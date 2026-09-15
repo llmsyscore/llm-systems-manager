@@ -55,7 +55,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.14-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.14-2">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.14-5">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
@@ -63,7 +63,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/tower.css?v=2026.09.14-1">
+  <link rel="stylesheet" href="/static/css/tower.css?v=2026.09.15-2">
 </head>
 <body>
 
@@ -2592,7 +2592,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.09.09-3"></script>
-<script src="/static/js/foundation.js?v=2026.09.12-3"></script>
+<script src="/static/js/foundation.js?v=2026.09.14-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
@@ -2601,7 +2601,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/reportcard.js?v=2026.09.08-2"></script>
 <script src="/static/js/lib/toolcards.js?v=2026.08.31-7"></script>
 <script src="/static/js/lib/sseguard.js?v=2026.09.12-1"></script>
-<script src="/static/js/lib/tower-view.js?v=2026.09.14-1"></script>
+<script src="/static/js/lib/tower-view.js?v=2026.09.14-3"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
 <script src="/static/js/charts.js?v=2026.09.14-4"></script>
@@ -2631,7 +2631,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
-<script src="/static/js/tower.js?v=2026.09.14-1"></script>
+<script src="/static/js/tower.js?v=2026.09.15-2"></script>
 
 <!-- Settings drawer — kept at body root so it's never inside a hidden tab container.
      Sections are rendered by foundation.js (renderSettingsPanel). -->
@@ -2667,7 +2667,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
       <button type="button" class="ib" id="twClose" title="Close (Esc)" aria-label="Close Tower" onclick="towerClose()">✕</button>
     </div>
     <div class="tw-sub"><span class="chip" id="twModelChip"></span><button type="button" class="chip ctx" id="twCtxChip" aria-pressed="true"></button></div>
-    <div class="tw-tabs" id="twTabs" role="tablist" hidden><button type="button" class="tab on" id="twTabConv" role="tab" aria-selected="true">Conversation</button><button type="button" class="tab" id="twTabIns" role="tab" aria-selected="false">Insights<span class="n" id="twInsCount" hidden></span></button></div>
+    <div class="tw-tabs" id="twTabs" role="tablist" hidden><button type="button" class="tab on" id="twTabConv" role="tab" aria-selected="true">Conversation</button><button type="button" class="tab" id="twTabIns" role="tab" aria-selected="false">Insights<span class="n" id="twInsCount" hidden></span></button><button type="button" class="ttl" id="twTitle" title="Rename conversation" hidden></button></div>
     <div class="tw-note" id="twInsNote" hidden></div>
     <div class="tw-b" id="twBody"></div>
     <div class="tw-iv" id="twInsView" role="tabpanel" hidden></div>
@@ -2898,7 +2898,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <link rel="stylesheet" href="/static/css/toasts.css?v=2026.06.10-6">
 <div id="alarmToastContainer"></div>
 
-<script src="/static/js/events-toasts.js?v=2026.09.11-1"></script>
+<script src="/static/js/events-toasts.js?v=2026.09.14-1"></script>
 <script src="/static/js/boot.js?v=2026.09.12-2"></script>
 </body>
 </html>

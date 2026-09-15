@@ -640,24 +640,38 @@ const AlertsView = {
         if (next) this.select(next);
     },
 
-    // From the console band / toasts: switch to Alerts and open this alert.
+    // From the console band, toasts and the manager (#962): switch to Alerts and open this alert.
+    // Waits for the tab's fetch so a console that just booted still finds the row.
     openFor(id) {
         const f = AppState.filters.alerts;
-        const a = AlertManager.byId(id);
-        if (a && !(a.status === 'active' || a.status === 'acknowledged') && f.status === 'open') {
-            f.status = 'all';
-            f.auto = true;
-            const sel = document.getElementById('alertStatus');
-            if (sel) sel.value = 'all';
-        }
         f.viaOpen = true;
         f.search = '';
         const box = document.getElementById('alertSearch');
         if (box) box.value = '';
         this._sel = String(id);
-        if (AppState.currentTab !== 'alerts') TabManager.switchTab('alerts');
-        else this.render();
-        document.querySelector(`#alertsBody tr[data-id="${CSS.escape(String(id))}"]`)?.scrollIntoView({ block: 'nearest' });
+        const p = AppState.currentTab !== 'alerts' ? TabManager.switchTab('alerts') : Promise.resolve(this.render());
+        return Promise.resolve(p).then(() => this._reveal(String(id)));
+    },
+
+    // Widens the status filter for a closed alert, turns to its page, selects it and scrolls it into view.
+    _reveal(id) {
+        const f = AppState.filters.alerts;
+        const a = AlertManager.byId(id);
+        if (!a) return;
+        let dirty = false;
+        if (!(a.status === 'active' || a.status === 'acknowledged') && f.status === 'open') {
+            f.status = 'all';
+            f.auto = true;
+            const sel = document.getElementById('alertStatus');
+            if (sel) sel.value = 'all';
+            dirty = true;
+        }
+        const i = this.ordered().findIndex(r => String(r.alert.alert_id) === id);
+        const page = i >= 0 ? Math.floor(i / f.pageSize) + 1 : f.page;
+        if (page !== f.page) { f.page = page; dirty = true; }
+        if (dirty) this.render();
+        this.select(id);
+        document.querySelector(`#alertsBody tr[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' });
     },
 
     _renderDetail() {

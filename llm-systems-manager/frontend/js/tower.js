@@ -8,6 +8,7 @@
   let _openTicks = new Set(), _lastKey = '', _unread = 0, _pending = [];
   let _prefs = { open: false, pinned: false, width: 400, thread: null, noCtx: false };
   let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
+  let _histOpen = false;
   const _bootS = Date.now() / 1000;
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
@@ -98,17 +99,30 @@
   function towerClose(opts) {
     $('towerOverlay')?.classList.remove('open');
     $('towerBtn')?.classList.remove('open');
-    document.body.classList.remove('tw-docked');
+    document.body.classList.remove('tw-docked', 'tw-lock');
     _prefs.open = false; savePrefs();
     const btn = $('towerBtn');
     if (btn && !btn.hidden && !(opts && opts.returnFocus === false)) btn.focus({ preventScroll: true });
   }
+  // Width of the page's vertical scrollbar (0 for overlay scrollbars); measured only while the page can scroll.
+  let _sbw = 0;
+  function measureScrollbar() {
+    if (document.body.classList.contains('tw-lock')) return _sbw;
+    const w = window.innerWidth - document.documentElement.clientWidth;
+    _sbw = Number.isFinite(w) ? Math.max(0, Math.min(30, w)) : 0;
+    return _sbw;
+  }
+  // Overlay locks the page behind the drawer; docked insets the drawer by the scrollbar width (#988).
   function applyDock() {
-    document.body.classList.toggle('tw-docked', !!_prefs.pinned && isOpen());
+    const open = isOpen(), docked = !!_prefs.pinned && open;
+    document.documentElement.style.setProperty('--tw-sbw', measureScrollbar() + 'px');
+    document.body.classList.toggle('tw-docked', docked);
+    document.body.classList.toggle('tw-lock', open && !docked);
     document.documentElement.style.setProperty('--tw-w', Math.max(360, Math.min(560, _prefs.width || 400)) + 'px');
     $('twPin')?.classList.toggle('on', !!_prefs.pinned);
     $('twPin')?.setAttribute('aria-pressed', String(!!_prefs.pinned));
   }
+  window.addEventListener('resize', () => { if (isOpen()) applyDock(); });
   function onKey(ev) {
     if (ev.key === 'Escape' && isOpen() && !_prefs.pinned) towerClose();
   }
@@ -141,9 +155,22 @@
     if (_thread) return _thread;
     if (_prefs.thread) {
       const r = await fetch(`/api/tower/threads/${encodeURIComponent(_prefs.thread)}`);
-      if (r.ok) { const d = await r.json(); if (d.ok) { _thread = d.thread; _state = { ...TW.initial(), turns: TW.threadView(d.messages) }; return _thread; } }
+      if (r.ok) { const d = await r.json(); if (d.ok) { _thread = d.thread; _state = { ...TW.initial(), turns: TW.threadView(d.messages) }; resumeRun(d.active_run); return _thread; } }
     }
     return newThread();
+  }
+  // A reloaded thread takes its run back: a parked action card keeps Stop and the decision buttons (#956),
+  // and a run still answering is re-attached so the reply lands instead of being cancelled.
+  function resumeRun(activeRun) {
+    const live = TW.liveRun(_state.turns);
+    if (live) {
+      const turns = _state.turns.slice();
+      turns[turns.length - 1] = { ...turns[turns.length - 1], done: false };
+      _state = { ..._state, turns, status: live.status === 'running' ? 'thinking' : 'awaiting' };
+      if (live.status === 'running') attach(live.runId); else _runId = live.runId;
+      return;
+    }
+    if (activeRun) { _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); attach(activeRun); }
   }
   async function newThread() {
     await abortRun();
@@ -269,6 +296,7 @@
     tabs.hidden = !on;
     view.hidden = !ins;
     body.hidden = ins;
+    paintTitle();
     for (const [elId, sel] of [['twTabConv', !ins], ['twTabIns', ins]]) {
       const b = $(elId); if (b) { b.classList.toggle('on', sel); b.setAttribute('aria-selected', String(sel)); }
     }
@@ -306,6 +334,7 @@
   function paintBody(opts) {
     const body = $('twBody'), box = $('twBox'), input = $('twInput'), sugs = $('twSugs');
     if (!body || !_view) return;
+    _histOpen = false;
     _lastKey = bodyKey(_view);
     const prevTop = body.scrollTop;
     const atBottom = (opts && opts.toBottom) || body.scrollHeight - prevTop - body.clientHeight < 24;
@@ -316,12 +345,14 @@
       body.innerHTML = `<div class="on-card"><h3>Turn on Tower</h3><p>Answers questions about your hosts, models, alerts and energy using a model you already run behind the gateway. Nothing leaves the lab. It starts <b>read-only</b> and declines anything outside this manager; actions and alarm diagnosis are separate switches in Settings.</p>`
           + `<div class="foot"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" id="twEnable">Turn on</button><a href="#" id="twSettingsLink">All settings →</a></div></div>`;
       box?.classList.add('dis'); if (input) input.disabled = true; if (sugs) sugs.innerHTML = '';
+      paintTitle();
       return;
     }
     if (_view.noModel) {
       body.innerHTML = `<div class="empty"><h3>Nothing to think with</h3><p>No chat model is loaded on any host, and Tower never loads one on its own. Load a model in <b>LLM Control</b> and this drawer wakes up.</p>`
         + `<div class="fu"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="switchTab('llm')">Open LLM Control</button></div></div>` + noticeHtml();
       box?.classList.add('dis'); if (input) input.disabled = true; if (sugs) sugs.innerHTML = '';
+      paintTitle();
       return;
     }
     box?.classList.remove('dis'); if (input) input.disabled = false;
@@ -346,6 +377,7 @@
     }
     $('towerAside')?.classList.toggle('streaming', busy);
     $('towerBtn')?.classList.toggle('streaming', busy);
+    paintTitle();
   }
 
   function closeStream() {
@@ -444,6 +476,7 @@
     if (!_thread) await ensureThread();
     if (!_thread) { _notice = 'Tower could not start a thread; try again.'; if ($('twInput')) $('twInput').value = t; paintBody(); return; }
     _notice = null;
+    if (_thread && (_thread.title || 'New thread') === 'New thread' && !((_state && _state.turns) || []).length) _thread.title = t.slice(0, 60);
     _state = TW.reduce(_state || TW.initial(), { event: 'user', text: t });
     paintBody({ toBottom: true });
     const page = _prefs.noCtx ? {} : pageContext();
@@ -508,6 +541,11 @@
       }
     });
     sugs?.addEventListener('click', onSug);
+    $('twTitle')?.addEventListener('click', () => {
+      const pill = $('twTitle');
+      if (!pill || !_thread) return;
+      editInline(pill, _thread.title || 'New thread', v => renameThread(_thread.id, v), () => paintTitle());
+    });
     $('twTabs')?.addEventListener('click', ev => {
       if (ev.target.closest('#twTabConv')) setTab('conv');
       else if (ev.target.closest('#twTabIns')) setTab('ins');
@@ -520,7 +558,12 @@
       const ia = ev.target.closest('[data-ins-apply]'); if (ia) { applyInsight(ia.dataset.insApply); return; }
       const idm = ev.target.closest('[data-ins-dismiss]'); if (idm) { dismissInsight(idm.dataset.insDismiss); return; }
       const io = ev.target.closest('[data-ins-open]');
-      if (io) { if (!_prefs.pinned) towerClose({ returnFocus: false }); if (typeof switchTab === 'function') switchTab('events'); return; }
+      if (io) {
+        if (!_prefs.pinned) towerClose({ returnFocus: false });
+        if (typeof focusAlarmAlert === 'function') focusAlarmAlert(io.dataset.insOpen);
+        else if (typeof switchTab === 'function') switchTab('events');
+        return;
+      }
       const idt = ev.target.closest('[data-ins-det]');
       if (idt) { const id = idt.dataset.insDet; if (_openIns.has(id)) _openIns.delete(id); else _openIns.add(id); paintInsights(); return; }
       if (ev.target.closest('#twInsDismissAll')) { dismissAllInsights(); return; }
@@ -553,8 +596,54 @@
   }
 
   function historyRow(t) {
-    return `<div class="hrow"><button type="button" class="sug" data-thread="${TW.esc(t.id)}">${TW.esc(t.title)}</button>`
+    return `<div class="hrow" data-row="${TW.esc(t.id)}"><button type="button" class="sug" data-thread="${TW.esc(t.id)}">${TW.esc(t.title)}</button>`
+      + (t.time ? `<span class="ht">${TW.esc(t.time)}</span>` : '')
+      + `<button type="button" class="rn" data-rn="${TW.esc(t.id)}" title="Rename conversation" aria-label="Rename ${TW.esc(t.title)}">✎</button>`
       + `<button type="button" class="ib del" data-del="${TW.esc(t.id)}" title="Delete conversation" aria-label="Delete ${TW.esc(t.title)}">✕</button></div>`;
+  }
+  // PATCHes a new title; null on failure (the notice explains).
+  async function renameThread(id, title) {
+    const t = String(title || '').trim().slice(0, 60);
+    if (!t) return null;
+    const r = await fetch(`/api/tower/threads/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: t }) }).catch(() => null);
+    const d = r && r.ok ? await r.json().catch(() => ({})) : {};
+    if (!d.ok) { _notice = 'Could not rename that conversation.'; return null; }
+    const nt = (d.thread && d.thread.title) || t;
+    if (_thread && _thread.id === id) { _thread.title = nt; paintTitle(); }
+    return nt;
+  }
+  // Swaps `label` for an input; Enter saves through onSave(title), Esc or blur restores the label;
+  // onDone (when given) repaints the label instead of setting its text.
+  function editInline(label, current, onSave, onDone) {
+    const input = document.createElement('input');
+    input.type = 'text'; input.className = 'rn-in'; input.value = current; input.maxLength = 60; input.setAttribute('aria-label', 'Conversation title');
+    label.replaceWith(input);
+    let done = false;
+    const finish = async save => {
+      if (done) return; done = true;
+      const v = input.value.trim();
+      let nt = null;
+      if (save && v && v !== current) nt = await onSave(v);
+      input.replaceWith(label);
+      if (onDone) onDone(nt); else if (nt) label.textContent = nt;
+    };
+    input.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); finish(true); } else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); } });
+    input.addEventListener('blur', () => finish(false));
+    input.focus(); input.select();
+  }
+  // The active conversation's title pill in the tab row; hidden until the thread has a turn and while History is open (#987).
+  function paintTitle() {
+    const el = $('twTitle'); if (!el || el.parentElement !== $('twTabs')) return;
+    const show = !!(_thread && _view && !_view.off && !_view.noModel && _tab === 'conv' && !_histOpen && _state && _state.turns.length);
+    el.hidden = !show;
+    if (!show) return;
+    const title = _thread.title || 'New thread';
+    el.innerHTML = `<span class="tt">${TW.esc(title)}</span><span class="pen" aria-hidden="true">✎</span>`;
+    el.setAttribute('aria-label', `Rename conversation: ${title}`);
+  }
+  // Day headers (Today, Yesterday, date) over newest-first rows (#987).
+  function historyHtml(threads) {
+    return TW.historyGroups(threads).map(g => `<div class="hgrp"><div class="hday">${TW.esc(g.label)}</div>${g.rows.map(historyRow).join('')}</div>`).join('');
   }
   // Deleting the current thread forgets it locally; the next question starts a new one.
   async function deleteThread(id) {
@@ -569,9 +658,16 @@
     const body = $('twBody'); if (!body) return;
     const threads = d.threads || [];
     body.innerHTML = `<div class="ins-h"><h3>History</h3><span class="cnt">${threads.length}</span><button type="button" class="lnk" id="twHistBack">Back</button></div>`
-      + (threads.length ? `<div class="hist">${threads.map(historyRow).join('')}</div>` : '<p class="hist-empty">No past conversations.</p>')
+      + (threads.length ? `<div class="hist">${historyHtml(threads)}</div>` : '<p class="hist-empty">No past conversations.</p>')
       + noticeHtml();
+    _histOpen = true; paintTitle();
     body.onclick = async ev => {
+      const rn = ev.target.closest('[data-rn]');
+      if (rn) {
+        const row = rn.closest('.hrow'), label = row && row.querySelector('[data-thread]');
+        if (label) editInline(label, label.textContent, v => renameThread(rn.dataset.rn, v));
+        return;
+      }
       const b = ev.target.closest('[data-thread]');
       if (b) {
         await abortRun();
@@ -586,7 +682,12 @@
           del.classList.add('arm'); del.textContent = 'Delete'; return;
         }
         const ok = await deleteThread(del.dataset.del);
-        if (ok) { const row = del.closest('.hrow'); row?.remove(); const cnt = body.querySelector('.cnt'); if (cnt) cnt.textContent = String(body.querySelectorAll('.hrow').length); }
+        if (ok) {
+          const row = del.closest('.hrow'), grp = row?.closest('.hgrp');
+          row?.remove();
+          if (grp && !grp.querySelector('.hrow')) grp.remove();
+          const cnt = body.querySelector('.cnt'); if (cnt) cnt.textContent = String(body.querySelectorAll('.hrow').length);
+        }
         else showHistory();
       }
       if (ev.target.closest('#twHistBack')) paintBody();

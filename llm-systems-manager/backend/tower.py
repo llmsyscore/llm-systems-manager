@@ -91,16 +91,22 @@ def _chat_candidates(entries: "list[dict]") -> "list[dict]":
     return [e for e in entries if e.get("id") and _resident(e) and not CHAT_EXCLUDE.search(str(e["id"]))]
 
 
+def _awake(entry: dict) -> bool:
+    st = entry.get("status")
+    return st.get("value") == "loaded" if isinstance(st, dict) else True
+
+
 def resolve_model(cfg, entries: "list[dict]") -> Optional[dict]:
-    """Pinned model if resident, else the first resident chat model, else None."""
+    """Pinned model if resident, else the first resident chat model; an awake copy always beats a
+    sleeping one (a sleeping pin yields to any awake chat model), else None."""
     pin = str(getattr(cfg, "model", "") or "").strip()
+    pinned = None
     if pin and pin.lower() != "auto":
-        for e in entries:
-            if e.get("id") == pin and _resident(e):
-                return _pick(e)
-    for e in _chat_candidates(entries):
-        return _pick(e)
-    return None
+        pinned = next((e for e in entries if e.get("id") == pin and _resident(e)), None)
+    chat = _chat_candidates(entries)
+    ranked = ([pinned] if pinned and _awake(pinned) else []) + [e for e in chat if _awake(e)] \
+        + ([pinned] if pinned else []) + chat
+    return _pick(ranked[0]) if ranked else None
 
 
 def alternate_model(current: dict, entries: "list[dict]") -> Optional[dict]:
@@ -173,7 +179,15 @@ def system_prompt(cfg, tools: "list[tower_tools.Tool]", page: Optional[dict], na
     if native and tools:
         parts.append("Prefer native function calls when you can; the fenced form works too.")
     parts.append("When you have what you need, answer in plain text without a tool block.")
+    parts.append(f"Current local time: {local_now()}. Every timestamp a tool returns is in this local time zone.")
     return "\n\n".join(parts)
+
+
+def local_now() -> str:
+    """The manager's current local time as ISO-8601 with offset and zone name."""
+    import datetime as _dt
+    d = _dt.datetime.now().astimezone()
+    return f"{d.isoformat(timespec='seconds')} ({d.tzname() or 'local'})"
 
 
 def _top_level_tool_blocks(text: str) -> "list[str]":
@@ -197,6 +211,18 @@ def _top_level_tool_blocks(text: str) -> "list[str]":
     return out
 
 
+def _outside_fences(text: str) -> str:
+    """The lines of `text` that sit outside every ``` fence (fence lines themselves dropped)."""
+    out, in_fence = [], False
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            out.append(line)
+    return "\n".join(out)
+
+
 def parse_tool_call(message: dict) -> "Optional[tuple[str, dict]]":
     calls = message.get("tool_calls") or []
     if calls:
@@ -214,7 +240,8 @@ def parse_tool_call(message: dict) -> "Optional[tuple[str, dict]]":
         call = _call_from_json(raw)
         if call:
             return call
-    for m in _TAG_CALL.finditer(text):
+    # A tag inside any fence is text the stream already showed, never a call (#959).
+    for m in _TAG_CALL.finditer(_outside_fences(text)):
         raw, wrap_name = (m.group(1), "") if m.group(1) is not None else (m.group(3), m.group(2))
         w = _TAG_WRAP.match(raw or "")
         if w:
@@ -271,7 +298,9 @@ def _history(store, thread_id: str, drop_refusals: bool = False) -> "list[dict]"
         if r["role"] in ("tool", "action"):
             continue
         nxt = rows[i + 1] if i + 1 < len(rows) else None
-        pre = r["role"] == "assistant" and nxt is not None and nxt["role"] in ("tool", "action")
+        # A canned line followed by a stray tool row (a worker that outlived its Stop) is not a preamble.
+        pre = (r["role"] == "assistant" and nxt is not None and nxt["role"] in ("tool", "action")
+               and not _canned(r["content"], drop_refusals))
         if r["role"] == "assistant" and not pre and _canned(r["content"], drop_refusals):
             if kept and kept[-1]["role"] == "user":
                 kept.pop()
@@ -611,9 +640,11 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
              model: dict, cancelled: Callable[[], bool], alternates: Optional[Callable[[dict], Optional[dict]]] = None,
              server_args_of: Optional[Callable[[dict], Optional[str]]] = None,
              approvals: Optional["Approvals"] = None, run_id: str = "", actor: str = "",
-             report_violation: Optional[Callable[[dict], None]] = None) -> dict:
+             report_violation: Optional[Callable[[dict], None]] = None,
+             stop_recorded: Optional[Callable[[], bool]] = None) -> dict:
     """One user turn: every model call streams; tool reads loop until a plain-text answer.
-    A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on."""
+    A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on.
+    `stop_recorded` is True when Stop already stored the turn's stop line (#961)."""
     t_start = time.monotonic()
     tools = tower_tools.catalog(registry, cfg, role)
     by_name = {t.name: t for t in tools}
@@ -654,7 +685,8 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
 
     def _stop_turn() -> dict:
         """Ends a cancelled turn: stores the stop line once, emits it, closes the trace."""
-        store.add_message(thread_id, "assistant", _FALLBACK_STOPPED)
+        if not (stop_recorded and stop_recorded()):
+            store.add_message(thread_id, "assistant", _FALLBACK_STOPPED)
         emit({"event": "error", "message": _FALLBACK_STOPPED})
         _end(False, "stopped")
         return {"ok": False, "calls": calls}
@@ -712,6 +744,8 @@ def run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role:
                 emit({"event": "status", "state": "answering"})
                 emit({"event": "delta", "text": preface})
                 continue
+            if cancelled():
+                return _stop_turn()
             if force_final:
                 _finish_answer(store, thread_id, emit, shown,
                                f"I stopped after {cap} tool calls without a final answer; "
@@ -931,6 +965,17 @@ class Store:
         r = self._conn().execute("SELECT id, title, created, updated, page_ctx FROM tower_threads WHERE user=? AND id=?", (user, tid)).fetchone()
         return {"id": r[0], "title": r[1], "created": r[2], "updated": r[3], "page": json.loads(r[4] or "{}")} if r else None
 
+    def rename_thread(self, user: str, tid: str, title: str) -> bool:
+        """Sets a thread's title (trimmed, 60 chars); False when the thread is not the user's."""
+        clean = " ".join(str(title or "").split())[:60]
+        if not clean:
+            return False
+        with self._lock:
+            c = self._conn()
+            n = c.execute("UPDATE tower_threads SET title=? WHERE user=? AND id=?", (clean, user, tid)).rowcount
+            c.commit()
+        return bool(n)
+
     def delete_thread(self, user: str, tid: str) -> bool:
         with self._lock:
             c = self._conn()
@@ -1005,8 +1050,8 @@ class Store:
         out = []
         for r in reversed(rows):
             a = dict(zip(self._ACTION_KEYS, r))
-            body = {"action_id": a["id"], "tool": a["tool"], "args": json.loads(a["args"] or "{}"), "card": json.loads(a["card"] or "{}"),
-                    "status": a["status"], "actor": a["actor"], "expires": a["expires"],
+            body = {"action_id": a["id"], "run_id": a["run_id"], "tool": a["tool"], "args": json.loads(a["args"] or "{}"),
+                    "card": json.loads(a["card"] or "{}"), "status": a["status"], "actor": a["actor"], "expires": a["expires"],
                     "message": ((json.loads(a["result"]) or {}).get("message") if a["result"] else None)}
             ok = 1 if a["status"] == "done" else (None if a["status"] in ("pending", "running") else 0)
             out.append({"role": "action", "content": json.dumps(body, default=str), "tool_name": a["tool"], "tool_args": a["args"],
@@ -1124,6 +1169,7 @@ class Store:
 
 _STREAM_TICK_S = 1.0
 _STREAM_MAX_S = 180.0
+_DETACH_GRACE_S = 30.0
 _RUN_TTL_S = 600.0
 _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
@@ -1251,7 +1297,7 @@ class Runs:
             rid = uuid.uuid4().hex[:16]
             run = {"id": rid, "user": user, "thread_id": thread_id, "queue": queue.Queue(maxsize=512),
                    "done": False, "truncated": False, "cancel": threading.Event(),
-                   "started": _now(), "model": model, "awaiting": None, "finished": None}
+                   "started": _now(), "model": model, "awaiting": None, "finished": None, "stopped": False}
             self._runs[rid] = run
             self._active_user[user] = rid
             self._rate[user] = self._rate.get(user, []) + [now]
@@ -1264,7 +1310,8 @@ class Runs:
                          cancelled=run["cancel"].is_set, server_args_of=self._server_args_of,
                          alternates=lambda cur: alternate_model(cur, (_gateway_entries or self._entries)()),
                          approvals=self._approvals, run_id=rid, actor=user,
-                         report_violation=self._report_violation)
+                         report_violation=self._report_violation,
+                         stop_recorded=lambda: bool(run.get("stopped")))
             except Exception as e:
                 log.warning("tower worker failed: %s: %s", type(e).__name__, e)
                 _drop_oldest_put(run, {"event": "error", "message": "Tower hit an internal error; try again."})
@@ -1287,11 +1334,44 @@ class Runs:
         r = self._runs.get(rid)
         return r if r and r["user"] == user else None
 
+    def active_run_id(self, user: str, thread_id: str) -> Optional[str]:
+        """The user's unfinished run on this thread, so a reloaded drawer can re-attach to it."""
+        r = self._active_run(user)
+        return r["id"] if r and r["thread_id"] == thread_id else None
+
+    def _detach(self, run: dict) -> None:
+        """A client that leaves mid-run gets _DETACH_GRACE_S to come back (a page reload) before the run is cancelled."""
+        token = object()
+        run["detached"] = token
+
+        def later():
+            if run.get("detached") is token and not run["done"]:
+                run["cancel"].set()
+                log.debug("tower run %s cancelled: client gone for %.0fs", run["id"], _DETACH_GRACE_S)
+        t = threading.Timer(_DETACH_GRACE_S, later)
+        t.daemon = True
+        t.start()
+
     def stop(self, rid: str, user: str) -> bool:
+        """Cancels a run. Unless it is parked on an approval, the user's slot is freed at once,
+        the stop line is stored and the stream ends now; the worker's late output is discarded (#961)."""
         r = self.get(rid, user)
         if not r:
             return False
         r["cancel"].set()
+        with self._lock:
+            release = not r["done"] and not r.get("awaiting") and not r.get("stopped")
+            if release:
+                r["stopped"] = True
+                if self._active_user.get(user) == rid:
+                    self._active_user.pop(user, None)
+        if release:
+            try:
+                self._store.add_message(r["thread_id"], "assistant", _FALLBACK_STOPPED)
+            except Exception as e:  # noqa: BLE001 — a store failure never blocks the stop
+                log.warning("tower stop line not stored: %s: %s", type(e).__name__, e)
+            _drop_oldest_put(r, {"event": "error", "message": _FALLBACK_STOPPED})
+            log.debug("tower stop run=%s released=True", rid)
         return True
 
     def approve(self, aid: str, *, user: str, role: str, decision: str) -> "tuple[Optional[dict], Optional[tuple[int, str]]]":
@@ -1316,6 +1396,7 @@ class Runs:
     def stream(self, run: dict):
         started = time.monotonic()
         reason = "client_gone"
+        run["detached"] = None
         log.debug("tower stream attach run=%s", run["id"])
         try:
             while True:
@@ -1342,9 +1423,9 @@ class Runs:
                     return
         finally:
             log.debug("tower stream end run=%s reason=%s", run["id"], reason)
-            # Client gone or timed out before the worker finished: stop it, unless it is parked on an approval.
+            # Client gone or timed out before the worker finished: cancel after a grace, unless parked on an approval.
             if not run["done"] and not run.get("awaiting"):
-                run["cancel"].set()
+                self._detach(run)
 
 
 # ── routes ──────────────────────────────────────────────────────────
@@ -1410,7 +1491,20 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         t = runs.store.get_thread(_user(), tid)
         if not t:
             return jsonify({"ok": False, "error": "unknown thread"}), 404
-        return jsonify({"ok": True, "thread": t, "messages": runs.store.messages(tid)})
+        return jsonify({"ok": True, "thread": t, "messages": runs.store.messages(tid),
+                        "active_run": runs.active_run_id(_user(), tid)})
+
+    @app.route("/api/tower/threads/<tid>", methods=["PATCH"])
+    def tower_thread_rename(tid):
+        deny = _gate()
+        if deny: return deny
+        body = flask_request.get_json(silent=True) or {}
+        title = " ".join(str(body.get("title") or "").split())[:60]
+        if not title:
+            return jsonify({"ok": False, "error": "title required"}), 400
+        if not runs.store.rename_thread(_user(), tid, title):
+            return jsonify({"ok": False, "error": "unknown thread"}), 404
+        return jsonify({"ok": True, "thread": runs.store.get_thread(_user(), tid)})
 
     @app.route("/api/tower/threads/<tid>", methods=["DELETE"])
     def tower_thread_delete(tid):

@@ -583,6 +583,31 @@ function _propagateThemeToAlarmEngine(name) {
   } catch (_) {}
 }
 
+// Opens the Events tab with one alert selected, scrolled into view and expanded (#962).
+// A booted alarm console takes a postMessage; one that has not loaded yet gets ?alert= on its URL.
+function focusAlarmAlert(id) {
+  if (id == null || id === '') return;
+  const iframe = document.getElementById('alarmEngineIframe');
+  const wanted = String(id);
+  const booted = !!(iframe && iframe.getAttribute('src'));
+  if (iframe && !booted) {
+    try {
+      const u = new URL(iframe.getAttribute('data-src') || '/alarm/', window.location.origin);
+      const theme = (document.documentElement.dataset.theme || '').trim();
+      if (theme) u.searchParams.set('theme', theme);
+      u.searchParams.set('alert', wanted);
+      iframe.setAttribute('src', u.pathname + u.search);
+    } catch (_) { /* switchTab loads the console; the message below still reaches it */ }
+  }
+  if (typeof switchTab === 'function') switchTab('events');
+  if (!iframe || !booted) return;
+  const post = () => { try { iframe.contentWindow?.postMessage({ type: 'open_alert', id: wanted }, window.location.origin); } catch (_) {} };
+  post();
+  // A console still loading gets the message once it is up.
+  iframe.addEventListener('load', post, { once: true });
+  setTimeout(() => iframe.removeEventListener('load', post), 15000);
+}
+
 // Resolve a CSS theme token (e.g. '--accent') to its computed string — for
 // canvas contexts (Chart.js) that can't consume var() directly.
 function cssVar(name, fallback) {

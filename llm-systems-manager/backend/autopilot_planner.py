@@ -213,12 +213,18 @@ def _uses_ram_budget(entry, observed, aid=None) -> bool:
         f"{entry['provider']}:{entry['model']}")
     return gl == 0
 
+def _unanswered(a, provider) -> bool:
+    """True when a llama host's last sample is stale or unknown (#967); other providers and
+    legacy agents without `answered` pass (an unreadable LM Studio ps is an older agent, not a dead server)."""
+    answered = a.get("answered")
+    return provider == "llama" and isinstance(answered, dict) and answered.get(provider) is False
+
 def _fits(entry, aid, observed, size) -> bool:
-    """Capability, heartbeat and known size; the budget check lives in _fit_and_size."""
+    """Capability, heartbeat, a fresh answered sample and known size; the budget check lives in _fit_and_size."""
     a = observed["agents"][aid]
     # live is the agent heartbeat, not the llama server's cached sleep state.
     return (entry["provider"] in a["provider_caps"] and bool(a["live"])
-            and size is not None)
+            and not _unanswered(a, entry["provider"]) and size is not None)
 
 def _dwell_blocks(k, placed_at, observed, now) -> bool:
     # Recent placement on a now-dead agent is a liveness blip, not a failure.
@@ -345,10 +351,14 @@ def entry_status(desired: dict, observed: dict,
                 else:
                     placeable = 0
                     resident_blocked = 0
+                    unanswered = 0
                     avail: "dict[str, int]" = {}   # budget + credit per candidate
                     for aid in live_capable:
                         if placeable >= need:
                             break
+                        if _unanswered(observed["agents"][aid], e["provider"]):
+                            unanswered += 1
+                            continue
                         if _resident_conflict(e, aid, residents, managed):
                             resident_blocked += 1
                             continue
@@ -363,6 +373,9 @@ def entry_status(desired: dict, observed: dict,
                     if placeable < need:
                         if size is None:
                             blocked = "model size unknown (set entry size MB)"
+                        elif placeable == 0 and unanswered and not resident_blocked and not avail:
+                            blocked = (f"waiting for a fresh {e['provider']} sample from "
+                                       f"{unanswered} capable host(s)")
                         elif placeable == 0 and resident_blocked:
                             blocked = (f"capable hosts already serve another "
                                        f"managed {e['provider']} model")

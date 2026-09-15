@@ -32,12 +32,13 @@ def _deps(calls, alerts=()):
             calls.append((name,) + a)
             return True, None
         return f
-    return {"host": lambda n: {"hostname": n, "llama": {"state": "sleeping"}}, "hosts": lambda: [], "models": lambda h=None, p=None: [],
+    return {"host": lambda n, section="all": {"hostname": n, "llama": {"state": "sleeping"}}, "host_history": lambda h, m, w="24h": {"points": 0},
+            "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],
             "alarms": lambda s="active", c=10, w=None, h=None, r=None: list(alerts),
             "alert": lambda aid: next((dict(a) for a in alerts if a["id"] == aid), None),
             "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None: {}, "energy": lambda w="today": {},
             "flow": lambda: {}, "runs": lambda t=None, c=5: [], "speed": lambda m: [], "health": lambda: {},
-            "log_tail": lambda h, p="llama", n=40: [], "config_get": lambda p: {}, "help": lambda t: "",
+            "log_tail": lambda h, p="llama", n=40, a=None: [], "config_get": lambda p: {}, "help": lambda t: "",
             "audit": lambda w="24h", a=None, ac=None, c=20: [], "pinned": lambda p, h, m: False,
             "wake": rec("wake"), "ack": rec("ack"), "load": rec("load"), "unload": rec("unload"), "restart": rec("restart"), "close": rec("close")}
 

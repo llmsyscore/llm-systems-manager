@@ -92,7 +92,7 @@ const TabManager = {
         }
         UI.closeMenus();
         this._armPoll();
-        this.refreshCurrent();
+        return this.refreshCurrent();
     },
 
     // Console every 30 s, Alerts every 15 s, Metrics every 60 s while live, Rules every 60 s.
@@ -161,12 +161,15 @@ const LEGACY_THEMES = { classic: 'oled' };
 })();
 window.addEventListener('message', (ev) => {
     try {
+        if (ev.origin !== window.location.origin) return;
         const d = ev.data;
         const name = d && d.type === 'theme' && typeof d.name === 'string' ? (LEGACY_THEMES[d.name] || d.name) : '';
         if (name && THEMES.has(name)) {
             document.documentElement.dataset.theme = name;
             if (typeof ChartManager !== 'undefined') ChartManager.retint();
         }
+        // The manager's Tower cards and toasts deep-link one alert (#962).
+        if (d && d.type === 'open_alert' && d.id != null && String(d.id)) AlertsView.openFor(String(d.id));
     } catch (_) {}
 });
 
@@ -185,5 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
     WebSocketEvents.init();
 
     const m = /^#(console|alerts|metrics|rules|notifications)\b/.exec(location.hash || '');
-    TabManager.switchTab(m ? m[1] : 'console', false);
+    const want = new URLSearchParams(window.location.search).get('alert');
+    if (want) AlertsView.openFor(want);
+    else TabManager.switchTab(m ? m[1] : 'console', false);
 });

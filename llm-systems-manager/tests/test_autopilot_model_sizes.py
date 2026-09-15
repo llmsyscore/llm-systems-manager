@@ -375,7 +375,7 @@ def _base_deps(gpu_layers=None, ram=None, vram_used_mb=1000):
         }
         if ram is not None:
             sample["ram"] = ram
-        return {"sample": sample}
+        return {"sample": sample, "last_seen": time.time()}
     def fake_saturation(prov, agent_id):
         return {"value": None}
     return {"agents": fake_agents, "liveness": fake_liveness,

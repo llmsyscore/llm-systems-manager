@@ -620,6 +620,7 @@ class Reconciler:
         self._route_sync = route_sync
         self._busy_agents = busy_agents
         self._proposals: "dict[str, dict]" = {}
+        self._unanswered_seen: "set[tuple[str, str]]" = set()
         self._sat_history: "dict[str, list]" = {}
         self._grace_expired: "set[tuple[str, str]]" = set()
         self.ledger = _empty_ledger()
@@ -636,6 +637,7 @@ class Reconciler:
         with self._lock:
             desired = self._get_state()
             observed = self._observe()
+            self._log_unanswered(observed)
             self._prune_stale_keys(desired, observed)
             self._debounce_blank(observed, now, record=True)
             self._prune_placed_at(observed, now)
@@ -674,6 +676,17 @@ class Reconciler:
                     "proposals": self._snapshot,
                     "entry_status": pl.entry_status(desired, observed,
                                                     self.ledger, now)}
+
+    def _log_unanswered(self, observed: dict) -> None:
+        """One INFO line when a capable agent's provider sample turns stale or unknown, one when it reports again (#967)."""
+        now_set = {(aid, prov) for aid, a in observed["agents"].items()
+                   for prov in a.get("provider_caps") or [] if pl._unanswered(a, prov)}
+        for aid, prov in sorted(now_set - self._unanswered_seen):
+            log.info("autopilot: agent:%s %s sample stale or unknown (%s) — skipping placement until it reports again",
+                     aid[:8], prov, _sample_detail(observed["agents"][aid], prov))
+        for aid, prov in sorted(self._unanswered_seen - now_set):
+            log.info("autopilot: agent:%s %s sample fresh again", aid[:8], prov)
+        self._unanswered_seen = now_set
 
     def _log_tick(self, desired: dict, observed: dict, actions: list, now: float) -> None:
         for aid, a in observed["agents"].items():

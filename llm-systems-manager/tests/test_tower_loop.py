@@ -58,11 +58,13 @@ def test_parse_ignores_a_tool_fence_nested_in_another_code_block():
 
 
 def _deps():
-    return {"host": lambda n: {"hostname": n, "gpu_temp_c": 91}, "hosts": lambda: [], "models": lambda h=None, p=None: [],
+    return {"host": lambda n, section="all": {"hostname": n, "gpu_temp_c": 91}, "host_history": lambda h, m, w="24h": {"points": 0},
+            "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],
             "alarms": lambda s="active", c=10, w=None, h=None, r=None: [{"id": "a1"}], "alert": lambda a: None,
-            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None: {"total": 1}, "energy": lambda w="today": {},
+            "alarm_search": lambda a: {"alerts": [{"id": "a1"}], "total": 1, "offset": 0, "next_offset": None},
+            "alarm_history": lambda w="30d", g="rule", t=10, h=None, r=None, a=None: {"total": 1}, "energy": lambda w="today": {},
             "flow": lambda: {}, "runs": lambda t=None, c=5: [], "speed": lambda m: [], "health": lambda: {},
-            "log_tail": lambda h, p="llama", n=40: [], "config_get": lambda p: {}, "help": lambda t: "",
+            "log_tail": lambda h, p="llama", n=40, a=None: [], "config_get": lambda p: {}, "help": lambda t: "",
             "audit": lambda w="24h", a=None, ac=None, c=20: [],
             "wake": lambda h: (h == "box", None if h == "box" else "unknown host"), "ack": lambda a: (True, None),
             "load": lambda p, h, m: (True, None), "unload": lambda p, h, m: (True, None),
@@ -1032,7 +1034,7 @@ def test_system_prompt_keeps_its_instructions_private():
 
 
 def test_top_of_loop_cancel_closes_the_turn_like_a_mid_stream_stop():
-    """Cancelling between the tool result and the next model call stores the stop line,
+    """A cancel that lands as the reply finishes streaming stores the stop line and runs no tool (#961),
     so the preamble before that tool never replays as an answer."""
     stop = {"now": False}
     def stream(body, *, label):
@@ -1044,9 +1046,9 @@ def test_top_of_loop_cancel_closes_the_turn_like_a_mid_stream_stop():
                          model={"model": "m", "provider": "llama", "hosts": []}, cancelled=lambda: stop["now"])
     rows = st.messages(tid)
     assert out["ok"] is False
-    assert [r["role"] for r in rows] == ["user", "assistant", "tool", "assistant"]
+    assert [r["role"] for r in rows] == ["user", "assistant"]
     assert rows[-1]["content"] == tower._FALLBACK_STOPPED
-    assert tower._history(st, tid) == [{"role": "user", "content": "q"}]
+    assert tower._history(st, tid) == []
 
 
 def test_stop_while_awaiting_approval_stores_one_stop_line():
@@ -1410,3 +1412,93 @@ def test_store_adds_seen_at_to_an_existing_insights_table(tmp_path):
     assert st.get_insight("x")["seen_at"] is None and st.count_unseen() == 1
     tower.Store(db)                                                             # a second init leaves the column alone
     assert st.mark_insights_seen() == 1 and st.get_insight("x")["seen_at"]
+
+
+# ── #959: a call tag inside a plain fence is text, never a call ──────
+
+def test_tag_call_inside_a_plain_fence_is_shown_and_never_run():
+    fenced = 'Here is what the model would send:\n```text\n<tool_call>{"name":"hosts_overview","args":{}}</tool_call>\n```\nDone.'
+    assert tower.parse_tool_call({"content": fenced}) is None
+    assert tower.parse_tool_call({"content": '```\n<function=hosts_overview>{}</function>\n```'}) is None
+    after = '```text\nplain\n```\n<tool_call>{"name":"hosts_overview","args":{}}</tool_call>'
+    assert tower.parse_tool_call({"content": after}) == ("hosts_overview", {})
+    out, events, seen, st, tid = _run([{"content": fenced}])
+    assert out["ok"] is True and out["calls"] == 0
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == fenced
+    assert [r["role"] for r in st.messages(tid)] == ["user", "assistant"]
+
+
+# ── #961: a stop the route already recorded stores no second stop line ──
+
+def test_stop_recorded_skips_the_second_stop_line():
+    def complete_stream(body, *, label):
+        yield {"choices": [{"delta": {"content": "he"}}]}
+        yield {"choices": [{"delta": {"content": "llo"}}]}
+    st = tower.Store(":memory:")
+    tid = st.create_thread("u", "t", {})
+    events = []
+    out = tower.run_turn(thread_id=tid, user_text="x", page={}, cfg=_cfg(), role="operator", registry=_registry(),
+                         complete_stream=complete_stream, store=st, emit=events.append,
+                         model={"model": "m", "provider": "llama", "hosts": ["box"]}, cancelled=lambda: True,
+                         stop_recorded=lambda: True)
+    assert out["ok"] is False and events[-1] == {"event": "error", "message": "Stopped."}
+    assert [r["role"] for r in st.messages(tid)] == ["user"]
+
+
+# ── #956: stored action rows carry their run id ──────────────────────
+
+def test_action_rows_carry_the_run_id():
+    st = tower.Store(":memory:")
+    tid = st.create_thread("u", "t", {})
+    aid = st.create_action(tid, "run77", "wake_server", {"host": "box"}, {"title": "Wake"}, 600)
+    row = next(r for r in st.messages(tid) if r["role"] == "action")
+    body = json.loads(row["content"])
+    assert body["action_id"] == aid and body["run_id"] == "run77" and body["status"] == "pending"
+
+
+# ── #978: the prompt states the local time ───────────────────────────
+
+def test_system_prompt_states_the_local_time_and_zone(monkeypatch):
+    monkeypatch.setattr(tower, "local_now", lambda: "2026-09-14T20:00:00-04:00 (EDT)")
+    p = tower.system_prompt(_cfg(), [], None, False)
+    assert "Current local time: 2026-09-14T20:00:00-04:00 (EDT)." in p and "local time zone" in p
+    assert tower.local_now().count(":") >= 3 and "(" in tower.local_now()
+
+
+def test_history_treats_a_stop_line_before_a_stray_tool_row_as_canned():
+    """#961: a worker that outlives Stop may append a tool row after the stop line; the stopped question still goes."""
+    st = tower.Store(":memory:")
+    tid = st.create_thread("u", "t", {})
+    st.add_message(tid, "user", "first")
+    st.add_message(tid, "assistant", "one")
+    st.add_message(tid, "user", "stopped question")
+    st.add_message(tid, "assistant", tower._FALLBACK_STOPPED)
+    st.add_message(tid, "tool", "{}", tool_name="hosts_overview", tool_ok=True, tool_ms=1)
+    st.add_message(tid, "user", "second")
+    assert [(m["role"], m["content"]) for m in tower._history(st, tid)] == [("user", "first"), ("assistant", "one"), ("user", "second")]
+
+
+def test_a_stop_that_lands_as_the_stream_ends_runs_no_tool():
+    calls = {"n": 0}
+    def cancelled():
+        calls["n"] += 1
+        return calls["n"] > 3          # set after the model's reply finished streaming
+    out, events, seen, st, tid = _run([{"content": '```tool\n{"name":"hosts_overview","args":{}}\n```'}], cancelled=cancelled)
+    assert out["ok"] is False and events[-1] == {"event": "error", "message": "Stopped."}
+    assert not any(e["event"] == "tool" for e in events)
+    assert [r["role"] for r in st.messages(tid)] == ["user", "assistant"] and st.messages(tid)[-1]["content"] == "Stopped."
+
+
+def test_resolve_model_prefers_an_awake_model_over_a_sleeping_pin():
+    """A sleeping pin (or first candidate) yields to any awake chat model; sleeping copies are the last resort."""
+    entries = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "sleeping"}},
+               {"id": "gemma-4", "provider": "lms", "status": {"value": "loaded"}}]
+    assert tower.resolve_model(_cfg(model="qwen3-14b"), entries)["model"] == "gemma-4"
+    assert tower.resolve_model(_cfg(model="auto"), entries)["model"] == "gemma-4"
+    entries[1]["status"] = {"value": "sleeping"}
+    assert tower.resolve_model(_cfg(model="qwen3-14b"), entries)["model"] == "qwen3-14b"
+    assert tower.resolve_model(_cfg(model="auto"), entries)["model"] == "qwen3-14b"
+    entries[0]["status"] = {"value": "loaded"}
+    assert tower.resolve_model(_cfg(model="qwen3-14b"), entries)["model"] == "qwen3-14b"
+    assert tower.resolve_model(_cfg(model="gemma-4"), entries)["model"] == "qwen3-14b"     # awake non-pin beats the sleeping pin
+    assert tower.resolve_model(_cfg(), [{"id": "x", "provider": "lms", "status": {"value": "unloaded"}}]) is None
