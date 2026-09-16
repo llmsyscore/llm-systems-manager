@@ -1259,7 +1259,11 @@
     const THRESHOLD = 62, MAX = 96;
     const ind = $('ptr');
     let startY = null, dy = 0, busy = false;
-    const active = () => document.querySelector('.screen:not([hidden])');
+    // A screen that scrolls an inner pane (Tower) marks it data-scroller; the pull reads that pane's scrollTop.
+    const active = () => {
+      const scr = document.querySelector('.screen:not([hidden])');
+      return scr ? (scr.querySelector('[data-scroller]:not([hidden])') || scr) : null;
+    };
 
     document.addEventListener('touchstart', (e) => {
       const scr = active();

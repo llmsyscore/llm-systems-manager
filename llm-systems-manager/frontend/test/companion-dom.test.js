@@ -97,6 +97,10 @@ describe('companion DOM contract', () => {
     for (const m of tjs.matchAll(/\$\('([^']+)'\)/g)) expect(htmlIds.has(m[1]), m[1]).toBe(true);
     expect(js).toMatch(/avail: \(\) => !!\(tower && tower\.enabled\)/);
     expect(js.includes("tower.init()")).toBe(true);
+    // Pull-to-refresh must read the inner pane's scrollTop, or it swallows every upward scroll in a conversation.
+    expect(html).toMatch(/id="towerConv" data-scroller/);
+    expect(html).toMatch(/id="towerIns" data-scroller/);
+    expect(js.includes("querySelector('[data-scroller]:not([hidden])')")).toBe(true);
     const sw = read('sw.js');
     for (const p of ['/static/js/lib/sseguard.js', '/static/js/lib/tower-view.js', '/static/js/companion-tower.js']) expect(sw.includes(`'${p}'`), p).toBe(true);
   });

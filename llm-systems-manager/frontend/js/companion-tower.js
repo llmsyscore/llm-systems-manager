@@ -130,7 +130,7 @@
           if (ev.event === 'done' || ev.event === 'error') {
             endRun();
             if (!visible()) { c.unread += 1; badge(); }
-            if (dropped) { dropped = false; c.state = { ...c.state, status: 'idle' }; reloadThread().then(paintConv); }
+            if (dropped) { dropped = false; reloadThread().then(paintConv); }
             drainPending();
           }
         },
@@ -497,7 +497,7 @@
       if ((b = q('[data-ins-det]'))) { const k = b.dataset.insDet; c.openIns.has(k) ? c.openIns.delete(k) : c.openIns.add(k); paintIns(); return; }
       if ((b = q('[data-ins-apply]'))) { applyInsight(b.dataset.insApply); return; }
       if ((b = q('[data-ins-dismiss]'))) { dismissInsight(b.dataset.insDismiss); return; }
-      if ((b = q('[data-ins-dismiss-all]'))) { dismissAll(); return; }
+      if (q('[data-ins-dismiss-all]')) { dismissAll(); return; }
       if ((b = q('[data-ins-open]'))) { if (deps.openAlert) deps.openAlert(b.dataset.insOpen); }
     }
     function submitInput() {
