@@ -44,12 +44,21 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .tw-h .sp { margin-left: auto; }
 
 /* ---------- chips ---------- */
-#towerAside .tw-sub { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; overflow: hidden; }
+#towerAside .tw-sub { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border-soft); flex-wrap: wrap; }
 #towerAside .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--bg-card-alt); color: var(--fg-muted); font: 500 11px var(--font-mono); white-space: nowrap; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #towerAside #twModelChip { flex: 1 1 auto; }
 #towerAside .chip.ctx { flex: 0 1 auto; }
 #towerAside .chip b { color: var(--fg); font-weight: 500; flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
 #towerAside .chip .sfx { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+#towerAside .tw-sub .chips { display: contents; }
+#towerAside .chip.chk { flex: 0 0 auto; position: relative; overflow: visible; height: 20px; padding: 0 7px; font-size: 10.5px; border-radius: 999px; }
+#towerAside .chip.chk.ok { color: color-mix(in srgb, var(--ok) 78%, var(--fg)); border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong)); background: linear-gradient(180deg, color-mix(in srgb, var(--ok) 20%, transparent), color-mix(in srgb, var(--ok) 7%, transparent)); }
+#towerAside .chip.chk.ok.outline { background: var(--bg-card-alt); }
+#towerAside .chip.chk.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 55%, var(--border-strong)); background: linear-gradient(180deg, color-mix(in srgb, var(--crit) 16%, transparent), transparent); }
+#towerAside .chip.chk.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border-strong)); }
+#towerAside .chip.chk.dim { color: var(--fg-faint); }
+#towerAside .chip.chk[data-tip]::after { content: attr(data-tip); display: none; position: absolute; top: calc(100% + 6px); left: 0; padding: 4px 8px; white-space: normal; width: max-content; max-width: 320px; background: var(--bg-elev); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 5px; font: 400 11px var(--font-sans); box-shadow: 0 4px 14px color-mix(in srgb, var(--bg) 60%, transparent); z-index: 60; pointer-events: none; }
+#towerAside .chip.chk[data-tip]:hover::after { display: block; }
 #towerAside .chip .x { color: var(--fg-dim); margin-left: 2px; flex-shrink: 0; }
 #towerAside .chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 #towerAside .chip i.warn { background: var(--warn); }

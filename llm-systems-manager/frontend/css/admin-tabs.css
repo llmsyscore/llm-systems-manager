@@ -248,6 +248,20 @@
 /* ── Settings (st-) ────────────────────────────────────────────────── */
 #admin-settings .st-note { font-size: 12px; color: var(--fg-dim); margin: -4px 0 14px; max-width: 78ch; line-height: 1.45; }
 #admin-settings .st-hidden { display: none !important; }
+#admin-settings .st-checkrow { border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; margin: 6px 0; background: color-mix(in srgb, var(--bg-card-alt) 45%, transparent); }
+#admin-settings .st-checkrow:last-child { border-bottom: 1px solid var(--border-soft); }
+#admin-settings .st-checkrow .st-lb { gap: 8px; justify-items: start; }
+#admin-settings .st-checkrow .st-ct .row { gap: 6px; font-size: 12px; }
+#admin-settings .st-checkrow .st-ct .row.fb { margin-top: 2px; }
+#admin-settings .st-checkrow .d { color: var(--fg-muted); font-size: 12px; }
+#admin-settings .st-checkrow .d.w { width: 62px; }
+#admin-settings .st-chip { position: relative; display: inline-flex; align-items: center; height: 20px; font-family: var(--font-mono); font-size: 10.5px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-muted); white-space: nowrap; }
+#admin-settings .st-chip.ok { color: color-mix(in srgb, var(--ok) 78%, var(--fg)); border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong)); background: linear-gradient(180deg, color-mix(in srgb, var(--ok) 20%, transparent), color-mix(in srgb, var(--ok) 7%, transparent)); }
+#admin-settings .st-chip.ok.outline { background: transparent; }
+#admin-settings .st-chip.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 55%, var(--border-strong)); background: linear-gradient(180deg, color-mix(in srgb, var(--crit) 16%, transparent), transparent); }
+#admin-settings .st-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border-strong)); }
+#admin-settings .st-chip.dim { color: var(--fg-faint); }
+#admin-settings .st-chip[data-tip]::after { white-space: normal; width: max-content; max-width: 360px; text-align: left; }
 #admin-settings .card[data-group="__most_used__"] { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); margin-bottom: 22px; }
 #admin-settings .card[data-group="__most_used__"] > .card-h { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 #admin-settings .card[data-group="__most_used__"] > .card-h h3 { color: var(--accent); }

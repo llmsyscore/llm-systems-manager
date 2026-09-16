@@ -87,6 +87,22 @@ def _load_manager_module():
 manager_mod = _load_manager_module()
 
 
+class _NoChecks:
+    """Stand-in for tower_check.Checks: answers without ever probing a model."""
+    def get(self, mid): return None
+    def ensure(self, model): return {"model": model["model"], "grade": "pending"}
+    def run(self, model): return {"model": model["model"], "grade": "failed", "mode": "fenced",
+                                  "size_b": None, "small": False, "at": 0.0, "detail": "stubbed"}
+    def forget(self): return None
+
+
+@pytest.fixture(autouse=True)
+def _tower_checks_stubbed(monkeypatch):
+    """Stops /api/tower/state from starting a real capability probe against the live fleet."""
+    import tower
+    monkeypatch.setattr(tower, "_checks", _NoChecks(), raising=False)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _live_audit_untouched():
     """Fail the session if any test writes the LIVE audit_log table."""

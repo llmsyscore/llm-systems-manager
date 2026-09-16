@@ -414,16 +414,31 @@
              minutes: Math.max(1, Math.round((last - first) / 60)) };
   }
 
+  // Model capability check (#1039): the drawer/settings chip for one check row.
+  const SMALL_TIP = 'Small model: expect the occasional tool call written as text; Tower corrects it once per question';
+  function checkChips(c) {
+    if (!c || !c.grade) return [];
+    const out = [];
+    if (c.grade === 'pending') out.push({ text: 'Checking\u2026', short: 'Checking\u2026', cls: 'dim', title: 'Checking whether the model can call Tower\u2019s tools' });
+    else if (c.grade === 'native') out.push({ text: 'Tools OK', short: 'Tools', cls: 'ok', title: 'Tool calls work: the model uses built-in function calling' });
+    else if (c.grade === 'fenced') out.push({ text: 'Tools OK', short: 'Tools', cls: 'ok outline', title: 'Tool calls work: the model writes them in text prompt mode' });
+    else if (c.grade === 'unknown') out.push({ text: 'Not checked', short: 'Not checked', cls: 'dim', title: `The model did not answer the check (${c.detail || 'unreachable'}); it runs again automatically` });
+    else out.push({ text: 'No tool support', short: 'No tools', cls: 'crit', title: `No tool support: the model made no tool call in either mode (${c.detail || 'no call'})` });
+    if (c.small) out.push({ text: 'small model', short: 'small', cls: 'warn', title: `${SMALL_TIP} (${c.size_b}B)` });
+    return out;
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
     const noModel = !off && !a.model;
     return { enabled: !!a.enabled, admin: !!a.admin, off, noModel,
              capabilities: a.capabilities || 'read', offTopic: a.off_topic || 'refuse',
+             check: a.check || null, fallback: a.fallback || null, fallbackEnabled: !!a.fallback_enabled,
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER, waitText, HELP_SUGS,
+  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
            timerLine, liveTimers, finishedTimers, timerSnapshot };
 });

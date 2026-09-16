@@ -557,6 +557,107 @@ def host_names(value, known: "list[str]") -> "list[str]":
     return out
 
 
+_HOST_SUFFIX = re.compile(r"\..*$")
+_HOST_SEP = re.compile(r"[-_. ]")
+
+
+def _host_key(name: str) -> str:
+    """Comparison key for a hostname: lowercase, domain suffix dropped, separators removed; IP-like values keep their dots."""
+    s = str(name).strip().lower()
+    if re.fullmatch(r"[\d.]+", s):
+        return s
+    return _HOST_SEP.sub("", _HOST_SUFFIX.sub("", s))
+
+
+def _resolve_one(value: str, known: "list[str]") -> "tuple[str, Optional[str], Optional[dict]]":
+    low = value.lower()
+    exact = [h for h in known if h.lower() == low]
+    if exact:
+        return exact[0], None, None
+    key = _host_key(value)
+    if not key:
+        return value, None, None
+    hits = [h for h in known if _host_key(h) == key] or [h for h in known if key in _host_key(h)]
+    if len(hits) == 1:
+        return hits[0], f"host {value} taken as {hits[0]}", None
+    if hits:
+        return value, None, {"error": f"{value} matches several hosts", "arg": "host", "choices": sorted(hits)}
+    return value, None, {"error": f"unknown host: {value}; hosts are {', '.join(known)}", "arg": "host",
+                         "choices": list(known)}
+
+
+def resolve_host(value, known: "list[str]", aliases: Optional[dict] = None) -> "tuple[str, Optional[str], Optional[dict]]":
+    """Resolves a host arg against known hostnames and aliases such as "primary llama": (value, note, refusal);
+    blank, all and exact pass unchanged."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "all" or not known:
+        return raw, None, None
+    amap = {_host_key(k): v for k, v in (aliases or {}).items() if v}
+    out, notes = [], []
+    for part in (p.strip() for p in raw.split(",")):
+        if not part:
+            continue
+        alias = amap.get(_host_key(part))
+        if alias and part.lower() != alias.lower():
+            val, note, refusal = alias, f"host {part} taken as {alias}", None
+        else:
+            val, note, refusal = _resolve_one(part, known)
+        if refusal:
+            return raw, None, refusal
+        out.append(val)
+        if note:
+            notes.append(note)
+    return ",".join(out), ("; ".join(notes) or None), None
+
+
+_PRIMARY_WORDS = {"llama": ("llama", "llama.cpp", "llamacpp", "llama-server"), "lms": ("lms", "lm studio", "lmstudio"),
+                  "vllm": ("vllm",)}
+
+
+def fleet(registry: dict) -> "tuple[list[str], dict]":
+    """(hostnames, aliases) from one hosts_overview run: aliases map "primary", "primary llama", "primary lms"…
+    to the default host per provider; ([], {}) when the tool is missing or fails."""
+    tool = registry.get("hosts_overview") if isinstance(registry, dict) else None
+    if tool is None:
+        return [], {}
+    result, ok = run_tool(tool, {})
+    if not ok:
+        return [], {}
+    rows = result.get("items") if isinstance(result, dict) else result
+    if not isinstance(rows, list):
+        return [], {}
+    rows = [r for r in rows if isinstance(r, dict) and r.get("hostname")]
+    aliases: dict = {}
+    for prov in ("llama", "lms", "vllm"):
+        host = next((str(r["hostname"]) for r in rows if prov in (r.get("primary") or [])), None)
+        if not host:
+            continue
+        aliases.setdefault("primary", host)
+        for w in _PRIMARY_WORDS[prov]:
+            aliases[f"primary {w}"] = host
+    return [str(r["hostname"]) for r in rows], aliases
+
+
+def fleet_hosts(registry: dict) -> "list[str]":
+    """Hostnames from one hosts_overview run, in its order; [] when the tool is missing or fails."""
+    return fleet(registry)[0]
+
+
+def primary_hosts(agents: dict) -> "dict[str, list]":
+    """{hostname lowercased: providers it is the default host for} from the agent registry."""
+    import agent_registry
+    out: dict = {}
+    for prov in ("llama", "lms", "vllm"):
+        try:
+            aid = agent_registry.default_agent_id_for(prov)
+        except Exception:  # noqa: BLE001
+            aid = None
+        hn = (agents.get(aid) or {}).get("hostname") if aid else None
+        if hn:
+            out.setdefault(str(hn).lower(), []).append(prov)
+    return out
+
+
 # Tower metric names for host_history -> (alarm-engine source, metric_name, unit).
 HISTORY_METRICS = {
     "cpu_pct": ("system", "cpu_total", "%"), "ram_pct": ("system", "ram_percent", "%"),
@@ -1456,12 +1557,16 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         agents = agent_registry.load_agents().get("agents") or {}
         by_host = {str(a.get("hostname") or "").lower(): a for a in agents.values()}
         rows = []
+        primaries = primary_hosts(agents)
         for r in base["fleet"]():
             row = with_liveness(r, by_host.get(str(r.get("hostname") or "").lower()), _liveness)
             if "models" in row:
                 row.pop("model", None)
             detail = base["host"](r.get("hostname")) or {}
             row.update({k: detail.get(k) for k in _OVERVIEW_METRICS if detail.get(k) is not None})
+            marks = primaries.get(str(r.get("hostname") or "").lower())
+            if marks:
+                row["primary"] = marks
             rows.append(row)
         return overview_rows(rows, provider=provider, online=online, busy=busy, sort_by=sort_by)
 

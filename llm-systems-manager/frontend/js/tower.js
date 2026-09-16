@@ -10,6 +10,7 @@
   let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
   let _histOpen = false;
   let _timers = [], _timersAt = 0, _timerPoll = null, _timerTick = null, _timersBusy = false, _reports = [];
+  let _checkPoll = 0;
   const _bootS = Date.now() / 1000;
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
@@ -20,6 +21,7 @@
     if (!v) return '';
     const p = pageContext();
     return [v.off, v.noModel, v.admin, v.chip ? `${v.chip.model}|${v.chip.provider}|${v.chip.host}` : '',
+            v.check ? `${v.check.grade}|${v.check.small}` : '',
             p.tab || '', p.sub || ''].join('\u0001');
   }
 
@@ -33,6 +35,8 @@
     _insightsNew = Number(_api.insights_new || 0);
     _insightsRev = _api.insights_rev ?? null;
     _view = TW.stateView(_api);
+    clearTimeout(_checkPoll);
+    if (_view.check && _view.check.grade === 'pending') _checkPoll = setTimeout(towerRefreshState, 8000);
     const btn = $('towerBtn');
     if (!btn) return;
     btn.hidden = _view.off && !_view.admin;
@@ -251,7 +255,7 @@
   }
 
   function paintHeader(page) {
-    const chip = $('twModelChip'), ctx = $('twCtxChip');
+    const chip = $('twModelChip'), ctx = $('twCtxChip'), check = $('twCheckChips');
     if (chip) {
       const c = _view && _view.chip;
       if (c) {
@@ -263,6 +267,10 @@
       } else {
         chip.innerHTML = '<i class="warn"></i><b>No model loaded</b>'; chip.title = 'No chat model is loaded';
       }
+    }
+    if (check) {
+      const chips = _view && _view.chip ? TW.checkChips(_view.check) : [];
+      check.innerHTML = chips.map(c => `<span class="chip chk ${c.cls}" data-tip="${TW.esc(c.title)}">${TW.esc(c.short || c.text)}</span>`).join('');
     }
     if (ctx) {
       const p = page || pageContext();

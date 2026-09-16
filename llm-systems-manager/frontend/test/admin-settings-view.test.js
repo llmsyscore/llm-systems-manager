@@ -2,7 +2,7 @@
 // reset/clear-to-default and the client-side validation that gates Save.
 import { describe, test, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { srcFile } from './helpers/harness.js';
+import { srcFile, flush } from './helpers/harness.js';
 
 const foundationSrc = srcFile('js/foundation.js');
 const settingsSrc = srcFile('js/admin-settings.js');
@@ -45,7 +45,17 @@ async function boot(data, opts) {
     `<!doctype html><html><body><div id="adminTab">${PANEL}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   dom.window.__puts = [];
+  dom.window.__posts = [];
   dom.window.fetch = (url, fetchOpts) => {
+    if (url === '/api/tower/state') {
+      dom.window.__towerReads = (dom.window.__towerReads || 0) + 1;
+      const st = (opts && opts.tower) || { ok: true, enabled: false };
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(st))) });
+    }
+    if (url === '/api/tower/check') {
+      dom.window.__posts.push(url);
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, check: (opts && opts.towerCheck) || null }) });
+    }
     if (fetchOpts && fetchOpts.method === 'PUT') {
       dom.window.__puts.push(JSON.parse(fetchOpts.body));
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, applied: [] }) });
@@ -62,6 +72,7 @@ async function boot(data, opts) {
   };
   inject(`if (!window.CSS) window.CSS = { escape: s => String(s).replace(/([^a-zA-Z0-9_-])/g, '\\\\$1') };`);
   inject(foundationSrc);
+  inject(srcFile('js/lib/tower-view.js'));
   inject(settingsSrc);
   await dom.window.adminSettingsLoad();
   return dom.window;
@@ -611,5 +622,109 @@ describe('tools setting (#924)', () => {
     win.adminSettingsOpenGroup('network');
     expect(box(win.document).classList.contains('open')).toBe(true);
     expect(box(win.document).querySelectorAll('.st-tool-chip')).toHaveLength(3);
+  });
+});
+
+describe('Tower model check row (#1039)', () => {
+  const TOWER = { path: 'manager.tower.enabled', label: 'Tower', help: 'Assistant drawer.',
+                  group: 'tower', service: 'manager', type: 'bool', hot: true };
+  const towerPayload = () => payload({
+    groups: [{ key: 'network', title: 'Network & TLS' }, { key: 'tower', title: 'Tower' }],
+    entries: [PORT, IDLE, TOWER],
+    values: { 'manager.ws_proxy_port': 5001, 'manager.poll_interval': 30, 'manager.tower.enabled': true },
+    defaults: { 'manager.ws_proxy_port': 5001, 'manager.poll_interval': 30, 'manager.tower.enabled': false },
+    secrets: {},
+  });
+  const STATE = { ok: true, enabled: true, admin: true, model: 'qwen3-14b',
+                  check: { model: 'qwen3-14b', grade: 'fenced', size_b: 4, small: true, at: Date.now() / 1000 } };
+
+  async function towerCard(opts) {
+    const win = await boot(towerPayload(), opts);
+    win.adminSettingsOpenGroup('tower');
+    await flush();
+    return win;
+  }
+
+  const TOOLMODE = { path: 'manager.tower.tool_mode', label: 'Tool calls', help: 'How.', group: 'tower', service: 'manager', type: 'choice', choices: ['auto', 'native', 'prompt'], hot: true };
+  const CAP = { path: 'manager.tower.max_tool_calls', label: 'Tool calls per question', help: 'Cap.', group: 'tower', service: 'manager', type: 'int', hot: true };
+
+  test('the row sits after Tool calls, grades the primary as chips with the model in the tip, and offers Verify to an admin', async () => {
+    const win = await boot(payload({
+      groups: [{ key: 'tower', title: 'Tower' }], entries: [TOWER, TOOLMODE, CAP],
+      values: { 'manager.tower.enabled': true, 'manager.tower.tool_mode': 'auto', 'manager.tower.max_tool_calls': 16 },
+      defaults: { 'manager.tower.enabled': false, 'manager.tower.tool_mode': 'auto', 'manager.tower.max_tool_calls': 16 }, secrets: {} }),
+      { tower: STATE });
+    win.adminSettingsOpenGroup('tower');
+    await flush();
+    const rows = [...win.document.querySelectorAll('.st-rows > .settings-row')].map(r => r.id || r.dataset.path);
+    expect(rows).toEqual(['manager.tower.enabled', 'manager.tower.tool_mode', 'stTowerCheck', 'manager.tower.max_tool_calls']);
+    const row = win.document.getElementById('stTowerCheck');
+    expect(row.querySelector('.st-lb label').textContent).toBe('Tool response check');
+    expect(row.querySelector('.key')).toBeNull();
+    const primary = row.querySelector('.st-ct .row');
+    expect(primary.textContent).toContain('Primary');
+    const ok = primary.querySelector('.st-chip.ok');
+    expect(ok.textContent).toBe('Tools OK');
+    expect(ok.classList.contains('outline')).toBe(true);
+    expect(ok.getAttribute('data-tip')).toBe('qwen3-14b · Tool calls work: the model writes them in text prompt mode');
+    const small = primary.querySelector('.st-chip.warn');
+    expect(small.textContent).toBe('small model');
+    expect(small.getAttribute('data-tip')).toContain('Small model');
+    expect(row.textContent).not.toContain('4B');
+    const btn = row.querySelector('.st-lb #stTowerCheckBtn');
+    expect(btn.textContent).toBe('Verify');
+    expect(btn.classList.contains('mcbtn')).toBe(true);
+    const fb = row.querySelector('.row.fb');
+    expect(fb.textContent).toContain('Fallback');
+    expect(fb.querySelector('.st-chip.dim').textContent).toBe('Off');
+  });
+
+  test('the fallback line shows None when the toggle is on without a second model, and its chips when one is resident', async () => {
+    const none = await towerCard({ tower: { ...STATE, fallback_enabled: true } });
+    expect(none.document.querySelector('#stTowerCheck .row.fb .st-chip.dim').textContent).toBe('None');
+    const win = await towerCard({ tower: { ...STATE, fallback_enabled: true,
+                                            fallback: { model: 'gemma-3-12b', check: { grade: 'failed', detail: 'no call' } } } });
+    const fb = win.document.querySelector('#stTowerCheck .row.fb');
+    expect(fb.textContent).not.toContain('gemma-3-12b');
+    const chip = fb.querySelector('.st-chip.crit');
+    expect(chip.textContent).toBe('No tool support');
+    expect(chip.getAttribute('data-tip')).toBe('gemma-3-12b · No tool support: the model made no tool call in either mode (no call)');
+  });
+
+  test('Verify posts to /api/tower/check and repaints with the new grade', async () => {
+    const win = await towerCard({ tower: STATE, towerCheck: { model: 'qwen3-14b', grade: 'native', size_b: 14, small: false } });
+    win.document.getElementById('stTowerCheckBtn').click();
+    await flush();
+    expect(win.__posts).toEqual(['/api/tower/check']);
+    const chip = win.document.querySelector('#stTowerCheck .st-ct .st-chip');
+    expect(chip.textContent).toBe('Tools OK');
+    expect(chip.classList.contains('ok')).toBe(true);
+    expect(chip.classList.contains('outline')).toBe(false);
+    expect(win.document.querySelector('#stTowerCheck .st-ct .st-chip.warn')).toBeNull();
+  });
+
+  test('a non-admin sees the grade without the button, and a model-less Tower says so', async () => {
+    const ro = await towerCard({ tower: { ...STATE, admin: false } });
+    expect(ro.document.getElementById('stTowerCheckBtn')).toBeNull();
+    expect(ro.document.querySelector('#stTowerCheck .st-ct .st-chip').textContent).toBe('Tools OK');
+    const none = await towerCard({ tower: { ok: true, enabled: true, admin: true, model: null, check: null } });
+    expect(none.document.getElementById('stTowerCheck').textContent).toContain('No model loaded');
+  });
+
+  test('re-rendering the group reuses the last state read', async () => {
+    const win = await towerCard({ tower: STATE });
+    expect(win.__towerReads).toBe(1);
+    win.adminSettingsOpenGroup('network');
+    win.adminSettingsOpenGroup('tower');
+    await flush();
+    expect(win.__towerReads).toBe(1);
+    expect(win.document.querySelector('#stTowerCheck .st-ct .st-chip').textContent).toBe('Tools OK');
+  });
+
+  test('other groups render no check row', async () => {
+    const win = await boot(towerPayload(), { tower: STATE });
+    win.adminSettingsOpenGroup('network');
+    await flush();
+    expect(win.document.getElementById('stTowerCheck')).toBeNull();
   });
 });

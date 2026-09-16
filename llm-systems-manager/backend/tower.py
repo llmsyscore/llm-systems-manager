@@ -24,6 +24,8 @@ _FALLBACK_LENGTH = ("The model ran out of tokens before answering (it spent them
                     "Raise Max tokens under Settings › Tower assistant or ask a narrower question.")
 _FALLBACK_REASONING = "The model finished thinking without writing an answer; ask again."
 _FALLBACK_STOPPED = "Stopped."
+_FALLBACK_PROSE = ("The model keeps writing tool calls as text instead of calling them; "
+                   "use a larger model or the fenced tool mode.")
 _ERR_GATEWAY = "Tower could not reach the model on its host — check the Gateway card."
 _ERR_INTERNAL = "Tower hit an internal error; try again."
 _VIOLATION_LINE_QUIET = "That request goes against Tower's rules."
@@ -55,9 +57,10 @@ def _norm(text: str) -> str:
 _TIMEOUT_MARK = " did not start answering within "
 _TIMEOUT_LINE = re.compile(r"\S.*" + re.escape(_TIMEOUT_MARK) + r"\d+ s\.")
 # Assistant lines Tower writes itself; _history leaves them out of replayed turns.
-_CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED,
+_CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED, _FALLBACK_PROSE,
                      _ERR_GATEWAY, _ERR_INTERNAL, _VIOLATION_LINE, _VIOLATION_LINE_QUIET})
-_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ")
+_FALLBACK_LAST = "The model stopped without an answer. Last step: "
+_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ", _FALLBACK_LAST)
 _WRITE_THE_BLOCK = "Write the tool block itself; a sentence like 'Let me check' without the block calls nothing."
 CHAT_EXCLUDE = re.compile(r"embed|rerank|whisper|sd-|stable-diffusion|clip|tts", re.I)
 _TOOL_OPEN = "```tool"
@@ -122,13 +125,20 @@ def alternate_model(current: dict, entries: "list[dict]") -> Optional[dict]:
     return _pick(others[0]) if others else None
 
 
-def _args_native(server_args: Optional[str]) -> bool:
-    return bool(server_args and ("--jinja" in server_args or "--tools" in server_args))
+def _args_native(server_args: Optional[str]) -> Optional[bool]:
+    """True/False when the llama-server args say so (--jinja/--tools on, --no-jinja off), else None."""
+    if not server_args:
+        return None
+    if "--no-jinja" in server_args:
+        return False
+    if "--jinja" in server_args or "--tools" in server_args:
+        return True
+    return None
 
 
-def native_supported(cfg, provider: str, server_args) -> bool:
-    """Whether every host serving the model takes native tool calls; `server_args` is one host's
-    llama-server args or a list of them, one per serving host (#952)."""
+def native_supported(cfg, provider: str, server_args) -> Optional[bool]:
+    """True when every host serving the model takes native tool calls, False when one refuses,
+    None when the args do not say (jinja is on by default in current llama.cpp builds)."""
     mode = str(getattr(cfg, "tool_mode", "auto") or "auto")
     if mode == "native":
         return True
@@ -136,9 +146,10 @@ def native_supported(cfg, provider: str, server_args) -> bool:
         return False
     if provider in ("vllm", "lms"):
         return True
-    if isinstance(server_args, (list, tuple)):
-        return bool(server_args) and all(_args_native(a) for a in server_args)
-    return _args_native(server_args)
+    votes = [_args_native(a) for a in server_args] if isinstance(server_args, (list, tuple)) else [_args_native(server_args)]
+    if any(v is False for v in votes):
+        return False
+    return True if votes and all(v is True for v in votes) else None
 
 
 # ── prompt + parsing ────────────────────────────────────────────────
@@ -265,11 +276,12 @@ def _top_level_tool_blocks(text: str) -> "list[str]":
     return out
 
 
-def _outside_fences(text: str) -> str:
-    """The lines of `text` that sit outside every ``` fence (fence lines themselves dropped)."""
+def _outside_fences(text: str, anywhere: bool = False) -> str:
+    """The lines of `text` that sit outside every ``` fence (fence lines themselves dropped);
+    with `anywhere`, a fence opened or closed mid-line counts too."""
     out, in_fence = [], False
     for line in text.split("\n"):
-        if line.strip().startswith("```"):
+        if ("```" in line) if anywhere else line.strip().startswith("```"):
             in_fence = not in_fence
             continue
         if not in_fence:
@@ -334,6 +346,30 @@ def _call_from_json(raw: str, default_name: str = "", lenient: bool = False) -> 
         except ValueError:
             args = {}
     return name, (args if isinstance(args, dict) else {})
+
+
+_PROSE_JSON_NAME = re.compile(r'"name"\s*:\s*"([\w.-]+)"')
+_PROSE_HEAD = re.compile(r"^\s*(?:[-*]\s*)?(?:call\s+)?([\w.-]+)\s*[:(]", re.M)
+
+
+def prose_call(text: str, names) -> Optional[str]:
+    """The tool a reply names as if calling it in prose, else None (matches inside closed fences ignored)."""
+    text = text if isinstance(text, str) else ""
+    if not text.strip():
+        return None
+    known = set(names)
+    lines = text.split("\n")
+    fence_lines = [i for i, line in enumerate(lines) if "```" in line]
+    body = _outside_fences(text, anywhere=True)
+    if len(fence_lines) % 2 == 1:
+        body += "\n" + "\n".join(lines[fence_lines[-1] + 1:])
+    for m in _PROSE_JSON_NAME.finditer(body):
+        if m.group(1) in known:
+            return m.group(1)
+    for m in _PROSE_HEAD.finditer(body):
+        if m.group(1) in known:
+            return m.group(1)
+    return None
 
 
 def _canned(content: str, drop_refusals: bool) -> bool:
@@ -786,7 +822,8 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
               approvals: Optional["Approvals"] = None, run_id: str = "", actor: str = "",
               report_violation: Optional[Callable[[dict], None]] = None,
               stop_recorded: Optional[Callable[[], bool]] = None, user: str = "",
-              timers=None, prelude: Optional[dict] = None) -> dict:
+              timers=None, prelude: Optional[dict] = None,
+              checks: Optional[Callable[[str], Optional[dict]]] = None) -> dict:
     """One user turn: every model call streams; tool reads loop until a plain-text answer.
     A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on.
     `stop_recorded` is True when Stop already stored the turn's stop line (#961). `prelude` is a finished
@@ -812,7 +849,14 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
     def prepare(m: dict, fallback_from: Optional[str] = None) -> "tuple[list, dict]":
         nonlocal native_used
         args = server_args_of(m) if server_args_of else None
-        native = native_used = native_supported(cfg, m["provider"], args)
+        native = native_supported(cfg, m["provider"], args)
+        chk = checks(m["model"]) if checks else None
+        grade = chk.get("grade") if chk else None
+        if native is None:
+            native = grade == "native"
+        elif native and grade == "fenced" and str(getattr(cfg, "tool_mode", "auto") or "auto") == "auto":
+            native = False
+        native_used = native
         emit({"event": "model", "model": m["model"], "provider": m["provider"], "hosts": m.get("hosts") or [],
               **({"fallback": True, "from": fallback_from} if fallback_from else {})})
         msgs = [{"role": "system", "content": system_prompt(cfg, tools, page, native)}] + history
@@ -824,7 +868,26 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         return msgs, b
 
     calls, note, force_final, preface, fell_back = 0, "", False, "", False
-    retried_length = False
+    retried_length = retried_reasoning = False
+    last_step = ""
+    salvaged = 0
+    fallback_on = bool(getattr(cfg, "fallback", False))
+
+    def _switch(alt: dict, reason: str) -> None:
+        """Hands the rest of the turn to `alt` with a disclosure line; resets the tool count."""
+        nonlocal model, fell_back, messages, base, calls, force_final, note, preface
+        old, model, fell_back = model, alt, True
+        log.debug("tower fallback from=%s to=%s reason=%s", old["model"], model["model"], reason)
+        messages, base = prepare(model, fallback_from=old["model"])
+        calls, force_final = 0, False
+        note = f"fallback from {old['model']}"
+        preface = f"Fallback: asking {model['model']} because {old['model']} {reason}.\n\n"
+        emit({"event": "status", "state": "answering"})
+        emit({"event": "delta", "text": preface})
+
+    def _alternate() -> Optional[dict]:
+        return alternates(model) if (alternates and fallback_on and not fell_back) else None
+
     model_calls = 0
     last_tool: Optional[str] = None
     cap = int(getattr(cfg, "max_tool_calls", 16))
@@ -856,6 +919,87 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             return False
         return True
 
+    fleet: "list[Optional[tuple]]" = [None]
+
+    def _fleet() -> "tuple[list, dict]":
+        if fleet[0] is None:
+            fleet[0] = tower_tools.fleet(registry)
+        return fleet[0]
+
+    def _resolve(tool, args: dict) -> "tuple[dict, Optional[str], Optional[dict]]":
+        """Resolves args['host'] (and schedule's nested tool host) against the fleet."""
+        notes: "list[str]" = []
+        if "host" in (tool.params.get("properties") or {}) and args.get("host"):
+            val, note, refusal = tower_tools.resolve_host(args["host"], *_fleet())
+            if refusal:
+                return args, None, refusal
+            args = {**args, "host": val}
+            if note:
+                notes.append(note)
+        inner = by_name.get(str(args.get("tool") or "")) if tool.kind == "timer" else None
+        targs = args.get("args") if isinstance(args.get("args"), dict) else None
+        if inner is not None and targs and targs.get("host") and "host" in (inner.params.get("properties") or {}):
+            val, note, refusal = tower_tools.resolve_host(targs["host"], *_fleet())
+            if refusal:
+                return args, None, refusal
+            args = {**args, "args": {**targs, "host": val}}
+            if note:
+                notes.append(note)
+        return args, ("; ".join(notes) or None), None
+
+    def _with_note(result, note: Optional[str]):
+        """Adds a resolution note to a dict result, after any note the tool set."""
+        if not note or not isinstance(result, dict):
+            return result
+        prior = result.get("note")
+        return {**result, "note": f"{prior}; {note}" if prior else note}
+
+    def _execute(tool, raw_args: dict, t0: float) -> "tuple[Any, bool, str, bool]":
+        """Runs one tool call end to end: (result, ok, summary, acted)."""
+        name = tool.name
+        args, err = tower_tools.validate_args(tool, raw_args)
+        if err:
+            return {"error": err}, False, f"{name} · {err}", False
+        args, hnote, refusal = _resolve(tool, args)
+        if refusal:
+            return refusal, False, f"{name} · {refusal['error']}", False
+        if tool.kind == "act" and approvals is None:
+            return {"error": f"{name} needs an approval channel"}, False, f"{name} · no approval channel", False
+        if tool.kind == "act" and (skip := _precheck(tool, args)):
+            return {"ok": False, "message": skip}, False, f"{name} · {skip}", False
+        if tool.kind == "act":
+            result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
+            return result, ok, "", True
+        if tool.kind == "ask" and approvals is None:
+            return tool.run(args), False, f"{name} · no question channel", False
+        if tool.kind == "ask" and not tower_tools.question_card(args)["questions"]:
+            return {"error": f"{name} needs a question"}, False, f"{name} · no question", False
+        if tool.kind == "ask":
+            result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
+            return result, ok, "", True
+        if tool.kind == "timer" and timers is None:
+            return {"error": f"{name} needs a timer channel"}, False, f"{name} · no timer channel", False
+        if tool.kind == "timer":
+            result = timers.schedule(thread_id=thread_id, user=user or actor, role=role, args=args)
+            ok = bool(result.get("ok"))
+        else:
+            result, ok = tower_tools.run_tool(tool, args)
+        result = _with_note(result, hnote)
+        summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
+        if hnote:
+            summary += f" · {hnote}"
+        return result, ok, summary, False
+
+    def _ask_for(refusal: dict) -> Optional[str]:
+        """Raises the card for a refusal that carries choices; the operator's answer or None."""
+        ask = by_name.get("ask_operator")
+        if ask is None or approvals is None:
+            return None
+        qargs = {"question": str(refusal["error"])[:200],
+                 "choices": list(refusal["choices"])[:tower_tools.QUESTION_CHOICES_MAX]}
+        res, ok = _run_question(store, approvals, thread_id, run_id, actor, ask, qargs, emit, cancelled)
+        return (str(res.get("answer") or "").strip() or None) if ok else None
+
     if _BYPASS.search(_norm(user_text)):
         _finish_answer(store, thread_id, emit, "",
                        _VIOLATION_LINE if _flag_violation("message") else _VIOLATION_LINE_QUIET)
@@ -865,7 +1009,12 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         _end(True, "rule-bypass attempt")
         return out
 
+    chk0 = checks(model["model"]) if checks else None
     messages, base = prepare(model)
+    if chk0 and chk0.get("grade") == "failed":
+        alt = _alternate()
+        if alt is not None:
+            _switch(alt, "failed the tool check")
     log.debug("tower turn start thread=%s run=%s user=%s model=%s provider=%s hosts=%s native=%s tools=%d "
               "history_msgs=%d question_chars=%d", thread_id, run_id, actor, model["model"], model["provider"],
               ",".join(model.get("hosts") or []) or "-", native_used, len(tools), len(history), len(user_text or ""))
@@ -881,20 +1030,10 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             try:
                 msg, shown = _stream_reply(cs, {**base, "messages": messages, "stream": True}, emit, cancelled)
             except Exception as e:  # noqa: BLE001 — only a first-token timeout may fall back
-                alt = alternates(model) if (_is_timeout(e) and alternates and not fell_back
-                                            and bool(getattr(cfg, "fallback", False))) else None
+                alt = _alternate() if _is_timeout(e) else None
                 if alt is None:
                     raise
-                old, model, fell_back = model, alt, True
-                log.debug("tower fallback from=%s to=%s reason=timeout timeout_s=%s",
-                          old["model"], model["model"], timeout)
-                messages, base = prepare(model, fallback_from=old["model"])
-                calls, force_final = 0, False
-                note = f"fallback from {old['model']}"
-                preface = (f"Fallback: asking {model['model']} because {old['model']} "
-                           f"did not respond within {timeout} s.\n\n")
-                emit({"event": "status", "state": "answering"})
-                emit({"event": "delta", "text": preface})
+                _switch(alt, f"did not respond within {timeout} s")
                 continue
             if cancelled():
                 return _stop_turn()
@@ -923,8 +1062,51 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     messages.append({"role": "user", "content": "You ran out of room while thinking. "
                                                                 "Answer now in plain text, briefly."})
                     continue
+                content = msg.get("content") or ""
+                thinking_only = bool(not length_stop and not shown and not content.strip() and msg.get("reasoning_chars"))
+                if thinking_only and not retried_reasoning:
+                    retried_reasoning = True
+                    note = "; ".join(x for x in (note, "retried after a thinking-only reply") if x)
+                    messages.append({"role": "assistant", "content": ""})
+                    messages.append({"role": "user", "content": "You finished thinking without writing an answer. "
+                                                                "Answer now in plain text, briefly."})
+                    continue
+                if thinking_only and (alt := _alternate()) is not None:
+                    _switch(alt, "kept thinking without answering")
+                    continue
+                prose = None if length_stop else prose_call(content, by_name)
+                if prose and salvaged == 0:
+                    salvaged = 1
+                    note = "; ".join(x for x in (note, "prose tool call corrected") if x)
+                    if shown:
+                        store.add_message(thread_id, "assistant", preface + shown)
+                        preface = ""
+                        emit({"event": "delta", "text": "\n\n"})
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": f"That was a sentence, not a tool call. Call {prose} now as a "
+                                                                "tool call (native or the fenced block), or answer without it."})
+                    continue
+                if prose:
+                    alt = _alternate()
+                    if alt is not None:
+                        if shown:
+                            store.add_message(thread_id, "assistant", preface + shown)
+                            emit({"event": "delta", "text": "\n\n"})
+                        _switch(alt, "kept writing tool calls as text")
+                        continue
+                    if shown:
+                        store.add_message(thread_id, "assistant", preface + shown)
+                        preface = ""
+                    _finish_answer(store, thread_id, emit, "", _FALLBACK_PROSE)
+                    out = {"ok": True, "calls": calls, "elapsed_ms": int((time.monotonic() - t_start) * 1000),
+                           "note": "; ".join(x for x in (note, "prose tool call") if x)}
+                    emit({"event": "done", **out})
+                    _end(True, out["note"])
+                    return out
                 if length_stop:
                     fallback = _FALLBACK_LENGTH
+                elif not shown and last_step:
+                    fallback = f"{_FALLBACK_LAST}{last_step}."
                 elif not shown and msg.get("reasoning_chars"):
                     fallback = _FALLBACK_REASONING
                 else:
@@ -961,33 +1143,17 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 result, ok = {"error": f"{name} is not available"}, False
                 summary = f"{name} · not available"
             else:
-                args, err = tower_tools.validate_args(tool, raw_args)
-                if err:
-                    result, ok, summary = {"error": err}, False, f"{name} · {err}"
-                elif tool.kind == "act" and approvals is None:
-                    result, ok, summary = {"error": f"{name} needs an approval channel"}, False, f"{name} · no approval channel"
-                elif tool.kind == "act" and (skip := _precheck(tool, args)):
-                    result, ok, summary = {"ok": False, "message": skip}, False, f"{name} · {skip}"
-                elif tool.kind == "act":
-                    result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
-                    summary, acted = "", True
-                elif tool.kind == "ask" and approvals is None:
-                    result, ok, summary = tool.run(args), False, f"{name} · no question channel"
-                elif tool.kind == "ask" and not tower_tools.question_card(args)["questions"]:
-                    result, ok, summary = {"error": f"{name} needs a question"}, False, f"{name} · no question"
-                elif tool.kind == "ask":
-                    result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
-                    summary, acted = "", True
-                elif tool.kind == "timer" and timers is None:
-                    result, ok, summary = {"error": f"{name} needs a timer channel"}, False, f"{name} · no timer channel"
-                elif tool.kind == "timer":
-                    result = timers.schedule(thread_id=thread_id, user=user or actor, role=role, args=args)
-                    ok = bool(result.get("ok"))
-                    summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
-                else:
-                    result, ok = tower_tools.run_tool(tool, args)
-                    summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
+                result, ok, summary, acted = _execute(tool, raw_args, t0)
+                if (not ok and not acted and isinstance(result, dict) and result.get("choices") and result.get("arg")
+                        and (answer := _ask_for(result))):
+                    arg = str(result["arg"])
+                    raw_args = {**(raw_args if isinstance(raw_args, dict) else {}), arg: answer}
+                    t0 = time.monotonic()
+                    result, ok, summary, acted = _execute(tool, raw_args, t0)
+                    if isinstance(result, dict):
+                        result = _with_note(result, f"{arg} taken from the operator's answer: {answer}")
             ms = int((time.monotonic() - t0) * 1000)
+            last_step = (summary or f"{name.replace('_', ' ')} · {'ok' if ok else 'failed'}").replace(f" · {ms} ms", "")
             result_json = json.dumps(result, default=str)
             if log.isEnabledFor(logging.DEBUG):
                 log.debug("tower tool %s args_keys=%s ok=%s ms=%d result_chars=%d", name,
@@ -1365,8 +1531,9 @@ _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0
 
-# Module-global set by register_routes(); read at call time.
+# Module-globals set by register_routes(); read at call time.
 _gateway_entries: "Optional[Callable[[], list]]" = None
+_checks = None
 
 _now: "Callable[[], float]" = time.time
 
@@ -1416,9 +1583,10 @@ class Runs:
                  shutting_down: "Optional[Callable[[], bool]]" = None,
                  approvals: "Optional[Approvals]" = None,
                  report_violation: "Optional[Callable[[dict], None]]" = None,
-                 timers=None):
+                 timers=None, checks=None):
         self._store = store
         self._timers = timers
+        self._checks = checks
         self._registry_factory, self._cs = registry_factory, complete_stream
         self._entries, self._server_args_of, self._cfg = entries, server_args_of, cfg
         self._stream_max_s = stream_max_s or (lambda: _STREAM_MAX_S)
@@ -1522,7 +1690,8 @@ class Runs:
                          approvals=self._approvals, run_id=rid, actor=actor or user,
                          report_violation=self._report_violation,
                          stop_recorded=lambda: bool(run.get("stopped")), user=user,
-                         timers=self._timers, prelude=prelude)
+                         timers=self._timers, prelude=prelude,
+                         checks=(lambda mid: self._checks.get(mid)) if self._checks is not None else None)
             except Exception as e:
                 log.warning("tower worker failed: %s: %s", type(e).__name__, e)
                 _drop_oldest_put(run, {"event": "error", "message": "Tower hit an internal error; try again."})
@@ -1740,9 +1909,10 @@ def ask_blocking(runs: Runs, *, user: str, role: str, text: str, page: Optional[
 
 # ── routes ──────────────────────────────────────────────────────────
 
-def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> Runs:
-    global _gateway_entries
+def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, checks=None) -> Runs:
+    global _gateway_entries, _checks
     _gateway_entries = gateway_entries
+    _checks = checks
     from flask import g, jsonify, request as flask_request, session, stream_with_context
     import auth
     import stream_pool
@@ -1764,6 +1934,16 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
             return owner
         return u
 
+    def _fallback_view(cfg, m: dict, how: str) -> Optional[dict]:
+        """The fallback model with its check (ensured or run now) when the toggle is on and an alternate is resident."""
+        if not m or not bool(getattr(cfg, "fallback", False)):
+            return None
+        alt = alternate_model(m, _gateway_entries())
+        if alt is None:
+            return None
+        chk = getattr(_checks, how)(alt) if _checks is not None else None
+        return {"model": alt["model"], "provider": alt["provider"], "hosts": alt.get("hosts") or [], "check": chk}
+
     def _gate():
         if not _enabled():
             return jsonify({"ok": False, "error": "tower disabled"}), 404
@@ -1780,8 +1960,10 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         if not _enabled():
             return jsonify({"ok": True, "enabled": False, "admin": role == "admin"})
         m = resolve_model(cfg, _gateway_entries()) or {}
+        chk = _checks.ensure(m) if (_checks is not None and m) else None
         return jsonify({"ok": True, "enabled": True, "admin": role == "admin", "model": m.get("model"),
-                        "provider": m.get("provider"), "hosts": m.get("hosts") or [],
+                        "provider": m.get("provider"), "hosts": m.get("hosts") or [], "check": chk,
+                        "fallback": _fallback_view(cfg, m, "ensure"), "fallback_enabled": bool(getattr(cfg, "fallback", False)),
                         "capabilities": cfg.capabilities, "off_topic": cfg.off_topic,
                         "diagnose_alarms": bool(cfg.diagnose_alarms),
                         "insights_new": runs.store.count_unseen(),
@@ -1948,6 +2130,19 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
             return jsonify({"ok": False, "error": err[1]}), err[0]
         g._audit_extra = {"label": row["label"], "thread_id": row["thread_id"], "samples": len(row["samples"])}
         return jsonify({"ok": True, "timer": tower_timers.timer_view(row)})
+
+    @app.route("/api/tower/check", methods=["POST"])
+    def tower_check_now():
+        """Runs the capability probe for the current model now and returns its grade."""
+        deny = _gate()
+        if deny: return deny
+        deny = ctx.require_admin()
+        if deny is not None:
+            return deny
+        m = resolve_model(_cfg(), _gateway_entries())
+        if m is None or _checks is None:
+            return jsonify({"ok": False, "error": "no_model"}), 503
+        return jsonify({"ok": True, "check": _checks.run(m), "fallback": _fallback_view(_cfg(), m, "run")})
 
     @app.route("/api/tower/model", methods=["PUT"])
     def tower_model_pin():

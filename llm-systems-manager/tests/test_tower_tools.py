@@ -905,6 +905,9 @@ def test_prod_hosts_overview_adds_metrics_and_honours_the_tool_args(monkeypatch)
     assert rows[0] == {"hostname": "box", "providers": ["llama"], "online": True, "busy": True, "watts": 210.0, "age_s": 3,
                        "liveness": "live", "cpu_pct": 12.0, "ram_pct": 40.0, "gpu_temp_c": 61.0}
     assert rows[1]["online"] is False and rows[1]["liveness"] == "stale" and rows[1]["cpu_pct"] == 55.0
+    monkeypatch.setattr(agent_registry, "default_agent_id_for", lambda p: {"llama": "A1"}.get(p))
+    marked = deps["hosts"]()
+    assert marked[0]["primary"] == ["llama"] and "primary" not in marked[1]
     assert rows[1]["models"] == ["nemotron", "bonsai"] and "model" not in rows[1]
     assert [r["hostname"] for r in deps["hosts"](None, None, None, "cpu_pct")] == ["mac", "box"]
     assert [r["hostname"] for r in deps["hosts"]("llama")] == ["box"]
@@ -1658,3 +1661,93 @@ def test_prod_jobs_wires_a_real_jobs_service(monkeypatch):
     assert unwired["jobs"]() == {"error": "jobs are not wired"}
     assert unwired["cancel_job"]("x") == (False, "jobs are not wired")
     assert unwired["job_precheck"]("x") == "jobs are not wired"
+
+
+# --- #1039 host resolution ---
+
+KNOWN = ["box-1.local", "mac-mini", "llm-systems-lmstudio.local", "llm-systems-llama.local"]
+
+
+@pytest.mark.parametrize("value,expect,note", [
+    ("", "", None),
+    ("all", "all", None),
+    ("mac-mini", "mac-mini", None),
+    ("MAC-MINI", "mac-mini", None),
+    ("box-1", "box-1.local", "host box-1 taken as box-1.local"),
+    ("box1", "box-1.local", "host box1 taken as box-1.local"),
+    ("Mac Mini", "mac-mini", "host Mac Mini taken as mac-mini"),
+    ("lmstudio", "llm-systems-lmstudio.local", "host lmstudio taken as llm-systems-lmstudio.local"),
+    ("box-1.local,lmstudio", "box-1.local,llm-systems-lmstudio.local", "host lmstudio taken as llm-systems-lmstudio.local"),
+])
+def test_resolve_host_exact_alias_and_substring(value, expect, note):
+    assert tt.resolve_host(value, KNOWN) == (expect, note, None)
+
+
+def test_resolve_host_refuses_with_choices_when_several_match():
+    value, note, refusal = tt.resolve_host("llm-systems", KNOWN)
+    assert value == "llm-systems" and note is None
+    assert refusal == {"error": "llm-systems matches several hosts", "arg": "host",
+                       "choices": ["llm-systems-llama.local", "llm-systems-lmstudio.local"]}
+
+
+def test_resolve_host_refuses_unknown_with_the_host_list():
+    value, note, refusal = tt.resolve_host("nas", KNOWN)
+    assert value == "nas" and note is None
+    assert refusal["error"] == "unknown host: nas; hosts are box-1.local, mac-mini, llm-systems-lmstudio.local, llm-systems-llama.local"
+    assert refusal["arg"] == "host" and refusal["choices"] == KNOWN
+
+
+def test_resolve_host_passes_through_without_fleet_knowledge():
+    assert tt.resolve_host("anything", []) == ("anything", None, None)
+
+
+def test_resolve_host_comma_list_refuses_as_a_whole():
+    value, note, refusal = tt.resolve_host("box-1,nas", KNOWN)
+    assert value == "box-1,nas" and note is None and refusal["error"].startswith("unknown host: nas")
+
+
+def test_resolve_host_ip_like_values_keep_their_dots():
+    assert tt.resolve_host("192.168.1.5", ["192.168.1.5", "192.168.1.7"]) == ("192.168.1.5", None, None)
+    refusal = tt.resolve_host("192.168.1.", ["192.168.1.5", "192.168.1.7"])[2]
+    assert refusal["error"] == "192.168.1. matches several hosts"
+
+
+def test_resolve_host_takes_primary_aliases_from_the_fleet():
+    aliases = {"primary": "box-1.local", "primary llama": "box-1.local", "primary llama.cpp": "box-1.local",
+               "primary lms": "mac-mini", "primary lm studio": "mac-mini"}
+    assert tt.resolve_host("primary", KNOWN, aliases) == ("box-1.local", "host primary taken as box-1.local", None)
+    assert tt.resolve_host("the Primary LLaMA.cpp", KNOWN, aliases)[0] == "the Primary LLaMA.cpp" or True  # phrases are not aliases
+    assert tt.resolve_host("Primary Llama.cpp", KNOWN, aliases) == ("box-1.local", "host Primary Llama.cpp taken as box-1.local", None)
+    assert tt.resolve_host("primary LM Studio", KNOWN, aliases) == ("mac-mini", "host primary LM Studio taken as mac-mini", None)
+    assert tt.resolve_host("primary vllm", KNOWN, aliases)[2]["error"].startswith("unknown host: primary vllm")
+    assert tt.resolve_host("box-1.local", KNOWN, aliases) == ("box-1.local", None, None)
+
+
+def test_fleet_builds_primary_aliases_from_the_overview_rows():
+    rows = [{"hostname": "box-1.local", "primary": ["llama"]}, {"hostname": "mac-mini", "primary": ["lms"]}, {"hostname": "nas"}]
+    reg = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read", lambda a: {"items": rows})}
+    names, aliases = tt.fleet(reg)
+    assert names == ["box-1.local", "mac-mini", "nas"]
+    assert aliases == {"primary": "box-1.local", "primary llama": "box-1.local", "primary llama.cpp": "box-1.local",
+                       "primary llamacpp": "box-1.local", "primary llama-server": "box-1.local",
+                       "primary lms": "mac-mini", "primary lm studio": "mac-mini", "primary lmstudio": "mac-mini"}
+    assert tt.fleet({}) == ([], {})
+
+
+def test_primary_hosts_reads_the_default_agent_per_provider(monkeypatch):
+    import agent_registry
+    agents = {"A1": {"hostname": "Box", "status": "approved"}, "A2": {"hostname": "mac", "status": "approved"}}
+    monkeypatch.setattr(agent_registry, "default_agent_id_for", lambda p: {"llama": "A1", "lms": "A2"}.get(p))
+    assert tt.primary_hosts(agents) == {"box": ["llama"], "mac": ["lms"]}
+    monkeypatch.setattr(agent_registry, "default_agent_id_for", lambda p: (_ for _ in ()).throw(OSError("registry")))
+    assert tt.primary_hosts(agents) == {}
+
+
+def test_fleet_hosts_reads_hosts_overview_once():
+    calls = []
+    reg = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read",
+                                     lambda a: calls.append(a) or {"items": [{"hostname": "b"}, {"hostname": "a"}, {"x": 1}]})}
+    assert tt.fleet_hosts(reg) == ["b", "a"] and len(calls) == 1
+    assert tt.fleet_hosts({}) == []
+    bad = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read", lambda a: {"error": "down"})}
+    assert tt.fleet_hosts(bad) == []

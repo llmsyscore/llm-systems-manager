@@ -57,6 +57,27 @@ def test_parse_ignores_a_tool_fence_nested_in_another_code_block():
         == ['{"name":"a","args":{}}', '{"name":"b","args":{}}']
 
 
+NAMES = ("ask_operator", "schedule", "host_detail")
+
+
+@pytest.mark.parametrize("text,expect", [
+    ("ask_operator: Which host did you mean?", "ask_operator"),
+    ("I will check.\n- schedule(host=box, metric=ram_pct)", "schedule"),
+    ("call host_detail: box", "host_detail"),
+    ('{"name": "schedule", "args": {}}', "schedule"),
+    ("Let me look.\n```tool\n{\"name\": \"host_detail\"", "host_detail"),
+    ("The schedule is fine and ask_operator is a tool name.", None),
+    ("```text\nask_operator: no\n```\nDone.", None),
+    ("box is hot: 91 °C.", None),
+    ("", None),
+    ('```json\nExample: {"name": "host_detail"}\n```\nJust showing the format.', None),
+    ('Let me look.\n```tool\n{"name": "host_detail", "args": {"host": "box"}', "host_detail"),
+    ('See ```tool\n{"name":"host_detail","args":{}}\n``` for the syntax.', None),
+])
+def test_prose_call_finds_tool_calls_written_as_text(text, expect):
+    assert tower.prose_call(text, NAMES) == expect
+
+
 def _deps():
     return {"host": lambda n, section="all": {"hostname": n, "gpu_temp_c": 91}, "host_history": lambda h, m, w="24h", a=None: {"points": 0},
             "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],
@@ -83,14 +104,15 @@ class _TimeoutError(RuntimeError):
 
 
 def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=None, alternates=None,
-         approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None):
+         approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None,
+         checks=None, server_args_of=None):
     """script: list of assistant messages the fake model returns, in order, delivered as
     stream deltas — "content" char by char, "chunks" verbatim as given, or one tool_calls
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
     calls = iter(script)
     seen = {"payloads": []}
     def complete_stream(body, *, label, **kw):
-        seen["payloads"].append(body)
+        seen["payloads"].append({**body, "messages": list(body.get("messages") or [])})
         seen.setdefault("timeouts", []).append(kw.get("read_timeout"))
         msg = next(calls)
         if "timeout" in msg:
@@ -120,7 +142,8 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
                          store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates,
                          approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation,
-                         user="adriel", timers=timers, prelude=prelude)
+                         user="adriel", timers=timers, prelude=prelude, checks=checks,
+                         server_args_of=server_args_of)
     return out, events, seen, st, tid
 
 
@@ -1058,9 +1081,10 @@ def test_length_retry_respects_the_max_tokens_ceiling():
 
 
 def test_reasoning_only_reply_gives_a_specific_hint():
-    out, events, seen, st, tid = _run([{"reasoning": "thinking", "content": "", "finish": "stop"}])
+    out, events, seen, st, tid = _run([{"reasoning": "thinking", "content": "", "finish": "stop"},
+                                       {"reasoning": "still", "content": "", "finish": "stop"}])
     assert _text(events).startswith("The model finished thinking without writing an answer")
-    assert len(seen["payloads"]) == 1
+    assert len(seen["payloads"]) == 2
 
 
 def test_plain_empty_reply_keeps_the_generic_hint():
@@ -1142,7 +1166,8 @@ def test_native_supported_recognises_tools_flag():
     cfg = _cfg(tool_mode="auto")
     assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --tools all") is True
     assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --jinja") is True
-    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0") is False
+    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0") is None
+    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --no-jinja") is False
 
 
 def test_prompt_mode_nudges_to_write_the_block():
@@ -1680,9 +1705,10 @@ def test_resolve_model_prefers_an_awake_model_over_a_sleeping_pin():
 def test_native_supported_follows_every_serving_host():
     cfg = _cfg(tool_mode="auto")
     assert tower.native_supported(cfg, "llama", ["--jinja", "--host x --jinja"]) is True
-    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x"]) is False
-    assert tower.native_supported(cfg, "llama", ["--jinja", None]) is False
-    assert tower.native_supported(cfg, "llama", []) is False
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x"]) is None
+    assert tower.native_supported(cfg, "llama", ["--jinja", None]) is None
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x --no-jinja"]) is False
+    assert tower.native_supported(cfg, "llama", []) is None
     assert tower.native_supported(cfg, "llama", "--tools all") is True
     assert tower.native_supported(cfg, "lms", []) is True
     assert tower.native_supported(_cfg(tool_mode="native"), "llama", [None]) is True
@@ -1952,3 +1978,262 @@ def test_report_turn_stores_and_shows_the_samples_and_hands_them_to_the_model():
     # The next turn's history carries the short line and the report, not the samples.
     hist = tower._history(st, tid)
     assert [m["role"] for m in hist] == ["user", "assistant"] and hist[0]["content"] == text
+
+
+# --- #1039 host resolution + tool-driven questions ---
+
+def _fleet_registry(hosts=("box-1.local", "mac-mini"), primary=None):
+    d = _deps()
+    d["hosts"] = lambda *a, **k: [{"hostname": h, "online": True, **({"primary": [primary[h]]} if primary and h in primary else {})}
+                                  for h in hosts]
+    return tt.build_registry(d)
+
+
+def _tool_events(events):
+    return [e for e in events if e["event"] == "tool"]
+
+
+def test_unique_host_match_is_corrected_with_a_note():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box1"}}\n```'},
+        {"content": "box-1 is hot."}], registry=_fleet_registry())
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["args"] == {"host": "box1"}
+    assert t["result"]["hostname"] == "box-1.local" and t["result"]["note"] == "host box1 taken as box-1.local"
+    assert t["summary"].endswith("· host box1 taken as box-1.local")
+    fed = seen["payloads"][1]["messages"][-1]["content"]
+    assert "Result of host_detail" in fed and '"note": "host box1 taken as box-1.local"' in fed
+
+
+def test_unknown_host_is_refused_with_the_host_list_when_no_question_channel():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"nas"}}\n```'},
+        {"content": "No such host."}], registry=_fleet_registry())
+    t = _tool_events(events)[0]
+    assert not t["ok"] and t["result"]["error"] == "unknown host: nas; hosts are box-1.local, mac-mini"
+    assert t["result"]["choices"] == ["box-1.local", "mac-mini"] and t["result"]["arg"] == "host"
+    assert t["summary"] == "host_detail · unknown host: nas; hosts are box-1.local, mac-mini"
+    assert len(seen["payloads"]) == 2
+
+
+def test_ambiguous_host_raises_the_question_card_and_retries_with_the_answer(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, "llm-systems-llama.local")
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"llm-systems"}}\n```'},
+        {"content": "llama box is fine."}],
+        registry=_fleet_registry(("llm-systems-llama.local", "llm-systems-lmstudio.local")), approvals=ap)
+    kinds = [e["event"] for e in events]
+    assert kinds.index("question") < kinds.index("answer") < kinds.index("tool")
+    q = next(e for e in events if e["event"] == "question")
+    assert q["tool"] == "ask_operator" and q["question"] == "llm-systems matches several hosts"
+    assert q["choices"] == ["llm-systems-llama.local", "llm-systems-lmstudio.local"]
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["hostname"] == "llm-systems-llama.local"
+    assert t["result"]["note"] == "host taken from the operator's answer: llm-systems-llama.local"
+    assert len(seen["payloads"]) == 2
+    roles = [r["role"] for r in st.messages(tid)]
+    assert roles == ["user", "action", "user", "tool", "assistant"]
+
+
+def test_dismissed_host_question_leaves_the_refusal_to_the_model(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    def deny():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(ap._pending)
+            if ids:
+                ap.resolve(ids[0], "denied", "adriel"); return
+            time.sleep(0.01)
+    threading.Thread(target=deny, daemon=True).start()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"nas"}}\n```'},
+        {"content": "I do not know that host."}], registry=_fleet_registry(), approvals=ap)
+    t = _tool_events(events)[0]
+    assert not t["ok"] and t["result"]["error"].startswith("unknown host: nas")
+    assert sum(1 for e in events if e["event"] == "question") == 1
+
+
+def test_schedule_nested_host_is_resolved_before_the_timer(monkeypatch):
+    seen_args = {}
+    class _Timers:
+        def schedule(self, *, thread_id, user, role, args):
+            seen_args.update(args)
+            return {"ok": True, "label": "x", "every_s": 30, "times": 4}
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"schedule","args":{"every_s":30,"times":4,"host":"mac","metric":"ram_pct"}}\n```'},
+        {"content": "Scheduled."}], registry=_fleet_registry(), timers=_Timers())
+    assert seen_args["host"] == "mac-mini"
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["note"] == "host mac taken as mac-mini"
+
+
+def test_act_tool_host_is_resolved_before_the_approval_card(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    def approve():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(ap._pending)
+            if ids:
+                ap.resolve(ids[0], "approved", "adriel"); return
+            time.sleep(0.01)
+    threading.Thread(target=approve, daemon=True).start()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"wake_server","args":{"host":"box"}}\n```'},
+        {"content": "Woken."}], cfg=_cfg(capabilities="operate"), registry=_fleet_registry(("box-1.local", "mac-mini")), approvals=ap)
+    card = next(e for e in events if e["event"] == "confirm")
+    assert card["args"]["host"] == "box-1.local"
+
+
+# --- #1039 prose salvage, reasoning retry, escalation ---
+
+def test_prose_tool_call_gets_one_correction_turn_then_the_call_runs():
+    out, events, seen, st, tid = _run([
+        {"content": "ask_operator: Which host did you mean, box or mac?"},
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box"}}\n```'},
+        {"content": "box is hot."}])
+    assert len(seen["payloads"]) == 3
+    corr = seen["payloads"][1]["messages"][-1]
+    assert corr["role"] == "user" and corr["content"].startswith("That was a sentence, not a tool call. Call ask_operator now")
+    assert seen["payloads"][1]["messages"][-2] == {"role": "assistant", "content": "ask_operator: Which host did you mean, box or mac?"}
+    assert out["note"] == "prose tool call corrected"
+    assert [r["content"] for r in st.messages(tid) if r["role"] == "assistant"][0] == "ask_operator: Which host did you mean, box or mac?"
+    assert _text(events).endswith("box is hot.")
+
+
+def test_second_prose_call_ends_with_the_prose_line_without_fallback():
+    out, events, seen, st, tid = _run([
+        {"content": "schedule: ram on box every 30 s"},
+        {"content": "schedule(host=box, metric=ram_pct)"}])
+    assert len(seen["payloads"]) == 2
+    assert _text(events).endswith(tower._FALLBACK_PROSE)
+    assert st.messages(tid)[-1]["content"] == tower._FALLBACK_PROSE
+
+
+def test_second_prose_call_escalates_to_the_alternate_when_fallback_is_on():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([
+        {"content": "schedule: ram on box every 30 s"},
+        {"content": "schedule(host=box, metric=ram_pct)"},
+        {"content": "Scheduled nothing; box is fine."}],
+        cfg=_cfg(fallback=True), alternates=lambda cur: alt)
+    assert seen["payloads"][2]["model"] == "gemma-3-12b"
+    m = [e for e in events if e["event"] == "model"]
+    assert m[-1]["fallback"] is True and m[-1]["from"] == "qwen3-14b"
+    assert _text(events).endswith("Fallback: asking gemma-3-12b because qwen3-14b kept writing tool calls as text."
+                                  "\n\nScheduled nothing; box is fine.")
+    assert out["note"].startswith("fallback from qwen3-14b")
+
+
+def test_thinking_only_reply_is_retried_once_then_answers():
+    out, events, seen, st, tid = _run([
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"content": "All timers are set."}])
+    assert len(seen["payloads"]) == 2
+    nudge = seen["payloads"][1]["messages"][-1]
+    assert nudge == {"role": "user", "content": "You finished thinking without writing an answer. Answer now in plain text, briefly."}
+    assert seen["payloads"][1]["messages"][-2] == {"role": "assistant", "content": ""}
+    assert out["note"] == "retried after a thinking-only reply"
+    assert _text(events) == "All timers are set."
+
+
+def test_failed_check_starts_the_turn_on_the_alternate():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([{"content": "fine."}], cfg=_cfg(fallback=True),
+                                       alternates=lambda cur: alt, checks=lambda mid: {"grade": "failed"} if mid == "qwen3-14b" else None)
+    assert seen["payloads"][0]["model"] == "gemma-3-12b"
+    assert _text(events).startswith("Fallback: asking gemma-3-12b because qwen3-14b failed the tool check.")
+
+
+def test_failed_check_without_fallback_uses_the_primary():
+    out, events, seen, st, tid = _run([{"content": "fine."}], checks=lambda mid: {"grade": "failed"})
+    assert seen["payloads"][0]["model"] == "qwen3-14b" and _text(events) == "fine."
+
+
+def test_fenced_grade_turns_native_off_in_auto_mode():
+    cfg = _cfg(tool_mode="auto")
+    sa = lambda m: "--jinja"  # noqa: E731
+    out, _e, seen, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "fenced"}, server_args_of=sa)
+    assert "tools" not in seen["payloads"][0]
+    out, _e, seen2, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"}, server_args_of=sa)
+    assert "tools" in seen2["payloads"][0]
+
+
+def test_schedule_nested_tool_args_host_is_resolved_before_the_timer():
+    seen_args = {}
+    class _Timers:
+        def schedule(self, *, thread_id, user, role, args):
+            seen_args.update(args)
+            return {"ok": True, "label": "x", "every_s": 30, "times": 2}
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"schedule","args":{"every_s":30,"times":2,"tool":"host_detail",'
+                    '"args":{"host":"mac"}}}\n```'},
+        {"content": "Scheduled."}], registry=_fleet_registry(), timers=_Timers())
+    assert seen_args["args"]["host"] == "mac-mini" and seen_args["tool"] == "host_detail"
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["note"] == "host mac taken as mac-mini"
+
+
+def test_a_length_stop_then_a_thinking_only_reply_are_both_retried_once():
+    out, events, seen, st, tid = _run([
+        {"content": "", "finish": "length"},
+        {"reasoning": "x", "content": "", "finish": "stop"},
+        {"content": "All timers are set."}])
+    assert len(seen["payloads"]) == 3
+    assert out["note"] == "retried after a length stop; retried after a thinking-only reply"
+    assert _text(events) == "All timers are set."
+
+
+def test_unknown_server_args_follow_the_check_grade():
+    """#1039: jinja is on by default in current llama.cpp, so unstated args defer to the capability check."""
+    cfg = _cfg(tool_mode="auto")
+    sa = lambda m: [None]  # noqa: E731
+    out, _e, seen, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"}, server_args_of=sa)
+    assert "tools" in seen["payloads"][0]
+    out, _e, seen2, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=None, server_args_of=sa)
+    assert "tools" not in seen2["payloads"][0]
+    out, _e, seen3, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"},
+                                  server_args_of=lambda m: ["--no-jinja"])
+    assert "tools" not in seen3["payloads"][0]
+
+
+def test_primary_resolves_to_the_default_llama_host():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"primary"}}\n```'},
+        {"content": "fine."}], registry=_fleet_registry(primary={"box-1.local": "llama"}))
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["hostname"] == "box-1.local" and t["result"]["note"] == "host primary taken as box-1.local"
+
+
+def test_second_thinking_only_reply_after_work_reports_the_last_step():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box"}}\n```'},
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"reasoning": "hmm", "content": "", "finish": "stop"}])
+    assert len(seen["payloads"]) == 3
+    assert _text(events).startswith("The model stopped without an answer. Last step: read host detail · box")
+    assert st.messages(tid)[-1]["content"].startswith("The model stopped without an answer. Last step: read host detail · box")
+    assert not any("ms." in r["content"] for r in st.messages(tid) if r["role"] == "assistant")
+
+
+def test_second_thinking_only_reply_escalates_when_fallback_is_on():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"content": "All set."}], cfg=_cfg(fallback=True), alternates=lambda cur: alt)
+    assert seen["payloads"][2]["model"] == "gemma-3-12b"
+    assert _text(events).startswith("Fallback: asking gemma-3-12b because qwen3-14b kept thinking without answering.")
+    assert _text(events).endswith("All set.")
+
+
+def test_history_drops_the_last_step_line():
+    st = tower.Store(":memory:")
+    tid = st.create_thread("u", "t", {})
+    st.add_message(tid, "user", "hi")
+    st.add_message(tid, "assistant", "The model stopped without an answer. Last step: read host detail · box.")
+    st.add_message(tid, "user", "q2")
+    assert tower._history(st, tid) == [{"role": "user", "content": "q2"}]
