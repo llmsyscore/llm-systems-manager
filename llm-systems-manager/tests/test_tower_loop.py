@@ -836,6 +836,8 @@ def test_ask_args_take_a_list_of_choices_and_question_card_trims_them():
     assert multi["questions"] == [{"question": "Host?", "choices": ["box", "mac"], "label": "Host"},
                                   {"question": "Model?", "choices": ["q"], "label": ""}]
     assert multi["question"] == "Host?" and multi["choices"] == ["box", "mac"]
+    odd = tt.question_card({"questions": [{"question": "Q", "choices": {"a": 1}}, {"question": "R", "choices": 5, "label": 7}]})
+    assert odd["questions"] == [{"question": "Q", "choices": [], "label": ""}, {"question": "R", "choices": [], "label": "7"}]
 
 
 _ASK_MULTI = ('```tool\n{"name":"ask_operator","args":{"questions":[{"question":"Which host?","choices":["box","mac"],"label":"Host"},'

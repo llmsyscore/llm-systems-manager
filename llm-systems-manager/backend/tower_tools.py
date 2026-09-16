@@ -1101,7 +1101,7 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
 
 def _one_question(q, choices, label=None) -> Optional[dict]:
     seen: list = []
-    for c in (choices or [])[:QUESTION_CHOICES_MAX]:
+    for c in (choices if isinstance(choices, list) else [])[:QUESTION_CHOICES_MAX]:
         c = str(c).strip()[:80]
         if c and c.lower() != "other" and c not in seen:
             seen.append(c)
