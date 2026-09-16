@@ -19,7 +19,8 @@ def test_batch_routes_are_registered_with_every_dep():
                 "write_config=_batch_write_config", "active_profile=_batch_active_profile",
                 "save_profile=_batch_save_profile", "alert=_ae_ingest_alert",
                 'run_ended=lambda aid: tool_activity.note_end(aid, "autotune")',
-                "shutting_down=lambda: _shutting_down", "models_for=_batch_models_for"):
+                "shutting_down=lambda: _shutting_down", "models_for=_batch_models_for",
+                "job_service=_jobs_service"):
         assert dep in call, f"{dep} not wired"
 
 

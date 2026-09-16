@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import sqlite3 as _sq
 import threading
 import time
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 import auth
+import jobs as _jobs
 import manager_mod as M
 import stream_pool
 import tower
@@ -51,10 +53,15 @@ def client(monkeypatch):
     orig_store = M._tower_runs._store
     orig_shutting_down = M._tower_runs._shutting_down
     orig_stream_max_s = M._tower_runs._stream_max_s
-    orig_timer_store = M._tower_timers._store
+    orig_timer_store, orig_timer_svc = M._tower_timers._store, M._tower_timers._svc
     M._tower_runs._store = tower.Store(":memory:")
     M._tower_runs._store.init_tables()
     M._tower_timers._store = M._tower_runs._store
+    _conn = _sq.connect(":memory:", check_same_thread=False)
+    _jobs.init_table(_conn)
+    _svc = _jobs.Service(_jobs.Store(lambda: _conn), cfg=lambda: settings.manager.jobs, inline=True)
+    _svc.register(M._jobs_service.kind("tower_timer"))
+    M._tower_timers._svc = _svc
     M._tower_runs._runs.clear()
     M._tower_runs._active_user.clear()
     M._tower_runs._rate.clear()
@@ -67,6 +74,7 @@ def client(monkeypatch):
     finally:
         M._tower_runs._store = orig_store
         M._tower_timers._store = orig_timer_store
+        M._tower_timers._svc = orig_timer_svc
         M._tower_runs._shutting_down = orig_shutting_down
         M._tower_runs._stream_max_s = orig_stream_max_s
         for k, v in orig_tower.model_dump().items():
@@ -1111,20 +1119,23 @@ def test_tower_run_rows_report_accept_rate_as_a_percentage():
 
 # ── timers (#1029) ─────────────────────────────────────────────────
 
-def _queue_timer(c, user="alice"):
+def _queue_timer(c, monkeypatch, user="alice"):
+    """Schedules a timer on a fake "box" host: timer_spec now probes host_detail, so agent_registry needs one."""
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"a1": {"status": "approved", "hostname": "box"}}})
     tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
-    st = M._tower_runs._store
-    timer_id = st.create_timer(tid, user, "operator", {"kind": "metric", "host": "box", "metric": "ram_pct", "label": "RAM on box",
-                                                       "every_s": 30, "times": 4}, time.time())
-    return tid, timer_id
+    out = M._tower_timers.schedule(thread_id=tid, user=user, role="operator",
+                                   args={"label": "RAM on box", "host": "box", "metric": "ram_pct", "every_s": 30, "times": 4})
+    assert out["ok"], out
+    return tid, out["timer_id"]
 
 
-def test_timers_route_lists_the_users_live_timers_and_state_counts_them(client):
+def test_timers_route_lists_the_users_live_timers_and_state_counts_them(client, monkeypatch):
     c = client
     assert c.get("/api/tower/timers").get_json() == {"ok": True, "timers": []}
     assert c.get("/api/tower/state").get_json()["timers"] == 0
-    tid, timer_id = _queue_timer(c)
-    _queue_timer(c, user="bob")
+    tid, timer_id = _queue_timer(c, monkeypatch)
+    _queue_timer(c, monkeypatch, user="bob")
     d = c.get("/api/tower/timers").get_json()
     assert d["ok"] and [t["id"] for t in d["timers"]] == [timer_id]
     t = d["timers"][0]
@@ -1133,10 +1144,10 @@ def test_timers_route_lists_the_users_live_timers_and_state_counts_them(client):
     assert c.get("/api/tower/state").get_json()["timers"] == 1
 
 
-def test_timer_cancel_route_audits_and_refuses_repeats_and_other_users(client):
+def test_timer_cancel_route_audits_and_refuses_repeats_and_other_users(client, monkeypatch):
     """#1029: POST cancel stops a live timer for its owner only; the audit row names the timer."""
     c = client
-    tid, timer_id = _queue_timer(c)
+    tid, timer_id = _queue_timer(c, monkeypatch)
     assert c.post("/api/tower/timers/nope/cancel").status_code == 404
     r = c.post(f"/api/tower/timers/{timer_id}/cancel")
     assert r.status_code == 200 and r.get_json()["timer"]["status"] == "cancelled"
@@ -1147,9 +1158,9 @@ def test_timer_cancel_route_audits_and_refuses_repeats_and_other_users(client):
     assert c.post(f"/api/tower/timers/{timer_id}/cancel").get_json() == {"ok": False, "error": "not live"}
     tool_rows = [m for m in c.get(f"/api/tower/threads/{tid}").get_json()["messages"] if m["role"] == "tool"]
     assert tool_rows and tool_rows[0]["tool_name"] == "timer" and json.loads(tool_rows[0]["content"])["status"] == "cancelled"
-    _, other = _queue_timer(c, user="bob")
+    _, other = _queue_timer(c, monkeypatch, user="bob")
     assert c.post(f"/api/tower/timers/{other}/cancel").status_code == 404
-    assert M._tower_runs._store.get_timer(other)["status"] == "queued"
+    assert M._tower_timers._svc.get(other)["status"] == "queued"
 
 
 def test_timer_routes_are_gated_like_the_rest(client):

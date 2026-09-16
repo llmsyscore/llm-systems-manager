@@ -1039,6 +1039,30 @@ Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint
 
 ---
 
+## Jobs
+
+One ledger and dispatcher for scheduled and queued manager work (#915). Kinds today: `tower_timer` (Tower's `schedule` tool) and `autotune_batch` (the overnight batch's start). Every route needs a dashboard session.
+
+### `GET /api/jobs`
+Query `status` (`live` default = queued + running, `all`, or one of `queued|running|done|failed|cancelled`), `kind`, `user`, `limit` (≤ 100). Returns `{ok, jobs: [view], summary: {queued, running, failed_24h, next_due}}`. A view carries `id, kind, kind_title, label, status, user, source, created, not_before, next_run, last_run, started, resolved, run_count, attempts, message, thread_id, exclusive, can_cancel` plus `*_local` strings for every timestamp.
+
+---
+
+### `GET /api/jobs/<id>`
+The view plus `spec`, `state` and `result`. 404 when unknown.
+
+---
+
+### `POST /api/jobs`
+Operator or admin. **Body:** `{"kind", "spec", "label"?, "not_before"? (epoch seconds), "period_s"?, "runs_left"?}`. Only kinds that opt into API submission are accepted (none ship in phase 1); 404 for an unknown kind, 409 `kind not submittable` for a registered kind that does not opt in, 400 for a bad spec.
+
+---
+
+### `POST /api/jobs/<id>/cancel`
+The job's own user (operator) or any admin. A queued job ends at once; a running one is signalled and its kind's cancel hook runs (an autotune batch stops after its current item). 409 when the job is not live.
+
+---
+
 ## Tower assistant
 
 Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state`, answers 404 while `manager.tower.enabled` is false.

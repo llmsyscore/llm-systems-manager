@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import sqlite3
+import types
 
 import pytest
 
 import autotune_batch as ab
+import jobs
 
 A1, A2 = "a" * 32, "b" * 32
 NOW = 1_800_000_000.0
@@ -26,10 +28,15 @@ def env(tmp_path):
         read_config=lambda aid: {}, write_config=lambda aid, cfg: (True, None),
         active_profile=lambda aid, mid: None, save_profile=lambda *a: None, alert=lambda p: True,
         now=lambda: NOW)
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                       now=lambda: NOW, inline=True)
     runner = ab.register_routes(app, None, db_path=str(tmp_path / "t.db"), deps=deps,
-                                models_for=lambda aid: world["models"].get(aid), now=lambda: NOW)
+                                models_for=lambda aid: world["models"].get(aid), now=lambda: NOW,
+                                job_service=svc, user_of=lambda: "alice")
     c = app.test_client()
-    c.runner, c.world = runner, world
+    c.runner, c.world, c.svc = runner, world, svc
     return c
 
 
@@ -142,3 +149,105 @@ def test_start_refuses_while_boot_recovery_is_still_running(env):
     assert r.status_code == 409 and "recovery" in r.get_json()["error"]
     env.runner._recover_thread = None
     assert env.post("/api/llm/autotune/batch", json=_body()).status_code == 200
+
+
+def test_start_submits_a_job_with_start_at_and_perf_keys(env):
+    r = env.post("/api/llm/autotune/batch", json=_body(start_at=NOW + 600)).get_json()
+    b = r["batch"]
+    job = env.svc.list("live", kind=ab.KIND)[0]
+    assert job["spec"] == {"batch_id": b["id"], "start_at": NOW + 600, "budget_min": 480, "agent_ids": [A1]}
+    assert job["not_before"] == NOW + 600 and job["exclusive"] == [f"perf:{A1}"]
+    assert job["user"] == "alice" and job["source"] == "ui"
+    assert job["label"] == "Autotune batch · 1 host"
+
+
+def test_cancel_queued_batch_cancels_its_job(env):
+    b = env.post("/api/llm/autotune/batch", json=_body(start_at=NOW + 600)).get_json()["batch"]
+    assert env.post(f"/api/llm/autotune/batch/{b['id']}/cancel").get_json()["status"] == "cancelled"
+    assert env.svc.list("live", kind=ab.KIND) == []
+    assert env.svc.list("cancelled", kind=ab.KIND)[0]["spec"]["batch_id"] == b["id"]
+
+
+def test_job_cancel_while_queued_cancels_the_batch(env):
+    b = env.post("/api/llm/autotune/batch", json=_body(start_at=NOW + 600)).get_json()["batch"]
+    job = env.svc.list("live", kind=ab.KIND)[0]
+    assert job["status"] == "queued"
+    assert env.post("/api/llm/autotune/batch", json=_body()).status_code == 409
+    env.svc.cancel(job["id"])
+    assert env.runner.store.get(b["id"])["status"] == "cancelled"
+    assert env.post("/api/llm/autotune/batch", json=_body()).status_code == 200
+
+
+def test_job_cancel_cancels_the_batch(env):
+    b = env.post("/api/llm/autotune/batch", json=_body(start_at=NOW + 600)).get_json()["batch"]
+    job = env.svc.list("live", kind=ab.KIND)[0]
+    env.svc._store.update(job["id"], status="running", started=NOW)
+    env.svc.cancel(job["id"])
+    assert env.runner.store.get(b["id"])["status"] == "cancelled"
+
+
+def _idle_deps():
+    return ab.Deps(hosts=lambda: [], busy_agents=set, preflight=lambda a: None, run_on_agent=lambda a, b_: (True, "r"),
+                   stream_on_agent=lambda a, last_id=None: iter(()), cancel_on_agent=lambda a: True,
+                   stop_server=lambda a: (True, None), restart_server=lambda a: (True, None),
+                   read_config=lambda a: {}, write_config=lambda a, c: (True, None),
+                   active_profile=lambda a, m: None, save_profile=lambda *a: None, alert=lambda p: True,
+                   now=lambda: NOW)
+
+
+def _service():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    return jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                        now=lambda: NOW, inline=True)
+
+
+def _queued_batch(tmp_path, start_at=NOW + 300):
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    ab.init_table(conn)
+    b = ab.new_batch(ab.validate_body(_body(start_at=start_at), {A1}, NOW), {A1: "alpha"}, NOW)
+    ab.Store(lambda: conn).save(b)
+    conn.close()
+    return b
+
+
+def test_cancel_of_a_running_batch_cancels_the_agent_once(env):
+    b = env.post("/api/llm/autotune/batch", json=_body()).get_json()["batch"]
+    row = env.runner.store.get(b["id"])
+    row.update({"status": "running", "started": NOW})
+    row["items"][0]["status"] = "running"
+    env.runner.store.save(row)
+    env.runner._current[b["id"]] = A1
+    job = env.svc.list("live", kind=ab.KIND)[0]
+    env.svc._store.update(job["id"], status="running", started=NOW)
+    assert env.post(f"/api/llm/autotune/batch/{b['id']}/cancel").get_json()["status"] == "running"
+    assert env.world["cancelled"] == [A1]
+    assert env.svc.get(job["id"])["status"] == "cancelled"
+
+
+def test_register_ensures_a_job_for_a_queued_batch_left_by_a_restart(tmp_path):
+    from flask import Flask
+    b = _queued_batch(tmp_path)
+    svc = _service()
+    ab.register_routes(Flask(__name__), None, db_path=str(tmp_path / "t.db"), deps=_idle_deps(),
+                       models_for=lambda a: None, now=lambda: NOW, job_service=svc)
+    job = svc.list("live", kind=ab.KIND)[0]
+    assert job["spec"]["batch_id"] == b["id"] and job["not_before"] == NOW + 300
+    assert job["source"] == "system" and job["user"] == ""
+
+
+def test_register_rearms_past_a_stale_running_job_left_by_a_crash(tmp_path):
+    from flask import Flask
+    b = _queued_batch(tmp_path)
+    svc = _service()
+    svc.register(jobs.Kind(ab.KIND, "Autotune batch", run=lambda job: jobs.ok(), resume="fail"))
+    stale = svc.submit(ab.KIND, {"batch_id": b["id"], "start_at": NOW + 300, "agent_ids": [A1]})
+    svc._store.update(stale["id"], status="running", started=NOW)
+    ab.register_routes(Flask(__name__), None, db_path=str(tmp_path / "t.db"), deps=_idle_deps(),
+                       models_for=lambda a: None, now=lambda: NOW, job_service=svc)
+    mine = [j for j in svc.list("live", kind=ab.KIND) if j["spec"]["batch_id"] == b["id"]]
+    assert len(mine) == 2 and [j["status"] for j in mine].count("queued") == 1
+    fresh = next(j for j in mine if j["status"] == "queued")
+    svc.recover()
+    assert svc.get(stale["id"])["status"] == "failed" and svc.get(stale["id"])["message"] == "manager restarted"
+    assert svc.get(fresh["id"])["status"] == "queued"

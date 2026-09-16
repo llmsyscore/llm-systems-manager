@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-21"
+__version__ = "v2026.09.16-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -211,6 +211,7 @@ import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no c
 import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_timers  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1029
+import jobs  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #915
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
@@ -3499,6 +3500,8 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True},
         {"key": "tower.action", "label": "Action approved / denied / playbook applied", "default_on": True},
         {"key": "tower.violation", "label": "Rule-bypass attempt", "default_on": True}]},
+    {"key": "jobs", "title": "Jobs", "events": [
+        {"key": "jobs", "label": "Job submitted / cancelled / failed", "default_on": True}]},
 ]
 _AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in g["events"]}
 
@@ -3563,6 +3566,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "tower.timer.complete": "Tower timer reported", "tower.timer.failed": "Tower timer failed",
     "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
+    "jobs.submit": "Submitted a job", "jobs.cancel": "Cancelled a job", "jobs.failed": "A job failed",
 }
 
 # (method-or-None, path regex, action, event). Groups: t = target, v = verb
@@ -3635,6 +3639,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny|answer)$"), "tower.action.{d}", "tower.action"),
     ("POST",   re.compile(r"^/api/tower/insights/(?P<t>[^/]+)/apply$"), "tower.playbook.apply", "tower.action"),
     ("POST",   re.compile(r"^/api/tower/timers/(?P<t>[^/]+)/cancel$"), "tower.timer.cancel", "tower.action"),
+    ("POST",   re.compile(r"^/api/jobs$"),                              "jobs.submit",        "jobs"),
+    ("POST",   re.compile(r"^/api/jobs/(?P<t>[^/]+)/cancel$"),          "jobs.cancel",        "jobs"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -3663,7 +3669,7 @@ _AUDIT_PATH_PREFIXES = ("/api/admin/", "/api/agents/", "/api/llm/", "/api/lmstud
                         "/api/config/", "/api/vllm/", "/api/autopilot", "/api/terminal/",
                         "/api/lms/terminal/", "/api/reportcard/", "/api/alarm/",
                         "/api/account/", "/api/layout", "/login", "/logout",
-                        "/api/benchmark/live/baselines", "/api/tower/")
+                        "/api/benchmark/live/baselines", "/api/tower/", "/api/jobs")
 
 _AUDIT_DETAIL_BODY_KEYS = ("model", "model_id", "agent", "agent_id", "kind", "set", "enabled",
                            "context_length", "n_gpu_layers", "role", "mode", "provider",
@@ -3694,7 +3700,8 @@ def _audit_reload_config() -> None:
         log.warning("audit config reload failed (runtime keeps previous values): %s", e)
 
 
-_AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation", "tower.playbook.auto": "tower.action"}
+_AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation", "tower.playbook.auto": "tower.action",
+                                          "jobs.failed": "jobs"}
 
 
 def _audit_event_for(action: str) -> str:
@@ -5270,6 +5277,17 @@ def admin_system_health():
             f"peak={_sp['peak']} refusals={_sp['refusals']} — new streams get 503 "
             f"('Stream error'); restart clears it")
 
+    try:
+        summ = _jobs_service.summary()
+        rows = [_jobs_service.view(r, role="admin", user="") for r in _jobs_service.recent(8)]
+        health["jobs"] = {**summ, "rows": rows}
+        for r in _jobs_service.list("failed", limit=20, order="resolved DESC"):
+            if (r.get("resolved") or 0) >= now - jobs.FAILED_WINDOW_S:
+                health["warnings"].append(f"job failed: {r['label']} — {r.get('message') or 'failed'}")
+    except Exception as _e:  # noqa: BLE001 — health never fails because the ledger is unreadable
+        log.debug("system-health jobs block failed: %s", type(_e).__name__)
+        health["jobs"] = {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None, "rows": []}
+
     health["flow"] = {
         "agent_pushes_per_s": round(_AGENT_PUSH_RATE.per_s(now), 2),
         "ae_ingest_points_per_s": ae_flow["ae_ingest_points_per_s"],
@@ -5776,6 +5794,36 @@ def _batch_save_profile(agent_id: str, model_id: str, name: str, values: dict, m
         store.put_profile(agent_id, model_id, name, values, make_active=make_active)
 
 
+def _jobs_audit_auto(info: dict) -> None:
+    """Audit row for a job event raised off-request (submit from a thread, failure, timeout)."""
+    if "jobs" in _AUDIT_CFG["disabled"]:
+        return
+    ok = bool(info.get("ok"))
+    _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), str(info.get("actor") or "jobs"), "operator",
+                   "", "session", "POST", "jobs", str(info.get("action") or "jobs.failed"),
+                   str(info.get("target") or ""), 200 if ok else 502, "ok" if ok else "error",
+                   json.dumps(info.get("detail") or {}, default=str), "jobs"))
+
+
+_jobs_tls = _threading.local()
+
+
+def _jobs_conn():
+    conn = getattr(_jobs_tls, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        _jobs_tls.conn = conn
+    return conn
+
+
+jobs.init_table(_jobs_conn())
+_jobs_service = jobs.Service(jobs.Store(_jobs_conn), cfg=lambda: settings.manager.jobs,
+                             alert=_ae_ingest_alert, audit=_jobs_audit_auto)
+jobs.register_routes(app, _jobs_service, role_of=auth.effective_role,
+                     user_of=lambda: tower.session_user(_flask_session))
+
+
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891
 
 autotune_batch.register_routes(
@@ -5789,6 +5837,7 @@ autotune_batch.register_routes(
         save_profile=_batch_save_profile, alert=_ae_ingest_alert,
         run_ended=lambda aid: tool_activity.note_end(aid, "autotune"),
         shutting_down=lambda: _shutting_down),
+    job_service=_jobs_service, user_of=lambda: tower.session_user(_flask_session),
 )
 
 
@@ -6181,9 +6230,10 @@ _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower
                                     speed_table=lambda m: bench_live.speed_table(str(DB_PATH), m),
                                     service_health=_tower_service_health, gateway_entries=_tower_gateway_entries,
                                     audit_rows=_tower_audit_rows, bench_start=_tower_bench_start, bench_options=_tower_bench_options,
-                                    card_result=_tower_card_result)
+                                    card_result=_tower_card_result, jobs_service=_jobs_service)
 _tower_approvals = tower.Approvals()
-_tower_timers = tower_timers.Timers(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
+_tower_timers = tower_timers.Timers(_jobs_service, store=_tower_store,
+                                    registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                                     cfg=lambda: settings.manager.tower, audit=_tower_audit_auto)
 _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                          complete_stream=gateway.complete_stream,
@@ -8725,9 +8775,15 @@ if __name__ == "__main__":
     # Tower alert watcher (#924); idle until manager.tower.enabled and diagnose_alarms are on.
     try:
         tower_watch.start_thread(_tower_watcher, lambda: _shutting_down)
-        tower_timers.start_thread(_tower_timers, lambda: _shutting_down)
     except Exception as _e:
         log.warning("tower watcher startup failed: %s", _e)
+
+    # Job dispatcher (#915): requeues what a restart interrupted, then ticks every registered kind.
+    try:
+        _jobs_service.recover()
+        jobs.start_thread(_jobs_service, lambda: _shutting_down)
+    except Exception as _e:
+        log.warning("jobs dispatcher startup failed: %s", _e)
 
     # Audit log retention purge (#794): at start, then every 24 h.
     _start_audit_purge_thread()

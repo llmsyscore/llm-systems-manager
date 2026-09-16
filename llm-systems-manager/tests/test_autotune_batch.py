@@ -331,7 +331,7 @@ def test_runner_cancel_stops_after_the_current_item():
     assert f.alerts[0]["name"].startswith("Overnight autotune")
 
 
-def test_runner_waits_for_start_at_and_cancel_while_queued():
+def test_runner_runs_a_queued_batch_at_once_and_honours_a_prior_cancel():
     f = Fake()
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     ab.init_table(conn)
@@ -340,7 +340,7 @@ def test_runner_waits_for_start_at_and_cancel_while_queued():
     store.save(b)
     runner = ab.Runner(store, f.deps())
     runner.run(b["id"])
-    assert f.t >= NOW + 120 and store.get(b["id"])["status"] == "done"
+    assert store.get(b["id"])["status"] == "done"
     b2 = ab.new_batch(ab.validate_body(_body(start_at=NOW + 120), {A1}, NOW), NAMES, NOW)
     store.save(b2)
     f2 = Fake()

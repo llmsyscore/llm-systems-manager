@@ -158,6 +158,7 @@ subsystems, each in its own module:
 | **Tool run tracking** | `tool_activity.py` | Records a tool run against the agent the proxy resolved to, confirms or expires it from a background probe of that agent's tools-state endpoint, and serves the merged fleet-wide view backing the Tools launcher's run ledger. |
 | **Discord bot** | `discord_bot.py` | Opt-in interactive slash commands (status queries and, behind a separate confirmation gate, model load/unload) driven over the inference gateway. |
 | **PWA companion** | `companion.py` | Serves the installable phone app (`/companion`, manifest, service worker), stores web-push subscriptions, fans alarm-engine alerts out to devices via VAPID web push, and runs the opt-in release-availability check. |
+| **Job service** | `jobs.py` | One ledger and dispatcher for scheduled and queued manager work (Tower timers, autotune batches); exclusive keys, boot recovery, alarm-engine alert on failure, Tower and Admin › System Health surfaces |
 
 ---
 

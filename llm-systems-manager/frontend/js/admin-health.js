@@ -355,6 +355,39 @@
       : rows.some(r => r.k === 'warn') ? ['warn', 'Attention'] : ['ok', 'Healthy'];
   }
 
+  // ── jobs strip (#915) ────────────────────────────────────────────────
+  function ago(s) { return upStr(s) || '0s'; }
+  function jobsRows(d, nowS) {
+    const j = (d && d.jobs) || {};
+    const now = nowS != null ? nowS : Date.now() / 1000;
+    return ((j.rows) || []).map(r => {
+      const st = r.status || 'queued';
+      let when = '';
+      if (st === 'queued') when = r.next_run > now ? `next in ${ago(r.next_run - now)}` : 'due now';
+      else if (st === 'running') when = `started ${ago(now - (r.started || now))} ago`;
+      else when = `${st} ${ago(now - (r.resolved || now))} ago` + (st === 'failed' && r.message ? ` — ${r.message}` : '');
+      if (st === 'queued' && r.message && /^waiting for /.test(r.message)) when = r.message;
+      return { id: r.id, k: st, label: r.label || r.id, kind: r.kind_title || r.kind || '', when, by: r.user || r.source || '', cancel: !!r.can_cancel, live: st === 'queued' || st === 'running' };
+    });
+  }
+  const DOT = { queued: 'ok', running: 'ok pulse', failed: 'crit', done: '', cancelled: '' };
+  function jobsHtml(rows) {
+    if (!rows.length) return '<div class="w-none">None</div>';
+    return rows.map(r => `<div class="hj ${r.k}${r.live ? ' live' : ''}" data-job="${esc(r.id)}"><span class="dot ${DOT[r.k] || ''}"></span>`
+      + `<span class="hj-l" title="${esc(r.label)}">${esc(r.label)}</span><span class="hj-k">${esc(r.kind)}</span>`
+      + `<span class="hj-w" title="${esc(r.when)}">${esc(r.when)}</span><span class="hj-by">${esc(r.by)}</span>`
+      + (r.cancel ? `<button type="button" class="ib" data-cancel-job="${esc(r.id)}" aria-label="Cancel job">✕</button>` : '<span class="ib none"></span>')
+      + '</div>').join('');
+  }
+  function jobsSummary(d) {
+    const j = (d && d.jobs) || {};
+    const parts = [];
+    if (j.queued) parts.push(plural(j.queued, 'queued', 'queued'));
+    if (j.running) parts.push(plural(j.running, 'running', 'running'));
+    if (j.failed_24h) parts.push(`${j.failed_24h} failed today`);
+    return parts.length ? parts.join(' · ') : 'none';
+  }
+
   // ── render ───────────────────────────────────────────────────────────
   function renderDetail() {
     const host = $('adminHealthDetail');
@@ -456,6 +489,23 @@
       }
     }
 
+    const jobsEl = $('adminHealthJobsList');
+    if (jobsEl) {
+      jobsEl.innerHTML = jobsHtml(jobsRows(_last));
+      const sum = $('adminHealthJobsSum');
+      if (sum) sum.textContent = jobsSummary(_last);
+      if (!jobsEl._hcBound) {
+        jobsEl._hcBound = true;
+        jobsEl.addEventListener('click', async e => {
+          const btn = e.target.closest('[data-cancel-job]');
+          if (!btn) return;
+          btn.disabled = true;
+          try { await fetch(`/api/jobs/${encodeURIComponent(btn.getAttribute('data-cancel-job'))}/cancel`, { method: 'POST' }); } catch (_) { /* next poll repaints */ }
+          if (typeof adminLoadHealth === 'function') adminLoadHealth();
+        });
+      }
+    }
+
     const det = $('adminHealthDetail');
     if (det && !det._hcBound) {
       det._hcBound = true;
@@ -468,6 +518,7 @@
 
   window.HealthView = {
     render, svcRows, svcRowHtml, edgeStates, nodeSubs, detailRows, warnRows, pillOf, upStr, num, authState,
+    jobsRows, jobsHtml, jobsSummary,
     select: n => { _selNode = n; renderDetail(); },
     selected: () => _selNode,
   };

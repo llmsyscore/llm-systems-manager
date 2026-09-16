@@ -114,6 +114,23 @@
 #adminHealthCard .w .lnk { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 #adminHealthCard .w .lnk:hover { text-decoration: underline; }
 
+#adminHealthCard .hc-jobs { padding: 12px 16px 14px; border-top: 1px solid var(--border-soft); }
+#adminHealthCard .hc-jobs > .microlbl { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+#adminHealthCard .hc-jobs > .microlbl em { font-style: normal; font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 10.5px; color: var(--fg-faint); }
+#adminHealthCard .hc-jl { display: flex; flex-direction: column; gap: 6px; }
+#adminHealthCard .hj { display: grid; grid-template-columns: 8px minmax(0, 1.4fr) auto minmax(0, 1fr) auto 26px; column-gap: 10px; align-items: center; font-size: 12.5px; color: var(--fg); }
+#adminHealthCard .hj .dot { grid-column: 1; }
+#adminHealthCard .hj .hj-l { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+#adminHealthCard .hj .hj-k { font-family: var(--font-mono); font-size: 10px; color: var(--fg-dim); border: 1px solid var(--border-strong); border-radius: 4px; padding: 0 5px; line-height: 1.6; white-space: nowrap; }
+#adminHealthCard .hj .hj-w { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#adminHealthCard .hj.failed .hj-w { color: var(--crit); }
+#adminHealthCard .hj.running .hj-w { color: var(--ok); }
+#adminHealthCard .hj .hj-by { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+#adminHealthCard .hj .ib.none { visibility: hidden; }
+#adminHealthCard .hj:not(.live) .hj-l { color: var(--fg-muted); font-weight: 500; }
+#adminHealthCard .hj:not(.live) .dot { opacity: .55; }
+#adminHealthCard .hj .dot.pulse { animation: hc-pulse 1.2s ease-in-out infinite; }
+
 @media (max-width: 1100px) {
   #adminHealthCard .hc-b { grid-template-columns: 1fr 1fr; }
   #adminHealthCard .hc-col.hc-flowcol { grid-column: 1 / -1; order: 3; border-left: 0; border-top: 1px solid var(--border-soft); }
@@ -122,7 +139,13 @@
 @media (max-width: 720px) {
   #adminHealthCard .hc-b { grid-template-columns: 1fr; }
   #adminHealthCard .hc-col { border-left: 0; border-top: 1px solid var(--border-soft); }
+  #adminHealthCard .hj { grid-template-columns: 8px minmax(0, 1fr) 26px; row-gap: 2px; }
+  #adminHealthCard .hj .dot { grid-row: 1 / span 4; }
+  #adminHealthCard .hj .hj-l { grid-row: 1; grid-column: 2; }
+  #adminHealthCard .hj .hj-k, #adminHealthCard .hj .hj-w, #adminHealthCard .hj .hj-by { grid-column: 2; }
+  #adminHealthCard .hj .hj-k { justify-self: start; }
+  #adminHealthCard .hj .ib { grid-row: 1; grid-column: 3; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #adminHealthCard .hc-e, #adminHealthCard .hc-rf.crit, #adminHealthCard .hc-rf.busy { animation: none; }
+  #adminHealthCard .hc-e, #adminHealthCard .hc-rf.crit, #adminHealthCard .hc-rf.busy, #adminHealthCard .hj .dot.pulse { animation: none; }
 }

@@ -13,8 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Optional
 
+import jobs as jobs_mod
+
 log = logging.getLogger("llm-systems-manager.autotune_batch")
 
+KIND = "autotune_batch"
 OBJECTIVES = ("fit", "speed", "balanced", "serve", "quiet")
 MAX_ITEMS = 32
 BUDGET_RANGE = (5, 1440)
@@ -30,7 +33,6 @@ STREAM_RETRY_S = 5.0
 STREAM_RETRIES = 3
 SUMMARY_MAX_CHARS = 3800
 SUMMARY_NOTE_MAX = 120
-POLL_S = 1.0
 BATCH_RETENTION = 50
 DIMS_MAX_BYTES = 8192
 CANCELLED = "cancelled"
@@ -332,11 +334,13 @@ class Runner:
         return t
 
     def cancel(self, batch_id: str) -> Optional[str]:
-        """Flag the batch; a queued batch ends at once, a running one after its item."""
+        """Flag the batch; a queued batch ends at once, a running one after its item.
+        Idempotent: a repeat call never cancels on the agent twice."""
         b = self.store.get(batch_id)
         if not b or b["status"] not in ("queued", "running"):
             return None
         with self._lock:
+            already = batch_id in self._cancel
             self._cancel.add(batch_id)
             aid = self._current.get(batch_id)
         if b["status"] == "queued":
@@ -346,7 +350,7 @@ class Runner:
             b["summary"] = summary_of(b)
             self.store.save(b)
             return "cancelled"
-        if aid:
+        if aid and not already:
             try:
                 self.deps.cancel_on_agent(aid)
             except Exception as e:  # noqa: BLE001
@@ -394,10 +398,11 @@ class Runner:
         b = self.store.get(batch_id)
         if not b or b["status"] != "queued":
             return
+        if self._cancelled(batch_id):
+            self._cancel_now(b)
+            return
         stopped: list = b["stopped"]
         try:
-            if not self._wait(b):
-                return
             b.update({"status": "running", "started": d.now()})
             self.store.save(b)
             for i, it in enumerate(b["items"]):
@@ -431,21 +436,6 @@ class Runner:
             with self._lock:
                 self._cancel.discard(batch_id)
                 self._current.pop(batch_id, None)
-
-    def _wait(self, b: dict) -> bool:
-        d = self.deps
-        while d.now() < b["start_at"]:
-            if d.shutting_down():
-                return False
-            if self._cancelled(b["id"]):
-                b.update({"status": "cancelled", "finished": d.now()})
-                for it in b["items"]:
-                    it["status"] = "cancelled"
-                b["summary"] = summary_of(b)
-                self.store.save(b)
-                return False
-            d.sleep(min(POLL_S, max(0.0, b["start_at"] - d.now())))
-        return not self._cancelled(b["id"]) or self._cancel_now(b)
 
     def _cancel_now(self, b: dict) -> bool:
         b.update({"status": "cancelled", "finished": self.deps.now()})
@@ -674,7 +664,8 @@ def _hosts_with_models(hosts: list, busy: set, models_for: Callable[[str], Optio
 
 
 def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[[str], Optional[list]],
-                    now: Callable[[], float] = time.time) -> Runner:
+                    now: Callable[[], float] = time.time, job_service=None,
+                    user_of: Callable[[], str] = lambda: "") -> Runner:
     from flask import jsonify, request as flask_request
 
     tls = threading.local()
@@ -691,8 +682,51 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
     store = Store(conn_factory)
     runner = Runner(store, deps)
     start_lock = threading.Lock()
+
+    def _job_run(job):
+        runner.run(job.spec["batch_id"])
+        b = store.get(job.spec["batch_id"]) or {}
+        if b.get("status") == "failed":
+            return jobs_mod.fail(str(b.get("error") or "batch failed")[:200])
+        s = b.get("summary") or {}
+        return jobs_mod.ok(result={"status": b.get("status"), "applied": s.get("applied")},
+                           message=str(b.get("status") or "done"))
+
+    def _job_cancel(job):
+        runner.cancel(job.spec["batch_id"])
+
+    def _job_finish(job):
+        """A job cancelled from the jobs side (queued or running) also ends its batch."""
+        if job.status == "cancelled":
+            runner.cancel(job.spec["batch_id"])
+
+    def _submit_job(b: dict, user: str) -> None:
+        """One queued job per batch id; a stale running row never suppresses the boot re-arm."""
+        if any(j["spec"].get("batch_id") == b["id"]
+               for j in job_service.list("queued", kind=KIND, limit=jobs_mod.LIST_MAX)):
+            return
+        n = len(b["items"])
+        job_service.submit(KIND, {"batch_id": b["id"], "start_at": float(b["start_at"]),
+                                  "budget_min": int(b.get("budget_min") or 480),
+                                  "agent_ids": sorted({it["agent_id"] for it in b["items"]})},
+                           user=user, role="operator", source="ui" if user else "system",
+                           label=f"Autotune batch \u00b7 {n} host{'s' if n != 1 else ''}",
+                           not_before=float(b["start_at"]))
+
+    def _arm(b: dict, user: str = "") -> None:
+        """The job dispatcher owns the batch when a service is wired; otherwise the old thread does."""
+        if job_service is not None:
+            _submit_job(b, user)
+        else:
+            runner.start(b)
+
+    if job_service is not None:
+        job_service.register(jobs_mod.Kind(
+            KIND, "Autotune batch", run=_job_run, on_cancel=_job_cancel, on_finish=_job_finish, resume="fail",
+            exclusive=lambda spec: [f"perf:{a}" for a in spec.get("agent_ids") or []],
+            max_run_s=lambda spec: float(spec.get("budget_min") or 480) * 60.0 + 1800.0))
     for b in runner.recover(now()):
-        runner.start(b)
+        _arm(b)
 
     @app.route("/api/llm/autotune/batch-hosts")
     def llm_autotune_batch_hosts():
@@ -720,7 +754,7 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
                 return jsonify({"ok": False, "error": "a batch is already queued or running", "batch_id": cur["id"]}), 409
             b = new_batch(req, {h["agent_id"]: h.get("hostname") for h in hosts}, now())
             store.save(b)
-        runner.start(b)
+        _arm(b, user_of() or "")
         return jsonify({"ok": True, "batch": b})
 
     @app.route("/api/llm/autotune/batch/<batch_id>")
@@ -746,6 +780,8 @@ def register_routes(app, ctx, *, db_path: str, deps: Deps, models_for: Callable[
         status = runner.cancel(b["id"])
         if status is None:
             return jsonify({"ok": False, "error": f"batch is {b['status']}"}), 409
+        if job_service is not None:
+            job_service.cancel_where(KIND, spec_match={"batch_id": b["id"]}, actor=user_of() or "")
         return jsonify({"ok": True, "status": status})
 
     return runner
