@@ -339,6 +339,7 @@ def _call_from_json(raw: str, default_name: str = "", lenient: bool = False) -> 
 
 
 _PROSE_JSON_NAME = re.compile(r'"name"\s*:\s*"([\w.-]+)"')
+_PROSE_HEAD = re.compile(r"^\s*(?:[-*]\s*)?(?:call\s+)?([\w.-]+)\s*[:(]", re.M)
 
 
 def prose_call(text: str, names) -> Optional[str]:
@@ -347,15 +348,15 @@ def prose_call(text: str, names) -> Optional[str]:
     if not text.strip():
         return None
     known = set(names)
-    for m in _PROSE_JSON_NAME.finditer(text):
+    lines = text.split("\n")
+    fence_lines = [i for i, line in enumerate(lines) if line.strip().startswith("```")]
+    body = _outside_fences(text)
+    if len(fence_lines) % 2 == 1:
+        body += "\n" + "\n".join(lines[fence_lines[-1] + 1:])
+    for m in _PROSE_JSON_NAME.finditer(body):
         if m.group(1) in known:
             return m.group(1)
-    if sum(1 for line in text.split("\n") if _fence(line)[1]) % 2 == 1:
-        m = _PROSE_JSON_NAME.search(text)
-        if m and m.group(1) in known:
-            return m.group(1)
-    head = re.compile(r"^\s*(?:[-*]\s*)?(?:call\s+)?([\w.-]+)\s*[:(]", re.M)
-    for m in head.finditer(_outside_fences(text)):
+    for m in _PROSE_HEAD.finditer(body):
         if m.group(1) in known:
             return m.group(1)
     return None

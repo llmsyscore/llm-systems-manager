@@ -1703,6 +1703,12 @@ def test_resolve_host_comma_list_refuses_as_a_whole():
     assert value == "box-1,nas" and note is None and refusal["error"].startswith("unknown host: nas")
 
 
+def test_resolve_host_ip_like_values_keep_their_dots():
+    assert tt.resolve_host("192.168.1.5", ["192.168.1.5", "192.168.1.7"]) == ("192.168.1.5", None, None)
+    refusal = tt.resolve_host("192.168.1.", ["192.168.1.5", "192.168.1.7"])[2]
+    assert refusal["error"] == "192.168.1. matches several hosts"
+
+
 def test_fleet_hosts_reads_hosts_overview_once():
     calls = []
     reg = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read",

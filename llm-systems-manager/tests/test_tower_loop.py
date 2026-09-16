@@ -70,6 +70,8 @@ NAMES = ("ask_operator", "schedule", "host_detail")
     ("```text\nask_operator: no\n```\nDone.", None),
     ("box is hot: 91 °C.", None),
     ("", None),
+    ('```json\nExample: {"name": "host_detail"}\n```\nJust showing the format.', None),
+    ('Let me look.\n```tool\n{"name": "host_detail", "args": {"host": "box"}', "host_detail"),
 ])
 def test_prose_call_finds_tool_calls_written_as_text(text, expect):
     assert tower.prose_call(text, NAMES) == expect

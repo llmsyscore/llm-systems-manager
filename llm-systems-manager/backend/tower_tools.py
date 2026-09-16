@@ -562,8 +562,11 @@ _HOST_SEP = re.compile(r"[-_. ]")
 
 
 def _host_key(name: str) -> str:
-    """Comparison key for a hostname: lowercase, domain suffix dropped, separators removed."""
-    return _HOST_SEP.sub("", _HOST_SUFFIX.sub("", str(name).strip().lower()))
+    """Comparison key for a hostname: lowercase, domain suffix dropped, separators removed; IP-like values keep their dots."""
+    s = str(name).strip().lower()
+    if re.fullmatch(r"[\d.]+", s):
+        return s
+    return _HOST_SEP.sub("", _HOST_SUFFIX.sub("", s))
 
 
 def _resolve_one(value: str, known: "list[str]") -> "tuple[str, Optional[str], Optional[dict]]":
