@@ -72,6 +72,7 @@ NAMES = ("ask_operator", "schedule", "host_detail")
     ("", None),
     ('```json\nExample: {"name": "host_detail"}\n```\nJust showing the format.', None),
     ('Let me look.\n```tool\n{"name": "host_detail", "args": {"host": "box"}', "host_detail"),
+    ('See ```tool\n{"name":"host_detail","args":{}}\n``` for the syntax.', None),
 ])
 def test_prose_call_finds_tool_calls_written_as_text(text, expect):
     assert tower.prose_call(text, NAMES) == expect
@@ -103,14 +104,15 @@ class _TimeoutError(RuntimeError):
 
 
 def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=None, alternates=None,
-         approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None):
+         approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None,
+         checks=None, server_args_of=None):
     """script: list of assistant messages the fake model returns, in order, delivered as
     stream deltas — "content" char by char, "chunks" verbatim as given, or one tool_calls
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
     calls = iter(script)
     seen = {"payloads": []}
     def complete_stream(body, *, label, **kw):
-        seen["payloads"].append(body)
+        seen["payloads"].append({**body, "messages": list(body.get("messages") or [])})
         seen.setdefault("timeouts", []).append(kw.get("read_timeout"))
         msg = next(calls)
         if "timeout" in msg:
@@ -140,7 +142,8 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
                          store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates,
                          approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation,
-                         user="adriel", timers=timers, prelude=prelude)
+                         user="adriel", timers=timers, prelude=prelude, checks=checks,
+                         server_args_of=server_args_of)
     return out, events, seen, st, tid
 
 
@@ -1078,9 +1081,10 @@ def test_length_retry_respects_the_max_tokens_ceiling():
 
 
 def test_reasoning_only_reply_gives_a_specific_hint():
-    out, events, seen, st, tid = _run([{"reasoning": "thinking", "content": "", "finish": "stop"}])
+    out, events, seen, st, tid = _run([{"reasoning": "thinking", "content": "", "finish": "stop"},
+                                       {"reasoning": "still", "content": "", "finish": "stop"}])
     assert _text(events).startswith("The model finished thinking without writing an answer")
-    assert len(seen["payloads"]) == 1
+    assert len(seen["payloads"]) == 2
 
 
 def test_plain_empty_reply_keeps_the_generic_hint():
@@ -2079,3 +2083,77 @@ def test_act_tool_host_is_resolved_before_the_approval_card(monkeypatch):
         {"content": "Woken."}], cfg=_cfg(capabilities="operate"), registry=_fleet_registry(("box-1.local", "mac-mini")), approvals=ap)
     card = next(e for e in events if e["event"] == "confirm")
     assert card["args"]["host"] == "box-1.local"
+
+
+# --- #1039 prose salvage, reasoning retry, escalation ---
+
+def test_prose_tool_call_gets_one_correction_turn_then_the_call_runs():
+    out, events, seen, st, tid = _run([
+        {"content": "ask_operator: Which host did you mean, box or mac?"},
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box"}}\n```'},
+        {"content": "box is hot."}])
+    assert len(seen["payloads"]) == 3
+    corr = seen["payloads"][1]["messages"][-1]
+    assert corr["role"] == "user" and corr["content"].startswith("That was a sentence, not a tool call. Call ask_operator now")
+    assert seen["payloads"][1]["messages"][-2] == {"role": "assistant", "content": "ask_operator: Which host did you mean, box or mac?"}
+    assert out["note"] == "prose tool call corrected"
+    assert [r["content"] for r in st.messages(tid) if r["role"] == "assistant"][0] == "ask_operator: Which host did you mean, box or mac?"
+    assert _text(events).endswith("box is hot.")
+
+
+def test_second_prose_call_ends_with_the_prose_line_without_fallback():
+    out, events, seen, st, tid = _run([
+        {"content": "schedule: ram on box every 30 s"},
+        {"content": "schedule(host=box, metric=ram_pct)"}])
+    assert len(seen["payloads"]) == 2
+    assert _text(events).endswith(tower._FALLBACK_PROSE)
+    assert st.messages(tid)[-1]["content"] == tower._FALLBACK_PROSE
+
+
+def test_second_prose_call_escalates_to_the_alternate_when_fallback_is_on():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([
+        {"content": "schedule: ram on box every 30 s"},
+        {"content": "schedule(host=box, metric=ram_pct)"},
+        {"content": "Scheduled nothing; box is fine."}],
+        cfg=_cfg(fallback=True), alternates=lambda cur: alt)
+    assert seen["payloads"][2]["model"] == "gemma-3-12b"
+    m = [e for e in events if e["event"] == "model"]
+    assert m[-1]["fallback"] is True and m[-1]["from"] == "qwen3-14b"
+    assert _text(events).endswith("Fallback: asking gemma-3-12b because qwen3-14b kept writing tool calls as text."
+                                  "\n\nScheduled nothing; box is fine.")
+    assert out["note"].startswith("fallback from qwen3-14b")
+
+
+def test_thinking_only_reply_is_retried_once_then_answers():
+    out, events, seen, st, tid = _run([
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"content": "All timers are set."}])
+    assert len(seen["payloads"]) == 2
+    nudge = seen["payloads"][1]["messages"][-1]
+    assert nudge == {"role": "user", "content": "You finished thinking without writing an answer. Answer now in plain text, briefly."}
+    assert seen["payloads"][1]["messages"][-2] == {"role": "assistant", "content": ""}
+    assert out["note"] == "retried after a thinking-only reply"
+    assert _text(events) == "All timers are set."
+
+
+def test_failed_check_starts_the_turn_on_the_alternate():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([{"content": "fine."}], cfg=_cfg(fallback=True),
+                                       alternates=lambda cur: alt, checks=lambda mid: {"grade": "failed"} if mid == "qwen3-14b" else None)
+    assert seen["payloads"][0]["model"] == "gemma-3-12b"
+    assert _text(events).startswith("Fallback: asking gemma-3-12b because qwen3-14b failed the tool check.")
+
+
+def test_failed_check_without_fallback_uses_the_primary():
+    out, events, seen, st, tid = _run([{"content": "fine."}], checks=lambda mid: {"grade": "failed"})
+    assert seen["payloads"][0]["model"] == "qwen3-14b" and _text(events) == "fine."
+
+
+def test_fenced_grade_turns_native_off_in_auto_mode():
+    cfg = _cfg(tool_mode="auto")
+    sa = lambda m: "--jinja"  # noqa: E731
+    out, _e, seen, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "fenced"}, server_args_of=sa)
+    assert "tools" not in seen["payloads"][0]
+    out, _e, seen2, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"}, server_args_of=sa)
+    assert "tools" in seen2["payloads"][0]
