@@ -209,6 +209,7 @@ import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
+import tower_check  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1039
 import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_timers  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1029
 import jobs  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #915
@@ -3558,7 +3559,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "alarm.acknowledge": "Acknowledged an alert", "alarm.close-all": "Closed all alerts",
     "alarm.ignore-all": "Ignored all alerts", "alarm.bulk": "Bulk alert action",
     "alarm.delete": "Deleted an alert", "alarm.rule": "Changed an alarm rule",
-    "tower.model": "Pinned the Tower model", "tower.thread.delete": "Deleted a Tower thread",
+    "tower.model": "Pinned the Tower model", "tower.check": "Ran the Tower model check",
+    "tower.thread.delete": "Deleted a Tower thread",
     "tower.thread.rename": "Renamed a Tower thread",
     "tower.action.approve": "Approved a Tower action", "tower.action.deny": "Denied a Tower action",
     "tower.action.answer": "Answered a Tower question",
@@ -3634,6 +3636,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("DELETE", re.compile(r"^/api/alarm/alerts/(?P<t>[^/]+)$"),        "alarm.delete",       "alarm.actions"),
     (None,     re.compile(r"^/api/alarm/(?:admin/)?rules(?:/(?P<t>[^/]+))?$"), "alarm.rule",  "alarm.actions"),
     ("PUT",    re.compile(r"^/api/tower/model$"),                      "tower.model",        "tower.config"),
+    ("POST",   re.compile(r"^/api/tower/check$"),                      "tower.check",        "tower.config"),
     ("DELETE", re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.delete", "tower.config"),
     ("PATCH",  re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.rename", "tower.config"),
     ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny|answer)$"), "tower.action.{d}", "tower.action"),
@@ -6232,6 +6235,9 @@ _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower
                                     audit_rows=_tower_audit_rows, bench_start=_tower_bench_start, bench_options=_tower_bench_options,
                                     card_result=_tower_card_result, jobs_service=_jobs_service)
 _tower_approvals = tower.Approvals()
+_tower_checks = tower_check.Checks(complete_stream=gateway.complete_stream, cfg=lambda: settings.manager.tower,
+                                   registry_factory=lambda: tower_tools.build_registry(_tower_deps),
+                                   server_args_of=_tower_server_args)
 _tower_timers = tower_timers.Timers(_jobs_service, store=_tower_store,
                                     registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                                     cfg=lambda: settings.manager.tower, audit=_tower_audit_auto)
@@ -6240,10 +6246,10 @@ _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.buil
                          entries=_tower_gateway_entries, server_args_of=_tower_server_args,
                          cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
                          shutting_down=lambda: _shutting_down, approvals=_tower_approvals,
-                         report_violation=_tower_report_violation, timers=_tower_timers)
+                         report_violation=_tower_report_violation, timers=_tower_timers, checks=_tower_checks)
 _tower_timers.runs = _tower_runs
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
-                      write_setting=_tower_write_setting)
+                      write_setting=_tower_write_setting, checks=_tower_checks)
 discord_bot.HOOKS["tower_ask"] = _tower_discord_ask
 _tower_registry = lambda: tower_tools.build_registry(_tower_deps)  # noqa: E731
 _tower_watcher = tower_watch.Watcher(_tower_store, deps=_tower_deps, registry_factory=_tower_registry,
@@ -6815,8 +6821,11 @@ def _tower_reload_config() -> None:
         live = getattr(settings.manager, "tower", None)
         if live is None:
             return
+        before = (live.model, live.tool_mode)
         for k in _TOWER_KEYS:
             setattr(live, k, getattr(snap, k))
+        if (live.model, live.tool_mode) != before:
+            _tower_checks.forget()
     except Exception as e:
         log.warning("tower config reload failed (runtime keeps previous values): %s", e)
     _apply_debug_loggers()

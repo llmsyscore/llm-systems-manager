@@ -1508,8 +1508,9 @@ _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0
 
-# Module-global set by register_routes(); read at call time.
+# Module-globals set by register_routes(); read at call time.
 _gateway_entries: "Optional[Callable[[], list]]" = None
+_checks = None
 
 _now: "Callable[[], float]" = time.time
 
@@ -1885,9 +1886,10 @@ def ask_blocking(runs: Runs, *, user: str, role: str, text: str, page: Optional[
 
 # ── routes ──────────────────────────────────────────────────────────
 
-def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> Runs:
-    global _gateway_entries
+def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, checks=None) -> Runs:
+    global _gateway_entries, _checks
     _gateway_entries = gateway_entries
+    _checks = checks
     from flask import g, jsonify, request as flask_request, session, stream_with_context
     import auth
     import stream_pool
@@ -1925,8 +1927,9 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         if not _enabled():
             return jsonify({"ok": True, "enabled": False, "admin": role == "admin"})
         m = resolve_model(cfg, _gateway_entries()) or {}
+        chk = _checks.ensure(m) if (_checks is not None and m) else None
         return jsonify({"ok": True, "enabled": True, "admin": role == "admin", "model": m.get("model"),
-                        "provider": m.get("provider"), "hosts": m.get("hosts") or [],
+                        "provider": m.get("provider"), "hosts": m.get("hosts") or [], "check": chk,
                         "capabilities": cfg.capabilities, "off_topic": cfg.off_topic,
                         "diagnose_alarms": bool(cfg.diagnose_alarms),
                         "insights_new": runs.store.count_unseen(),
@@ -2093,6 +2096,19 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
             return jsonify({"ok": False, "error": err[1]}), err[0]
         g._audit_extra = {"label": row["label"], "thread_id": row["thread_id"], "samples": len(row["samples"])}
         return jsonify({"ok": True, "timer": tower_timers.timer_view(row)})
+
+    @app.route("/api/tower/check", methods=["POST"])
+    def tower_check_now():
+        """Runs the capability probe for the current model now and returns its grade."""
+        deny = _gate()
+        if deny: return deny
+        deny = ctx.require_admin()
+        if deny is not None:
+            return deny
+        m = resolve_model(_cfg(), _gateway_entries())
+        if m is None or _checks is None:
+            return jsonify({"ok": False, "error": "no_model"}), 503
+        return jsonify({"ok": True, "check": _checks.run(m)})
 
     @app.route("/api/tower/model", methods=["PUT"])
     def tower_model_pin():

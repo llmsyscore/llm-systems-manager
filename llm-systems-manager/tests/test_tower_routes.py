@@ -1167,3 +1167,45 @@ def test_timer_routes_are_gated_like_the_rest(client):
     settings.manager.tower.enabled = False
     assert client.get("/api/tower/timers").status_code == 404
     assert client.post("/api/tower/timers/x/cancel").status_code == 404
+
+
+# --- #1039 capability check ---
+
+def _fake_checks(monkeypatch, result):
+    calls = []
+    class _C:
+        def get(self, mid): return result if mid == "qwen3-14b" else None
+        def ensure(self, model): calls.append(("ensure", model["model"])); return result or {"model": model["model"], "grade": "pending"}
+        def run(self, model): calls.append(("run", model["model"])); return {**(result or {}), "model": model["model"], "grade": "fenced"}
+        def forget(self): calls.append(("forget", None))
+    monkeypatch.setattr(tower, "_checks", _C(), raising=False)
+    return calls
+
+
+def test_state_carries_the_check_and_starts_a_missing_one(client, monkeypatch):
+    calls = _fake_checks(monkeypatch, None)
+    d = client.get("/api/tower/state").get_json()
+    assert d["check"] == {"model": "qwen3-14b", "grade": "pending"} and calls == [("ensure", "qwen3-14b")]
+    res = {"model": "qwen3-14b", "grade": "native", "mode": "native", "size_b": 14, "small": False, "at": 1.0, "detail": "called hosts_overview"}
+    _fake_checks(monkeypatch, res)
+    assert client.get("/api/tower/state").get_json()["check"] == res
+
+
+def test_state_check_is_null_without_a_model(client, monkeypatch):
+    _fake_checks(monkeypatch, None)
+    monkeypatch.setattr(tower, "_gateway_entries", lambda: [], raising=False)
+    assert client.get("/api/tower/state").get_json()["check"] is None
+
+
+def test_check_route_runs_now_for_admins_only(client, monkeypatch):
+    calls = _fake_checks(monkeypatch, None)
+    assert client.post("/api/tower/check").status_code == 403
+    with client.session_transaction() as s:
+        s["role"] = "admin"
+    d = client.post("/api/tower/check")
+    assert d.status_code == 200 and d.get_json()["check"]["grade"] == "fenced" and ("run", "qwen3-14b") in calls
+    monkeypatch.setattr(tower, "_gateway_entries", lambda: [], raising=False)
+    d = client.post("/api/tower/check")
+    assert d.status_code == 503 and d.get_json()["error"] == "no_model"
+    settings.manager.tower.enabled = False
+    assert client.post("/api/tower/check").status_code == 404
