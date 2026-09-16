@@ -30,6 +30,7 @@ TIMED_OUT = "timed out"
 class JobError(ValueError):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
+        self.message = str(message)
         self.status = status
 
 
@@ -593,7 +594,7 @@ def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str
                                  label=(str(body.get("label")) if body.get("label") else None),
                                  not_before=nb, period_s=period, runs_left=left)
         except JobError as e:
-            return jsonify({"ok": False, "error": str(e)}), e.status
+            return jsonify({"ok": False, "error": e.message}), e.status
         g._audit_extra = {"job_id": row["id"], "kind": row["kind"], "label": row["label"]}
         return jsonify({"ok": True, "job": service.view(row, role=role, user=user)})
 
