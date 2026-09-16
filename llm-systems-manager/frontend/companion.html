@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-companion.html — PWA companion (#522). Six-tab phone shell; screens reuse
+companion.html — PWA companion (#522). Seven-tab phone shell; screens reuse
 existing session-authed endpoints. Served at /companion with __MGR_VERSION__
 stamped in. Models and Admin controls confirm via the bottom sheet.
 -->
@@ -91,6 +91,24 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
     </section>
 
     <!-- ENERGY -->
+    <section class="screen tower" id="scr-tower" hidden>
+      <div class="chiprow">
+        <div class="chips" id="towerChips">
+          <button class="chip on" data-tview="ask">Ask</button>
+          <button class="chip" data-tview="ins">Insights <span class="cnt" id="towerInsCount" hidden></span></button>
+        </div>
+        <button class="chip refreshbtn" id="towerHistory" aria-label="Conversations">☰</button>
+        <button class="chip refreshbtn" id="towerNew" aria-label="New conversation">+</button>
+      </div>
+      <div class="tw-conv" id="towerConv"><div class="tw-body" id="towerBody"></div></div>
+      <div class="tw-ins" id="towerIns" hidden><div id="towerInsList"></div></div>
+      <div class="tw-ask" id="towerAsk">
+        <textarea id="towerInput" rows="1" maxlength="4000" placeholder="Ask Tower…" aria-label="Ask Tower" autocomplete="off"></textarea>
+        <button class="btn primary" id="towerSend" aria-label="Send">➤</button>
+        <button class="btn danger" id="towerStop" hidden>Stop</button>
+      </div>
+    </section>
+
     <section class="screen" id="scr-energy" hidden>
       <div class="strip energy" id="energyStrip">
         <svg viewBox="0 0 340 118" preserveAspectRatio="none" aria-hidden="true">
@@ -220,6 +238,8 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
       <svg viewBox="0 0 24 24"><path d="M3 13l4-4 4 3 5-6 5 5"/><path d="M3 20h18"/></svg>Home</button>
     <button class="tab" data-tab="alerts" aria-label="Alerts">
       <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="alertBadge" hidden></span></button>
+    <button class="tab" data-tab="tower" aria-label="Tower">
+      <svg viewBox="0 0 24 24"><path d="M12 3v3"/><path d="M8 21l4-11 4 11"/><path d="M9.5 17h5"/><path d="M6 8l6-2 6 2"/></svg>Tower<span class="badge" id="towerBadge" hidden></span></button>
     <button class="tab" data-tab="energy" aria-label="Energy">
       <svg viewBox="0 0 24 24"><path d="M13 2 6 13h5l-1 9 7-11h-5z"/></svg>Energy</button>
     <button class="tab" data-tab="models" aria-label="Models">
@@ -245,6 +265,9 @@ stamped in. Models and Admin controls confirm via the bottom sheet.
   <script src="/static/js/lib/energy.js"></script>
   <script src="/static/js/lib/companion-spark.js"></script>
   <script src="/static/js/lib/companion-view.js"></script>
+  <script src="/static/js/lib/sseguard.js"></script>
+  <script src="/static/js/lib/tower-view.js"></script>
+  <script src="/static/js/companion-tower.js"></script>
   <script src="/static/js/companion.js"></script>
 </body>
 </html>

@@ -25,7 +25,7 @@ describe('companion DOM contract', () => {
 
   it('every tab has a matching screen section', () => {
     const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
-    expect(tabs).toEqual(['glance', 'alerts', 'energy', 'models', 'admin', 'settings']);
+    expect(tabs).toEqual(['glance', 'alerts', 'tower', 'energy', 'models', 'admin', 'settings']);
     tabs.forEach((t) => expect(htmlIds.has('scr-' + t)).toBe(true));
   });
 
@@ -88,6 +88,19 @@ describe('companion DOM contract', () => {
     }
   });
 
+  it('the Tower screen exposes the controller contract ids and is gated on the Tower state', () => {
+    for (const id of ['scr-tower', 'towerChips', 'towerInsCount', 'towerHistory', 'towerNew', 'towerConv', 'towerBody',
+      'towerIns', 'towerInsList', 'towerAsk', 'towerInput', 'towerSend', 'towerStop', 'towerBadge']) {
+      expect(htmlIds.has(id), id).toBe(true);
+    }
+    const tjs = read('js/companion-tower.js');
+    for (const m of tjs.matchAll(/\$\('([^']+)'\)/g)) expect(htmlIds.has(m[1]), m[1]).toBe(true);
+    expect(js).toMatch(/avail: \(\) => !!\(tower && tower\.enabled\)/);
+    expect(js.includes("tower.init()")).toBe(true);
+    const sw = read('sw.js');
+    for (const p of ['/static/js/lib/sseguard.js', '/static/js/lib/tower-view.js', '/static/js/companion-tower.js']) expect(sw.includes(`'${p}'`), p).toBe(true);
+  });
+
   it('the Actions screen is gone — its ids must not linger', () => {
     for (const id of ['scr-actions', 'actionsServices', 'actionsModel',
       'actionsAgents', 'actionsMsg']) {
@@ -101,7 +114,7 @@ describe('companion DOM contract', () => {
     // SyntaxError that isolated-module vitest imports cannot see; parsing the
     // concatenation together surfaces it.
     const files = ['js/lib/pushutil.js', 'js/lib/energy.js', 'js/lib/companion-spark.js',
-      'js/lib/companion-view.js', 'js/companion.js'];
+      'js/lib/companion-view.js', 'js/lib/sseguard.js', 'js/lib/tower-view.js', 'js/companion-tower.js', 'js/companion.js'];
     const concat = files.map(read).join('\n;\n');
     // Compile (parse) the concatenation without running it; a duplicate
     // top-level declaration throws SyntaxError here.

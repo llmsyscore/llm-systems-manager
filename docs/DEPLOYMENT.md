@@ -422,6 +422,8 @@ It starts scoped down: "What Tower may do" defaults to read (answer only), and o
 
 Set "What Tower may do" to *Answer and act* to let it load or unload a model, wake llama-server, or acknowledge / close an alert; *incl. admin actions* adds restarting a provider server (admins only). Every action pauses on a card in the drawer — what it will do, where, what it will not do, and who may approve — and runs only after Approve. Approvals expire after 10 minutes, the caller's role and the tier are re-checked at that moment, and each decision lands in Admin › Audit as `tower via <user>`. Any single tool can still be switched off under Available tools.
 
+The phone companion carries the same assistant as a Tower tab: ask and read the answer, approve or deny action cards, answer question cards, switch between conversations, and read the Insights list with Dismiss, an Alert link into the Alerts screen, and Apply where the role and tier allow it. Apply and Approve confirm in the bottom sheet first. The tab is hidden while Tower is off.
+
 Tower never produces code: a language-tagged code fence in a reply is withheld and replaced with a single "Code withheld" line, though configuration Tower reads for diagnosis — TOML, JSON, YAML, plain text and the like — still shows. "Report rule-bypass attempts" (Settings › Tower assistant, on by default) covers messages that try to make Tower ignore its rules, reveal its instructions, skip approvals or take on another persona: these are refused outright, and with reporting on the refusal is logged to Admin › Audit as a critical `tower.violation` and raises a critical alert; with reporting off, Tower still refuses but nothing is logged or alerted.
 
 Request timeout (s) bounds how long Tower waits for the model to start answering. With Fallback model on, a question that misses it is asked of the next loaded chat model instead (another host first), and the reply says so; the next question goes back to the primary model.
@@ -496,7 +498,7 @@ Setup:
 2. Enable notifications from the companion's **Settings** screen, then use **Send test notification** to confirm delivery end-to-end.
 3. Alerts are pushed by the alarm engine through the manager's `/api/companion/push/notify` bridge. A co-located install needs no token configuration; a split install presents `[alarm_engine].management_token` (or `push_notify_token` if you set one).
 
-Home, Alerts, Energy, and Models screens work for every role; control actions (model swap/pin, autopilot approval, restarts) and the Admin screen require an admin session, and every action confirms in a sheet before it runs. `pywebpush` must be installed in the manager venv for push delivery — the installer includes it.
+Home, Alerts, Tower, Energy, and Models screens work for every role (the Tower tab shows only while the Tower assistant is enabled); control actions (model swap/pin, autopilot approval, restarts) and the Admin screen require an admin session, and every action confirms in a sheet before it runs. `pywebpush` must be installed in the manager venv for push delivery — the installer includes it.
 
 ---
 
