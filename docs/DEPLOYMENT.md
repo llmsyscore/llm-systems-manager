@@ -418,6 +418,14 @@ Restart the manager after editing this section — the bot reads its allowlist a
 
 An in-dashboard drawer that answers questions about hosts, models, alerts, energy, and saved model profiles over the inference gateway. Enable it in Admin › Settings › Tower assistant: turn Enabled on and, optionally, pick a Primary model from the loaded ones — the default `auto` lets Tower use any loaded chat model, since Tower never loads one itself.
 
+**Choosing a model.** Tower needs a chat model that can call tools. Any resident chat model works with Primary model set to *auto*; a pinned model must already be loaded (Tower never loads one). Recommendations:
+
+- **Size:** 7B parameters or more. Under 7B (the drawer marks these *small model*) expect tool calls written as text now and then; Tower corrects one per question and falls back to a canned line after the second, so answers get slower and shorter.
+- **Family:** an instruction-tuned model with tool-call training — Qwen3 8B/14B/27B, Gemma 3 12B/27B, Llama 3.1 8B+ or their fine-tunes. Base, embedding, reranker, speech and image models are skipped automatically.
+- **Thinking models** (Qwen3 in think mode, reasoning fine-tunes) spend part of every reply thinking: give Answer length 2048 tokens or more and expect the first token to take longer; Tower retries a reply that finished thinking without writing an answer once, then reports the last step it completed.
+- **Server:** built-in function calling needs llama.cpp with jinja templates on (the default in current builds), LM Studio, or vLLM; otherwise Tower uses its text format, which works everywhere but depends more on the model. Leave Tool calls on *Auto*: the **Tool response check** row in Settings › Tower assistant probes the primary and fallback models once and shows *Tools OK* (filled = built-in, outlined = text format), *No tool support* or *small model*; **Verify** re-runs it after a server or model change.
+- **Fallback:** with a second chat model loaded, switch Fallback model on so a timeout, a failed check or a model that keeps writing tool calls as text hands the question to the other model.
+
 It starts scoped down: "Capabilities" defaults to read (answer only), and off-topic questions are refused. Both can be relaxed later in the same settings group, as can the tool list (Available tools).
 
 Set "Capabilities" to *Answer and act* to let it load or unload a model, wake llama-server, or acknowledge / close an alert; *incl. admin actions* adds restarting a provider server (admins only). Every action pauses on a card in the drawer — what it will do, where, what it will not do, and who may approve — and runs only after Approve. Approvals expire after 10 minutes, the caller's role and the tier are re-checked at that moment, and each decision lands in Admin › Audit as `tower via <user>`. Any single tool can still be switched off under Available tools.

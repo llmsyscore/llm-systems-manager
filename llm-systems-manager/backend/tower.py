@@ -926,9 +926,6 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             fleet[0] = tower_tools.fleet(registry)
         return fleet[0]
 
-    def _known_hosts() -> "list[str]":
-        return _fleet()[0]
-
     def _resolve(tool, args: dict) -> "tuple[dict, Optional[str], Optional[dict]]":
         """Resolves args['host'] (and schedule's nested tool host) against the fleet."""
         notes: "list[str]" = []
