@@ -11,6 +11,9 @@ const SHELL = [
   '/static/js/lib/energy.js',
   '/static/js/lib/companion-spark.js',
   '/static/js/lib/companion-view.js',
+  '/static/js/lib/sseguard.js',
+  '/static/js/lib/tower-view.js',
+  '/static/js/companion-tower.js',
   '/static/js/companion.js',
   '/static/icons/icon-192.png',
 ];

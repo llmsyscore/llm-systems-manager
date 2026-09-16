@@ -1,4 +1,4 @@
-// Companion shell (#522): six-tab router, per-screen controllers, push
+// Companion shell (#522): seven-tab router, per-screen controllers, push
 // opt-in, the Models control surface and the Admin/Settings screens. Classic IIFE.
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -461,13 +461,14 @@
     },
   };
 
-  function setBadge(n) {
-    const b = $('alertBadge');
+  function setTabBadge(badgeId, tabName, label, n) {
+    const b = $(badgeId);
     if (n > 0) { b.textContent = n > 99 ? '99+' : n; b.hidden = false; }
     else b.hidden = true;
-    const tab = $('tabbar').querySelector('.tab[data-tab="alerts"]');
-    if (tab) tab.setAttribute('aria-label', n > 0 ? `Alerts, ${n} unread` : 'Alerts');
+    const tab = $('tabbar').querySelector(`.tab[data-tab="${tabName}"]`);
+    if (tab) tab.setAttribute('aria-label', n > 0 ? `${label}, ${n} unread` : label);
   }
+  const setBadge = (n) => setTabBadge('alertBadge', 'alerts', 'Alerts', n);
 
   // ── Energy ────────────────────────────────────────────────────────────────
   const energy = {
@@ -1210,9 +1211,18 @@
   }
 
   // ── router ────────────────────────────────────────────────────────────────
+  // Tower screen (#964): lives in companion-tower.js; hidden while Tower is off.
+  const tower = window.CTower ? window.CTower.create({
+    $, sheet,
+    visible: () => current === 'tower' && document.visibilityState === 'visible',
+    badge: (n) => setTabBadge('towerBadge', 'tower', 'Tower', n),
+    openAlert: (id) => { alerts.openFrom(id); show('alerts'); },
+  }) : null;
+
   const SCREENS = {
     glance: { title: 'LLM Systems Manager', ctrl: glance, interval: 2000 },
     alerts: { title: 'Alerts', ctrl: alerts, interval: 15000 },
+    tower: { title: 'Tower', ctrl: tower, interval: 15000, avail: () => !!(tower && tower.enabled) },
     energy: { title: 'Energy', ctrl: energy, interval: 30000 },
     models: { title: 'Models', ctrl: models, interval: 10000 },
     admin: { title: 'Admin', ctrl: admin, interval: 10000, admin: true },
@@ -1249,7 +1259,11 @@
     const THRESHOLD = 62, MAX = 96;
     const ind = $('ptr');
     let startY = null, dy = 0, busy = false;
-    const active = () => document.querySelector('.screen:not([hidden])');
+    // A screen that scrolls an inner pane (Tower) marks it data-scroller; the pull reads that pane's scrollTop.
+    const active = () => {
+      const scr = document.querySelector('.screen:not([hidden])');
+      return scr ? (scr.querySelector('[data-scroller]:not([hidden])') || scr) : null;
+    };
 
     document.addEventListener('touchstart', (e) => {
       const scr = active();
@@ -1293,6 +1307,7 @@
     // The router refuses admin screens for non-admins, independent of the
     // hidden tab button.
     if (cfg && cfg.admin && !ADMIN) { tab = 'glance'; cfg = SCREENS[tab]; }
+    if (cfg && cfg.avail && !cfg.avail()) { tab = 'glance'; cfg = SCREENS[tab]; }
     if (!cfg) return;
     current = tab;
     if (timer) { clearInterval(timer); timer = null; }
@@ -1314,7 +1329,16 @@
     }
   }
 
+  // The Tower tab shows only while Tower is on; the state poll also unhides it when it comes on later.
+  async function pollTower() {
+    if (!tower || current === 'tower') return;
+    await tower.pollBadge();
+    const tab = $('tabbar').querySelector('.tab[data-tab="tower"]');
+    if (tab) tab.hidden = !tower.enabled;
+  }
+
   async function pollBadge() {
+    pollTower();
     // The Alerts screen sets the badge from its own 15 s refresh while open.
     if (current === 'alerts') return;
     try {
@@ -1335,6 +1359,11 @@
     if (!ADMIN) {
       const tab = $('tabbar').querySelector('.tab[data-tab="admin"]');
       if (tab) tab.hidden = true;
+    }
+    if (tower) {
+      const on = await tower.init().catch(() => false);
+      const tab = $('tabbar').querySelector('.tab[data-tab="tower"]');
+      if (tab) tab.hidden = !on;
     }
     await applyTheme();
     if ('serviceWorker' in navigator) {
