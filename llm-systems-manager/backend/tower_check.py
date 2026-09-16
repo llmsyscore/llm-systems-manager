@@ -12,12 +12,11 @@ import tower_tools
 
 log = logging.getLogger("llm-systems-manager.tower")
 
-GRADES = ("native", "fenced", "failed")
 SMALL_B = 7.0
 PROBE_TEXT = "Which hosts are online? Call hosts_overview."
 PROBE_TOOL = "hosts_overview"
 PROBE_MAX_TOKENS = 512
-_SIZE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d)?)\s*[bB](?![A-Za-z0-9])")
+_SIZE = re.compile(r"(?<![^-_ .xX/])(\d{1,3}(?:\.\d)?)\s*[bB](?![A-Za-z0-9])")
 
 
 def size_b(model_id: str) -> Optional[float]:
@@ -83,7 +82,7 @@ class Checks:
 
     def _run_bg(self, model: dict, key: tuple) -> None:
         try:
-            self.run(model)
+            self._run(model, key)
         except Exception as e:  # noqa: BLE001
             log.warning("tower check failed: %s: %s", type(e).__name__, e)
         finally:
@@ -92,8 +91,11 @@ class Checks:
 
     def run(self, model: dict) -> dict:
         """Runs the probe now (native first when supported, then fenced) and caches the grade."""
+        return self._run(model, self._key(model["model"]))
+
+    def _run(self, model: dict, key: tuple) -> dict:
+        """The probe body; `key` is pinned by the caller so a tool-mode flip mid-probe cannot move the cache slot."""
         cfg = self._cfg()
-        key = self._key(model["model"])
         tools = tower_tools.catalog(self._registry_factory(), cfg, "operator")
         timeout = int(getattr(cfg, "request_timeout_s", 0) or 0)
         args = self._server_args_of(model) if self._server_args_of else None

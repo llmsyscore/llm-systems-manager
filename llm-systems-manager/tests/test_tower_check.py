@@ -59,6 +59,8 @@ def test_size_b_reads_the_largest_b_suffix():
     assert tc.size_b("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf") == 8
     assert tc.size_b("phi-4") is None and tc.size_b("") is None
     assert tc.size_b("qwen2.5-0.5b") == 0.5
+    assert tc.size_b("model-q1b-x") is None
+    assert tc.size_b("7b") == 7
 
 
 def test_probe_passes_when_the_reply_calls_hosts_overview():
