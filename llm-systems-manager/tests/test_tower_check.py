@@ -103,7 +103,30 @@ def test_run_grades_native_then_fenced_then_failed():
                    server_args_of=lambda m: [None], now=lambda: now[0])
     r3 = c3.run({"model": "x", "provider": "llama", "hosts": ["box"]})
     assert r3["grade"] == "failed" and r3["mode"] == "fenced" and r3["size_b"] is None and r3["small"] is False
-    assert len(cs3.seen) == 1  # no --jinja: native never tried
+    assert len(cs3.seen) == 2  # unstated args: native tried first, then fenced
+    cs4 = _stream(["nope"])
+    c4 = tc.Checks(complete_stream=cs4, cfg=lambda: cfg, registry_factory=_registry,
+                   server_args_of=lambda m: ["--no-jinja"], now=lambda: now[0])
+    r4 = c4.run({"model": "y", "provider": "llama", "hosts": ["box"]})
+    assert r4["grade"] == "failed" and len(cs4.seen) == 1  # --no-jinja: fenced only
+
+
+def test_no_reply_in_any_mode_is_unknown_and_retried_later():
+    cfg = _cfg()
+    now = [1000.0]
+    cs = _stream([RuntimeError("down"), RuntimeError("down")])
+    c = tc.Checks(complete_stream=cs, cfg=lambda: cfg, registry_factory=_registry,
+                  server_args_of=lambda m: [None], now=lambda: now[0])
+    model = {"model": "m", "provider": "llama", "hosts": ["box"]}
+    r = c.run(model)
+    assert r["grade"] == "unknown" and r["detail"] == "error: RuntimeError" and r["retry_at"] == 1060.0
+    assert c.get("m") is r and c.ensure(model) is r and len(cs.seen) == 2
+    now[0] = 1061.0
+    assert c.get("m") is None
+    cs2 = _stream(["nope", "still nope"])
+    c._cs = cs2
+    r2 = c.run(model)
+    assert r2["grade"] == "failed" and "retry_at" not in r2 and len(cs2.seen) == 2
 
 
 def test_ensure_caches_by_model_and_tool_mode_and_runs_once_in_the_background():
@@ -113,7 +136,7 @@ def test_ensure_caches_by_model_and_tool_mode_and_runs_once_in_the_background():
     def slow(body, *, label, **kw):
         started.set(); release.wait(2)
         yield {"choices": [{"delta": {"content": FENCED_OK}}]}
-    c = tc.Checks(complete_stream=slow, cfg=lambda: cfg, registry_factory=_registry, server_args_of=lambda m: [None])
+    c = tc.Checks(complete_stream=slow, cfg=lambda: cfg, registry_factory=_registry, server_args_of=lambda m: ["--no-jinja"])
     model = {"model": "m", "provider": "llama", "hosts": ["box"]}
     assert c.ensure(model) == {"model": "m", "grade": "pending"}
     assert started.wait(1)
@@ -131,15 +154,15 @@ def test_ensure_caches_by_model_and_tool_mode_and_runs_once_in_the_background():
     assert c.get("m") is None
 
 
-def test_a_raising_probe_body_is_graded_failed_and_cached():
+def test_a_raising_probe_body_is_graded_unknown_and_cached_until_retry():
     cfg = _cfg()
     def boom():
         raise RuntimeError("no registry")
     c = tc.Checks(complete_stream=_stream([FENCED_OK]), cfg=lambda: cfg, registry_factory=boom,
                   server_args_of=lambda m: [None], now=lambda: 1000.0)
     r = c.run({"model": "tiny-4b", "provider": "llama", "hosts": ["box"]})
-    assert r == {"model": "tiny-4b", "grade": "failed", "mode": "fenced", "size_b": 4, "small": True,
-                 "at": 1000.0, "detail": "error: RuntimeError"}
+    assert r == {"model": "tiny-4b", "grade": "unknown", "mode": "fenced", "size_b": 4, "small": True,
+                 "at": 1000.0, "detail": "error: RuntimeError", "retry_at": 1060.0}
     assert c.get("tiny-4b") == r
 
 
@@ -151,7 +174,7 @@ def test_run_joins_a_background_run_instead_of_probing_twice():
     def slow(body, *, label, **kw):
         seen.append(label); started.set(); release.wait(3)
         yield {"choices": [{"delta": {"content": FENCED_OK}}]}
-    c = tc.Checks(complete_stream=slow, cfg=lambda: cfg, registry_factory=_registry, server_args_of=lambda m: [None])
+    c = tc.Checks(complete_stream=slow, cfg=lambda: cfg, registry_factory=_registry, server_args_of=lambda m: ["--no-jinja"])
     model = {"model": "m", "provider": "llama", "hosts": ["box"]}
     assert c.ensure(model)["grade"] == "pending"
     assert started.wait(2)

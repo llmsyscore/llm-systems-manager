@@ -255,21 +255,22 @@
   }
 
   function paintHeader(page) {
-    const chip = $('twModelChip'), ctx = $('twCtxChip');
+    const chip = $('twModelChip'), ctx = $('twCtxChip'), check = $('twCheckChips');
     if (chip) {
       const c = _view && _view.chip;
       if (c) {
         const sfx = [c.provider, c.host].filter(Boolean).map(x => `· ${TW.esc(x)}`).join(' ');
-        const chk = TW.checkChip(_view.check);
-        const dot = chk && chk.cls === 'warn' ? '<i class="warn"></i>' : '<i></i>';
-        const chkHtml = chk ? `<span class="sfx chk ${chk.cls}" title="${TW.esc(chk.title)}">· ${TW.esc(chk.text)}</span>` : '';
-        chip.innerHTML = `${dot}<b>${TW.esc(c.model)}</b>${sfx ? `<span class="sfx">${sfx}</span>` : ''}${chkHtml}`;
-        chip.title = [c.model, c.provider, c.host, chk && chk.title].filter(Boolean).join(' · ');
+        chip.innerHTML = `<i></i><b>${TW.esc(c.model)}</b>${sfx ? `<span class="sfx">${sfx}</span>` : ''}`;
+        chip.title = [c.model, c.provider, c.host].filter(Boolean).join(' · ');
       } else if (_view && _view.off) {
         chip.innerHTML = '<i class="dim"></i><b>Off</b>'; chip.title = 'Tower is off';
       } else {
         chip.innerHTML = '<i class="warn"></i><b>No model loaded</b>'; chip.title = 'No chat model is loaded';
       }
+    }
+    if (check) {
+      const chips = _view && _view.chip ? TW.checkChips(_view.check) : [];
+      check.innerHTML = chips.map(c => `<span class="chip chk ${c.cls}" data-tip="${TW.esc(c.title)}">${TW.esc(c.short || c.text)}</span>`).join('');
     }
     if (ctx) {
       const p = page || pageContext();

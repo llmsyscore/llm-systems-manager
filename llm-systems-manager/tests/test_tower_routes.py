@@ -1209,3 +1209,22 @@ def test_check_route_runs_now_for_admins_only(client, monkeypatch):
     assert d.status_code == 503 and d.get_json()["error"] == "no_model"
     settings.manager.tower.enabled = False
     assert client.post("/api/tower/check").status_code == 404
+
+
+def test_state_and_check_cover_the_fallback_model_when_the_toggle_is_on(client, monkeypatch):
+    calls = _fake_checks(monkeypatch, None)
+    both = ENTRIES + [{"id": "gemma-3-12b", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"]}]
+    monkeypatch.setattr(tower, "_gateway_entries", lambda: both, raising=False)
+    settings.manager.tower.fallback = False
+    d0 = client.get("/api/tower/state").get_json()
+    assert d0["fallback"] is None and d0["fallback_enabled"] is False
+    settings.manager.tower.fallback = True
+    d = client.get("/api/tower/state").get_json()
+    assert d["fallback_enabled"] is True
+    assert d["fallback"]["model"] == "gemma-3-12b" and d["fallback"]["check"] == {"model": "gemma-3-12b", "grade": "pending"}
+    assert ("ensure", "gemma-3-12b") in calls
+    with client.session_transaction() as s:
+        s["role"] = "admin"
+    d = client.post("/api/tower/check").get_json()
+    assert d["check"]["grade"] == "fenced" and d["fallback"]["model"] == "gemma-3-12b" and d["fallback"]["check"]["grade"] == "fenced"
+    assert ("run", "gemma-3-12b") in calls

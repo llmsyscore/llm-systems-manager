@@ -252,6 +252,28 @@ def reconcile_now() -> None:
             _reconcile_hook()
 
 
+_llama_server_args = {"pid": None, "args": None}
+
+
+def _llama_server_cmdline(pid: "Optional[int]") -> "Optional[str]":
+    """Joined command line of the llama-server process (by unit PID, else by name), cached per PID."""
+    if pid == _llama_server_args["pid"] and _llama_server_args["args"] is not None:
+        return _llama_server_args["args"]
+    args = None
+    try:
+        import psutil  # type: ignore
+        procs = [psutil.Process(pid)] if pid else psutil.process_iter(attrs=["name", "cmdline"])
+        for p in procs:
+            cmd = p.cmdline() if pid else list((p.info or {}).get("cmdline") or [])
+            if pid or any("llama-server" in str(c) for c in cmd[:1]):
+                args = " ".join(str(c) for c in cmd) or None
+                break
+    except Exception:
+        args = None
+    _llama_server_args.update({"pid": pid, "args": args})
+    return args
+
+
 def _llama_unit_main_pid() -> "Optional[int]":
     """MainPID of the llama unit via systemctl show; None when unknown."""
     try:
@@ -328,6 +350,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     llama: dict[str, Any] = {
         "state": "unknown",
         "port": llama_api_port(api_base),
+        "server_args": _llama_server_cmdline(pid),
         "model": None,
         "sleeping": False,
         "tokens_per_second": None,

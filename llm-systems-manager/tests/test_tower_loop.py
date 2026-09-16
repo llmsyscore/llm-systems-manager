@@ -1166,7 +1166,8 @@ def test_native_supported_recognises_tools_flag():
     cfg = _cfg(tool_mode="auto")
     assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --tools all") is True
     assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --jinja") is True
-    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0") is False
+    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0") is None
+    assert tower.native_supported(cfg, "llama", "--host 0.0.0.0 --no-jinja") is False
 
 
 def test_prompt_mode_nudges_to_write_the_block():
@@ -1704,9 +1705,10 @@ def test_resolve_model_prefers_an_awake_model_over_a_sleeping_pin():
 def test_native_supported_follows_every_serving_host():
     cfg = _cfg(tool_mode="auto")
     assert tower.native_supported(cfg, "llama", ["--jinja", "--host x --jinja"]) is True
-    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x"]) is False
-    assert tower.native_supported(cfg, "llama", ["--jinja", None]) is False
-    assert tower.native_supported(cfg, "llama", []) is False
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x"]) is None
+    assert tower.native_supported(cfg, "llama", ["--jinja", None]) is None
+    assert tower.native_supported(cfg, "llama", ["--jinja", "--host x --no-jinja"]) is False
+    assert tower.native_supported(cfg, "llama", []) is None
     assert tower.native_supported(cfg, "llama", "--tools all") is True
     assert tower.native_supported(cfg, "lms", []) is True
     assert tower.native_supported(_cfg(tool_mode="native"), "llama", [None]) is True
@@ -1980,9 +1982,10 @@ def test_report_turn_stores_and_shows_the_samples_and_hands_them_to_the_model():
 
 # --- #1039 host resolution + tool-driven questions ---
 
-def _fleet_registry(hosts=("box-1.local", "mac-mini")):
+def _fleet_registry(hosts=("box-1.local", "mac-mini"), primary=None):
     d = _deps()
-    d["hosts"] = lambda *a, **k: [{"hostname": h, "online": True} for h in hosts]
+    d["hosts"] = lambda *a, **k: [{"hostname": h, "online": True, **({"primary": [primary[h]]} if primary and h in primary else {})}
+                                  for h in hosts]
     return tt.build_registry(d)
 
 
@@ -2182,3 +2185,55 @@ def test_a_length_stop_then_a_thinking_only_reply_are_both_retried_once():
     assert len(seen["payloads"]) == 3
     assert out["note"] == "retried after a length stop; retried after a thinking-only reply"
     assert _text(events) == "All timers are set."
+
+
+def test_unknown_server_args_follow_the_check_grade():
+    """#1039: jinja is on by default in current llama.cpp, so unstated args defer to the capability check."""
+    cfg = _cfg(tool_mode="auto")
+    sa = lambda m: [None]  # noqa: E731
+    out, _e, seen, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"}, server_args_of=sa)
+    assert "tools" in seen["payloads"][0]
+    out, _e, seen2, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=None, server_args_of=sa)
+    assert "tools" not in seen2["payloads"][0]
+    out, _e, seen3, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"},
+                                  server_args_of=lambda m: ["--no-jinja"])
+    assert "tools" not in seen3["payloads"][0]
+
+
+def test_primary_resolves_to_the_default_llama_host():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"primary"}}\n```'},
+        {"content": "fine."}], registry=_fleet_registry(primary={"box-1.local": "llama"}))
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["hostname"] == "box-1.local" and t["result"]["note"] == "host primary taken as box-1.local"
+
+
+def test_second_thinking_only_reply_after_work_reports_the_last_step():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box"}}\n```'},
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"reasoning": "hmm", "content": "", "finish": "stop"}])
+    assert len(seen["payloads"]) == 3
+    assert _text(events).startswith("The model stopped without an answer. Last step: read host detail · box")
+    assert st.messages(tid)[-1]["content"].startswith("The model stopped without an answer. Last step: read host detail · box")
+    assert not any("ms." in r["content"] for r in st.messages(tid) if r["role"] == "assistant")
+
+
+def test_second_thinking_only_reply_escalates_when_fallback_is_on():
+    alt = {"model": "gemma-3-12b", "provider": "lms", "hosts": ["mac"]}
+    out, events, seen, st, tid = _run([
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"reasoning": "hmm", "content": "", "finish": "stop"},
+        {"content": "All set."}], cfg=_cfg(fallback=True), alternates=lambda cur: alt)
+    assert seen["payloads"][2]["model"] == "gemma-3-12b"
+    assert _text(events).startswith("Fallback: asking gemma-3-12b because qwen3-14b kept thinking without answering.")
+    assert _text(events).endswith("All set.")
+
+
+def test_history_drops_the_last_step_line():
+    st = tower.Store(":memory:")
+    tid = st.create_thread("u", "t", {})
+    st.add_message(tid, "user", "hi")
+    st.add_message(tid, "assistant", "The model stopped without an answer. Last step: read host detail · box.")
+    st.add_message(tid, "user", "q2")
+    assert tower._history(st, tid) == [{"role": "user", "content": "q2"}]

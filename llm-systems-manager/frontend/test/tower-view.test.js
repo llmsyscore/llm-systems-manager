@@ -425,19 +425,23 @@ describe('timer rows in a stored thread (#1029)', () => {
   });
 });
 
-describe('checkChip (#1039)', () => {
-  test('grades map to text, class and tooltip', () => {
-    expect(TW.checkChip(null)).toBeNull();
-    expect(TW.checkChip({ grade: 'pending', model: 'm' })).toEqual({ text: 'checking…', cls: 'dim', title: 'Tool check running' });
-    expect(TW.checkChip({ grade: 'native', size_b: 27, small: false })).toEqual({ text: 'native ok · 27B', cls: '', title: 'Passed the tool check with native function calls' });
-    expect(TW.checkChip({ grade: 'fenced', size_b: 4, small: true })).toEqual({
-      text: 'fenced ok · 4B', cls: 'warn',
-      title: 'Passed the tool check with the fenced block only. Under 7B: expect prose tool calls; Tower corrects them once per question.' });
-    expect(TW.checkChip({ grade: 'failed', size_b: null, small: false, detail: 'no call' })).toEqual({
-      text: 'tool check failed', cls: 'warn', title: 'Failed the tool check (no call); needs hosts_overview enabled and a model that can call tools' });
+describe('checkChips (#1039)', () => {
+  test('grades map to operator wording, class and tooltip', () => {
+    expect(TW.checkChips(null)).toEqual([]);
+    expect(TW.checkChips({ grade: 'pending', model: 'm' })).toEqual([{ text: 'Checking…', short: 'Checking…', cls: 'dim', title: 'Checking whether the model can call Tower’s tools' }]);
+    expect(TW.checkChips({ grade: 'native', size_b: 27, small: false })).toEqual([{ text: 'Tools OK', short: 'Tools', cls: 'ok', title: 'Tool calls work: the model uses built-in function calling' }]);
+    expect(TW.checkChips({ grade: 'fenced', size_b: 4, small: true })).toEqual([
+      { text: 'Tools OK', short: 'Tools', cls: 'ok outline', title: 'Tool calls work: the model writes them in text prompt mode' },
+      { text: 'small model', short: 'small', cls: 'warn', title: 'Small model: expect the occasional tool call written as text; Tower corrects it once per question (4B)' }]);
+    expect(TW.checkChips({ grade: 'unknown', detail: 'error: GatewayError' })).toEqual([
+      { text: 'Not checked', short: 'Not checked', cls: 'dim', title: 'The model did not answer the check (error: GatewayError); it runs again automatically' }]);
+    expect(TW.checkChips({ grade: 'failed', size_b: null, small: false, detail: 'no call' })).toEqual([
+      { text: 'No tool support', short: 'No tools', cls: 'crit', title: 'No tool support: the model made no tool call in either mode (no call)' }]);
   });
-  test('stateView carries the check', () => {
+  test('stateView carries the check and the fallback', () => {
     expect(TW.stateView({ ok: true, enabled: true, model: 'm', check: { grade: 'native' } }).check).toEqual({ grade: 'native' });
     expect(TW.stateView({ ok: true, enabled: true, model: 'm' }).check).toBeNull();
+    expect(TW.stateView({ ok: true, enabled: true, model: 'm', fallback: { model: 'g', check: { grade: 'failed' } } }).fallback.model).toBe('g');
+    expect(TW.stateView({ ok: true, enabled: true, model: 'm' }).fallback).toBeNull();
   });
 });

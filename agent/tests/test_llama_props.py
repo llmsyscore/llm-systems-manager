@@ -223,3 +223,58 @@ def test_props_build_info_truncated_and_non_string_ignored(ctx, monkeypatch):
         "total_slots": 2, "build_info": 12345,
     })))
     assert "build" not in llama.collect_llama_for_metrics()
+
+
+# --- #1039: the llama block carries the server command line for the manager's --jinja check ---
+
+class _Proc:
+    def __init__(self, cmd, name="llama-server"):
+        self._cmd, self.info = cmd, {"name": name, "cmdline": cmd}
+
+    def cmdline(self):
+        return list(self._cmd)
+
+
+def _fake_psutil(monkeypatch, by_pid=None, running=()):
+    calls = []
+    def _process(pid):
+        calls.append(pid)
+        return _Proc((by_pid or {})[pid])
+    mod = types.ModuleType("psutil")
+    mod.Process = _process
+    mod.process_iter = lambda attrs=None: list(running)
+    monkeypatch.setitem(sys.modules, "psutil", mod)
+    return calls
+
+
+def test_server_cmdline_reads_the_unit_pid_once_per_pid(monkeypatch):
+    monkeypatch.setattr(llama, "_llama_server_args", {"pid": None, "args": None})
+    calls = _fake_psutil(monkeypatch, by_pid={4242: ["llama-server", "--jinja", "-m", "x.gguf"]})
+    assert llama._llama_server_cmdline(4242) == "llama-server --jinja -m x.gguf"
+    assert llama._llama_server_cmdline(4242) == "llama-server --jinja -m x.gguf"
+    assert calls == [4242]
+
+
+def test_server_cmdline_falls_back_to_a_named_process_without_a_unit_pid(monkeypatch):
+    monkeypatch.setattr(llama, "_llama_server_args", {"pid": None, "args": None})
+    _fake_psutil(monkeypatch, running=[_Proc(["python3", "agent.py"], name="python3"),
+                                       _Proc(["/opt/llama/llama-server", "--port", "8080"])])
+    assert llama._llama_server_cmdline(None) == "/opt/llama/llama-server --port 8080"
+
+
+def test_server_cmdline_is_none_without_psutil_or_process(monkeypatch):
+    monkeypatch.setattr(llama, "_llama_server_args", {"pid": None, "args": None})
+    _fake_psutil(monkeypatch, running=[])
+    assert llama._llama_server_cmdline(None) is None
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(llama, "_llama_server_args", {"pid": None, "args": None})
+    assert llama._llama_server_cmdline(7) is None
+
+
+def test_metrics_block_carries_server_args(ctx, monkeypatch):
+    monkeypatch.setattr(llama, "_llama_unit_main_pid", lambda: 4242)
+    monkeypatch.setattr(llama, "_llama_server_args", {"pid": None, "args": None})
+    _fake_psutil(monkeypatch, by_pid={4242: ["llama-server", "--jinja"]})
+    monkeypatch.setattr(llama, "requests", SimpleNamespace(get=_fake_get_factory({"total_slots": 1})))
+    out = llama.collect_llama_for_metrics()
+    assert out["server_args"] == "llama-server --jinja"

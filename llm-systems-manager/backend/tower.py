@@ -59,7 +59,8 @@ _TIMEOUT_LINE = re.compile(r"\S.*" + re.escape(_TIMEOUT_MARK) + r"\d+ s\.")
 # Assistant lines Tower writes itself; _history leaves them out of replayed turns.
 _CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED, _FALLBACK_PROSE,
                      _ERR_GATEWAY, _ERR_INTERNAL, _VIOLATION_LINE, _VIOLATION_LINE_QUIET})
-_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ")
+_FALLBACK_LAST = "The model stopped without an answer. Last step: "
+_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ", _FALLBACK_LAST)
 _WRITE_THE_BLOCK = "Write the tool block itself; a sentence like 'Let me check' without the block calls nothing."
 CHAT_EXCLUDE = re.compile(r"embed|rerank|whisper|sd-|stable-diffusion|clip|tts", re.I)
 _TOOL_OPEN = "```tool"
@@ -124,13 +125,20 @@ def alternate_model(current: dict, entries: "list[dict]") -> Optional[dict]:
     return _pick(others[0]) if others else None
 
 
-def _args_native(server_args: Optional[str]) -> bool:
-    return bool(server_args and ("--jinja" in server_args or "--tools" in server_args))
+def _args_native(server_args: Optional[str]) -> Optional[bool]:
+    """True/False when the llama-server args say so (--jinja/--tools on, --no-jinja off), else None."""
+    if not server_args:
+        return None
+    if "--no-jinja" in server_args:
+        return False
+    if "--jinja" in server_args or "--tools" in server_args:
+        return True
+    return None
 
 
-def native_supported(cfg, provider: str, server_args) -> bool:
-    """Whether every host serving the model takes native tool calls; `server_args` is one host's
-    llama-server args or a list of them, one per serving host (#952)."""
+def native_supported(cfg, provider: str, server_args) -> Optional[bool]:
+    """True when every host serving the model takes native tool calls, False when one refuses,
+    None when the args do not say (jinja is on by default in current llama.cpp builds)."""
     mode = str(getattr(cfg, "tool_mode", "auto") or "auto")
     if mode == "native":
         return True
@@ -138,9 +146,10 @@ def native_supported(cfg, provider: str, server_args) -> bool:
         return False
     if provider in ("vllm", "lms"):
         return True
-    if isinstance(server_args, (list, tuple)):
-        return bool(server_args) and all(_args_native(a) for a in server_args)
-    return _args_native(server_args)
+    votes = [_args_native(a) for a in server_args] if isinstance(server_args, (list, tuple)) else [_args_native(server_args)]
+    if any(v is False for v in votes):
+        return False
+    return True if votes and all(v is True for v in votes) else None
 
 
 # ── prompt + parsing ────────────────────────────────────────────────
@@ -840,10 +849,14 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
     def prepare(m: dict, fallback_from: Optional[str] = None) -> "tuple[list, dict]":
         nonlocal native_used
         args = server_args_of(m) if server_args_of else None
-        native = native_used = native_supported(cfg, m["provider"], args)
+        native = native_supported(cfg, m["provider"], args)
         chk = checks(m["model"]) if checks else None
-        if native and chk and chk.get("grade") == "fenced" and str(getattr(cfg, "tool_mode", "auto") or "auto") == "auto":
-            native = native_used = False
+        grade = chk.get("grade") if chk else None
+        if native is None:
+            native = grade == "native"
+        elif native and grade == "fenced" and str(getattr(cfg, "tool_mode", "auto") or "auto") == "auto":
+            native = False
+        native_used = native
         emit({"event": "model", "model": m["model"], "provider": m["provider"], "hosts": m.get("hosts") or [],
               **({"fallback": True, "from": fallback_from} if fallback_from else {})})
         msgs = [{"role": "system", "content": system_prompt(cfg, tools, page, native)}] + history
@@ -856,6 +869,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
 
     calls, note, force_final, preface, fell_back = 0, "", False, "", False
     retried_length = retried_reasoning = False
+    last_step = ""
     salvaged = 0
     fallback_on = bool(getattr(cfg, "fallback", False))
 
@@ -905,18 +919,21 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             return False
         return True
 
-    fleet: "list[Optional[list]]" = [None]
+    fleet: "list[Optional[tuple]]" = [None]
+
+    def _fleet() -> "tuple[list, dict]":
+        if fleet[0] is None:
+            fleet[0] = tower_tools.fleet(registry)
+        return fleet[0]
 
     def _known_hosts() -> "list[str]":
-        if fleet[0] is None:
-            fleet[0] = tower_tools.fleet_hosts(registry)
-        return fleet[0]
+        return _fleet()[0]
 
     def _resolve(tool, args: dict) -> "tuple[dict, Optional[str], Optional[dict]]":
         """Resolves args['host'] (and schedule's nested tool host) against the fleet."""
         notes: "list[str]" = []
         if "host" in (tool.params.get("properties") or {}) and args.get("host"):
-            val, note, refusal = tower_tools.resolve_host(args["host"], _known_hosts())
+            val, note, refusal = tower_tools.resolve_host(args["host"], *_fleet())
             if refusal:
                 return args, None, refusal
             args = {**args, "host": val}
@@ -925,7 +942,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         inner = by_name.get(str(args.get("tool") or "")) if tool.kind == "timer" else None
         targs = args.get("args") if isinstance(args.get("args"), dict) else None
         if inner is not None and targs and targs.get("host") and "host" in (inner.params.get("properties") or {}):
-            val, note, refusal = tower_tools.resolve_host(targs["host"], _known_hosts())
+            val, note, refusal = tower_tools.resolve_host(targs["host"], *_fleet())
             if refusal:
                 return args, None, refusal
             args = {**args, "args": {**targs, "host": val}}
@@ -1049,12 +1066,16 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                                                                 "Answer now in plain text, briefly."})
                     continue
                 content = msg.get("content") or ""
-                if not length_stop and not shown and not content.strip() and msg.get("reasoning_chars") and not retried_reasoning:
+                thinking_only = bool(not length_stop and not shown and not content.strip() and msg.get("reasoning_chars"))
+                if thinking_only and not retried_reasoning:
                     retried_reasoning = True
                     note = "; ".join(x for x in (note, "retried after a thinking-only reply") if x)
                     messages.append({"role": "assistant", "content": ""})
                     messages.append({"role": "user", "content": "You finished thinking without writing an answer. "
                                                                 "Answer now in plain text, briefly."})
+                    continue
+                if thinking_only and (alt := _alternate()) is not None:
+                    _switch(alt, "kept thinking without answering")
                     continue
                 prose = None if length_stop else prose_call(content, by_name)
                 if prose and salvaged == 0:
@@ -1087,6 +1108,8 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     return out
                 if length_stop:
                     fallback = _FALLBACK_LENGTH
+                elif not shown and last_step:
+                    fallback = f"{_FALLBACK_LAST}{last_step}."
                 elif not shown and msg.get("reasoning_chars"):
                     fallback = _FALLBACK_REASONING
                 else:
@@ -1133,6 +1156,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     if isinstance(result, dict):
                         result = _with_note(result, f"{arg} taken from the operator's answer: {answer}")
             ms = int((time.monotonic() - t0) * 1000)
+            last_step = (summary or f"{name.replace('_', ' ')} · {'ok' if ok else 'failed'}").replace(f" · {ms} ms", "")
             result_json = json.dumps(result, default=str)
             if log.isEnabledFor(logging.DEBUG):
                 log.debug("tower tool %s args_keys=%s ok=%s ms=%d result_chars=%d", name,
@@ -1913,6 +1937,16 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
             return owner
         return u
 
+    def _fallback_view(cfg, m: dict, how: str) -> Optional[dict]:
+        """The fallback model with its check (ensured or run now) when the toggle is on and an alternate is resident."""
+        if not m or not bool(getattr(cfg, "fallback", False)):
+            return None
+        alt = alternate_model(m, _gateway_entries())
+        if alt is None:
+            return None
+        chk = getattr(_checks, how)(alt) if _checks is not None else None
+        return {"model": alt["model"], "provider": alt["provider"], "hosts": alt.get("hosts") or [], "check": chk}
+
     def _gate():
         if not _enabled():
             return jsonify({"ok": False, "error": "tower disabled"}), 404
@@ -1932,6 +1966,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
         chk = _checks.ensure(m) if (_checks is not None and m) else None
         return jsonify({"ok": True, "enabled": True, "admin": role == "admin", "model": m.get("model"),
                         "provider": m.get("provider"), "hosts": m.get("hosts") or [], "check": chk,
+                        "fallback": _fallback_view(cfg, m, "ensure"), "fallback_enabled": bool(getattr(cfg, "fallback", False)),
                         "capabilities": cfg.capabilities, "off_topic": cfg.off_topic,
                         "diagnose_alarms": bool(cfg.diagnose_alarms),
                         "insights_new": runs.store.count_unseen(),
@@ -2110,7 +2145,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
         m = resolve_model(_cfg(), _gateway_entries())
         if m is None or _checks is None:
             return jsonify({"ok": False, "error": "no_model"}), 503
-        return jsonify({"ok": True, "check": _checks.run(m)})
+        return jsonify({"ok": True, "check": _checks.run(m), "fallback": _fallback_view(_cfg(), m, "run")})
 
     @app.route("/api/tower/model", methods=["PUT"])
     def tower_model_pin():

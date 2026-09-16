@@ -334,7 +334,7 @@
   }
 
   // Standalone renderer reused by the Backups settings card (#797).
-  function renderFields(entries, values, defs, over) {
+  function renderFields(entries, values, defs, over, extra) {
     const opt = Object.assign({
       defs: defs || defaults(),
       secrets: (_data && _data.secrets) || {},
@@ -346,7 +346,12 @@
         return isList(e) ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
-    return `<div class="st-rows">${entries.map(e => fieldHtml(e, opt)).join('')}</div>`;
+    const rows = entries.map(e => fieldHtml(e, opt));
+    if (extra && extra.html) {
+      const at = entries.findIndex(e => e.path === extra.after);
+      rows.splice(at >= 0 ? at + 1 : rows.length, 0, extra.html);
+    }
+    return `<div class="st-rows">${rows.join('')}</div>`;
   }
 
   // ── validation ────────────────────────────────────────────────────
@@ -420,23 +425,37 @@
     return { nav: gs.map(btn).join(''), sel: gs.map(opt).join('') };
   }
   // Tower model check (#1039): the status row above the Tower group's fields.
+  function checkChipsHtml(check, model, none) {
+    const chips = (window.TW && TW.checkChips) ? TW.checkChips(check) : [];
+    const tip = t => esc(model ? `${model} \u00b7 ${t}` : t);
+    if (!chips.length) return `<span class="st-chip dim tl" data-tip="${tip(none || 'No tool check has run yet')}">Not checked</span>`;
+    return chips.map(c => `<span class="st-chip ${c.cls} tl" data-tip="${tip(c.title)}">${esc(c.text)}</span>`).join('');
+  }
+  function towerFallbackHtml(s) {
+    if (s.fallback) return checkChipsHtml(s.fallback.check, s.fallback.model);
+    if (s.fallbackEnabled || s.fallback_enabled) return '<span class="st-chip dim tl" data-tip="No second chat model is loaded">None</span>';
+    return '<span class="st-chip dim tl" data-tip="The Fallback model setting is off">Off</span>';
+  }
   function towerCheckHtml() {
     const s = _towerState;
-    let body;
-    if (!s) body = '<span class="d">Loading\u2026</span>';
-    else if (!s.enabled) body = '<span class="d">Tower is off</span>';
-    else if (!s.model) body = '<span class="d">No model loaded</span>';
+    let control, btn = '';
+    if (!s) control = '<div class="row"><span class="d">Loading\u2026</span></div>';
+    else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
+    else if (!s.model) control = '<div class="row"><span class="d">No model loaded</span></div>';
     else {
-      const chk = (window.TW && TW.checkChip) ? TW.checkChip(s.check) : null;
-      const at = s.check && s.check.at;
-      const age = at && window.TW && TW.ageText ? ` \u00b7 checked ${TW.ageText(Date.now() / 1000 - at)}` : '';
-      body = `<b>${esc(s.model)}</b>`
-        + (chk ? `<span class="st-chip ${chk.cls}" title="${esc(chk.title)}">${esc(chk.text)}</span>` : '<span class="d">not checked</span>')
-        + `<span class="d">${esc(age)}</span>`
-        + (s.admin ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerCheckBtn"${_towerBusy ? ' disabled' : ''}>`
-          + `${_towerBusy ? 'Checking\u2026' : 'Check model'}</button>` : '');
+      btn = s.admin ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerCheckBtn"${_towerBusy ? ' disabled' : ''}>`
+        + `${_towerBusy ? 'Verifying\u2026' : 'Verify'}</button>` : '';
+      control = `<div class="row"><span class="d w">Primary</span>${checkChipsHtml(s.check, s.model)}</div>`
+        + `<div class="row fb"><span class="d w">Fallback</span>${towerFallbackHtml(s)}</div>`;
     }
-    return `<div class="st-check" id="stTowerCheck"><span class="lbl">Model check</span>${body}</div>`;
+    return '<div class="settings-row st-fld st-checkrow" id="stTowerCheck">'
+      + `<div class="st-lb"><label>Tool response check</label>${btn}</div>`
+      + '<div class="help">Whether the primary and fallback models answer with a tool call. Runs when Tower is switched on or a model changes; Verify runs it again now. Hover a status for the model.</div>'
+      + `<div class="st-ct">${control}</div></div>`;
+  }
+  function towerPending(s) {
+    const p = c => !!(c && c.grade === 'pending');
+    return !!s && (p(s.check) || (s.fallback && p(s.fallback.check)));
   }
   // Re-renders (filter keystrokes, group switches) reuse a state read under 15 s old.
   async function loadTowerState(force) {
@@ -446,7 +465,7 @@
     const el = $('stTowerCheck');
     if (el) el.outerHTML = towerCheckHtml();
     clearTimeout(_towerPoll);
-    if (_towerState && _towerState.check && _towerState.check.grade === 'pending') _towerPoll = setTimeout(() => loadTowerState(true), 8000);
+    if (towerPending(_towerState)) _towerPoll = setTimeout(() => loadTowerState(true), 8000);
   }
   async function runTowerCheck() {
     _towerBusy = true;
@@ -454,7 +473,7 @@
     try {
       const r = await fetch('/api/tower/check', { method: 'POST' });
       const d = r.ok ? await r.json() : null;
-      if (d && d.check && _towerState) _towerState.check = d.check;
+      if (d && d.check && _towerState) { _towerState.check = d.check; _towerState.fallback = d.fallback || null; }
     } catch (_) { /* offline */ }
     _towerBusy = false;
     const el2 = $('stTowerCheck'); if (el2) el2.outerHTML = towerCheckHtml();
@@ -466,8 +485,7 @@
     const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
-      + (g.key === 'tower' ? towerCheckHtml() : '')
-      + `<div class="card-b">${renderFields(entries, _data.values, defaults())}</div></div>`;
+      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? { after: 'manager.tower.tool_mode', html: towerCheckHtml() } : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {

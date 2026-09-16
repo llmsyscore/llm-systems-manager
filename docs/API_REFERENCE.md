@@ -1068,12 +1068,12 @@ The job's own user (operator) or any admin. A queued job ends at once; a running
 Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state`, answers 404 while `manager.tower.enabled` is false.
 
 ### `GET /api/tower/state`
-Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new, latest_insight, insights_rev, check}`; responds 200 with `enabled: false` (no other fields) while Tower is off. `insights_new` counts new or applied insights not yet seen; `latest_insight` is `{id, rule, host, severity, summary, created}` for the newest of them, or `null`; `insights_rev` is the newest insight create or resolve time, and changes whenever the list does. `check` is `{model, grade: native|fenced|failed, mode, size_b, small, at, detail}` for the resolved model, `{model, grade: "pending"}` while its first check runs, or `null` without a resolved model; polling state starts a missing check.
+Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new, latest_insight, insights_rev, check}`; responds 200 with `enabled: false` (no other fields) while Tower is off. `insights_new` counts new or applied insights not yet seen; `latest_insight` is `{id, rule, host, severity, summary, created}` for the newest of them, or `null`; `insights_rev` is the newest insight create or resolve time, and changes whenever the list does. `check` is `{model, grade: native|fenced|failed|unknown, mode, size_b, small, at, detail}` for the resolved model (`unknown` = no reply in any mode, e.g. the model was loading; carries `retry_at` and is re-run after it), `{model, grade: "pending"}` while its first check runs, or `null` without a resolved model; polling state starts a missing check. `fallback` is `{model, provider, hosts, check}` for the alternate model when `manager.tower.fallback` is on and one is resident, else `null`; `fallback_enabled` mirrors the toggle.
 
 ---
 
 ### `POST /api/tower/check`
-Admin. Runs the model capability check now for the resolved model — one canned `hosts_overview` probe in native mode (when the provider supports it) then fenced — and returns `{ok, check}`. 503 `no_model` when no chat model is resident.
+Admin. Runs the model capability check now for the resolved model — one canned `hosts_overview` probe in native mode (when the provider supports it) then fenced — and returns `{ok, check, fallback}` (`fallback` as in `state`, its check run now too). 503 `no_model` when no chat model is resident.
 
 ---
 
