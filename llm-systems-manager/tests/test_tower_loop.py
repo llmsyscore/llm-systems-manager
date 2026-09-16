@@ -1972,3 +1972,110 @@ def test_report_turn_stores_and_shows_the_samples_and_hands_them_to_the_model():
     # The next turn's history carries the short line and the report, not the samples.
     hist = tower._history(st, tid)
     assert [m["role"] for m in hist] == ["user", "assistant"] and hist[0]["content"] == text
+
+
+# --- #1039 host resolution + tool-driven questions ---
+
+def _fleet_registry(hosts=("box-1.local", "mac-mini")):
+    d = _deps()
+    d["hosts"] = lambda *a, **k: [{"hostname": h, "online": True} for h in hosts]
+    return tt.build_registry(d)
+
+
+def _tool_events(events):
+    return [e for e in events if e["event"] == "tool"]
+
+
+def test_unique_host_match_is_corrected_with_a_note():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box1"}}\n```'},
+        {"content": "box-1 is hot."}], registry=_fleet_registry())
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["args"] == {"host": "box1"}
+    assert t["result"]["hostname"] == "box-1.local" and t["result"]["note"] == "host box1 taken as box-1.local"
+    assert t["summary"].endswith("· host box1 taken as box-1.local")
+    fed = seen["payloads"][1]["messages"][-1]["content"]
+    assert "Result of host_detail" in fed and '"note": "host box1 taken as box-1.local"' in fed
+
+
+def test_unknown_host_is_refused_with_the_host_list_when_no_question_channel():
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"nas"}}\n```'},
+        {"content": "No such host."}], registry=_fleet_registry())
+    t = _tool_events(events)[0]
+    assert not t["ok"] and t["result"]["error"] == "unknown host: nas; hosts are box-1.local, mac-mini"
+    assert t["result"]["choices"] == ["box-1.local", "mac-mini"] and t["result"]["arg"] == "host"
+    assert t["summary"] == "host_detail · unknown host: nas; hosts are box-1.local, mac-mini"
+    assert len(seen["payloads"]) == 2
+
+
+def test_ambiguous_host_raises_the_question_card_and_retries_with_the_answer(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, "llm-systems-llama.local")
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"llm-systems"}}\n```'},
+        {"content": "llama box is fine."}],
+        registry=_fleet_registry(("llm-systems-llama.local", "llm-systems-lmstudio.local")), approvals=ap)
+    kinds = [e["event"] for e in events]
+    assert kinds.index("question") < kinds.index("answer") < kinds.index("tool")
+    q = next(e for e in events if e["event"] == "question")
+    assert q["tool"] == "ask_operator" and q["question"] == "llm-systems matches several hosts"
+    assert q["choices"] == ["llm-systems-llama.local", "llm-systems-lmstudio.local"]
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["hostname"] == "llm-systems-llama.local"
+    assert t["result"]["note"] == "host taken from the operator's answer: llm-systems-llama.local"
+    assert len(seen["payloads"]) == 2
+    roles = [r["role"] for r in st.messages(tid)]
+    assert roles == ["user", "action", "user", "tool", "assistant"]
+
+
+def test_dismissed_host_question_leaves_the_refusal_to_the_model(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    def deny():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(ap._pending)
+            if ids:
+                ap.resolve(ids[0], "denied", "adriel"); return
+            time.sleep(0.01)
+    threading.Thread(target=deny, daemon=True).start()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"nas"}}\n```'},
+        {"content": "I do not know that host."}], registry=_fleet_registry(), approvals=ap)
+    t = _tool_events(events)[0]
+    assert not t["ok"] and t["result"]["error"].startswith("unknown host: nas")
+    assert sum(1 for e in events if e["event"] == "question") == 1
+
+
+def test_schedule_nested_host_is_resolved_before_the_timer(monkeypatch):
+    seen_args = {}
+    class _Timers:
+        def schedule(self, *, thread_id, user, role, args):
+            seen_args.update(args)
+            return {"ok": True, "label": "x", "every_s": 30, "times": 4}
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"schedule","args":{"every_s":30,"times":4,"host":"mac","metric":"ram_pct"}}\n```'},
+        {"content": "Scheduled."}], registry=_fleet_registry(), timers=_Timers())
+    assert seen_args["host"] == "mac-mini"
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["note"] == "host mac taken as mac-mini"
+
+
+def test_act_tool_host_is_resolved_before_the_approval_card(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    def approve():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(ap._pending)
+            if ids:
+                ap.resolve(ids[0], "approved", "adriel"); return
+            time.sleep(0.01)
+    threading.Thread(target=approve, daemon=True).start()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"wake_server","args":{"host":"box"}}\n```'},
+        {"content": "Woken."}], cfg=_cfg(capabilities="operate"), registry=_fleet_registry(("box-1.local", "mac-mini")), approvals=ap)
+    card = next(e for e in events if e["event"] == "confirm")
+    assert card["args"]["host"] == "box-1.local"

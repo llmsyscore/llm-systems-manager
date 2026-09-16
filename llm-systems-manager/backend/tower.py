@@ -882,6 +882,87 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             return False
         return True
 
+    fleet: "list[Optional[list]]" = [None]
+
+    def _known_hosts() -> "list[str]":
+        if fleet[0] is None:
+            fleet[0] = tower_tools.fleet_hosts(registry)
+        return fleet[0]
+
+    def _resolve(tool, args: dict) -> "tuple[dict, Optional[str], Optional[dict]]":
+        """Resolves args['host'] (and schedule's nested tool host) against the fleet."""
+        notes: "list[str]" = []
+        if "host" in (tool.params.get("properties") or {}) and args.get("host"):
+            val, note, refusal = tower_tools.resolve_host(args["host"], _known_hosts())
+            if refusal:
+                return args, None, refusal
+            args = {**args, "host": val}
+            if note:
+                notes.append(note)
+        inner = by_name.get(str(args.get("tool") or "")) if tool.kind == "timer" else None
+        targs = args.get("args") if isinstance(args.get("args"), dict) else None
+        if inner is not None and targs and targs.get("host") and "host" in (inner.params.get("properties") or {}):
+            val, note, refusal = tower_tools.resolve_host(targs["host"], _known_hosts())
+            if refusal:
+                return args, None, refusal
+            args = {**args, "args": {**targs, "host": val}}
+            if note:
+                notes.append(note)
+        return args, ("; ".join(notes) or None), None
+
+    def _with_note(result, note: Optional[str]):
+        """Adds a resolution note to a dict result, after any note the tool set."""
+        if not note or not isinstance(result, dict):
+            return result
+        prior = result.get("note")
+        return {**result, "note": f"{prior}; {note}" if prior else note}
+
+    def _execute(tool, raw_args: dict, t0: float) -> "tuple[Any, bool, str, bool]":
+        """Runs one tool call end to end: (result, ok, summary, acted)."""
+        name = tool.name
+        args, err = tower_tools.validate_args(tool, raw_args)
+        if err:
+            return {"error": err}, False, f"{name} · {err}", False
+        args, note, refusal = _resolve(tool, args)
+        if refusal:
+            return refusal, False, f"{name} · {refusal['error']}", False
+        if tool.kind == "act" and approvals is None:
+            return {"error": f"{name} needs an approval channel"}, False, f"{name} · no approval channel", False
+        if tool.kind == "act" and (skip := _precheck(tool, args)):
+            return {"ok": False, "message": skip}, False, f"{name} · {skip}", False
+        if tool.kind == "act":
+            result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
+            return result, ok, "", True
+        if tool.kind == "ask" and approvals is None:
+            return tool.run(args), False, f"{name} · no question channel", False
+        if tool.kind == "ask" and not tower_tools.question_card(args)["questions"]:
+            return {"error": f"{name} needs a question"}, False, f"{name} · no question", False
+        if tool.kind == "ask":
+            result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
+            return result, ok, "", True
+        if tool.kind == "timer" and timers is None:
+            return {"error": f"{name} needs a timer channel"}, False, f"{name} · no timer channel", False
+        if tool.kind == "timer":
+            result = timers.schedule(thread_id=thread_id, user=user or actor, role=role, args=args)
+            ok = bool(result.get("ok"))
+        else:
+            result, ok = tower_tools.run_tool(tool, args)
+        result = _with_note(result, note)
+        summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
+        if note:
+            summary += f" · {note}"
+        return result, ok, summary, False
+
+    def _ask_for(refusal: dict) -> Optional[str]:
+        """Raises the card for a refusal that carries choices; the operator's answer or None."""
+        ask = by_name.get("ask_operator")
+        if ask is None or approvals is None:
+            return None
+        qargs = {"question": str(refusal["error"])[:200],
+                 "choices": list(refusal["choices"])[:tower_tools.QUESTION_CHOICES_MAX]}
+        res, ok = _run_question(store, approvals, thread_id, run_id, actor, ask, qargs, emit, cancelled)
+        return (str(res.get("answer") or "").strip() or None) if ok else None
+
     if _BYPASS.search(_norm(user_text)):
         _finish_answer(store, thread_id, emit, "",
                        _VIOLATION_LINE if _flag_violation("message") else _VIOLATION_LINE_QUIET)
@@ -987,32 +1068,14 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 result, ok = {"error": f"{name} is not available"}, False
                 summary = f"{name} · not available"
             else:
-                args, err = tower_tools.validate_args(tool, raw_args)
-                if err:
-                    result, ok, summary = {"error": err}, False, f"{name} · {err}"
-                elif tool.kind == "act" and approvals is None:
-                    result, ok, summary = {"error": f"{name} needs an approval channel"}, False, f"{name} · no approval channel"
-                elif tool.kind == "act" and (skip := _precheck(tool, args)):
-                    result, ok, summary = {"ok": False, "message": skip}, False, f"{name} · {skip}"
-                elif tool.kind == "act":
-                    result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
-                    summary, acted = "", True
-                elif tool.kind == "ask" and approvals is None:
-                    result, ok, summary = tool.run(args), False, f"{name} · no question channel"
-                elif tool.kind == "ask" and not tower_tools.question_card(args)["questions"]:
-                    result, ok, summary = {"error": f"{name} needs a question"}, False, f"{name} · no question"
-                elif tool.kind == "ask":
-                    result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
-                    summary, acted = "", True
-                elif tool.kind == "timer" and timers is None:
-                    result, ok, summary = {"error": f"{name} needs a timer channel"}, False, f"{name} · no timer channel"
-                elif tool.kind == "timer":
-                    result = timers.schedule(thread_id=thread_id, user=user or actor, role=role, args=args)
-                    ok = bool(result.get("ok"))
-                    summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
-                else:
-                    result, ok = tower_tools.run_tool(tool, args)
-                    summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
+                result, ok, summary, acted = _execute(tool, raw_args, t0)
+                if (not ok and isinstance(result, dict) and result.get("choices") and result.get("arg")
+                        and (answer := _ask_for(result))):
+                    arg = str(result["arg"])
+                    raw_args = {**(raw_args if isinstance(raw_args, dict) else {}), arg: answer}
+                    result, ok, summary, acted = _execute(tool, raw_args, t0)
+                    if isinstance(result, dict):
+                        result = _with_note(result, f"{arg} taken from the operator's answer: {answer}")
             ms = int((time.monotonic() - t0) * 1000)
             result_json = json.dumps(result, default=str)
             if log.isEnabledFor(logging.DEBUG):
