@@ -60,8 +60,9 @@ ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_ale
 
 def test_registry_has_read_and_act_tools():
     reg = tt.build_registry(_deps())
-    assert set(reg) == READ | ACT
+    assert set(reg) == READ | {"ask_operator"} | ACT
     assert {t.name for t in reg.values() if t.kind == "act"} == ACT
+    assert reg["ask_operator"].kind == "ask" and reg["ask_operator"].tier == "read"
     assert all(reg[n].tier == "operate" for n in ACT - {"restart_provider"})
     assert reg["restart_provider"].tier == "admin" and reg["restart_provider"].role == "admin"
     assert tt.ACT_TOOL_NAMES == tuple(n for n in tt.TOOL_NAMES if n in ACT)
@@ -883,7 +884,8 @@ def test_prod_hosts_overview_adds_metrics_and_honours_the_tool_args(monkeypatch)
     monkeypatch.setattr(agent_registry, "agent_liveness", lambda a: "live" if a["hostname"] == "box" else "stale")
     monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {
         "fleet": lambda: [{"hostname": "box", "providers": ["llama"], "online": True, "busy": True, "watts": 210.0, "age_s": 3},
-                          {"hostname": "mac", "providers": ["lms"], "online": True, "busy": False, "watts": None, "age_s": 40}],
+                          {"hostname": "mac", "providers": ["lms"], "online": True, "busy": False, "watts": None, "age_s": 40,
+                           "model": "nemotron", "models": ["nemotron", "bonsai"]}],
         "host": lambda name: {"hostname": name, "cpu_pct": 12.0 if name == "box" else 55.0, "ram_pct": 40.0, "gpu_pct": None, "gpu_temp_c": 61.0},
         "ack": lambda a: (True, None), "close": lambda a: (True, None)})
     ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
@@ -893,6 +895,7 @@ def test_prod_hosts_overview_adds_metrics_and_honours_the_tool_args(monkeypatch)
     assert rows[0] == {"hostname": "box", "providers": ["llama"], "online": True, "busy": True, "watts": 210.0, "age_s": 3,
                        "liveness": "live", "cpu_pct": 12.0, "ram_pct": 40.0, "gpu_temp_c": 61.0}
     assert rows[1]["online"] is False and rows[1]["liveness"] == "stale" and rows[1]["cpu_pct"] == 55.0
+    assert rows[1]["models"] == ["nemotron", "bonsai"] and "model" not in rows[1]
     assert [r["hostname"] for r in deps["hosts"](None, None, None, "cpu_pct")] == ["mac", "box"]
     assert [r["hostname"] for r in deps["hosts"]("llama")] == ["box"]
     reg = tt.build_registry(deps)

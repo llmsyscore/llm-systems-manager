@@ -526,12 +526,18 @@ def prod_deps(ctx) -> dict:
                     break
             _sample, last_seen = _freshest(buckets)
             model = None
+            models: list = []
             ll = _bucket_sample(buckets, "llama").get("llama") or {}
             if ll.get("model"):
                 model = ll["model"]
+                models.append(ll["model"])
             for row in _bucket_sample(buckets, "lms").get("ps") or []:
-                if isinstance(row, dict) and row.get("identifier"):
-                    model = model or row.get("identifier")
+                if not isinstance(row, dict) or str(row.get("status") or "").upper() == "STOPPED":
+                    continue
+                name = row.get("identifier") or row.get("model")
+                if name and name not in models:
+                    models.append(name)
+                    model = model or name
             caps = a.get("capabilities") or {}
             provs = [p for p in providers_mod.names()
                      if caps.get(_cap_key(p))]
@@ -541,6 +547,7 @@ def prod_deps(ctx) -> dict:
                 "online": bool(last_seen) and (now - last_seen) < 90,
                 "age_s": (now - last_seen) if last_seen else None,
                 "model": model,
+                "models": models,
                 "busy": any(energy.extract_busy(s)
                             for s, _ls in buckets.values()),
                 "watts": watts,

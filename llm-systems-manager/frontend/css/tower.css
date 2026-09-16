@@ -61,7 +61,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 /* ---------- transcript ---------- */
 /* Wide answers (text charts, tables, long tokens) stay inside the drawer: no horizontal page scroll (#979). */
 #towerAside .tw-b { flex: 1; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-#towerAside .u { align-self: flex-end; max-width: 86%; padding: 7px 11px; border-radius: 10px 10px 3px 10px; background: color-mix(in srgb, var(--accent) 13%, var(--bg-card-alt)); color: var(--fg); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+#towerAside .u { align-self: flex-end; max-width: 86%; padding: 7px 11px; border-radius: 10px 10px 3px 10px; background: color-mix(in srgb, var(--accent) 13%, var(--bg-card-alt)); color: var(--fg); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-line; }
 #towerAside .u.queued { border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--border-strong)); background: transparent; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 8px; }
 #towerAside .u.queued .ql { font: 500 10px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--fg-dim); }
 #towerAside .u.queued .qx { border: 0; background: transparent; color: var(--fg-dim); cursor: pointer; padding: 0; font: 12px var(--font-mono); line-height: 1; }
@@ -213,6 +213,22 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .act .chips { display: flex; gap: 4px; flex-wrap: wrap; }
 #towerAside .act .chip { border: 1px solid var(--border-strong); border-radius: 999px; padding: 1px 9px; background: none; color: var(--fg-muted); font: 11.5px var(--font-sans); cursor: pointer; }
 #towerAside .act .chip:hover { color: var(--fg); }
+#towerAside .act .choices { display: grid; gap: 4px; margin: 2px 0 2px; }
+#towerAside .act .choice { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; background: var(--bg-card-alt); color: var(--fg); font: 12.5px var(--font-sans); line-height: 1.35; cursor: pointer; }
+#towerAside .act .choice i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--fg-dim); flex-shrink: 0; }
+#towerAside .act .choice:hover { border-color: var(--accent); }
+#towerAside .act .choice:hover i { border-color: var(--accent); }
+#towerAside .act .choice.on { border-color: var(--accent); cursor: default; }
+#towerAside .act .choice.on i { border-color: var(--accent); background: var(--accent); }
+#towerAside .act .choice.other { color: var(--fg-muted); }
+#towerAside .act .choice input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg); font: 12.5px var(--font-sans); outline: none; padding: 0; }
+#towerAside .act .choice input::placeholder { color: var(--fg-dim); }
+#towerAside .act .qtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-strong); margin: 0 0 2px; overflow-x: auto; }
+#towerAside .act .qtab { border: 0; border-bottom: 2px solid transparent; background: none; color: var(--fg-muted); font: 500 12px var(--font-sans); padding: 4px 10px 6px; cursor: pointer; white-space: nowrap; margin-bottom: -1px; }
+#towerAside .act .qtab:hover { color: var(--fg); }
+#towerAside .act .qtab.on { color: var(--fg); border-bottom-color: var(--accent); }
+#towerAside .act .qtab.done::after { content: " ✓"; color: var(--ok); }
+#towerAside .act .btns .mcbtn[disabled] { opacity: .45; cursor: default; }
 #towerAside .act .chip.on { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 #towerAside .act .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #towerAside .tick.act.ok .k { color: var(--ok); }

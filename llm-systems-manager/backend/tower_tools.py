@@ -25,7 +25,7 @@ class Tool:
     name: str
     description: str
     params: dict
-    kind: str            # read | act
+    kind: str            # read | act | ask
     tier: str            # read | operate | admin
     run: Callable[[dict], Any]
     role: str = "operator"
@@ -81,7 +81,7 @@ def validate_args(tool: Tool, args: Any) -> "tuple[dict, Optional[str]]":
         for key, spec in props.items():
             if key not in args:
                 if "default" in spec:
-                    out[key] = spec["default"]
+                    out[key] = list(spec["default"]) if isinstance(spec["default"], list) else spec["default"]
                 continue
             v = args[key]
             t = spec.get("type")
@@ -104,6 +104,11 @@ def validate_args(tool: Tool, args: Any) -> "tuple[dict, Optional[str]]":
             elif t == "boolean":
                 if not isinstance(v, bool):
                     return {}, f"{key} must be true or false"
+            elif t == "array":
+                objs = (spec.get("items") or {}).get("type") == "object"
+                if not isinstance(v, list) or not all(isinstance(x, dict if objs else str) for x in v):
+                    return {}, f"{key} must be a list of {'objects' if objs else 'strings'}"
+                v = (list(v) if objs else [x.strip()[:200] for x in v if x.strip()])[: int(spec.get("maxItems") or 50)]
             out[key] = v
         for key in tool.params.get("required") or []:
             if key not in out or out[key] in ("", None):
@@ -183,8 +188,10 @@ def catalog(registry: dict, cfg: Any, role: str) -> "list[Tool]":
     allowed = TIERS[: TIERS.index(cap) + 1] if cap in TIERS else ("read",)
     disabled = {str(x).strip() for x in (getattr(cfg, "disabled_tools", None) or [])}
     rank = _ROLE_RANK.get(role or "operator", 0)
+    asks = bool(getattr(cfg, "questions", True))
     return [t for t in registry.values()
-            if t.tier in allowed and t.name not in disabled and _ROLE_RANK.get(t.role, 0) <= rank]
+            if t.tier in allowed and t.name not in disabled and _ROLE_RANK.get(t.role, 0) <= rank
+            and (t.kind != "ask" or asks)]
 
 
 def openai_schema(tool: Tool) -> dict:
@@ -196,7 +203,7 @@ def prompt_catalog(tools: "list[Tool]") -> str:
     lines = ["You can call these tools. To call one, reply with ONLY this fenced block, never <tool_call> or other tags:",
              "```tool", '{"name": "<tool>", "args": {…}}', "```", "Tools:"]
     for t in tools:
-        tag = " (action, needs approval)" if t.kind == "act" else ""
+        tag = {"act": " (action, needs approval)", "ask": " (question card, pauses for the operator's pick)"}.get(t.kind, "")
         lines.append(f"- {t.name}{tag}: {t.description} args={json.dumps(t.params.get('properties') or {}, separators=(',', ':'))}")
     return "\n".join(lines)
 
@@ -792,11 +799,14 @@ def filter_log_lines(lines: list, *, search: Optional[str] = None, level: Option
 READ_TOOL_NAMES = ("hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history",
                    "alert_detail", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health",
                    "log_tail", "config_get", "help", "support", "wait_until", "audit_log")
+ASK_TOOL_NAMES = ("ask_operator",)
+QUESTION_CHOICES_MAX = 6
+QUESTIONS_MAX = 4
 ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "start_benchmark", "ack_alert", "close_alert",
                   "resume_alert")
 WAIT_KINDS = ("host_awake", "model_loaded", "model_ready", "run_done", "reportcard_done")
 BENCH_KINDS = ("live", "reportcard")
-TOOL_NAMES = READ_TOOL_NAMES + ACT_TOOL_NAMES
+TOOL_NAMES = READ_TOOL_NAMES + ASK_TOOL_NAMES + ACT_TOOL_NAMES
 PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio", "vllm": "vLLM"}
 _PROVIDER_ENUM = {"type": "string", "enum": ["llama", "lms", "vllm"]}
 _GROUP_DIMS = ("rule", "host", "severity", "status", "day", "hour", "hour_of_day")
@@ -1047,6 +1057,15 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              lambda a: deps["audit"](a.get("window", "24h"), a.get("actor"), a.get("action"), a.get("count", 20), a), role="admin"),
     ]
     tools += [
+        Tool("ask_operator", "Asks the operator what you cannot continue without: which host, which model, which alert, "
+             "or whether your reading of an ambiguous request is right. One question goes in question + choices "
+             f"(the most likely answers, up to {QUESTION_CHOICES_MAX}); several related questions (up to {QUESTIONS_MAX}, "
+             "for example host and model) go together in questions, each {question, choices, label} where label is a "
+             "one-or-two-word tab name. The card always offers Other for a typed answer. Never ask what a tool can tell you.",
+             _obj({"question": {"type": "string"},
+                   "choices": {"type": "array", "items": {"type": "string"}, "maxItems": QUESTION_CHOICES_MAX, "default": []},
+                   "questions": {"type": "array", "items": {"type": "object"}, "maxItems": QUESTIONS_MAX, "default": []}}),
+             "ask", "read", lambda a: {"error": "question cards are not available here; ask in your answer"}),
         Tool("load_model", "Load a model on a host's provider server (asks the operator first).",
              _obj({"provider": _LOAD_PROVIDER_ENUM, "host": {"type": "string"}, "model": {"type": "string"}}, ["provider", "host", "model"]),
              "act", "operate", lambda a: _act(deps, "load_model", "load", a["provider"], a["host"], a["model"])),
@@ -1078,6 +1097,31 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              precheck=lambda a: alert_precheck(deps, "resume", a["alert_id"])),
     ]
     return {t.name: t for t in tools}
+
+
+def _one_question(q, choices, label=None) -> Optional[dict]:
+    seen: list = []
+    for c in (choices or [])[:QUESTION_CHOICES_MAX]:
+        c = str(c).strip()[:80]
+        if c and c.lower() != "other" and c not in seen:
+            seen.append(c)
+    text = str(q or "").strip()[:200]
+    if not text:
+        return None
+    return {"question": text, "choices": seen, "label": str(label or "").strip()[:24]}
+
+
+def question_card(args: dict) -> dict:
+    """The question card's copy: every question with its choices (Other is always added by the drawer);
+    `question`/`choices` mirror the first one."""
+    qs = [_one_question(x.get("question"), x.get("choices"), x.get("label"))
+          for x in (args.get("questions") or [])[:QUESTIONS_MAX] if isinstance(x, dict)]
+    qs = [q for q in qs if q]
+    if not qs:
+        one = _one_question(args.get("question"), args.get("choices"))
+        qs = [one] if one else []
+    first = qs[0] if qs else {"question": "", "choices": []}
+    return {"questions": qs, "question": first["question"], "choices": first["choices"]}
 
 
 def action_card(tool: Tool, args: dict) -> dict:
@@ -1376,6 +1420,8 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         rows = []
         for r in base["fleet"]():
             row = with_liveness(r, by_host.get(str(r.get("hostname") or "").lower()), _liveness)
+            if "models" in row:
+                row.pop("model", None)
             detail = base["host"](r.get("hostname")) or {}
             row.update({k: detail.get(k) for k in _OVERVIEW_METRICS if detail.get(k) is not None})
             rows.append(row)

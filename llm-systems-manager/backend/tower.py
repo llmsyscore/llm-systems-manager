@@ -72,6 +72,7 @@ _CONFIG_FENCES = frozenset({"", "text", "txt", "toml", "ini", "json", "yaml", "y
                             "properties", "log", "diff", "csv", "tsv", "markdown", "md"})
 _HISTORY_CHARS = 8000
 _APPROVAL_TTL_S = 600.0
+QUESTION_ANSWER_MAX = 500
 _MODEL_NAME_SAFE = re.compile(r"[^A-Za-z0-9._:/ -]")
 
 
@@ -170,6 +171,16 @@ def system_prompt(cfg, tools: "list[tower_tools.Tool]", page: Optional[dict], na
             "when the operator asked for that change, one at a time, and say in one line what you are about to do. "
             "After the result, report it in one line. If an action is denied or expires, do not retry it. "
             "Never say an action was done unless you called its tool in this turn and the result says ok; a past turn's outcome does not count."
+        )
+    if any(t.kind == "ask" for t in tools):
+        parts.append(
+            "When a request names a host, model or alert loosely and more than one could match (the LM Studio box "
+            "when two hosts run LM Studio, the llama server when two hosts run one, the model when a host lists "
+            "several in models), call ask_operator before any action instead of picking the likeliest; also ask when "
+            "your reading of an ambiguous request could be wrong. Give the matches as choices, each a short label (the "
+            "host or model name, then a few words of state); the card adds Other. Related picks (host and model) go "
+            "in one call as questions with short labels; otherwise ask one thing at a time. Never ask what a tool can "
+            "tell you, and continue with the answers it returns. If it returns no answer, say so in one line and stop."
         )
     if str(getattr(cfg, "off_topic", "refuse")) == "refuse":
         parts.append(f"If a request is not about this manager or its hosts, reply exactly: {REFUSAL}")
@@ -355,8 +366,15 @@ class _Cancelled(Exception):
     """Raised by _stream_reply when cancelled() fires mid-stream."""
 
 
+def _clean_answers(options) -> "list[str]":
+    """The answer list from an /answer body: `answers` (one per question) or a single `answer`, whitespace collapsed."""
+    o = options if isinstance(options, dict) else {}
+    raw = o.get("answers") if isinstance(o.get("answers"), list) else [o.get("answer")]
+    return [" ".join(str(x or "").split())[:QUESTION_ANSWER_MAX] for x in raw[:tower_tools.QUESTIONS_MAX]]
+
+
 class Approvals:
-    """Pending act approvals: the loop's worker waits on an Event the approve/deny route sets."""
+    """Pending approval and question cards: the loop's worker waits on an Event the decide/answer routes set."""
     def __init__(self):
         self._lock = threading.Lock()
         self._pending: "dict[str, dict]" = {}
@@ -682,6 +700,47 @@ def _run_action(store, approvals: "Approvals", thread_id: str, run_id: str, acto
         approvals.forget(aid)
 
 
+_NO_ANSWER = "no answer from the operator"
+
+
+def _run_question(store, approvals: "Approvals", thread_id: str, run_id: str, actor: str, tool, args: dict,
+                emit: Callable[[dict], None], cancelled: Callable[[], bool]) -> "tuple[dict, bool]":
+    """Parks the turn on a question card; the operator's pick comes back as the tool result. Returns (result, ok)."""
+    card = tower_tools.question_card(args)
+    aid = store.create_action(thread_id, run_id, tool.name, args, card, _APPROVAL_TTL_S)
+    approvals.register(aid)
+    try:
+        emit({"event": "question", "action_id": aid, "tool": tool.name, "question": card["question"],
+              "choices": card["choices"], "questions": card["questions"], "actor": f"tower via {actor}",
+              "expires_s": int(_APPROVAL_TTL_S)})
+        decision = approvals.wait(aid, time.time() + _APPROVAL_TTL_S, cancelled)
+        ev = {"event": "answer", "action_id": aid, "tool": tool.name}
+        if decision is None:
+            stopped = cancelled()
+            status, who = ("denied", "stopped") if stopped else ("expired", None)
+            msg = "stopped" if stopped else _NO_ANSWER
+            store.resolve_action(aid, status, actor=who, result={"ok": False, "message": msg})
+            emit({**ev, "status": status, "message": msg, "actor": who})
+            if stopped:
+                raise _Cancelled()
+            return {"ok": False, "message": _NO_ANSWER}, False
+        answers = list((decision.get("options") or {}).get("answers") or [])
+        if decision["status"] != "answered" or len(answers) != len(card["questions"]) or not all(answers):
+            msg = "dismissed by the operator" if decision["status"] == "denied" else _NO_ANSWER
+            store.resolve_action(aid, "denied", actor=decision["actor"], result={"ok": False, "message": msg})
+            emit({**ev, "status": "denied", "message": msg, "actor": decision["actor"]})
+            return {"ok": False, "message": msg}, False
+        pairs = [{"question": q["question"], "answer": a} for q, a in zip(card["questions"], answers)]
+        text = answers[0] if len(pairs) == 1 else "\n".join(f"{p['question']} {p['answer']}" for p in pairs)
+        result = {"ok": True, "answer": answers[0], "answers": pairs}
+        store.resolve_action(aid, "done", actor=decision["actor"], result={**result, "text": text}, ms=0)
+        store.add_message(thread_id, "user", text)
+        emit({**ev, "status": "answered", "answer": text, "answers": pairs, "actor": decision["actor"]})
+        return result, True
+    finally:
+        approvals.forget(aid)
+
+
 def heartbeat_fn(complete_stream: Callable, model: dict) -> Callable[[], None]:
     """A one-token completion that keeps an idle-sleeping Tower model awake during a long wait."""
     def beat() -> None:
@@ -883,6 +942,13 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     result, ok, summary = {"ok": False, "message": skip}, False, f"{name} · {skip}"
                 elif tool.kind == "act":
                     result, ok = _run_action(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
+                    summary, acted = "", True
+                elif tool.kind == "ask" and approvals is None:
+                    result, ok, summary = tool.run(args), False, f"{name} · no question channel"
+                elif tool.kind == "ask" and not tower_tools.question_card(args)["questions"]:
+                    result, ok, summary = {"error": f"{name} needs a question"}, False, f"{name} · no question"
+                elif tool.kind == "ask":
+                    result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
                     summary, acted = "", True
                 else:
                     result, ok = tower_tools.run_tool(tool, args)
@@ -1131,7 +1197,8 @@ class Store:
             a = dict(zip(self._ACTION_KEYS, r))
             body = {"action_id": a["id"], "run_id": a["run_id"], "tool": a["tool"], "args": json.loads(a["args"] or "{}"),
                     "card": json.loads(a["card"] or "{}"), "status": a["status"], "actor": a["actor"], "expires": a["expires"],
-                    "message": ((json.loads(a["result"]) or {}).get("message") if a["result"] else None)}
+                    "message": ((json.loads(a["result"]) or {}).get("message") if a["result"] else None),
+                    "answer": ((lambda r: r.get("text") or r.get("answer"))(json.loads(a["result"]) or {}) if a["result"] else None)}
             ok = 1 if a["status"] == "done" else (None if a["status"] in ("pending", "running") else 0)
             out.append({"role": "action", "content": json.dumps(body, default=str), "tool_name": a["tool"], "tool_args": a["args"],
                         "tool_ok": ok, "tool_ms": a["ms"], "ts": a["requested"]})
@@ -1408,9 +1475,9 @@ class Runs:
     def _emit(self, run: dict, ev: dict) -> None:
         """Tracks the parked action so a closed stream does not cancel an awaiting run."""
         kind = ev.get("event")
-        if kind == "confirm":
+        if kind in ("confirm", "question"):
             run["awaiting"] = ev.get("action_id")
-        elif kind == "action":
+        elif kind in ("action", "answer"):
             run["awaiting"] = None
         _drop_oldest_put(run, ev)
 
@@ -1477,6 +1544,16 @@ class Runs:
             return None, (404, "unknown action")
         if a["status"] != "pending":
             return None, (409, "not pending")
+        is_ask = a["tool"] in tower_tools.ASK_TOOL_NAMES
+        if decision == "answered" and not is_ask:
+            return None, (400, "not a question")
+        if decision == "approved" and is_ask:
+            return None, (400, "a question needs an answer")
+        if decision == "answered":
+            answers = _clean_answers(options)
+            if len(answers) != len((a.get("card") or {}).get("questions") or []) or not all(answers):
+                return None, (400, "every question needs an answer")
+            options = {"answers": answers}
         if decision == "approved":
             allowed = {t.name for t in tower_tools.catalog(self._registry_factory(), self._cfg(), role)}
             if a["tool"] not in allowed:
@@ -1518,7 +1595,7 @@ class Runs:
                     yield ": keepalive\n\n"
                     continue
                 yield "data: " + json.dumps(ev, default=str) + "\n\n"
-                if ev.get("event") in ("done", "error", "confirm"):
+                if ev.get("event") in ("done", "error", "confirm", "question"):
                     reason = ev["event"]
                     return
         finally:
@@ -1537,8 +1614,9 @@ _ASK_TOO_LONG = "Tower took too long to answer."
 
 
 class ReadOnlyView:
-    """A settings view pinned to the read tier; every other field reads through to the live config."""
+    """A settings view pinned to the read tier with no question cards; every other field reads through to the live config."""
     capabilities = "read"
+    questions = False
 
     def __init__(self, cfg):
         self._cfg = cfg
@@ -1588,7 +1666,7 @@ def ask_blocking(runs: Runs, *, user: str, role: str, text: str, page: Optional[
         elif kind == "error":
             error = str(ev.get("message") or "Tower failed.")
             break
-        elif kind == "confirm":
+        elif kind in ("confirm", "question"):
             declined = True
             runs.approve(str(ev.get("action_id") or ""), user=user, role=role, decision="denied")
         elif kind == "done":
@@ -1766,6 +1844,25 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
     @app.route("/api/tower/actions/<aid>/deny", methods=["POST"])
     def tower_action_deny(aid):
         return _decide(aid, "denied")
+
+    @app.route("/api/tower/actions/<aid>/answer", methods=["POST"])
+    def tower_action_answer(aid):
+        deny = _gate()
+        if deny: return deny
+        body = flask_request.get_json(silent=True) or {}
+        answers = _clean_answers(body)
+        if not any(answers):
+            return jsonify({"ok": False, "error": "answer required"}), 400
+        user = _user()
+        out, err = runs.approve(aid, user=user, role=auth.effective_role() or "operator", decision="answered",
+                                options={"answers": answers})
+        g._audit_actor = f"tower via {user}"
+        if err:
+            return jsonify({"ok": False, "error": err[1]}), err[0]
+        card = (runs.store.get_action(aid) or {}).get("card") or {}
+        g._audit_extra = {"tool": out["tool"], "questions": [q.get("question") for q in card.get("questions") or []],
+                          "answers": answers, "thread_id": out["thread_id"]}
+        return jsonify({"ok": True, **{k: out[k] for k in ("run_id", "status", "tool", "thread_id")}})
 
     @app.route("/api/tower/model", methods=["PUT"])
     def tower_model_pin():

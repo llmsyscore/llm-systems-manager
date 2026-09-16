@@ -78,6 +78,33 @@
         s.turns[i] = { ...t, actions };
         s.status = 'thinking'; return s;
       }
+      // A question card parks the turn like an approval; the answer becomes the next user turn (#1028).
+      case 'question': {
+        s.turns = ensureTower(s.turns);
+        const qs = (ev.questions || []).map(q => ({ question: String(q.question || ''), choices: (q.choices || []).map(String), label: String(q.label || '') }));
+        const a = { id: ev.action_id, tool: ev.tool || 'ask_operator', args: {}, card: { question: ev.question || '', choices: (ev.choices || []).map(String), questions: qs },
+                    status: 'pending', tier: 'read', role: 'operator', actor: ev.actor || '', message: null, ms: null, answer: null,
+                    expires: ev.expires_s != null ? Math.floor(Date.now() / 1000) + Number(ev.expires_s) : null };
+        s.turns[s.turns.length - 1] = { ...last(s.turns), actions: (last(s.turns).actions || []).concat([a]) };
+        s.status = 'awaiting'; return s;
+      }
+      case 'answer': {
+        const i = findAction(s.turns, ev.action_id);
+        const answered = ev.status === 'answered';
+        const was = i >= 0 ? s.turns[i].actions.find(a => a.id === ev.action_id).status : 'pending';
+        if (was !== 'pending') { s.turns = ensureTower(s.turns); s.status = 'thinking'; return s; }
+        if (i >= 0) {
+          const t = s.turns[i];
+          const actions = t.actions.map(a => a.id === ev.action_id
+            ? { ...a, status: answered ? 'done' : (ev.status || a.status), answer: answered ? String(ev.answer || '') : a.answer,
+                message: ev.message == null ? a.message : ev.message, actor: ev.actor || a.actor }
+            : a);
+          s.turns[i] = { ...t, actions, done: answered ? true : t.done };
+        }
+        if (answered) s.turns.push({ role: 'user', text: String(ev.answer || '') });
+        s.turns = ensureTower(s.turns);
+        s.status = 'thinking'; return s;
+      }
       default: return s;
     }
   }
@@ -175,6 +202,7 @@
         const b = safeJson(r.content) || {};
         cur.actions.push({ id: b.action_id, runId: b.run_id || null, tool: b.tool || r.tool_name, args: b.args || {}, card: b.card || {}, status: b.status || 'pending',
                            tier: b.tier || 'operate', role: b.role || 'operator', actor: b.actor || '', message: b.message == null ? null : b.message,
+                           answer: b.answer == null ? null : String(b.answer),
                            ms: r.tool_ms == null ? null : r.tool_ms, expires: b.expires == null ? null : b.expires });
       }
     });

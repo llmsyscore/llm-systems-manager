@@ -32,6 +32,7 @@ _OPEN_ALERT = ("active", "acknowledged")
 class _ReadOnly:
     """cfg view for diagnosis runs: read tier, refuse off-topic, capped tool calls and first-token wait."""
     capabilities = "read"
+    questions = False
     off_topic = "refuse"
 
     def __init__(self, cfg):

@@ -134,6 +134,52 @@ describe('actions', () => {
     s = TW.reduce(s, { event: 'done', ok: true });
     expect(s.turns[1].text).toBe('awake');
   });
+  test('a question parks the turn; the answer closes it and becomes the next user turn (#1028)', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'restart it' });
+    s = TW.reduce(s, { event: 'question', action_id: 'q1', tool: 'ask_operator', question: 'Which host?', choices: ['box', 'mac'], actor: 'tower via adriel', expires_s: 600 });
+    expect(s.status).toBe('awaiting');
+    expect(s.turns[1].actions[0]).toMatchObject({ id: 'q1', tool: 'ask_operator', status: 'pending', card: { question: 'Which host?', choices: ['box', 'mac'], questions: [] }, answer: null, expires: expect.any(Number) });
+    const multi = TW.reduce(TW.initial(), { event: 'question', action_id: 'q2', questions: [{ question: 'Host?', choices: ['a'], label: 'Host' }, { question: 'Model?', choices: [] }] });
+    expect(multi.turns[0].actions[0].card.questions).toEqual([{ question: 'Host?', choices: ['a'], label: 'Host' }, { question: 'Model?', choices: [], label: '' }]);
+    expect(TW.liveRun([...s.turns.slice(0, 1), { ...s.turns[1], actions: [{ ...s.turns[1].actions[0], runId: 'r1' }] }])).toEqual({ runId: 'r1', status: 'pending' });
+    s = TW.reduce(s, { event: 'answer', action_id: 'q1', tool: 'ask_operator', status: 'answered', answer: 'mac', actor: 'adriel' });
+    expect(s.status).toBe('thinking');
+    expect(s.turns.map(t => t.role)).toEqual(['user', 'tower', 'user', 'tower']);
+    expect(s.turns[1].actions[0]).toMatchObject({ status: 'done', answer: 'mac', actor: 'adriel' });
+    expect(s.turns[1].done).toBe(true);
+    expect(s.turns[2].text).toBe('mac');
+    s = TW.reduce(s, { event: 'delta', text: 'restarting mac' });
+    s = TW.reduce(s, { event: 'done', ok: true });
+    expect(s.turns[3].text).toBe('restarting mac');
+  });
+  test('a repeated answer event for an already answered card changes nothing', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'restart it' });
+    s = TW.reduce(s, { event: 'question', action_id: 'q1', question: 'Which host?', choices: ['box', 'mac'], expires_s: 600 });
+    s = TW.reduce(s, { event: 'answer', action_id: 'q1', status: 'answered', answer: 'mac' });
+    const once = JSON.stringify(s.turns);
+    s = TW.reduce(s, { event: 'answer', action_id: 'q1', status: 'answered', answer: 'mac' });
+    expect(JSON.stringify(s.turns)).toBe(once);
+    expect(s.turns.map(t => t.role)).toEqual(['user', 'tower', 'user', 'tower']);
+  });
+  test('an expired question keeps the turn and adds no user turn', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'restart it' });
+    s = TW.reduce(s, { event: 'question', action_id: 'q1', question: 'Which host?', choices: ['box'], expires_s: 600 });
+    s = TW.reduce(s, { event: 'answer', action_id: 'q1', status: 'expired', message: 'no answer from the operator' });
+    expect(s.turns.map(t => t.role)).toEqual(['user', 'tower']);
+    expect(s.turns[1].actions[0]).toMatchObject({ status: 'expired', message: 'no answer from the operator', answer: null });
+    expect(s.status).toBe('thinking');
+  });
+  test('threadView carries a stored question card with its answer, followed by the answer as a user turn', () => {
+    const v = TW.threadView([
+      { role: 'user', content: 'restart it', ts: 1 },
+      { role: 'action', content: JSON.stringify({ action_id: 'q1', tool: 'ask_operator', card: { question: 'Which host?', choices: ['box', 'mac'] }, status: 'done', answer: 'mac', actor: 'adriel' }), tool_name: 'ask_operator', tool_ok: 1, ts: 2 },
+      { role: 'user', content: 'mac', ts: 3 },
+      { role: 'assistant', content: 'restarting mac', ts: 4 },
+    ]);
+    expect(v.map(t => t.role)).toEqual(['user', 'tower', 'user', 'tower']);
+    expect(v[1].actions[0]).toMatchObject({ id: 'q1', tool: 'ask_operator', status: 'done', answer: 'mac', card: { question: 'Which host?', choices: ['box', 'mac'] } });
+    expect(v[3].text).toBe('restarting mac');
+  });
   test('an action resolves the card in whichever turn holds it, appending nothing', () => {
     let s = { ...TW.initial(), turns: TW.threadView([
       { role: 'action', content: JSON.stringify({ action_id: 'a1', tool: 'wake_server', card: CARD, status: 'pending' }), tool_name: 'wake_server' },
