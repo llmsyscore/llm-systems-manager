@@ -287,15 +287,18 @@ class Timers:
     def _sample(self, row: dict, now: float) -> None:
         cfg = self._cfg()
         if not bool(getattr(cfg, "enabled", False)):
-            return self._finish(row, "failed", "Tower was turned off")
+            self._finish(row, "failed", "Tower was turned off")
+            return
         if not self._store.thread_user(row["thread_id"]):
-            return self._finish(row, "failed", "the conversation was deleted")
+            self._finish(row, "failed", "the conversation was deleted")
+            return
         registry = self._registry_factory()
         allowed = {t.name for t in tower_tools.catalog(registry, cfg, row["role"])}
         spec = row["spec"]
         name = "host_detail" if spec["kind"] == "metric" else spec["tool"]
         if TOOL_NAME not in allowed or name not in allowed:
-            return self._finish(row, "failed", f"{name} is no longer available")
+            self._finish(row, "failed", f"{name} is no longer available")
+            return
         samples = list(row["samples"])
         if self.runs is not None and not self.runs.count_tick(row["user"]):
             samples.append({"t": now, "error": "rate limited"})
@@ -316,7 +319,8 @@ class Timers:
         if self.runs is None:
             return
         if not self._store.thread_user(row["thread_id"]):
-            return self._finish(row, "failed", "the conversation was deleted")
+            self._finish(row, "failed", "the conversation was deleted")
+            return
         live = self._store.get_timer(row["id"])
         if not live or live["status"] != "reporting":
             return

@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 import types
 
-import pytest
-
 import tower
 import tower_timers as tm
 import tower_tools as tt
