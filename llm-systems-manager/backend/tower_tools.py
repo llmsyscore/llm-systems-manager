@@ -800,7 +800,7 @@ def filter_log_lines(lines: list, *, search: Optional[str] = None, level: Option
 # Every tool name build_registry can return, for the settings chip list.
 READ_TOOL_NAMES = ("hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history",
                    "alert_detail", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health",
-                   "log_tail", "config_get", "help", "support", "wait_until", "audit_log")
+                   "log_tail", "config_get", "help", "support", "wait_until", "audit_log", "jobs")
 ASK_TOOL_NAMES = ("ask_operator",)
 QUESTION_CHOICES_MAX = 6
 QUESTIONS_MAX = 4
@@ -810,7 +810,7 @@ TIMER_MIN_EVERY_S = 30
 TIMER_MAX_SPAN_S = 3600
 TIMER_MAX_SAMPLES = 120
 ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "start_benchmark", "ack_alert", "close_alert",
-                  "resume_alert")
+                  "resume_alert", "cancel_job")
 WAIT_KINDS = ("host_awake", "model_loaded", "model_ready", "run_done", "reportcard_done")
 BENCH_KINDS = ("live", "reportcard")
 TOOL_NAMES = READ_TOOL_NAMES + ASK_TOOL_NAMES + TIMER_TOOL_NAMES + ACT_TOOL_NAMES
@@ -1062,6 +1062,13 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
                    "count": {"type": "integer", "minimum": 1, "maximum": AUDIT_COUNT_MAX, "default": 20},
                    "offset": {"type": "integer", "minimum": 0, "default": 0}}), "read", "read",
              lambda a: deps["audit"](a.get("window", "24h"), a.get("actor"), a.get("action"), a.get("count", 20), a), role="admin"),
+        Tool("jobs", "Scheduled and queued work on this manager (Tower timers, autotune batches): kind, label, status, when it "
+             "runs next or ran last, who submitted it. status live (default) = queued and running; job_id returns one job "
+             "with its spec, state and result.",
+             _obj({"status": {"type": "string", "enum": ["live", "all", "queued", "running", "done", "failed", "cancelled"], "default": "live"},
+                   "kind": {"type": "string"}, "job_id": {"type": "string"},
+                   "count": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10}}),
+             "read", "read", lambda a: deps["jobs"](a.get("status", "live"), a.get("kind"), a.get("job_id"), int(a.get("count") or 10))),
     ]
     tools += [
         Tool("ask_operator", "Asks the operator what you cannot continue without: which host, which model, which alert, "
@@ -1118,6 +1125,10 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              "active and its rule resumes; this is not a close.",
              _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "act", "operate", lambda a: _act(deps, "resume_alert", "resume", a["alert_id"]),
              precheck=lambda a: alert_precheck(deps, "resume", a["alert_id"])),
+        Tool("cancel_job", "Cancel a queued or running job (asks the operator first). Read jobs first to get the id; a "
+             "finished job is reported, not re-actioned.",
+             _obj({"job_id": {"type": "string"}}, ["job_id"]), "act", "operate", lambda a: _act(deps, "cancel_job", "cancel_job", a["job_id"]),
+             precheck=lambda a: (deps.get("job_precheck") or (lambda _j: None))(a["job_id"])),
     ]
     return {t.name: t for t in tools}
 
@@ -1171,6 +1182,9 @@ def action_card(tool: Tool, args: dict) -> dict:
                          "Does not close the alert."),
         "close_alert": (f"Close alert {aid}", f"alert {aid}", "Closes the alert in the alarm engine.",
                         "It reopens if the rule fires again."),
+        "cancel_job": (f"Cancel job {args.get('job_id')}", f"job {args.get('job_id')}",
+                       "Stops the job in the manager's ledger; a running autotune batch is cancelled after its current item.",
+                       "Nothing else on the hosts changes."),
     }
     title, target, does, not_ = cards.get(tool.name, (tool.name.replace("_", " "), host or aid, tool.description, ""))
     return {"title": title, "target": target, "does": does, "not": not_}
@@ -1326,7 +1340,8 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
               audit_rows: Callable[[str, Optional[str], Optional[str], int], list],
               bench_start: Optional[Callable[[dict], dict]] = None,
               bench_options: Optional[Callable[[dict], list]] = None,
-              card_result: Optional[Callable[[str], Optional[dict]]] = None) -> dict:
+              card_result: Optional[Callable[[str], Optional[dict]]] = None,
+              jobs_service=None) -> dict:
     """Production readers: Discord bot deps for hosts/host/alarms, plus models from the
     gateway index + polled provider state, energy, flow, runs, speed, health, log tail, masked config."""
     import urllib.parse
@@ -1896,6 +1911,29 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             return False
         return bool(agent) and str(agent.get("hostname") or "").lower() == str(host or "").lower()
 
+    def _jobs(status="live", kind=None, job_id=None, count=10):
+        if jobs_service is None:
+            return {"error": "jobs are not wired"}
+        if job_id:
+            row = jobs_service.get(str(job_id)[:32])
+            return jobs_service.view(row, role="admin", user="", detail=True) if row else {"error": "job not found"}
+        rows = jobs_service.list(status or "live", kind=kind or None, limit=int(count or 10))
+        return [jobs_service.view(r, role="admin", user="") for r in rows]
+
+    def _cancel_job(job_id):
+        if jobs_service is None:
+            return False, "jobs are not wired"
+        out = jobs_service.cancel(str(job_id)[:32], actor="tower")
+        return (True, None) if out else (False, "job is not live")
+
+    def _job_precheck(job_id):
+        if jobs_service is None:
+            return "jobs are not wired"
+        row = jobs_service.get(str(job_id)[:32])
+        if not row:
+            return "job not found"
+        return None if row["status"] in ("queued", "running") else f"job is {row['status']}"
+
     deps_out = {
         "hosts": hosts_overview, "host": host_detail, "host_history": host_history,
         "models": models, "profiles": profiles,
@@ -1912,4 +1950,5 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         "bench_start": bench_start or (lambda a: {"ok": False, "message": "benchmarks are not wired"}),
         "bench_options": bench_options or (lambda a: []),
     }
+    deps_out.update({"jobs": _jobs, "cancel_job": _cancel_job, "job_precheck": _job_precheck})
     return deps_out

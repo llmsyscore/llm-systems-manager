@@ -290,6 +290,12 @@ nightly_at = "03:00"                                     # local time; blank = n
 on_build_change = true                                   # also re-check when the host's llama.cpp build changes
 regression_pct = 15.0                                    # alert when decode t/s drops this much vs the pin
 
+[manager.jobs]
+# Job service (#915): one ledger + dispatcher for scheduled and queued work
+# (Tower timers, autotune batches). Both keys are hot.
+workers = 4                                              # jobs the dispatcher runs at once (1-16)
+history_days = 30                                        # done/failed/cancelled jobs older than this are deleted daily (1-365)
+
 [manager.audit]
 # Admin action audit log. Entries older than retention_days are purged every
 # 24 h and at start; 0 keeps everything (a 100,000-row cap still applies).

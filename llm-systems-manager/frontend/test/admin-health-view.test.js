@@ -347,3 +347,68 @@ describe('alarm-engine auth posture (#828)', () => {
     expect(view().pillOf(d, rows)).toEqual(['warn', 'Attention']);
   });
 });
+
+describe('jobs strip (#915)', () => {
+  const NOW = 1_800_000_000;
+  const JOBS = { queued: 1, running: 1, failed_24h: 1, next_due: NOW + 3600, rows: [
+    { id: 'j1', label: 'Autotune batch · 2 hosts', kind_title: 'Autotune batch', status: 'queued', user: 'alice', source: 'ui', next_run: NOW + 3600, can_cancel: true },
+    { id: 'j2', label: 'ram_pct on box', kind_title: 'Tower timer', status: 'running', user: 'bob', source: 'tower', started: NOW - 120, can_cancel: false },
+    { id: 'j3', label: 'old', kind_title: 'Autotune batch', status: 'failed', user: '', source: 'system', resolved: NOW - 7200, message: 'boom', can_cancel: false },
+  ] };
+
+  test('jobsRows maps status, timing and by-line', () => {
+    const rows = view().jobsRows({ jobs: JOBS }, NOW);
+    expect(rows.map(r => r.k)).toEqual(['queued', 'running', 'failed']);
+    expect(rows[0]).toMatchObject({ id: 'j1', kind: 'Autotune batch', when: 'next in 1h 0m', by: 'alice', cancel: true });
+    expect(rows[0].live).toBe(true);
+    expect(rows[1].when).toBe('started 2m ago');
+    expect(rows[2].when).toBe('failed 2h 0m ago — boom');
+    expect(rows[2].by).toBe('system');
+    expect(rows[2].live).toBe(false);
+    expect(view().jobsRows({}, NOW)).toEqual([]);
+  });
+
+  test('render paints the strip, summary and a cancel button only where allowed', () => {
+    const doc = card({ ...HEALTHY, jobs: JOBS });
+    const sum = doc.getElementById('adminHealthJobsSum').textContent;
+    expect(sum).toBe('1 queued · 1 running · 1 failed today');
+    const rows = doc.querySelectorAll('#adminHealthJobsList .hj');
+    expect(rows.length).toBe(3);
+    expect(rows[0].querySelector('[data-cancel-job]')).not.toBeNull();
+    expect(rows[1].querySelector('[data-cancel-job]')).toBeNull();
+    expect(rows[0].querySelector('.dot').className).toBe('dot ok');
+    expect(rows[1].querySelector('.dot').className).toBe('dot ok pulse');
+    expect(rows[2].querySelector('.dot').className).toBe('dot crit');
+    expect(rows[0].classList.contains('live')).toBe(true);
+    expect(rows[1].classList.contains('live')).toBe(true);
+    expect(rows[2].classList.contains('live')).toBe(false);
+    const none = card({ ...HEALTHY, jobs: { queued: 0, running: 0, failed_24h: 0, next_due: null, rows: [] } });
+    expect(none.getElementById('adminHealthJobsList').textContent.trim()).toBe('None');
+    expect(none.getElementById('adminHealthJobsSum').textContent).toBe('none');
+  });
+
+  test('cancel click posts to /api/jobs/<id>/cancel', () => {
+    const doc = card({ ...HEALTHY, jobs: JOBS }, null,
+      'window.__posts = []; window.fetch = (u, o) => { window.__posts.push([u, (o||{}).method]); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };');
+    doc.querySelector('[data-cancel-job="j1"]').click();
+    expect(doc.defaultView.__posts).toEqual([['/api/jobs/j1/cancel', 'POST']]);
+  });
+
+  test('done/cancelled read past-tense with no message suffix or cancel button; a "waiting for" message overrides queued wording', () => {
+    const rows = [
+      { id: 'j4', label: 'done job', kind_title: 'Autotune batch', status: 'done', resolved: NOW - 300, message: 'ignored', user: 'alice', can_cancel: false },
+      { id: 'j5', label: 'cancelled job', kind_title: 'Tower timer', status: 'cancelled', resolved: NOW - 300, message: 'ignored', source: 'ui', can_cancel: false },
+      { id: 'j6', label: 'waiting job', kind_title: 'Autotune batch', status: 'queued', next_run: NOW + 60, message: 'waiting for perf:x', can_cancel: true },
+    ];
+    const mapped = view().jobsRows({ jobs: { rows } }, NOW);
+    expect(mapped[0]).toMatchObject({ id: 'j4', when: 'done 5m ago', by: 'alice', cancel: false });
+    expect(mapped[1]).toMatchObject({ id: 'j5', when: 'cancelled 5m ago', by: 'ui', cancel: false });
+    expect(mapped[2].when).toBe('waiting for perf:x');
+
+    const doc = card({ ...HEALTHY, jobs: { queued: 1, running: 0, failed_24h: 0, next_due: null, rows } });
+    const hj = doc.querySelectorAll('#adminHealthJobsList .hj');
+    expect(hj[0].querySelector('[data-cancel-job]')).toBeNull();
+    expect(hj[1].querySelector('[data-cancel-job]')).toBeNull();
+    expect(hj[2].querySelector('[data-cancel-job]')).not.toBeNull();
+  });
+});

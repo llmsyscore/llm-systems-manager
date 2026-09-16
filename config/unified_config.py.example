@@ -299,6 +299,13 @@ class ManagerBenchBaselines(BaseModel):
     regression_pct: float = 15.0
 
 
+class ManagerJobs(BaseModel):
+    """Job service (#915): worker cap for the dispatcher and how long resolved jobs are kept."""
+    model_config = _MODEL_CFG
+    workers: int = Field(4, ge=1, le=16)
+    history_days: int = Field(30, ge=1, le=365)
+
+
 class ManagerConfig(BaseModel):
     model_config = _MODEL_CFG
     host: str = "0.0.0.0"
@@ -370,6 +377,7 @@ class ManagerConfig(BaseModel):
     branding: ManagerBranding = Field(default_factory=ManagerBranding)
     backup: ManagerBackup = Field(default_factory=ManagerBackup)
     bench_baselines: ManagerBenchBaselines = Field(default_factory=ManagerBenchBaselines)
+    jobs: ManagerJobs = Field(default_factory=ManagerJobs)
     audit: ManagerAudit = Field(default_factory=ManagerAudit)
 
 

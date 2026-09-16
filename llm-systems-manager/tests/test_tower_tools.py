@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import types
 from datetime import timedelta, timezone
 
 import pytest
 
+import jobs
 import tower_tools as tt
 
 
@@ -42,6 +44,13 @@ def _deps():
         "restart": lambda provider, host: (True, None),
         "ack": lambda aid: (aid == "a1", None if aid == "a1" else "alert not found"),
         "close": lambda aid: (True, None),
+        "jobs": lambda status="live", kind=None, job_id=None, count=10: (
+            {"id": job_id, "kind": "autotune_batch", "label": "Autotune batch · 2 hosts", "status": "queued"} if job_id == "j1"
+            else {"error": "job not found"} if job_id else
+            [{"id": "j1", "kind": "autotune_batch", "kind_title": "Autotune batch", "label": "Autotune batch · 2 hosts", "status": "queued",
+              "next_run_local": "2026-09-16 02:00:00", "user": "alice", "source": "ui"}][:count]),
+        "cancel_job": lambda jid: (jid == "j1", None if jid == "j1" else "not found"),
+        "job_precheck": lambda jid: None if jid == "j1" else "job is done",
     }
 
 
@@ -53,9 +62,9 @@ def _cfg(**over):
 
 READ = {"hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history", "alert_detail",
         "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get",
-        "help", "support", "audit_log", "wait_until"}
+        "help", "support", "audit_log", "wait_until", "jobs"}
 ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert", "start_benchmark",
-       "resume_alert"}
+       "resume_alert", "cancel_job"}
 
 
 def test_registry_has_read_and_act_tools():
@@ -1595,3 +1604,57 @@ def test_probe_dep_sends_a_one_token_completion_to_the_host(monkeypatch):
     answers["body"] = ValueError("not json")
     assert deps["probe"]("box", "Qwen3-14B") is None
     assert deps["probe"]("ghost", "Qwen3-14B") is None
+
+
+def test_jobs_tool_lists_and_details():
+    reg = tt.build_registry(_deps())
+    t = reg["jobs"]
+    assert (t.kind, t.tier) == ("read", "read") and "jobs" in tt.READ_TOOL_NAMES
+    args, err = tt.validate_args(t, {"status": "live", "count": 5})
+    assert err is None
+    out, ok_ = tt.run_tool(t, args)
+    assert ok_ and out[0]["label"] == "Autotune batch · 2 hosts"
+    out, ok_ = tt.run_tool(t, {"job_id": "j1"})
+    assert ok_ and out["id"] == "j1"
+    assert tt.validate_args(t, {"status": "bogus"})[1]
+
+
+def test_cancel_job_tool_is_an_operate_action_with_precheck_and_card():
+    reg = tt.build_registry(_deps())
+    t = reg["cancel_job"]
+    assert (t.kind, t.tier) == ("act", "operate") and tt.ACT_TOOL_NAMES[-1] == "cancel_job"
+    assert t.precheck({"job_id": "j1"}) is None and t.precheck({"job_id": "j9"}) == "job is done"
+    assert tt.run_tool(t, {"job_id": "j1"}) == ({"ok": True, "message": "done"}, True)
+    card = tt.action_card(t, {"job_id": "j1"})
+    assert card["title"] == "Cancel job j1" and "ledger" in card["does"].lower()
+
+
+def test_prod_jobs_wires_a_real_jobs_service(monkeypatch):
+    import discord_bot
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"ack": lambda a: (True, None), "close": lambda a: (True, None)})
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30), inline=True)
+    svc.register(jobs.Kind("echo", "Echo", run=lambda j: jobs.ok()))
+    row = svc.submit("echo", {"x": 1}, user="alice", role="operator", source="ui")
+
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [],
+                        jobs_service=svc)
+
+    rows = deps["jobs"]("live", None, None, 10)
+    assert isinstance(rows, list) and rows[0]["id"] == row["id"] and rows[0]["kind_title"] == "Echo"
+    detail = deps["jobs"](None, None, row["id"], 10)
+    assert detail["id"] == row["id"] and "spec" in detail
+    assert deps["jobs"](None, None, "nope", 10) == {"error": "job not found"}
+    assert deps["job_precheck"](row["id"]) is None
+    assert deps["cancel_job"](row["id"]) == (True, None)
+    assert deps["job_precheck"](row["id"]) == "job is cancelled"
+    assert deps["cancel_job"](row["id"]) == (False, "job is not live")
+
+    unwired = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                           service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    assert unwired["jobs"]() == {"error": "jobs are not wired"}
+    assert unwired["cancel_job"]("x") == (False, "jobs are not wired")
+    assert unwired["job_precheck"]("x") == "jobs are not wired"

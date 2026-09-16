@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import threading
 import time
 from datetime import datetime
 from typing import Any, Callable, Optional
 
+import jobs
 import tower_tools
 
 log = logging.getLogger("tower")
@@ -23,11 +23,12 @@ REPORT_CHARS = 8000
 REPORT_RETRY_S = 600.0
 RECENT_S = 120.0
 POLL_S = 2.0
+EARLY_FAIL_TICKS = 3
 TOOL_NAME = "schedule"
 TICK_TOOL = "timer"
 METRICS = tower_tools.TIMER_METRICS
 METRIC_UNIT = {"cpu_pct": "%", "ram_pct": "%", "gpu_pct": "%", "gpu_temp_c": "C", "watts": "W"}
-LIVE = ("queued", "running", "reporting")
+KIND = "tower_timer"
 _NOT_POLLABLE = frozenset({TOOL_NAME, "wait_until", "help", "support"})
 _CANCELLED = "cancelled by the operator"
 REPORT_PREFIX = "⏱ Timer finished: "
@@ -62,6 +63,32 @@ def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
+def _fleet_names(registry: dict) -> str:
+    """Comma-separated hostnames from hosts_overview, or "" when it is unavailable."""
+    tool = registry.get("hosts_overview") if isinstance(registry, dict) else None
+    if tool is None:
+        return ""
+    result, ok = tower_tools.run_tool(tool, {})
+    if not ok:
+        return ""
+    rows = result.get("items") if isinstance(result, dict) else result
+    if not isinstance(rows, list):
+        return ""
+    return ", ".join(str(r["hostname"]) for r in rows if isinstance(r, dict) and r.get("hostname"))
+
+
+def _host_known(allowed: dict, registry: dict, host: str) -> Optional[str]:
+    """None when host_detail resolves `host`; else an error naming the fleet (or skips when host_detail is unavailable)."""
+    tool = allowed.get("host_detail") if isinstance(allowed, dict) else None
+    if tool is None:
+        return None
+    result, ok = tower_tools.run_tool(tool, {"host": host, "section": "summary"})
+    if ok and isinstance(result, dict) and not result.get("error"):
+        return None
+    names = _fleet_names(registry)
+    return f"unknown host: {host}; hosts are {names}" if names else f"unknown host: {host}"
+
+
 def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Optional[dict], Optional[str]]":
     """Validates schedule args into a spec: label, every_s, times and either host+metric or tool+args(+pick)."""
     a = args if isinstance(args, dict) else {}
@@ -90,6 +117,9 @@ def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Option
             return None, "metric needs one host"
         if "host_detail" not in allowed:
             return None, "host_detail cannot be polled"
+        err = _host_known(allowed, registry, host)
+        if err:
+            return None, err
         spec.update({"kind": "metric", "host": host, "metric": metric})
         label = label or f"{metric} on {host}"
     else:
@@ -102,6 +132,11 @@ def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Option
         targs, err = tower_tools.validate_args(tool, a.get("args") if isinstance(a.get("args"), dict) else {})
         if err:
             return None, f"{name}: {err}"
+        thost = targs.get("host")
+        if isinstance(thost, str) and thost and "," not in thost and thost.lower() != "all":
+            err = _host_known(allowed, registry, thost)
+            if err:
+                return None, err
         pick = str(a.get("pick") or "").strip()[:80]
         spec.update({"kind": "tool", "tool": name, "args": targs, "pick": pick})
         tgt = targs.get("host") or targs.get("model") or targs.get("path") or ""
@@ -163,14 +198,35 @@ def report_request(row: dict) -> "tuple[str, dict]":
     return text, prelude
 
 
+def timer_row(job: dict) -> dict:
+    """A job row in the legacy timer shape the views, reports and routes read."""
+    spec, state = job.get("spec") or {}, job.get("state") or {}
+    res = job.get("result") or {}
+    status = job["status"]
+    if status == "queued" and state.get("phase") == "reporting":
+        status = "reporting"
+    elif status in ("queued", "running") and state.get("samples"):
+        status = "running"
+    elif status == "running":
+        status = "queued"
+    return {"id": job["id"], "thread_id": job.get("thread_id"), "user": job.get("user"), "role": job.get("role"),
+            "label": job.get("label"), "spec": spec, "every_s": int(spec.get("every_s") or 0), "times": int(spec.get("times") or 1),
+            "samples": list(state.get("samples") or []), "status": status, "created": job.get("created"),
+            "next_tick": job.get("next_run"), "ends": state.get("ends"), "resolved": job.get("resolved"),
+            "message": job.get("message") if status in ("failed", "cancelled") else None,
+            "run_id": (res.get("run_id") if isinstance(res, dict) else None) or state.get("run_id")}
+
+
 class Timers:
-    """Schedules, ticks and reports timers; `runs` is attached after the run registry exists."""
-    def __init__(self, store, *, registry_factory: Callable[[], dict], cfg: Callable[[], Any],
+    """Schedules timers as `tower_timer` jobs and runs their ticks; `runs` is attached after the run registry exists."""
+    def __init__(self, service, *, store, registry_factory: Callable[[], dict], cfg: Callable[[], Any],
                  audit: Optional[Callable[[dict], None]] = None, now: Callable[[], float] = time.time):
-        self._store = store
+        self._svc, self._store = service, store
         self._registry_factory, self._cfg, self._audit, self._now = registry_factory, cfg, audit, now
         self.runs = None
         self._lock = threading.Lock()
+        service.register(jobs.Kind(KIND, "Tower timer", run=self._run, on_finish=self._finished,
+                                   resume="requeue", max_run_s=120.0, label=lambda spec: spec.get("label") or "timer"))
 
     def _log_audit(self, action: str, row: dict, ok: bool, detail: Optional[dict] = None) -> None:
         if self._audit is None:
@@ -183,24 +239,28 @@ class Timers:
             log.warning("tower timer audit failed: %s: %s", type(e).__name__, e)
 
     def schedule(self, *, thread_id: str, user: str, role: str, args: dict) -> dict:
-        """The schedule tool's result: the queued timer, or a message saying why not."""
+        """The schedule tool's result: the queued timer job, or a message saying why not."""
         spec, err = timer_spec(args, self._registry_factory(), self._cfg(), role)
         if err:
             return {"ok": False, "message": err}
         now = self._now()
         with self._lock:
-            live = self._store.live_timers()
+            live = self._svc.list("live", kind=KIND, limit=jobs.LIST_MAX)
             if sum(1 for t in live if t["user"] == user) >= MAX_PER_USER:
                 return {"ok": False, "message": f"you already have {MAX_PER_USER} timers running; cancel one first"}
             if len(live) >= MAX_TOTAL:
                 return {"ok": False, "message": f"{MAX_TOTAL} timers are already running on this manager; try again later"}
-            tid = self._store.create_timer(thread_id, user, role, spec, now)
-        row = self._store.get_timer(tid)
-        self._log_audit("tower.timer.schedule", row, True)
-        log.debug("tower timer %s scheduled user=%s every=%s times=%s", tid, user, spec["every_s"], spec["times"])
-        out = {"ok": True, "timer_id": tid, "label": spec["label"], "every_s": spec["every_s"], "times": spec["times"],
-               "first_tick": local(row["next_tick"]), "ends": local(row["ends"]),
-               "message": f"scheduled: {spec['label']}, every {spec['every_s']} s, {spec['times']} tick{'s' if spec['times'] != 1 else ''}; "
+            job = self._svc.submit(KIND, spec, user=user, role=role, source="tower", label=spec["label"],
+                                   not_before=now + spec["every_s"], thread_id=thread_id)
+        ends = now + spec["every_s"] * spec["times"]
+        self._svc.set_state(job["id"], {"samples": [], "phase": "sampling", "ends": ends})
+        self._store.touch_thread(thread_id, now)
+        self._log_audit("tower.timer.schedule", timer_row(self._svc.get(job["id"]) or job), True)
+        log.debug("tower timer %s scheduled user=%s every=%s times=%s", job["id"], user, spec["every_s"], spec["times"])
+        plural = "s" if spec["times"] != 1 else ""
+        out = {"ok": True, "timer_id": job["id"], "label": spec["label"], "every_s": spec["every_s"], "times": spec["times"],
+               "first_tick": local(now + spec["every_s"]), "ends": local(ends),
+               "message": f"scheduled: {spec['label']}, every {spec['every_s']} s, {spec['times']} tick{plural}; "
                           "the report arrives in this conversation when it is done"}
         if spec.get("note"):
             out["note"] = spec["note"]
@@ -209,23 +269,89 @@ class Timers:
     def list(self, user: str) -> "list[dict]":
         """The user's live timers plus the ones resolved in the last RECENT_S, newest first."""
         now = self._now()
-        return [timer_view(r, now) for r in self._store.user_timers(user, now - RECENT_S)]
+        rows = self._svc.list("live", kind=KIND, user=user, since=now - RECENT_S, limit=20)
+        return [timer_view(timer_row(r), now) for r in rows]
 
     def live_count(self, user: str) -> int:
-        return sum(1 for t in self._store.live_timers() if t["user"] == user)
+        return len(self._svc.list("live", kind=KIND, user=user, limit=jobs.LIST_MAX))
 
     def cancel(self, tid: str, user: str) -> "tuple[Optional[dict], Optional[tuple[int, str]]]":
-        row = self._store.get_timer(tid)
-        if not row or row["user"] != user:
+        job = self._svc.get(tid)
+        if not job or job["kind"] != KIND or job["user"] != user:
             return None, (404, "unknown timer")
-        if row["status"] not in LIVE:
+        if job["status"] not in jobs.LIVE:
             return None, (409, "not live")
+        out = self._svc.cancel(tid, actor=user, message=_CANCELLED)
+        if out is None:
+            return None, (409, "not live")
+        return timer_row(out), None
+
+    def cancel_thread(self, thread_id: str) -> int:
+        """Cancels every live timer of a deleted conversation."""
+        return self._svc.cancel_where(KIND, thread_id=thread_id, message="the conversation was deleted", actor="tower")
+
+    def _run(self, job) -> jobs.Outcome:
+        """One tick: a sample while sampling, the report turn once every tick is in."""
+        cfg = self._cfg()
+        row = timer_row(job.row())
+        state = dict(job.state or {})
+        samples = list(state.get("samples") or [])
+        if not bool(getattr(cfg, "enabled", False)):
+            return jobs.fail("Tower was turned off", alert=False)
+        if not self._store.thread_user(job.thread_id):
+            return jobs.fail("the conversation was deleted", alert=False)
+        if state.get("phase") == "reporting":
+            return self._report(job, row, state)
+        registry = self._registry_factory()
+        allowed = {t.name for t in tower_tools.catalog(registry, cfg, job.role)}
+        spec = job.spec
+        name = "host_detail" if spec["kind"] == "metric" else spec["tool"]
+        if TOOL_NAME not in allowed or name not in allowed:
+            return jobs.fail(f"{name} is no longer available")
         now = self._now()
-        if not self._store.update_timer(tid, status="cancelled", resolved=now, message=_CANCELLED, next_tick=None, only_live=True):
-            return None, (409, "not live")
-        row = self._store.get_timer(tid)
-        self._note_thread(row, "cancelled")
-        return row, None
+        if self.runs is not None and not self.runs.count_tick(job.user):
+            samples.append({"t": now, "error": "rate limited"})
+        else:
+            value, err = self._read(registry[name], spec)
+            samples.append({"t": now, "value": value} if err is None else {"t": now, "error": err})
+        state["samples"] = samples
+        if len(samples) >= EARLY_FAIL_TICKS and all("error" in s for s in samples):
+            self._svc.set_state(job.id, state)
+            return jobs.fail(f"every tick failed: {samples[-1]['error']}", alert=False)
+        if len(samples) < row["times"]:
+            return jobs.again(row["every_s"], state=state, message=f"{len(samples)} of {row['times']} ticks")
+        state["phase"] = "reporting"
+        return jobs.again(POLL_S, state=state, message="reporting")
+
+    def _report(self, job, row: dict, state: dict) -> jobs.Outcome:
+        """Starts the report turn; a busy user or missing model is retried until REPORT_RETRY_S past the end."""
+        now = self._now()
+        if self.runs is None:
+            return jobs.again(POLL_S, state=state)
+        text, prelude = report_request(row)
+        rid, err = self.runs.start(user=job.user, role=job.role, thread_id=job.thread_id, text=text, page={},
+                                   actor=f"timer via {job.user}", prelude=prelude)
+        if err is None:
+            # The LIVE-guarded write is the race check: a timer cancelled meanwhile stops its own report run.
+            if not self._svc.set_state(job.id, {**state, "run_id": rid}) or job.cancelled():
+                self.runs.stop(rid, job.user)
+                return jobs.fail("cancelled while the report started")
+            self._log_audit("tower.timer.complete", row, True, {"run_id": rid, "samples": len(row["samples"])})
+            return jobs.finish(result={"run_id": rid, "samples": len(row["samples"])}, message="reported", state=state)
+        if now - float(state.get("ends") or now) > REPORT_RETRY_S:
+            return jobs.fail(f"could not report: {err[1]}")
+        return jobs.again(POLL_S, state=state, message=f"waiting to report: {err[1]}")
+
+    def _finished(self, job) -> None:
+        """Failed and cancelled timers leave their samples in a live thread; only a failure adds an audit row."""
+        row = timer_row(job.row())
+        if job.status in ("failed", "cancelled") and self._store.thread_user(job.thread_id):
+            self._note_thread(row, job.status)
+        if job.status == "failed":
+            self._log_audit("tower.timer.failed", row, False, {"message": job.message})
+        rid = (job.state or {}).get("run_id")
+        if job.status == "cancelled" and rid and self.runs is not None:
+            self.runs.stop(rid, job.user)
 
     def _note_thread(self, row: dict, status: str) -> None:
         """Leaves the samples in the thread as a timer tool row when no report turn will carry them."""
@@ -236,34 +362,6 @@ class Timers:
                                     tool_args=json.dumps({"label": row["label"], "timer_id": row["id"]}), tool_ok=False, tool_ms=0)
         except Exception as e:  # noqa: BLE001 — the timer row still records the outcome
             log.warning("tower timer note failed: %s: %s", type(e).__name__, e)
-
-    def _finish(self, row: dict, status: str, message: str) -> None:
-        """Ends a live timer; a timer the operator cancelled meanwhile is left as it is."""
-        now = self._now()
-        if not self._store.update_timer(row["id"], status=status, resolved=now, message=message, next_tick=None, only_live=True):
-            return
-        row = self._store.get_timer(row["id"]) or {**row, "status": status, "message": message}
-        if status == "failed":
-            self._note_thread(row, status)
-        self._log_audit(f"tower.timer.{status}", row, status == "done", {"message": message})
-        log.debug("tower timer %s %s: %s", row["id"], status, message)
-
-    def tick(self) -> None:
-        """Samples every due timer once and tries to start the report turn of every finished one."""
-        now = self._now()
-        retry = self._store.timers_by_status("reporting")
-        for row in self._store.due_timers(now):
-            try:
-                self._sample(row, now)
-            except Exception as e:  # noqa: BLE001 — one timer's failure never stops the others
-                log.warning("tower timer %s tick failed: %s: %s", row["id"], type(e).__name__, e)
-                self._finish(row, "failed", "tick failed")
-        for row in retry:
-            try:
-                self._try_report(row, now)
-            except Exception as e:  # noqa: BLE001
-                log.warning("tower timer %s report failed: %s: %s", row["id"], type(e).__name__, e)
-                self._finish(row, "failed", "report failed")
 
     def _read(self, tool, spec: dict) -> "tuple[Any, Optional[str]]":
         if spec["kind"] == "metric":
@@ -283,75 +381,3 @@ class Timers:
                 return None, f"{spec['pick']} not in the result"
             return v if isinstance(v, (int, float, str, bool)) else tower_tools.cap_result(v, SAMPLE_CHARS), None
         return tower_tools.cap_result(result, SAMPLE_CHARS), None
-
-    def _sample(self, row: dict, now: float) -> None:
-        cfg = self._cfg()
-        if not bool(getattr(cfg, "enabled", False)):
-            self._finish(row, "failed", "Tower was turned off")
-            return
-        if not self._store.thread_user(row["thread_id"]):
-            self._finish(row, "failed", "the conversation was deleted")
-            return
-        registry = self._registry_factory()
-        allowed = {t.name for t in tower_tools.catalog(registry, cfg, row["role"])}
-        spec = row["spec"]
-        name = "host_detail" if spec["kind"] == "metric" else spec["tool"]
-        if TOOL_NAME not in allowed or name not in allowed:
-            self._finish(row, "failed", f"{name} is no longer available")
-            return
-        samples = list(row["samples"])
-        if self.runs is not None and not self.runs.count_tick(row["user"]):
-            samples.append({"t": now, "error": "rate limited"})
-        else:
-            value, err = self._read(registry[name], spec)
-            samples.append({"t": now, "value": value} if err is None else {"t": now, "error": err})
-        if len(samples) >= row["times"]:
-            self._store.update_timer(row["id"], samples=samples, status="reporting", next_tick=None)
-            self._try_report({**row, "samples": samples, "status": "reporting"}, now)
-            return
-        nxt = float(row["next_tick"]) + row["every_s"]
-        if nxt <= now:
-            nxt = now + row["every_s"]
-        self._store.update_timer(row["id"], samples=samples, status="running", next_tick=nxt)
-
-    def _try_report(self, row: dict, now: float) -> None:
-        """Starts the report turn; a busy user or missing model is retried each tick until REPORT_RETRY_S past the end."""
-        if self.runs is None:
-            return
-        if not self._store.thread_user(row["thread_id"]):
-            self._finish(row, "failed", "the conversation was deleted")
-            return
-        live = self._store.get_timer(row["id"])
-        if not live or live["status"] != "reporting":
-            return
-        text, prelude = report_request(row)
-        rid, err = self.runs.start(user=row["user"], role=row["role"], thread_id=row["thread_id"], text=text, page={},
-                                   actor=f"timer via {row['user']}", prelude=prelude)
-        if err is None:
-            if not self._store.update_timer(row["id"], status="done", run_id=rid, resolved=now, message=None, only_live=True):
-                self.runs.stop(rid, row["user"])
-                log.debug("tower timer %s cancelled while its report started; run %s stopped", row["id"], rid)
-                return
-            self._log_audit("tower.timer.complete", row, True, {"run_id": rid, "samples": len(row["samples"])})
-            log.debug("tower timer %s reported run=%s", row["id"], rid)
-            return
-        if now - float(row["ends"] or now) > REPORT_RETRY_S:
-            self._finish(row, "failed", f"could not report: {err[1]}")
-
-
-def start_thread(timers: Timers, shutting_down: Callable[[], bool]):
-    """Daemon loop ticking the timers every POLL_S; None under pytest."""
-    if "pytest" in sys.modules:
-        return None
-
-    def _loop():
-        while not shutting_down():
-            try:
-                timers.tick()
-            except Exception as e:  # noqa: BLE001 — the loop outlives any one tick
-                log.warning("tower timers tick failed: %s: %s", type(e).__name__, e)
-            time.sleep(POLL_S)
-
-    t = threading.Thread(target=_loop, name="tower-timers", daemon=True)
-    t.start()
-    return t

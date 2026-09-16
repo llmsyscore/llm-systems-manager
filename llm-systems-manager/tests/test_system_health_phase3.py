@@ -332,3 +332,27 @@ def test_older_engine_without_auth_field_is_quiet(admin, monkeypatch):
     svc = _ae_svc(h)
     assert svc["auth"] is None and svc["auth_detail"] is None
     assert _auth_warnings(h) == []
+
+
+def test_jobs_block_lists_recent_rows_and_warns_on_failures(admin, monkeypatch):
+    import sqlite3
+    import types
+
+    import jobs as jobs_mod
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs_mod.init_table(conn)
+    svc = jobs_mod.Service(jobs_mod.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                           inline=True)
+    monkeypatch.setattr(M, "_jobs_service", svc)
+    svc.register(jobs_mod.Kind("t_health", "Health kind", run=lambda j: jobs_mod.ok()))
+    now = M.time.time()
+    q = svc.submit("t_health", {}, label="queued one")
+    older = svc.submit("t_health", {}, label="older but newly broken")
+    newer = svc.submit("t_health", {}, label="newer but long broken")
+    svc._store.update(older["id"], status="failed", resolved=now - 60, message="boom")
+    svc._store.update(newer["id"], status="failed", resolved=now - 600, message="bang")
+    h = _health(admin)
+    assert h["jobs"]["queued"] == 1 and h["jobs"]["failed_24h"] == 2
+    assert any(r["id"] == q["id"] and r["can_cancel"] for r in h["jobs"]["rows"])
+    warns = [w for w in h["warnings"] if w.startswith("job failed: ")]
+    assert warns == ["job failed: older but newly broken — boom", "job failed: newer but long broken — bang"]
