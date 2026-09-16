@@ -155,11 +155,19 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins .acts .ok { font: 500 11.5px var(--font-sans); color: var(--ok); margin-right: auto; }
 #towerAside .ins .acts .run { font: 500 11.5px var(--font-sans); color: var(--accent); }
 #towerAside .ins .fail { font: 11px var(--font-mono); color: var(--crit); }
-#towerAside .ins .snap { display: grid; gap: 2px; margin: 2px 0; min-width: 0; }
-#towerAside .ins .snap svg { display: block; width: 100%; height: 36px; overflow: visible; }
-#towerAside .ins .snap path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-#towerAside .ins .snap .thr { stroke: var(--crit); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
-#towerAside .ins .snapc { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#towerAside .snap { display: grid; gap: 2px; margin: 2px 0; min-width: 0; }
+#towerAside .snap svg { display: block; width: 100%; height: 36px; overflow: visible; }
+#towerAside .snap path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+#towerAside .snap .thr { stroke: var(--crit); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+#towerAside .snapc { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#towerAside .log .snap { margin: 2px 0 6px 18px; }
+/* Live timers (#1029): one row per timer under the tabs. */
+#towerAside .tw-timers { display: flex; flex-direction: column; gap: 4px; padding: 6px 16px; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--accent) 6%, var(--bg-card)); font-size: 12px; flex-shrink: 0; }
+#towerAside .tmr { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#towerAside .tmr .lbl { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--fg); }
+#towerAside .tmr .st { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--font-mono); color: var(--fg-muted); }
+#towerAside .tmr .lnk { background: none; border: 0; padding: 0; color: var(--accent); font: 500 12px var(--font-sans); cursor: pointer; flex-shrink: 0; }
+#towerAside .tmr .lnk:hover { text-decoration: underline; }
 #towerAside .ins .detb { display: grid; gap: 4px; padding-left: 10px; border-left: 1px solid var(--border); margin-top: 2px; }
 #towerAside .ins .detb p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--fg-muted); overflow-wrap: anywhere; }
 #towerAside .ins .detb .aud { font: 10.5px var(--font-mono); color: var(--fg-dim); }

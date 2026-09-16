@@ -60,9 +60,10 @@ ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_ale
 
 def test_registry_has_read_and_act_tools():
     reg = tt.build_registry(_deps())
-    assert set(reg) == READ | {"ask_operator"} | ACT
+    assert set(reg) == READ | {"ask_operator", "schedule"} | ACT
     assert {t.name for t in reg.values() if t.kind == "act"} == ACT
     assert reg["ask_operator"].kind == "ask" and reg["ask_operator"].tier == "read"
+    assert reg["schedule"].kind == "timer" and reg["schedule"].tier == "read"
     assert all(reg[n].tier == "operate" for n in ACT - {"restart_provider"})
     assert reg["restart_provider"].tier == "admin" and reg["restart_provider"].role == "admin"
     assert tt.ACT_TOOL_NAMES == tuple(n for n in tt.TOOL_NAMES if n in ACT)

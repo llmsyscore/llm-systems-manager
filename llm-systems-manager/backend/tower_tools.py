@@ -189,9 +189,10 @@ def catalog(registry: dict, cfg: Any, role: str) -> "list[Tool]":
     disabled = {str(x).strip() for x in (getattr(cfg, "disabled_tools", None) or [])}
     rank = _ROLE_RANK.get(role or "operator", 0)
     asks = bool(getattr(cfg, "questions", True))
+    timers = bool(getattr(cfg, "timers", True))
     return [t for t in registry.values()
             if t.tier in allowed and t.name not in disabled and _ROLE_RANK.get(t.role, 0) <= rank
-            and (t.kind != "ask" or asks)]
+            and (t.kind != "ask" or asks) and (t.kind != "timer" or timers)]
 
 
 def openai_schema(tool: Tool) -> dict:
@@ -203,7 +204,8 @@ def prompt_catalog(tools: "list[Tool]") -> str:
     lines = ["You can call these tools. To call one, reply with ONLY this fenced block, never <tool_call> or other tags:",
              "```tool", '{"name": "<tool>", "args": {…}}', "```", "Tools:"]
     for t in tools:
-        tag = {"act": " (action, needs approval)", "ask": " (question card, pauses for the operator's pick)"}.get(t.kind, "")
+        tag = {"act": " (action, needs approval)", "ask": " (question card, pauses for the operator's pick)",
+               "timer": " (timer, reports later as a new turn)"}.get(t.kind, "")
         lines.append(f"- {t.name}{tag}: {t.description} args={json.dumps(t.params.get('properties') or {}, separators=(',', ':'))}")
     return "\n".join(lines)
 
@@ -225,7 +227,7 @@ def apply_options(card: dict, chosen) -> "tuple[dict, Optional[str]]":
 
 
 def summary_line(tool: Tool, args: dict, result: Any, ms: int) -> str:
-    verb = "read" if tool.kind == "read" else "ran"
+    verb = {"read": "read", "timer": "scheduled"}.get(tool.kind, "ran")
     label = tool.name.replace("_", " ")
     tgt = args.get("host") or args.get("model") or args.get("alert_id") or args.get("path") or args.get("window") or ""
     if tool.summary:
@@ -802,11 +804,16 @@ READ_TOOL_NAMES = ("hosts_overview", "host_detail", "host_history", "models", "m
 ASK_TOOL_NAMES = ("ask_operator",)
 QUESTION_CHOICES_MAX = 6
 QUESTIONS_MAX = 4
+TIMER_TOOL_NAMES = ("schedule",)
+TIMER_METRICS = ("cpu_pct", "ram_pct", "gpu_pct", "gpu_temp_c", "watts")
+TIMER_MIN_EVERY_S = 30
+TIMER_MAX_SPAN_S = 3600
+TIMER_MAX_SAMPLES = 120
 ACT_TOOL_NAMES = ("load_model", "unload_model", "wake_server", "restart_provider", "start_benchmark", "ack_alert", "close_alert",
                   "resume_alert")
 WAIT_KINDS = ("host_awake", "model_loaded", "model_ready", "run_done", "reportcard_done")
 BENCH_KINDS = ("live", "reportcard")
-TOOL_NAMES = READ_TOOL_NAMES + ASK_TOOL_NAMES + ACT_TOOL_NAMES
+TOOL_NAMES = READ_TOOL_NAMES + ASK_TOOL_NAMES + TIMER_TOOL_NAMES + ACT_TOOL_NAMES
 PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio", "vllm": "vLLM"}
 _PROVIDER_ENUM = {"type": "string", "enum": ["llama", "lms", "vllm"]}
 _GROUP_DIMS = ("rule", "host", "severity", "status", "day", "hour", "hour_of_day")
@@ -1066,6 +1073,22 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
                    "choices": {"type": "array", "items": {"type": "string"}, "maxItems": QUESTION_CHOICES_MAX, "default": []},
                    "questions": {"type": "array", "items": {"type": "object"}, "maxItems": QUESTIONS_MAX, "default": []}}),
              "ask", "read", lambda a: {"error": "question cards are not available here; ask in your answer"}),
+        Tool("schedule", "Queues a read on a timer and reports the samples later as a new turn in this conversation: "
+             f"every_s seconds ({TIMER_MIN_EVERY_S} or more) for times ticks or for_s seconds (at most "
+             f"{TIMER_MAX_SPAN_S // 60} min and {TIMER_MAX_SAMPLES} ticks; times 1 = one check after every_s). Either "
+             "host + metric (one number per tick) or tool + args (any read tool; pick keeps one field of each result, "
+             "such as ram.used_pct). Use it when the operator wants something polled, watched, or checked later; "
+             "say it is scheduled and stop.",
+             _obj({"label": {"type": "string", "description": "Short name, e.g. RAM on box1"},
+                   "every_s": {"type": "integer", "minimum": 1, "default": 60},
+                   "times": {"type": "integer", "minimum": 1, "maximum": TIMER_MAX_SAMPLES},
+                   "for_s": {"type": "integer", "minimum": 1},
+                   "host": {"type": "string"}, "metric": {"type": "string", "enum": list(TIMER_METRICS)},
+                   "tool": {"type": "string"}, "args": {"type": "object"},
+                   "pick": {"type": "string", "description": "Dotted path into the tool result to keep"}}, ["every_s"]),
+             "timer", "read", lambda a: {"error": "timers are not available here"},
+             summary=lambda a, r: ((r or {}).get("label") or a.get("label") or "") + (
+                 f" · every {r['every_s']} s × {r['times']}" if (r or {}).get("ok") else f" · {(r or {}).get('message') or (r or {}).get('error') or 'not scheduled'}")),
         Tool("load_model", "Load a model on a host's provider server (asks the operator first).",
              _obj({"provider": _LOAD_PROVIDER_ENUM, "host": {"type": "string"}, "model": {"type": "string"}}, ["provider", "host", "model"]),
              "act", "operate", lambda a: _act(deps, "load_model", "load", a["provider"], a["host"], a["model"])),

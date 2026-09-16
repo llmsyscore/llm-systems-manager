@@ -39,6 +39,15 @@ function boot(state, opts = {}) {
       w.__decideBody = o && o.body ? JSON.parse(o.body) : null;
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: { approve: 'approved', deny: 'denied', answer: 'answered' }[act[2]], tool: act[2] === 'answer' ? 'ask_operator' : 'wake_server' }) });
     }
+    if (url === '/api/tower/timers') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, timers: w.__timers || [] }) });
+    const tmr = url.match(/^\/api\/tower\/timers\/([^/]+)\/cancel$/);
+    if (tmr) {
+      w.__cancelled = (w.__cancelled || []).concat([tmr[1]]);
+      if (w.__cancelFail) return Promise.resolve({ ok: false, status: 409, json: () => Promise.resolve({ ok: false, error: 'not live' }) });
+      const row = (w.__timers || []).find(t => t.id === tmr[1]) || { id: tmr[1], thread_id: 't1' };
+      w.__timers = (w.__timers || []).map(t => t.id === tmr[1] ? { ...t, status: 'cancelled' } : t);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, timer: { ...row, status: 'cancelled' } }) });
+    }
     if (url === '/api/tower/insights') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, insights: w.__insights || [], new: (w.__insights || []).filter(r => !r.seen_at && (r.status === 'new' || r.status === 'applied')).length }) });
     if (url === '/api/tower/insights/seen') { w.__seen = (w.__seen || 0) + 1; return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, seen: 1 }) }); }
     if (url === '/api/tower/insights/dismiss_all') { w.__dismissedAll = true; return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, dismissed: 1 }) }); }
@@ -1183,5 +1192,130 @@ describe('Tower drawer: running cards and help suggestions (#1017, #1018)', () =
     const hi = [...w.document.querySelectorAll('#twBody .sug.hi')].map(b => b.textContent);
     expect(hi).toEqual(['Who develops LLM Systems Manager?', 'How do I get help?']);
     expect(w.document.querySelector('#twBody .sug:not(.hi)')).not.toBeNull();
+  });
+});
+
+describe('timers (#1029)', () => {
+  const TM = { id: 'tm1', thread_id: 't1', label: 'RAM on box', status: 'running', count: 2, times: 10, every_s: 60, next_in_s: 42, left_s: 480, run_id: null };
+  const strip = w => w.document.getElementById('twTimers');
+
+  test('a schedule tick fetches the timers and shows the strip; Cancel posts cancel and the strip empties', async () => {
+    const w = await bootAndAsk(ENABLED, 'poll RAM on box every minute for 10 minutes');
+    expect(strip(w).hidden).toBe(true);
+    w.__timers = [TM];
+    w.__sse.onEvent({ event: 'tool', name: 'schedule', ok: true, ms: 3, summary: 'scheduled schedule · RAM on box · every 60 s × 10 · 3 ms', result: { ok: true, timer_id: 'tm1' } });
+    await flush(); await flush();
+    expect(w.__calls).toContain('GET /api/tower/timers');
+    expect(strip(w).hidden).toBe(false);
+    const row = strip(w).querySelector('.tmr[data-tmr="tm1"]');
+    expect(row.querySelector('.lbl').textContent).toBe('\u23f1 RAM on box');
+    expect(row.querySelector('.st').textContent).toBe('2/10 · next in 42 s · 8 min left');
+    expect(w.document.querySelector('#twBody .tick').textContent).toContain('scheduled schedule · RAM on box · every 60 s × 10');
+    row.querySelector('[data-tmr-cancel="tm1"]').click();
+    await flush(); await flush(); await flush();
+    expect(w.__cancelled).toEqual(['tm1']);
+    expect(strip(w).hidden).toBe(true);
+    expect(strip(w).querySelector('.tmr')).toBeNull();
+  });
+
+  test('a state poll that reports live timers starts the strip without a schedule tick', async () => {
+    const w = boot({ ...ENABLED, timers: 1 });
+    w.__timers = [{ ...TM, status: 'queued', count: 0 }];
+    await w.towerRefreshState(); await flush(); await flush();
+    expect(strip(w).hidden).toBe(false);
+    expect(strip(w).querySelector('.st').textContent).toBe('0/10 · next in 42 s · 8 min left');
+  });
+
+  test('a timer that finished re-reads the thread and attaches to its report run', async () => {
+    const w = await ready({ ...ENABLED, timers: 1 });
+    w.__timers = [TM];
+    await w.towerLoadTimers(); await flush();
+    expect(strip(w).hidden).toBe(false);
+    w.__rows = [{ role: 'user', content: '\u23f1 Timer finished: RAM on box · 10 ticks every 60 s over 10 min. Report each tick.' },
+                { role: 'tool', tool_name: 'timer', tool_args: '{"label":"RAM on box"}', tool_ok: 1, tool_ms: 0,
+                  content: JSON.stringify({ ok: true, label: 'RAM on box', metric: 'ram_pct', unit: '%', ticks: 10, series: [[0, 41], [60, 42], [120, 45]] }) }];
+    w.__timers = [{ ...TM, status: 'done', count: 10, run_id: 'r7', next_in_s: null, left_s: null }];
+    await w.towerLoadTimers(); await flush(); await flush();
+    expect(strip(w).hidden).toBe(true);
+    expect(w.__calls).toContain('GET /api/tower/threads/t1');
+    expect(w.__sse.url).toBe('/api/tower/runs/r7/stream');
+    expect(w.document.querySelector('#twBody .u').textContent).toContain('Timer finished: RAM on box');
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+    expect(w.document.querySelectorAll('#twBody .log .snap svg path').length).toBe(1);
+    expect(w.document.querySelector('#twBody .log .snapc').textContent).toBe('ram_pct · last 2 min · 41%–45%');
+    w.__sse.onEvent({ event: 'model', model: 'qwen3-14b', provider: 'llama', hosts: ['box'] });
+    w.__sse.onEvent({ event: 'status', state: 'thinking' });
+    w.__sse.onEvent({ event: 'delta', text: 'RAM rose from 41 % to 45 %.' });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    // One tower turn: the stored tick with its graph, then the streamed answer under it.
+    expect(w.document.querySelectorAll('#twBody .t').length).toBe(1);
+    expect(w.document.querySelectorAll('#twBody .log .snap').length).toBe(1);
+    expect(w.document.querySelector('#twBody .t .ans').textContent).toContain('RAM rose');
+  });
+
+  test('a page reload during a report run continues the stored turn instead of opening a second one', async () => {
+    const w = boot(ENABLED, { stored: { thread: 't1' } });
+    w.__rows = [{ role: 'user', content: '\u23f1 Timer finished: RAM on box' },
+                { role: 'tool', tool_name: 'timer', tool_args: '{"label":"RAM on box"}', tool_ok: 1, tool_ms: 0, content: JSON.stringify({ ok: true, ticks: 2, series: [[0, 41], [60, 42]] }) }];
+    w.__activeRun = 'r7';
+    await w.towerRefreshState(); await flush();
+    w.towerOpen(); await flush(); await flush();
+    expect(w.__sse.url).toBe('/api/tower/runs/r7/stream');
+    w.__sse.onEvent({ event: 'delta', text: 'RAM rose.' });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    expect(w.document.querySelectorAll('#twBody .t').length).toBe(1);
+    expect(w.document.querySelector('#twBody .t .ans').textContent).toContain('RAM rose');
+  });
+
+  test('a report that lands while the drawer is busy waits and attaches after the current run ends', async () => {
+    const w = await ready({ ...ENABLED, timers: 1 });
+    w.__timers = [TM];
+    await w.towerLoadTimers(); await flush();
+    await ask(w, 'something else');
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    w.__rows = [{ role: 'user', content: 'something else' }, { role: 'assistant', content: 'answered' }, { role: 'user', content: '\u23f1 Timer finished: RAM on box' }];
+    w.__timers = [{ ...TM, status: 'done', count: 10, run_id: 'r7' }];
+    await w.towerLoadTimers(); await flush();
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    w.__sse.onEvent({ event: 'delta', text: 'answered' });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    await flush(); await flush(); await flush();
+    expect(w.__sse.url).toBe('/api/tower/runs/r7/stream');
+    expect([...w.document.querySelectorAll('#twBody .u')].pop().textContent).toContain('Timer finished');
+  });
+
+  test('overlapping timer polls attach a report run once', async () => {
+    const w = await ready({ ...ENABLED, timers: 1 });
+    w.__timers = [TM];
+    await w.towerLoadTimers(); await flush();
+    w.__rows = [{ role: 'user', content: '\u23f1 Timer finished: RAM on box' }];
+    w.__timers = [{ ...TM, status: 'done', count: 10, run_id: 'r7' }];
+    const opened = [];
+    w.SG = { open: (o) => { opened.push(o.url); w.__sse = o; return { close() { w.__sseClosed = true; } }; } };
+    await Promise.all([w.towerLoadTimers(), w.towerLoadTimers(), w.towerLoadTimers()]);
+    await flush(); await flush();
+    await w.towerLoadTimers(); await flush(); await flush();
+    expect(opened).toEqual(['/api/tower/runs/r7/stream']);
+  });
+
+  test('a finished timer of another thread is left alone', async () => {
+    const w = await ready({ ...ENABLED, timers: 1 });
+    w.__timers = [{ ...TM, thread_id: 't2' }];
+    await w.towerLoadTimers(); await flush();
+    w.__timers = [{ ...TM, thread_id: 't2', status: 'done', run_id: 'r7' }];
+    await w.towerLoadTimers(); await flush(); await flush();
+    expect(w.__sse).toBeUndefined();
+    expect(w.__calls.filter(c => c === 'GET /api/tower/threads/t1')).toEqual([]);
+  });
+
+  test('a stored timer row draws its series under the tick', async () => {
+    const w = await bootWithThread(ENABLED, [
+      { role: 'user', content: '\u23f1 Timer finished: RAM on box · 3 ticks every 60 s. Report each tick.' },
+      { role: 'tool', tool_name: 'timer', tool_args: '{"label":"RAM on box"}', tool_ok: 1, tool_ms: 0,
+        content: JSON.stringify({ ok: true, label: 'RAM on box', metric: 'ram_pct', unit: '%', ticks: 3, series: [[0, 41], [60, 42], [120, 45]], samples: [] }) },
+      { role: 'assistant', content: 'RAM rose.' },
+    ]);
+    expect(w.document.querySelector('#twBody .log .snap svg')).not.toBeNull();
+    expect(w.document.querySelector('#twBody .tick').textContent).toContain('timer · RAM on box · 3 ticks');
   });
 });

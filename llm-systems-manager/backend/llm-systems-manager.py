@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-17"
+__version__ = "v2026.09.15-19"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -210,6 +210,7 @@ import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no c
 import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
+import tower_timers  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1029
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
@@ -3558,6 +3559,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "tower.thread.rename": "Renamed a Tower thread",
     "tower.action.approve": "Approved a Tower action", "tower.action.deny": "Denied a Tower action",
     "tower.action.answer": "Answered a Tower question",
+    "tower.timer.schedule": "Scheduled a Tower timer", "tower.timer.cancel": "Cancelled a Tower timer",
+    "tower.timer.complete": "Tower timer reported", "tower.timer.failed": "Tower timer failed",
     "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
 }
@@ -3631,6 +3634,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PATCH",  re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.rename", "tower.config"),
     ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny|answer)$"), "tower.action.{d}", "tower.action"),
     ("POST",   re.compile(r"^/api/tower/insights/(?P<t>[^/]+)/apply$"), "tower.playbook.apply", "tower.action"),
+    ("POST",   re.compile(r"^/api/tower/timers/(?P<t>[^/]+)/cancel$"), "tower.timer.cancel", "tower.action"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -6179,12 +6183,15 @@ _tower_deps = tower_tools.prod_deps(ctx, db_path=str(DB_PATH), tools_runs=_tower
                                     audit_rows=_tower_audit_rows, bench_start=_tower_bench_start, bench_options=_tower_bench_options,
                                     card_result=_tower_card_result)
 _tower_approvals = tower.Approvals()
+_tower_timers = tower_timers.Timers(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
+                                    cfg=lambda: settings.manager.tower, audit=_tower_audit_auto)
 _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                          complete_stream=gateway.complete_stream,
                          entries=_tower_gateway_entries, server_args_of=_tower_server_args,
                          cfg=lambda: settings.manager.tower, stream_max_s=_tower_stream_max_s,
                          shutting_down=lambda: _shutting_down, approvals=_tower_approvals,
-                         report_violation=_tower_report_violation)
+                         report_violation=_tower_report_violation, timers=_tower_timers)
+_tower_timers.runs = _tower_runs
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
                       write_setting=_tower_write_setting)
 discord_bot.HOOKS["tower_ask"] = _tower_discord_ask
@@ -8718,6 +8725,7 @@ if __name__ == "__main__":
     # Tower alert watcher (#924); idle until manager.tower.enabled and diagnose_alarms are on.
     try:
         tower_watch.start_thread(_tower_watcher, lambda: _shutting_down)
+        tower_timers.start_thread(_tower_timers, lambda: _shutting_down)
     except Exception as _e:
         log.warning("tower watcher startup failed: %s", _e)
 
