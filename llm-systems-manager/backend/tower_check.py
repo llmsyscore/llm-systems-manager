@@ -94,7 +94,7 @@ class Checks:
         return self._run(model, self._key(model["model"]))
 
     def _run(self, model: dict, key: tuple) -> dict:
-        """The probe body; `key` is pinned by the caller so a tool-mode flip mid-probe cannot move the cache slot."""
+        """The probe body, cached under the caller's key."""
         cfg = self._cfg()
         tools = tower_tools.catalog(self._registry_factory(), cfg, "operator")
         timeout = int(getattr(cfg, "request_timeout_s", 0) or 0)
