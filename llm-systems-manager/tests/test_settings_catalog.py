@@ -227,7 +227,7 @@ def test_capabilities_entry_has_display_labels():
 def test_disabled_tools_entry_groups_cover_every_tool():
     import tower_tools
     e = sc._BY_PATH["manager.tower.disabled_tools"]
-    assert set(e["groups"]) == {"Read tools", "Actions"}
+    assert list(e["groups"]) == ["Read tools", "Questions", "Actions"]
     concatenated = [n for names in e["groups"].values() for n in names]
     assert concatenated == list(tower_tools.TOOL_NAMES)
 

@@ -230,6 +230,7 @@
   const TIER_LABEL = { read: 'answer only', operate: 'answer and act', admin: 'answer and act, incl. admin actions' };
   // Pending and running actions render as a card; every other status is one tick.
   function actionHtml(a) {
+    if (a.tool === 'ask_operator') return questionHtml(a);
     const running = a.status === 'running';
     const stale = a.status === 'pending' && a.expires != null && a.expires * 1000 < Date.now();
     if (a.status === 'pending' || running) {
@@ -248,6 +249,53 @@
     const tail = ok ? (a.ms != null ? `${a.ms} ms` : '') : a.status;
     const msg = a.message && a.status !== 'done' && a.message !== a.status ? ` · ${TW.esc(a.message)}` : '';
     return `<div class="tick act${ok ? ' ok' : ' bad'}"><span class="k">${ok ? '✓' : '✕'}</span>${TW.esc(a.card.title || a.tool)}${msg}<span class="ms">${TW.esc(tail)}</span></div>`;
+  }
+  // A question card: one tab per question, one row per choice, Other with a text field, Submit + Dismiss (#1028).
+  const _qSel = {}, _qOther = {}, _qTab = {};
+  const OTHER = '__other__';
+  function questionList(a) {
+    const qs = (a.card && a.card.questions) || [];
+    return qs.length ? qs : [{ question: (a.card && a.card.question) || '', choices: (a.card && a.card.choices) || [], label: '' }];
+  }
+  function questionAnswers(a) {
+    const sel = _qSel[a.id] || {}, other = _qOther[a.id] || {};
+    return questionList(a).map((q, i) => sel[i] === OTHER ? String(other[i] || '').trim() : (sel[i] == null ? '' : String(sel[i])));
+  }
+  function questionHtml(a) {
+    const qs = questionList(a), id = TW.esc(a.id), first = (qs[0] && qs[0].question) || '';
+    const stale = a.status === 'pending' && a.expires != null && a.expires * 1000 < Date.now();
+    if (a.status === 'pending') {
+      if (stale) return `<div class="act q" data-act="${id}"><div class="eyebrow">Question expired</div><h4>${TW.esc(first)}</h4></div>`;
+      const sel = _qSel[a.id] || {}, other = _qOther[a.id] || {}, answers = questionAnswers(a);
+      const cur = Math.min(_qTab[a.id] || 0, qs.length - 1), q = qs[cur];
+      const tabs = qs.length > 1 ? '<div class="qtabs">' + qs.map((x, i) =>
+        `<button type="button" class="qtab${i === cur ? ' on' : ''}${answers[i] ? ' done' : ''}" data-qtab="${id}" data-i="${i}">${TW.esc(x.label || `Question ${i + 1}`)}</button>`).join('') + '</div>' : '';
+      const rows = (q.choices || []).map(c =>
+        `<button type="button" class="choice${sel[cur] === c ? ' on' : ''}" data-pick="${id}" data-i="${cur}" data-val="${TW.esc(c)}" aria-pressed="${sel[cur] === c}"><i></i>${TW.esc(c)}</button>`).join('')
+        + (sel[cur] === OTHER
+          ? `<div class="choice other on"><i></i><input type="text" data-other-input="${id}" data-i="${cur}" maxlength="500" placeholder="Type your answer" aria-label="Your answer" value="${TW.esc(other[cur] || '')}"></div>`
+          : `<button type="button" class="choice other" data-pick="${id}" data-i="${cur}" data-val="${OTHER}"><i></i>Other…</button>`);
+      const ready = answers.every(Boolean);
+      const btns = `<div class="btns"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-submit="${id}"${ready ? '' : ' disabled'}>Submit</button>`
+        + `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-dismiss="${id}">Dismiss</button></div>`;
+      return `<div class="act q" data-act="${id}"><div class="eyebrow">Tower asks</div>${tabs}<h4>${TW.esc(q.question)}</h4><div class="choices">${rows}</div>${btns}</div>`;
+    }
+    const ok = a.status === 'done';
+    const more = qs.length > 1 ? ` (+${qs.length - 1} more)` : '';
+    const tail = ok ? '' : TW.esc(a.message && a.message !== a.status ? `${a.status} · ${a.message}` : a.status);
+    return `<div class="tick act${ok ? ' ok' : ' bad'}"><span class="k">${ok ? '✓' : '✕'}</span>${TW.esc(first + more)}<span class="ms">${tail}</span></div>`;
+  }
+  function forgetQuestion(aid) { delete _qSel[aid]; delete _qOther[aid]; delete _qTab[aid]; }
+  // Moves to the next unanswered tab after a pick; false when every question is answered.
+  function advanceQuestion(aid) {
+    const a = actionById(aid);
+    if (!a) return false;
+    const answers = questionAnswers(a), cur = _qTab[aid] || 0;
+    const order = answers.map((_, i) => (cur + 1 + i) % answers.length);
+    const next = order.find(i => !answers[i]);
+    if (next == null) return false;
+    _qTab[aid] = next;
+    return true;
   }
   // Option chips on an approval card; the picks ride along with the approve request (#1002).
   const _optSel = {};
@@ -441,7 +489,8 @@
                        _state = TW.reduce(_state, ev); paintBody();
                        if (ev.event === 'truncated') dropped = true;
                        if (ev.event === 'action' && ev.action_id) delete _optSel[ev.action_id];
-                       if (ev.event === 'confirm') { closeStream(); if (!isOpen()) markUnread(); return; }
+                       if (ev.event === 'answer' && ev.action_id) forgetQuestion(ev.action_id);
+                       if (ev.event === 'confirm' || ev.event === 'question') { closeStream(); if (!isOpen()) markUnread(); return; }
                        if (ev.event === 'done' || ev.event === 'error') { endRun(); if (!isOpen()) markUnread(); if (dropped) reloadThread(); drainPending(); }
                      },
                      onLost: () => {
@@ -477,6 +526,41 @@
     if (verb === 'approve') _state = TW.reduce(_state, { event: 'action', action_id: aid, status: 'running' });
     _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody();
     attach(d.run_id);
+  }
+  function otherInput(aid, i) {
+    return [...($('twBody')?.querySelectorAll('[data-other-input]') || [])].find(e => e.dataset.otherInput === aid && (i == null || e.dataset.i === String(i))) || null;
+  }
+  // Submit (verb answer) or Dismiss (verb deny) a question card, then re-attach to the run it releases (#1028).
+  async function questionDecision(aid, verb, body) {
+    _notice = null;
+    let res = null;
+    const init = { method: 'POST' };
+    if (body) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(body); }
+    try { res = await fetch(`/api/tower/actions/${encodeURIComponent(aid)}/${verb}`, init); } catch (_) { /* offline */ }
+    const d = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok || !d.ok) {
+      if (d.error === 'expired') {
+        _notice = 'That question expired; ask again.';
+        _state = TW.reduce(_state, { event: 'answer', action_id: aid, status: 'expired', message: 'no answer from the operator' });
+        _state = TW.reduce(_state, { event: 'done', ok: false });
+        forgetQuestion(aid); endRun(); paintBody(); drainPending(); return;
+      }
+      _notice = d.error === 'not pending' ? 'That question was already answered.' : 'Tower could not record the answer; try again.';
+      paintBody();
+      if (d.error === 'not pending' && _runId) { closeStream(); attach(_runId); }
+      return;
+    }
+    closeStream();
+    forgetQuestion(aid);
+    _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody();
+    attach(d.run_id);
+  }
+  function submitQuestion(aid) {
+    const a = actionById(aid);
+    if (!a) return;
+    const answers = questionAnswers(a);
+    if (!answers.every(Boolean)) return;
+    questionDecision(aid, 'answer', { answers });
   }
   // The Apply click is the approval: the server re-checks role, tier and the alert, runs the steps, audits.
   async function applyInsight(id) {
@@ -593,6 +677,22 @@
     input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; });
     sendBtn?.addEventListener('click', () => { if (sendBtn.classList.contains('stop')) stop(); else sendFromInput(); });
     const onSug = ev => { const b = ev.target.closest('[data-sug]'); if (b) send(b.dataset.sug); };
+    body?.addEventListener('input', ev => {
+      const inp = ev.target.closest('[data-other-input]');
+      if (!inp) return;
+      const id = inp.dataset.otherInput, i = inp.dataset.i;
+      _qOther[id] = { ...(_qOther[id] || {}), [i]: inp.value };
+      const btn = body.querySelector(`[data-submit="${id}"]`);
+      if (btn) btn.disabled = !questionAnswers(actionById(id) || { id, card: {} }).every(Boolean);
+    });
+    body?.addEventListener('keydown', ev => {
+      const inp = ev.target.closest('[data-other-input]');
+      if (inp && ev.key === 'Enter') {
+        ev.preventDefault();
+        const id = inp.dataset.otherInput;
+        if (advanceQuestion(id)) paintBody(); else submitQuestion(id);
+      }
+    });
     body?.addEventListener('click', ev => {
       onSug(ev);
       if (ev.target.closest('#twEnable')) { ev.preventDefault(); enable(); }
@@ -601,6 +701,16 @@
       if (oc) { const id = oc.dataset.opt; _optSel[id] = { ...(_optSel[id] || {}), [oc.dataset.name]: oc.dataset.val }; paintBody(); return; }
       const ap = ev.target.closest('[data-approve]'); if (ap) { decide(ap.dataset.approve, 'approve'); return; }
       const dn = ev.target.closest('[data-deny]'); if (dn) { decide(dn.dataset.deny, 'deny'); return; }
+      const pk = ev.target.closest('[data-pick]');
+      if (pk) {
+        const id = pk.dataset.pick, i = pk.dataset.i;
+        _qSel[id] = { ...(_qSel[id] || {}), [i]: pk.dataset.val };
+        if (pk.dataset.val !== OTHER) advanceQuestion(id);
+        paintBody(); if (pk.dataset.val === OTHER) otherInput(id, i)?.focus(); return;
+      }
+      const qt = ev.target.closest('[data-qtab]'); if (qt) { _qTab[qt.dataset.qtab] = Number(qt.dataset.i); paintBody(); return; }
+      const sb = ev.target.closest('[data-submit]'); if (sb) { submitQuestion(sb.dataset.submit); return; }
+      const dm = ev.target.closest('[data-dismiss]'); if (dm) { questionDecision(dm.dataset.dismiss, 'deny'); return; }
       const qx = ev.target.closest('[data-qx]');
       if (qx) { _pending.splice(Number(qx.dataset.qx), 1); paintBody(); return; }
       const tick = ev.target.closest('.tick[data-tk]');

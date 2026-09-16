@@ -29,7 +29,7 @@ function boot(state, opts = {}) {
   w.__calls = [];
   w.fetch = (url, o) => {
     w.__calls.push((o && o.method ? o.method + ' ' : 'GET ') + url);
-    const act = url.match(/^\/api\/tower\/actions\/([^/]+)\/(approve|deny)$/);
+    const act = url.match(/^\/api\/tower\/actions\/([^/]+)\/(approve|deny|answer)$/);
     if (act) {
       if (w.__actNetFail) return Promise.reject(new Error('offline'));
       if (w.__actFail) {
@@ -37,7 +37,7 @@ function boot(state, opts = {}) {
         return Promise.resolve({ ok: false, status: w.__actFail, json: () => Promise.resolve({ ok: false, error: err }) });
       }
       w.__decideBody = o && o.body ? JSON.parse(o.body) : null;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: act[2] === 'approve' ? 'approved' : 'denied', tool: 'wake_server' }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, run_id: 'r1', status: { approve: 'approved', deny: 'denied', answer: 'answered' }[act[2]], tool: act[2] === 'answer' ? 'ask_operator' : 'wake_server' }) });
     }
     if (url === '/api/tower/insights') return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, insights: w.__insights || [], new: (w.__insights || []).filter(r => !r.seen_at && (r.status === 'new' || r.status === 'applied')).length }) });
     if (url === '/api/tower/insights/seen') { w.__seen = (w.__seen || 0) + 1; return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, seen: 1 }) }); }
@@ -507,6 +507,153 @@ describe('Tower drawer', () => {
 
 const CARD = { title: 'Wake llama-server', target: 'box · llama.cpp', does: 'Sends a one-token completion so the server leaves idle sleep.', not: 'No model is loaded or unloaded.' };
 const CONFIRM = { event: 'confirm', action_id: 'a1', tool: 'wake_server', args: { host: 'box' }, card: CARD, tier: 'operate', role: 'operator', actor: 'tower via adriel', expires_s: 600 };
+
+const QUESTION = { event: 'question', action_id: 'q1', tool: 'ask_operator', question: 'Which host?', choices: ['box', 'mac'], actor: 'tower via adriel', expires_s: 600 };
+
+describe('question cards (#1028)', () => {
+  const pick = (w, val, i = 0) => w.document.querySelector(`#twBody .choice[data-pick="q1"][data-i="${i}"][data-val="${val}"]`);
+  const submit = w => w.document.querySelector('#twBody [data-submit="q1"]');
+
+  test('a question renders one row per choice plus Other, Submit disabled until a pick, and closes the stream without stopping the run', async () => {
+    const w = await bootAndAsk(ENABLED, 'restart it');
+    w.__sse.onEvent(QUESTION);
+    const card = w.document.querySelector('#twBody .act.q[data-act="q1"]');
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.eyebrow').textContent).toBe('Tower asks');
+    expect(card.querySelector('h4').textContent).toBe('Which host?');
+    expect([...card.querySelectorAll('.choice')].map(e => e.textContent)).toEqual(['box', 'mac', 'Other…']);
+    expect(card.querySelector('.qtabs')).toBeNull();
+    expect(card.querySelector('[data-other-input]')).toBeNull();
+    expect(card.querySelector('.role')).toBeNull();
+    expect(submit(w).disabled).toBe(true);
+    expect(card.querySelector('[data-dismiss="q1"]')).not.toBeNull();
+    expect(w.__sseClosed).toBe(true);
+    expect(w.__calls.some(c => c.startsWith('POST /api/tower/runs/r1/stop'))).toBe(false);
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+  });
+
+  test('picking a row selects it; Submit posts the answers, re-attaches, and the answer event collapses the card once', async () => {
+    const w = await bootAndAsk(ENABLED, 'restart it');
+    w.__sse.onEvent(QUESTION);
+    pick(w, 'mac').click(); await flush();
+    expect(w.__calls).not.toContain('POST /api/tower/actions/q1/answer');
+    expect(pick(w, 'mac').classList.contains('on')).toBe(true);
+    expect(pick(w, 'box').classList.contains('on')).toBe(false);
+    expect(submit(w).disabled).toBe(false);
+    pick(w, 'box').click(); await flush();
+    expect(pick(w, 'box').classList.contains('on')).toBe(true);
+    submit(w).click(); await flush();
+    expect(w.__calls).toContain('POST /api/tower/actions/q1/answer');
+    expect(w.__decideBody).toEqual({ answers: ['box'] });
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    expect(w.__sseClosed).toBe(false);
+    expect(w.document.querySelector('#twBody .act[data-act="q1"]')).not.toBeNull();
+    w.__sse.onEvent({ event: 'answer', action_id: 'q1', tool: 'ask_operator', status: 'answered', answer: 'box', actor: 'adriel' });
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+    const tick = w.document.querySelector('#twBody .tick.act.ok');
+    expect(tick.textContent).toContain('Which host?');
+    expect([...w.document.querySelectorAll('#twBody .u')].map(e => e.textContent)).toEqual(['restart it', 'box']);
+    w.__sse.onEvent({ event: 'answer', action_id: 'q1', tool: 'ask_operator', status: 'answered', answer: 'box', actor: 'adriel' });
+    expect([...w.document.querySelectorAll('#twBody .u')].map(e => e.textContent)).toEqual(['restart it', 'box']);
+    w.__sse.onEvent({ event: 'delta', text: 'restarting box' }); w.__sse.onEvent({ event: 'done', ok: true });
+    expect(w.document.querySelector('#twBody .t:last-of-type .ans').textContent).toContain('restarting box');
+    expect(w.document.querySelector('#twBody .caret')).toBeNull();
+  });
+
+  test('Other opens a text field in the row; typing enables Submit and Enter submits the typed answer', async () => {
+    const w = await bootAndAsk(ENABLED, 'restart it');
+    w.__sse.onEvent(QUESTION);
+    pick(w, '__other__').click(); await flush();
+    const inp = w.document.querySelector('#twBody [data-other-input="q1"]');
+    expect(inp).not.toBeNull();
+    expect(w.document.activeElement).toBe(inp);
+    expect(submit(w).disabled).toBe(true);
+    inp.value = '  the lab mini  ';
+    inp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    expect(submit(w).disabled).toBe(false);
+    inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+    expect(w.__decideBody).toEqual({ answers: ['the lab mini'] });
+  });
+
+  test('several questions render as tabs; answers carry across tabs and Submit sends all of them', async () => {
+    const w = await bootAndAsk(ENABLED, 'unload it');
+    w.__sse.onEvent({ ...QUESTION, question: 'Which host?', choices: ['box', 'mac'],
+                      questions: [{ question: 'Which host?', choices: ['box', 'mac'], label: 'Host' }, { question: 'Which model?', choices: ['qwen3', 'gemma'], label: 'Model' }] });
+    const tabs = () => [...w.document.querySelectorAll('#twBody .qtab')];
+    expect(tabs().map(e => e.textContent)).toEqual(['Host', 'Model']);
+    expect(w.document.querySelector('#twBody .act.q h4').textContent).toBe('Which host?');
+    pick(w, 'mac', 0).click(); await flush();
+    expect(submit(w).disabled).toBe(true);
+    expect(tabs()[0].classList.contains('done')).toBe(true);
+    // The pick moves on to the next unanswered tab by itself.
+    expect(w.document.querySelector('#twBody .act.q h4').textContent).toBe('Which model?');
+    expect(tabs()[1].classList.contains('on')).toBe(true);
+    pick(w, '__other__', 1).click(); await flush();
+    expect(tabs()[1].classList.contains('on')).toBe(true);
+    const inp = w.document.querySelector('#twBody [data-other-input="q1"][data-i="1"]');
+    inp.value = 'phi4'; inp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    tabs()[0].click(); await flush();
+    expect(pick(w, 'mac', 0).classList.contains('on')).toBe(true);
+    expect(submit(w).disabled).toBe(false);
+    // Re-picking on a tab with everything answered stays put.
+    pick(w, 'box', 0).click(); await flush();
+    expect(tabs()[0].classList.contains('on')).toBe(true);
+    submit(w).click(); await flush();
+    expect(w.__decideBody).toEqual({ answers: ['box', 'phi4'] });
+    w.__sse.onEvent({ event: 'answer', action_id: 'q1', status: 'answered', answer: 'Which host? box\nWhich model? phi4' });
+    expect(w.document.querySelector('#twBody .tick.act.ok').textContent).toContain('Which host? (+1 more)');
+  });
+
+  test('Enter in an Other field moves to the next unanswered tab, and submits once all are answered', async () => {
+    const w = await bootAndAsk(ENABLED, 'unload it');
+    w.__sse.onEvent({ ...QUESTION, questions: [{ question: 'Which host?', choices: ['box'], label: 'Host' }, { question: 'Which model?', choices: ['qwen3'], label: 'Model' }] });
+    pick(w, '__other__', 0).click(); await flush();
+    const inp = w.document.querySelector('#twBody [data-other-input="q1"][data-i="0"]');
+    inp.value = 'mini'; inp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await flush();
+    expect(w.__calls).not.toContain('POST /api/tower/actions/q1/answer');
+    expect(w.document.querySelector('#twBody .act.q h4').textContent).toBe('Which model?');
+    pick(w, 'qwen3', 1).click(); await flush();
+    expect(submit(w).disabled).toBe(false);
+    submit(w).click(); await flush();
+    expect(w.__decideBody).toEqual({ answers: ['mini', 'qwen3'] });
+  });
+
+  test('Dismiss posts deny and the run reports the dismissal as a crossed tick', async () => {
+    const w = await bootAndAsk(ENABLED, 'restart it');
+    w.__sse.onEvent(QUESTION);
+    w.document.querySelector('#twBody [data-dismiss="q1"]').click(); await flush();
+    expect(w.__calls).toContain('POST /api/tower/actions/q1/deny');
+    expect(w.__sse.url).toBe('/api/tower/runs/r1/stream');
+    w.__sse.onEvent({ event: 'answer', action_id: 'q1', status: 'denied', message: 'dismissed by the operator', actor: 'adriel' });
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+    expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('dismissed by the operator');
+    expect([...w.document.querySelectorAll('#twBody .u')].map(e => e.textContent)).toEqual(['restart it']);
+  });
+
+  test('an expired question shows a notice and closes out the turn', async () => {
+    const w = await bootAndAsk(ENABLED, 'restart it');
+    w.__sse.onEvent(QUESTION);
+    w.__actFail = 410;
+    pick(w, 'box').click(); await flush();
+    submit(w).click(); await flush();
+    expect(w.document.querySelector('#twBody .notice').textContent).toContain('That question expired');
+    expect(w.document.querySelector('#twBody .act[data-act]')).toBeNull();
+    expect(w.document.querySelector('#twBody .tick.act.bad').textContent).toContain('no answer from the operator');
+    expect(w.document.querySelector('#twBody .caret')).toBeNull();
+  });
+
+  test('a reloaded thread parked on a question keeps the card and its Stop', async () => {
+    const rows = [
+      { role: 'user', content: 'restart it', ts: 1 },
+      { role: 'action', content: JSON.stringify({ action_id: 'q1', run_id: 'r7', tool: 'ask_operator', card: { question: 'Which host?', choices: ['box'], questions: [{ question: 'Which host?', choices: ['box'], label: '' }] }, status: 'pending', actor: 'tower via adriel', expires: Math.floor(Date.now() / 1000) + 500 }), tool_name: 'ask_operator', ts: 2 },
+    ];
+    const w = await bootWithThread(ENABLED, rows);
+    expect(w.document.querySelector('#twBody .act.q[data-act="q1"] .choice[data-val="box"]')).not.toBeNull();
+    expect(w.document.getElementById('twSend').classList.contains('stop')).toBe(true);
+  });
+});
 
 describe('action cards', () => {
   test('confirm renders a card with the copy and closes the stream without stopping the run', async () => {

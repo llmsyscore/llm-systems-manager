@@ -349,6 +349,23 @@ def _fake_act_turn(**kw):
     emit({"event": "done", "ok": True, "calls": 1}); return {"ok": True, "calls": 1}
 
 
+def _fake_ask_turn(**kw):
+    """A turn that parks on one question card, then answers with the pick (#1028)."""
+    st, emit = kw["store"], kw["emit"]
+    st.add_message(kw["thread_id"], "user", kw["user_text"])
+    emit({"event": "model", "model": "qwen3-14b", "provider": "llama", "hosts": ["box"]})
+    tool = kw["registry"]["ask_operator"]
+    try:
+        result, ok = tower._run_question(st, kw["approvals"], kw["thread_id"], kw["run_id"], kw["actor"], tool,
+                                         {"question": "Which host?", "choices": ["box", "mac"]}, emit, kw["cancelled"])
+    except tower._Cancelled:
+        emit({"event": "error", "message": "Stopped."}); return {"ok": False, "calls": 0}
+    text = f"ok, {result['answer']}" if ok else "no pick"
+    emit({"event": "status", "state": "answering"}); emit({"event": "delta", "text": text})
+    st.add_message(kw["thread_id"], "assistant", text)
+    emit({"event": "done", "ok": True, "calls": 1}); return {"ok": True, "calls": 1}
+
+
 def _first_event(client, rid, name, tries=40):
     """Drains the run stream until `name` shows up (the stream ends at confirm/done/error)."""
     for _ in range(tries):
@@ -391,6 +408,66 @@ def test_confirm_ends_the_stream_and_approve_reattaches(act_client):
     row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.approve' ORDER BY id DESC LIMIT 1").fetchone()
     assert row and row["actor"] == "tower via alice" and row["target"] == confirm["action_id"]
     assert json.loads(row["detail"])["tool"] == "wake_server" and json.loads(row["detail"])["thread_id"] == tid
+
+
+def test_question_ends_the_stream_and_answer_reattaches(client, monkeypatch):
+    """#1028: a question card parks the run; POST answer resolves it, audits, and the pick lands in History."""
+    monkeypatch.setattr(tower, "run_turn", _fake_ask_turn)
+    c = client
+    tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = c.post(f"/api/tower/threads/{tid}/messages", json={"text": "restart it"}).get_json()["run_id"]
+    q, evs = _first_event(c, rid, "question")
+    assert evs[-1]["event"] == "question" and q["question"] == "Which host?" and q["choices"] == ["box", "mac"]
+    run = M._tower_runs._runs[rid]
+    assert run["awaiting"] == q["action_id"] and not run["cancel"].is_set() and not run["done"]
+    aid = q["action_id"]
+    assert c.post(f"/api/tower/actions/{aid}/answer", json={}).status_code == 400
+    r = c.post(f"/api/tower/actions/{aid}/answer", json={"answers": ["box", "extra"]})
+    assert r.status_code == 400 and r.get_json()["error"] == "every question needs an answer"
+    r = c.post(f"/api/tower/actions/{aid}/approve")
+    assert r.status_code == 400 and r.get_json()["error"] == "a question needs an answer"
+    r = c.post(f"/api/tower/actions/{aid}/answer", json={"answer": "  the   mac  "})
+    d = r.get_json()
+    assert r.status_code == 200 and d["ok"] and d["run_id"] == rid and d["status"] == "answered" and d["tool"] == "ask_operator"
+    a, evs = _first_event(c, rid, "answer")
+    assert a["status"] == "answered" and a["answer"] == "the mac" and any(e["event"] == "done" for e in evs)
+    assert _wait_done(rid)["done"] and run["awaiting"] is None
+    msgs = c.get(f"/api/tower/threads/{tid}").get_json()["messages"]
+    assert [m["role"] for m in msgs] == ["user", "action", "user", "assistant"]
+    act = json.loads(next(m for m in msgs if m["role"] == "action")["content"])
+    assert act["status"] == "done" and act["answer"] == "the mac"
+    assert act["card"] == {"questions": [{"question": "Which host?", "choices": ["box", "mac"], "label": ""}], "question": "Which host?", "choices": ["box", "mac"]}
+    assert msgs[2]["content"] == "the mac" and msgs[3]["content"] == "ok, the mac"
+    row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.answer' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row and row["actor"] == "tower via alice" and row["target"] == aid
+    assert json.loads(row["detail"])["answers"] == ["the mac"] and json.loads(row["detail"])["questions"] == ["Which host?"]
+    assert c.post(f"/api/tower/actions/{aid}/answer", json={"answer": "again"}).status_code == 409
+
+
+def test_dismiss_denies_a_question_and_the_run_reports_it(client, monkeypatch):
+    monkeypatch.setattr(tower, "run_turn", _fake_ask_turn)
+    c = client
+    tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = c.post(f"/api/tower/threads/{tid}/messages", json={"text": "restart it"}).get_json()["run_id"]
+    q, _ = _first_event(c, rid, "question")
+    r = c.post(f"/api/tower/actions/{q['action_id']}/deny")
+    assert r.status_code == 200 and r.get_json()["status"] == "denied"
+    a, evs = _first_event(c, rid, "answer")
+    assert a["status"] == "denied" and a["message"] == "dismissed by the operator"
+    assert _wait_done(rid)["done"]
+    msgs = c.get(f"/api/tower/threads/{tid}").get_json()["messages"]
+    assert [m["role"] for m in msgs] == ["user", "action", "assistant"] and msgs[-1]["content"] == "no pick"
+
+
+def test_answer_on_an_approval_card_is_refused(act_client):
+    c = act_client
+    tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    rid = c.post(f"/api/tower/threads/{tid}/messages", json={"text": "wake box"}).get_json()["run_id"]
+    confirm, _ = _first_event(c, rid, "confirm")
+    r = c.post(f"/api/tower/actions/{confirm['action_id']}/answer", json={"answer": "yes"})
+    assert r.status_code == 400 and r.get_json()["error"] == "not a question"
+    assert c.post(f"/api/tower/actions/{confirm['action_id']}/deny").status_code == 200
+    _wait_done(rid)
 
 
 def test_deny_and_ownership_and_pending_checks(act_client):

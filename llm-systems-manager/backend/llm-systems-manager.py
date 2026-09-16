@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-11"
+__version__ = "v2026.09.15-17"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3557,6 +3557,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "tower.model": "Pinned the Tower model", "tower.thread.delete": "Deleted a Tower thread",
     "tower.thread.rename": "Renamed a Tower thread",
     "tower.action.approve": "Approved a Tower action", "tower.action.deny": "Denied a Tower action",
+    "tower.action.answer": "Answered a Tower question",
     "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
 }
@@ -3628,7 +3629,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/tower/model$"),                      "tower.model",        "tower.config"),
     ("DELETE", re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.delete", "tower.config"),
     ("PATCH",  re.compile(r"^/api/tower/threads/(?P<t>[^/]+)$"),       "tower.thread.rename", "tower.config"),
-    ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny)$"), "tower.action.{d}", "tower.action"),
+    ("POST",   re.compile(r"^/api/tower/actions/(?P<t>[^/]+)/(?P<d>approve|deny|answer)$"), "tower.action.{d}", "tower.action"),
     ("POST",   re.compile(r"^/api/tower/insights/(?P<t>[^/]+)/apply$"), "tower.playbook.apply", "tower.action"),
 ]
 

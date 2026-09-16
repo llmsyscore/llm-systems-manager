@@ -742,6 +742,141 @@ def test_stop_while_awaiting_denies_the_action():
     assert st.get_action(aid)["status"] == "denied" and st.get_action(aid)["actor"] == "stopped"
 
 
+def _answer_later(approvals, answer, delay=0.05, actor="adriel"):
+    """Answers the first pending question card from another thread once the loop has parked."""
+    def go():
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            ids = list(approvals._pending)
+            if ids:
+                approvals.resolve(ids[0], "answered", actor, {"answers": answer if isinstance(answer, list) else [answer]}); return
+            time.sleep(0.01)
+    threading.Thread(target=go, daemon=True).start()
+
+
+_ASK_BLOCK = '```tool\n{"name":"ask_operator","args":{"question":"Which host?","choices":["box","mac","Other"]}}\n```'
+
+
+def test_ask_tool_parks_on_a_question_card_and_feeds_the_answer_back(monkeypatch):
+    """#1028: the pick returns as the tool result and is stored as the next user turn."""
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, "mac")
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}, {"content": "mac is fine."}], approvals=ap)
+    kinds = [e["event"] for e in events]
+    assert "question" in kinds and kinds.index("question") < kinds.index("answer") < kinds.index("done")
+    q = next(e for e in events if e["event"] == "question")
+    assert q["tool"] == "ask_operator" and q["question"] == "Which host?" and q["choices"] == ["box", "mac"]
+    assert q["questions"] == [{"question": "Which host?", "choices": ["box", "mac"], "label": ""}]
+    assert q["actor"] == "tower via adriel" and q["expires_s"] == 2
+    a = next(e for e in events if e["event"] == "answer")
+    assert a["status"] == "answered" and a["answer"] == "mac" and a["actor"] == "adriel" and a["action_id"] == q["action_id"]
+    assert a["answers"] == [{"question": "Which host?", "answer": "mac"}]
+    row = st.get_action(q["action_id"])
+    assert row["status"] == "done" and row["result"] == {"ok": True, "answer": "mac", "answers": a["answers"], "text": "mac"}
+    assert [(r["role"], r["content"]) for r in st.messages(tid) if r["role"] == "user"] == [("user", "why is box red?"), ("user", "mac")]
+    assert [r["role"] for r in st.messages(tid)] == ["user", "action", "user", "assistant"]
+    fed = next(m for m in seen["payloads"][1]["messages"] if "Result of ask_operator" in (m.get("content") or ""))
+    assert '"answer": "mac"' in fed["content"]
+    assert "ask_operator" in seen["payloads"][0]["messages"][0]["content"]
+
+
+def test_question_expiry_is_a_failed_result(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 0.05)
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}, {"content": "No answer, stopping here."}],
+                                      approvals=tower.Approvals())
+    a = next(e for e in events if e["event"] == "answer")
+    assert a["status"] == "expired" and st.get_action(a["action_id"])["status"] == "expired"
+    assert st.get_action(a["action_id"])["result"] == {"ok": False, "message": "no answer from the operator"}
+    assert [r["role"] for r in st.messages(tid)] == ["user", "action", "assistant"]
+    assert events[-1]["event"] == "done"
+
+
+def test_stop_while_a_question_is_parked_cancels_the_turn():
+    flag = {"stop": False}
+    def cancel_soon():
+        time.sleep(0.05); flag["stop"] = True
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}], approvals=tower.Approvals(), cancelled=lambda: flag["stop"])
+    assert out["ok"] is False and events[-1] == {"event": "error", "message": "Stopped."}
+    aid = next(e for e in events if e["event"] == "question")["action_id"]
+    assert st.get_action(aid)["status"] == "denied" and st.get_action(aid)["actor"] == "stopped"
+
+
+def test_ask_tool_without_a_question_channel_is_data_not_a_card():
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}, {"content": "Which host do you mean?"}], approvals=None)
+    kinds = [e["event"] for e in events]
+    assert "question" not in kinds
+    t = next(e for e in events if e["event"] == "tool")
+    assert t["name"] == "ask_operator" and t["ok"] is False and "ask in your answer" in t["result"]["error"]
+
+
+def test_read_only_view_hides_the_ask_tool_but_the_live_config_offers_it():
+    reg = _registry()
+    assert "ask_operator" in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
+    assert "ask_operator" not in {t.name for t in tt.catalog(reg, tower.ReadOnlyView(_cfg()), "operator")}
+    import tower_watch
+    assert "ask_operator" not in {t.name for t in tt.catalog(reg, tower_watch._ReadOnly(_cfg()), "operator")}
+    assert "ask_operator" not in {t.name for t in tt.catalog(reg, _cfg(disabled_tools=["ask_operator"]), "operator")}
+
+
+def test_ask_args_take_a_list_of_choices_and_question_card_trims_them():
+    tool = _registry()["ask_operator"]
+    args, err = tt.validate_args(tool, {"question": " Which? ", "choices": ["a", " b ", "", 3]})
+    assert err == "choices must be a list of strings"
+    args, err = tt.validate_args(tool, {"question": "Which?", "choices": ["a", " b ", "", "a", "other", "c", "d", "e", "f", "g"]})
+    assert err is None and args["choices"] == ["a", "b", "a", "other", "c", "d"]
+    assert tt.question_card(args) == {"questions": [{"question": "Which?", "choices": ["a", "b", "c", "d"], "label": ""}],
+                                      "question": "Which?", "choices": ["a", "b", "c", "d"]}
+    assert tt.validate_args(tool, {"question": "Q"})[0] == {"question": "Q", "choices": [], "questions": []}
+    assert tt.validate_args(tool, {"questions": "no"})[1] == "questions must be a list of objects"
+    assert tt.question_card({"choices": ["a"]})["questions"] == []
+    multi = tt.question_card({"questions": [{"question": "Host?", "choices": ["box", "mac"], "label": "Host"},
+                                            {"question": "Model?", "choices": ["q", "other"]}, {"choices": ["x"]}, "junk"]})
+    assert multi["questions"] == [{"question": "Host?", "choices": ["box", "mac"], "label": "Host"},
+                                  {"question": "Model?", "choices": ["q"], "label": ""}]
+    assert multi["question"] == "Host?" and multi["choices"] == ["box", "mac"]
+    odd = tt.question_card({"questions": [{"question": "Q", "choices": {"a": 1}}, {"question": "R", "choices": 5, "label": 7}]})
+    assert odd["questions"] == [{"question": "Q", "choices": [], "label": ""}, {"question": "R", "choices": [], "label": "7"}]
+
+
+_ASK_MULTI = ('```tool\n{"name":"ask_operator","args":{"questions":[{"question":"Which host?","choices":["box","mac"],"label":"Host"},'
+              '{"question":"Which model?","choices":["qwen3","gemma"],"label":"Model"}]}}\n```')
+
+
+def test_several_questions_answer_together_and_read_back_as_pairs(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, ["mac", "gemma"])
+    out, events, seen, st, tid = _run([{"content": _ASK_MULTI}, {"content": "gemma on mac it is."}], approvals=ap)
+    q = next(e for e in events if e["event"] == "question")
+    assert [x["label"] for x in q["questions"]] == ["Host", "Model"] and q["question"] == "Which host?"
+    a = next(e for e in events if e["event"] == "answer")
+    assert a["answers"] == [{"question": "Which host?", "answer": "mac"}, {"question": "Which model?", "answer": "gemma"}]
+    assert a["answer"] == "Which host? mac\nWhich model? gemma"
+    assert [r["content"] for r in st.messages(tid) if r["role"] == "user"][-1] == "Which host? mac\nWhich model? gemma"
+    fed = next(m for m in seen["payloads"][1]["messages"] if "Result of ask_operator" in (m.get("content") or ""))
+    assert '"answers"' in fed["content"] and '"gemma"' in fed["content"]
+
+
+def test_a_question_without_text_is_an_error_not_a_card():
+    out, events, seen, st, tid = _run([{"content": '```tool\n{"name":"ask_operator","args":{"choices":["a"]}}\n```'},
+                                      {"content": "Never mind."}], approvals=tower.Approvals())
+    assert "question" not in [e["event"] for e in events]
+    t = next(e for e in events if e["event"] == "tool")
+    assert t["ok"] is False and "needs a question" in t["result"]["error"]
+
+
+def test_a_dismissed_question_is_a_failed_result(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _approve_later(ap, "denied", actor="bob")
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}, {"content": "Okay, nothing to do."}], approvals=ap)
+    a = next(e for e in events if e["event"] == "answer")
+    assert a["status"] == "denied" and a["message"] == "dismissed by the operator" and a["actor"] == "bob"
+    assert [r["role"] for r in st.messages(tid)] == ["user", "action", "assistant"]
+
+
 def test_ack_on_an_already_handled_alert_skips_the_approval_card(monkeypatch):
     ap = tower.Approvals()
     deps = {**_deps(), "alert": lambda a: {"id": a, "status": "acknowledged"}}

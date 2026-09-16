@@ -24,7 +24,7 @@ LMS_SAMPLE = {
     "system": {"host": "mac", "cpu_total": 9.0, "ram": {"percent": 70.0},
                "gpu": {}},
     "server": {"on": True},
-    "ps": [{"identifier": "phi4", "status": "IDLE"}],
+    "ps": [{"identifier": "phi4", "status": "IDLE"}, {"identifier": "gemma", "status": "IDLE"}, {"identifier": "old", "status": "STOPPED"}],
 }
 
 AGENTS = {
@@ -104,6 +104,7 @@ def test_fleet_reads_seeded_store(deps):
     assert rows["mac"]["providers"] == ["lms"]
     assert rows["mac"]["busy"] is False
     assert rows["mac"]["model"] == "phi4"
+    assert rows["mac"]["models"] == ["phi4", "gemma"] and rows["box"]["models"] == ["qwen3"]
 
 
 def test_host_detail_flat_and_nested_shapes(deps):
