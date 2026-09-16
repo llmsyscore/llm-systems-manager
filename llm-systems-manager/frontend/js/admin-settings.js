@@ -12,6 +12,7 @@
   const MOST_USED = '__most_used__';
   let _group = MOST_USED;       // active rail group key
   let _filter = '';
+  let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
 
   const esc = s => _esc(String(s ?? ''));
   const $ = id => document.getElementById(id);
@@ -418,12 +419,57 @@
     const opt = g => `<option value="${esc(g.key)}"${g.key === _group ? ' selected' : ''}>${esc(g.title)}</option>`;
     return { nav: gs.map(btn).join(''), sel: gs.map(opt).join('') };
   }
+  // Tower model check (#1039): the status row above the Tower group's fields.
+  function towerCheckHtml() {
+    const s = _towerState;
+    let body;
+    if (!s) body = '<span class="d">Loading\u2026</span>';
+    else if (!s.enabled) body = '<span class="d">Tower is off</span>';
+    else if (!s.model) body = '<span class="d">No model loaded</span>';
+    else {
+      const chk = (window.TW && TW.checkChip) ? TW.checkChip(s.check) : null;
+      const age = s.check && s.check.at ? ` \u00b7 checked ${ageText(s.check.at)}` : '';
+      body = `<b>${esc(s.model)}</b>`
+        + (chk ? `<span class="st-chip ${chk.cls}" title="${esc(chk.title)}">${esc(chk.text)}</span>` : '<span class="d">not checked</span>')
+        + `<span class="d">${esc(age)}</span>`
+        + (s.admin ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerCheckBtn"${_towerBusy ? ' disabled' : ''}>`
+          + `${_towerBusy ? 'Checking\u2026' : 'Check model'}</button>` : '');
+    }
+    return `<div class="st-check" id="stTowerCheck"><span class="lbl">Model check</span>${body}</div>`;
+  }
+  function ageText(t) {
+    const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+    return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+  }
+  // Re-renders (filter keystrokes, group switches) reuse a state read under 15 s old.
+  async function loadTowerState(force) {
+    if (!force && _towerState && Date.now() - _towerAt < 15000) return;
+    _towerAt = Date.now();
+    try { const r = await fetch('/api/tower/state'); if (r.ok) { _towerState = await r.json(); _towerAt = Date.now(); } } catch (_) { /* offline */ }
+    const el = $('stTowerCheck');
+    if (el) el.outerHTML = towerCheckHtml();
+    clearTimeout(_towerPoll);
+    if (_towerState && _towerState.check && _towerState.check.grade === 'pending') _towerPoll = setTimeout(() => loadTowerState(true), 8000);
+  }
+  async function runTowerCheck() {
+    _towerBusy = true;
+    const el = $('stTowerCheck'); if (el) el.outerHTML = towerCheckHtml();
+    try {
+      const r = await fetch('/api/tower/check', { method: 'POST' });
+      const d = r.ok ? await r.json() : null;
+      if (d && d.check && _towerState) _towerState.check = d.check;
+    } catch (_) { /* offline */ }
+    _towerBusy = false;
+    const el2 = $('stTowerCheck'); if (el2) el2.outerHTML = towerCheckHtml();
+  }
+
   function groupCardHtml(g, entries, all) {
     const hot = all.filter(e => e.hot).length;
     const restart = all.length - hot;
     const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
+      + (g.key === 'tower' ? towerCheckHtml() : '')
       + `<div class="card-b">${renderFields(entries, _data.values, defaults())}</div></div>`;
   }
   function paneHtml() {
@@ -452,6 +498,7 @@
     applyDirtyValues(root, _dirty, _entryByPath);
     renderSummary();
     bindOnce(root);
+    if (root.querySelector('#stTowerCheck')) loadTowerState();
   }
 
   function renderSummary() {
@@ -669,6 +716,7 @@
   }
 
   function onClick(ev) {
+    if (ev.target.closest('#stTowerCheckBtn')) { ev.preventDefault(); runTowerCheck(); return; }
     const tedit = ev.target.closest('.st-tools [data-tools-edit]');
     if (tedit) {
       ev.preventDefault();

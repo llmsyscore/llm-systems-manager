@@ -248,6 +248,12 @@
 /* ── Settings (st-) ────────────────────────────────────────────────── */
 #admin-settings .st-note { font-size: 12px; color: var(--fg-dim); margin: -4px 0 14px; max-width: 78ch; line-height: 1.45; }
 #admin-settings .st-hidden { display: none !important; }
+#admin-settings .st-check { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+#admin-settings .st-check .lbl { color: var(--fg-muted); }
+#admin-settings .st-check .d { color: var(--fg-muted); }
+#admin-settings .st-chip { font-family: var(--font-mono); font-size: 12px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-muted); }
+#admin-settings .st-chip.warn { color: var(--warn); border-color: var(--warn); }
+#admin-settings .st-chip.dim { color: var(--fg-faint); }
 #admin-settings .card[data-group="__most_used__"] { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); margin-bottom: 22px; }
 #admin-settings .card[data-group="__most_used__"] > .card-h { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 #admin-settings .card[data-group="__most_used__"] > .card-h h3 { color: var(--accent); }

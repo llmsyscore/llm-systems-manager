@@ -414,16 +414,33 @@
              minutes: Math.max(1, Math.round((last - first) / 60)) };
   }
 
+  // Model capability check (#1039): the drawer/settings chip for one check row.
+  const SMALL_NOTE = 'Under 7B: expect prose tool calls; Tower corrects them once per question.';
+  function checkChip(c) {
+    if (!c || !c.grade) return null;
+    if (c.grade === 'pending') return { text: 'checking\u2026', cls: 'dim', title: 'Tool check running' };
+    if (c.grade === 'failed') {
+      return { text: 'tool check failed', cls: 'warn',
+               title: `Failed the tool check (${c.detail || 'no call'}); needs hosts_overview enabled and a model that can call tools` };
+    }
+    const size = c.size_b == null ? '' : ` \u00b7 ${c.size_b}B`;
+    const base = c.grade === 'native' ? 'Passed the tool check with native function calls'
+      : 'Passed the tool check with the fenced block only';
+    return { text: `${c.grade} ok${size}`, cls: c.small ? 'warn' : '',
+             title: c.small ? `${base}. ${SMALL_NOTE}` : base };
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
     const noModel = !off && !a.model;
     return { enabled: !!a.enabled, admin: !!a.admin, off, noModel,
              capabilities: a.capabilities || 'read', offTopic: a.off_topic || 'refuse',
+             check: a.check || null,
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER, waitText, HELP_SUGS,
+  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChip, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
            timerLine, liveTimers, finishedTimers, timerSnapshot };
 });

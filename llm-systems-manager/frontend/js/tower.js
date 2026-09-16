@@ -10,6 +10,7 @@
   let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
   let _histOpen = false;
   let _timers = [], _timersAt = 0, _timerPoll = null, _timerTick = null, _timersBusy = false, _reports = [];
+  let _checkPoll = 0;
   const _bootS = Date.now() / 1000;
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
@@ -20,6 +21,7 @@
     if (!v) return '';
     const p = pageContext();
     return [v.off, v.noModel, v.admin, v.chip ? `${v.chip.model}|${v.chip.provider}|${v.chip.host}` : '',
+            v.check ? `${v.check.grade}|${v.check.small}` : '',
             p.tab || '', p.sub || ''].join('\u0001');
   }
 
@@ -33,6 +35,8 @@
     _insightsNew = Number(_api.insights_new || 0);
     _insightsRev = _api.insights_rev ?? null;
     _view = TW.stateView(_api);
+    clearTimeout(_checkPoll);
+    if (_view.check && _view.check.grade === 'pending') _checkPoll = setTimeout(towerRefreshState, 8000);
     const btn = $('towerBtn');
     if (!btn) return;
     btn.hidden = _view.off && !_view.admin;
@@ -256,8 +260,11 @@
       const c = _view && _view.chip;
       if (c) {
         const sfx = [c.provider, c.host].filter(Boolean).map(x => `· ${TW.esc(x)}`).join(' ');
-        chip.innerHTML = `<i></i><b>${TW.esc(c.model)}</b>${sfx ? `<span class="sfx">${sfx}</span>` : ''}`;
-        chip.title = [c.model, c.provider, c.host].filter(Boolean).join(' · ');
+        const chk = TW.checkChip(_view.check);
+        const dot = chk && chk.cls === 'warn' ? '<i class="warn"></i>' : '<i></i>';
+        const chkHtml = chk ? `<span class="sfx chk ${chk.cls}" title="${TW.esc(chk.title)}">· ${TW.esc(chk.text)}</span>` : '';
+        chip.innerHTML = `${dot}<b>${TW.esc(c.model)}</b>${sfx ? `<span class="sfx">${sfx}</span>` : ''}${chkHtml}`;
+        chip.title = [c.model, c.provider, c.host, chk && chk.title].filter(Boolean).join(' · ');
       } else if (_view && _view.off) {
         chip.innerHTML = '<i class="dim"></i><b>Off</b>'; chip.title = 'Tower is off';
       } else {

@@ -50,6 +50,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .chip.ctx { flex: 0 1 auto; }
 #towerAside .chip b { color: var(--fg); font-weight: 500; flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
 #towerAside .chip .sfx { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+#towerAside .chip .sfx.chk.warn { color: var(--warn); }
 #towerAside .chip .x { color: var(--fg-dim); margin-left: 2px; flex-shrink: 0; }
 #towerAside .chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 #towerAside .chip i.warn { background: var(--warn); }
