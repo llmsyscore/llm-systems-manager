@@ -65,16 +65,7 @@ def _num(v: Any) -> bool:
 
 def _fleet_names(registry: dict) -> str:
     """Comma-separated hostnames from hosts_overview, or "" when it is unavailable."""
-    tool = registry.get("hosts_overview") if isinstance(registry, dict) else None
-    if tool is None:
-        return ""
-    result, ok = tower_tools.run_tool(tool, {})
-    if not ok:
-        return ""
-    rows = result.get("items") if isinstance(result, dict) else result
-    if not isinstance(rows, list):
-        return ""
-    return ", ".join(str(r["hostname"]) for r in rows if isinstance(r, dict) and r.get("hostname"))
+    return ", ".join(tower_tools.fleet_hosts(registry))
 
 
 def _host_known(allowed: dict, registry: dict, host: str) -> Optional[str]:

@@ -1658,3 +1658,56 @@ def test_prod_jobs_wires_a_real_jobs_service(monkeypatch):
     assert unwired["jobs"]() == {"error": "jobs are not wired"}
     assert unwired["cancel_job"]("x") == (False, "jobs are not wired")
     assert unwired["job_precheck"]("x") == "jobs are not wired"
+
+
+# --- #1039 host resolution ---
+
+KNOWN = ["box-1.local", "mac-mini", "llm-systems-lmstudio.local", "llm-systems-llama.local"]
+
+
+@pytest.mark.parametrize("value,expect,note", [
+    ("", "", None),
+    ("all", "all", None),
+    ("mac-mini", "mac-mini", None),
+    ("MAC-MINI", "mac-mini", None),
+    ("box-1", "box-1.local", "host box-1 taken as box-1.local"),
+    ("box1", "box-1.local", "host box1 taken as box-1.local"),
+    ("Mac Mini", "mac-mini", "host Mac Mini taken as mac-mini"),
+    ("lmstudio", "llm-systems-lmstudio.local", "host lmstudio taken as llm-systems-lmstudio.local"),
+    ("box-1.local,lmstudio", "box-1.local,llm-systems-lmstudio.local", "host lmstudio taken as llm-systems-lmstudio.local"),
+])
+def test_resolve_host_exact_alias_and_substring(value, expect, note):
+    assert tt.resolve_host(value, KNOWN) == (expect, note, None)
+
+
+def test_resolve_host_refuses_with_choices_when_several_match():
+    value, note, refusal = tt.resolve_host("llm-systems", KNOWN)
+    assert value == "llm-systems" and note is None
+    assert refusal == {"error": "llm-systems matches several hosts", "arg": "host",
+                       "choices": ["llm-systems-llama.local", "llm-systems-lmstudio.local"]}
+
+
+def test_resolve_host_refuses_unknown_with_the_host_list():
+    value, note, refusal = tt.resolve_host("nas", KNOWN)
+    assert value == "nas" and note is None
+    assert refusal["error"] == "unknown host: nas; hosts are box-1.local, mac-mini, llm-systems-lmstudio.local, llm-systems-llama.local"
+    assert refusal["arg"] == "host" and refusal["choices"] == KNOWN
+
+
+def test_resolve_host_passes_through_without_fleet_knowledge():
+    assert tt.resolve_host("anything", []) == ("anything", None, None)
+
+
+def test_resolve_host_comma_list_refuses_as_a_whole():
+    value, note, refusal = tt.resolve_host("box-1,nas", KNOWN)
+    assert value == "box-1,nas" and note is None and refusal["error"].startswith("unknown host: nas")
+
+
+def test_fleet_hosts_reads_hosts_overview_once():
+    calls = []
+    reg = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read",
+                                     lambda a: calls.append(a) or {"items": [{"hostname": "b"}, {"hostname": "a"}, {"x": 1}]})}
+    assert tt.fleet_hosts(reg) == ["b", "a"] and len(calls) == 1
+    assert tt.fleet_hosts({}) == []
+    bad = {"hosts_overview": tt.Tool("hosts_overview", "", tt._obj({}), "read", "read", lambda a: {"error": "down"})}
+    assert tt.fleet_hosts(bad) == []

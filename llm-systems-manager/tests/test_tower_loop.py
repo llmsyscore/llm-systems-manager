@@ -57,6 +57,24 @@ def test_parse_ignores_a_tool_fence_nested_in_another_code_block():
         == ['{"name":"a","args":{}}', '{"name":"b","args":{}}']
 
 
+NAMES = ("ask_operator", "schedule", "host_detail")
+
+
+@pytest.mark.parametrize("text,expect", [
+    ("ask_operator: Which host did you mean?", "ask_operator"),
+    ("I will check.\n- schedule(host=box, metric=ram_pct)", "schedule"),
+    ("call host_detail: box", "host_detail"),
+    ('{"name": "schedule", "args": {}}', "schedule"),
+    ("Let me look.\n```tool\n{\"name\": \"host_detail\"", "host_detail"),
+    ("The schedule is fine and ask_operator is a tool name.", None),
+    ("```text\nask_operator: no\n```\nDone.", None),
+    ("box is hot: 91 °C.", None),
+    ("", None),
+])
+def test_prose_call_finds_tool_calls_written_as_text(text, expect):
+    assert tower.prose_call(text, NAMES) == expect
+
+
 def _deps():
     return {"host": lambda n, section="all": {"hostname": n, "gpu_temp_c": 91}, "host_history": lambda h, m, w="24h", a=None: {"points": 0},
             "hosts": lambda *a, **k: [], "models": lambda h=None, p=None: [],

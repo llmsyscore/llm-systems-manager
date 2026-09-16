@@ -557,6 +557,64 @@ def host_names(value, known: "list[str]") -> "list[str]":
     return out
 
 
+_HOST_SUFFIX = re.compile(r"\..*$")
+_HOST_SEP = re.compile(r"[-_. ]")
+
+
+def _host_key(name: str) -> str:
+    """Comparison key for a hostname: lowercase, domain suffix dropped, separators removed."""
+    return _HOST_SEP.sub("", _HOST_SUFFIX.sub("", str(name).strip().lower()))
+
+
+def _resolve_one(value: str, known: "list[str]") -> "tuple[str, Optional[str], Optional[dict]]":
+    low = value.lower()
+    exact = [h for h in known if h.lower() == low]
+    if exact:
+        return exact[0], None, None
+    key = _host_key(value)
+    if not key:
+        return value, None, None
+    hits = [h for h in known if _host_key(h) == key] or [h for h in known if key in _host_key(h)]
+    if len(hits) == 1:
+        return hits[0], f"host {value} taken as {hits[0]}", None
+    if hits:
+        return value, None, {"error": f"{value} matches several hosts", "arg": "host", "choices": sorted(hits)}
+    return value, None, {"error": f"unknown host: {value}; hosts are {', '.join(known)}", "arg": "host",
+                         "choices": list(known)}
+
+
+def resolve_host(value, known: "list[str]") -> "tuple[str, Optional[str], Optional[dict]]":
+    """Resolves a host arg against known hostnames: (value, note, refusal); blank, all and exact pass unchanged."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "all" or not known:
+        return raw, None, None
+    out, notes = [], []
+    for part in (p.strip() for p in raw.split(",")):
+        if not part:
+            continue
+        val, note, refusal = _resolve_one(part, known)
+        if refusal:
+            return raw, None, refusal
+        out.append(val)
+        if note:
+            notes.append(note)
+    return ",".join(out), ("; ".join(notes) or None), None
+
+
+def fleet_hosts(registry: dict) -> "list[str]":
+    """Hostnames from one hosts_overview run, in its order; [] when the tool is missing or fails."""
+    tool = registry.get("hosts_overview") if isinstance(registry, dict) else None
+    if tool is None:
+        return []
+    result, ok = run_tool(tool, {})
+    if not ok:
+        return []
+    rows = result.get("items") if isinstance(result, dict) else result
+    if not isinstance(rows, list):
+        return []
+    return [str(r["hostname"]) for r in rows if isinstance(r, dict) and r.get("hostname")]
+
+
 # Tower metric names for host_history -> (alarm-engine source, metric_name, unit).
 HISTORY_METRICS = {
     "cpu_pct": ("system", "cpu_total", "%"), "ram_pct": ("system", "ram_percent", "%"),

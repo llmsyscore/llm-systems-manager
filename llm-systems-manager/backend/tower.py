@@ -24,6 +24,8 @@ _FALLBACK_LENGTH = ("The model ran out of tokens before answering (it spent them
                     "Raise Max tokens under Settings › Tower assistant or ask a narrower question.")
 _FALLBACK_REASONING = "The model finished thinking without writing an answer; ask again."
 _FALLBACK_STOPPED = "Stopped."
+_FALLBACK_PROSE = ("The model keeps writing tool calls as text instead of calling them; "
+                   "use a larger model or the fenced tool mode.")
 _ERR_GATEWAY = "Tower could not reach the model on its host — check the Gateway card."
 _ERR_INTERNAL = "Tower hit an internal error; try again."
 _VIOLATION_LINE_QUIET = "That request goes against Tower's rules."
@@ -55,7 +57,7 @@ def _norm(text: str) -> str:
 _TIMEOUT_MARK = " did not start answering within "
 _TIMEOUT_LINE = re.compile(r"\S.*" + re.escape(_TIMEOUT_MARK) + r"\d+ s\.")
 # Assistant lines Tower writes itself; _history leaves them out of replayed turns.
-_CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED,
+_CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED, _FALLBACK_PROSE,
                      _ERR_GATEWAY, _ERR_INTERNAL, _VIOLATION_LINE, _VIOLATION_LINE_QUIET})
 _CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ")
 _WRITE_THE_BLOCK = "Write the tool block itself; a sentence like 'Let me check' without the block calls nothing."
@@ -334,6 +336,29 @@ def _call_from_json(raw: str, default_name: str = "", lenient: bool = False) -> 
         except ValueError:
             args = {}
     return name, (args if isinstance(args, dict) else {})
+
+
+_PROSE_JSON_NAME = re.compile(r'"name"\s*:\s*"([\w.-]+)"')
+
+
+def prose_call(text: str, names) -> Optional[str]:
+    """The tool a reply names as if calling it in prose, else None (matches inside closed fences ignored)."""
+    text = text if isinstance(text, str) else ""
+    if not text.strip():
+        return None
+    known = set(names)
+    for m in _PROSE_JSON_NAME.finditer(text):
+        if m.group(1) in known:
+            return m.group(1)
+    if sum(1 for line in text.split("\n") if _fence(line)[1]) % 2 == 1:
+        m = _PROSE_JSON_NAME.search(text)
+        if m and m.group(1) in known:
+            return m.group(1)
+    head = re.compile(r"^\s*(?:[-*]\s*)?(?:call\s+)?([\w.-]+)\s*[:(]", re.M)
+    for m in head.finditer(_outside_fences(text)):
+        if m.group(1) in known:
+            return m.group(1)
+    return None
 
 
 def _canned(content: str, drop_refusals: bool) -> bool:
