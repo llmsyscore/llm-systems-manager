@@ -1063,6 +1063,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     if shown:
                         store.add_message(thread_id, "assistant", preface + shown)
                         preface = ""
+                        emit({"event": "delta", "text": "\n\n"})
                     messages.append({"role": "assistant", "content": content})
                     messages.append({"role": "user", "content": f"That was a sentence, not a tool call. Call {prose} now as a "
                                                                 "tool call (native or the fenced block), or answer without it."})
@@ -1072,6 +1073,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                     if alt is not None:
                         if shown:
                             store.add_message(thread_id, "assistant", preface + shown)
+                            emit({"event": "delta", "text": "\n\n"})
                         _switch(alt, "kept writing tool calls as text")
                         continue
                     if shown:
@@ -1122,7 +1124,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 summary = f"{name} · not available"
             else:
                 result, ok, summary, acted = _execute(tool, raw_args, t0)
-                if (not ok and isinstance(result, dict) and result.get("choices") and result.get("arg")
+                if (not ok and not acted and isinstance(result, dict) and result.get("choices") and result.get("arg")
                         and (answer := _ask_for(result))):
                     arg = str(result["arg"])
                     raw_args = {**(raw_args if isinstance(raw_args, dict) else {}), arg: answer}

@@ -2157,3 +2157,28 @@ def test_fenced_grade_turns_native_off_in_auto_mode():
     assert "tools" not in seen["payloads"][0]
     out, _e, seen2, _s, _t = _run([{"content": "ok"}], cfg=cfg, checks=lambda mid: {"grade": "native"}, server_args_of=sa)
     assert "tools" in seen2["payloads"][0]
+
+
+def test_schedule_nested_tool_args_host_is_resolved_before_the_timer():
+    seen_args = {}
+    class _Timers:
+        def schedule(self, *, thread_id, user, role, args):
+            seen_args.update(args)
+            return {"ok": True, "label": "x", "every_s": 30, "times": 2}
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"schedule","args":{"every_s":30,"times":2,"tool":"host_detail",'
+                    '"args":{"host":"mac"}}}\n```'},
+        {"content": "Scheduled."}], registry=_fleet_registry(), timers=_Timers())
+    assert seen_args["args"]["host"] == "mac-mini" and seen_args["tool"] == "host_detail"
+    t = _tool_events(events)[0]
+    assert t["ok"] and t["result"]["note"] == "host mac taken as mac-mini"
+
+
+def test_a_length_stop_then_a_thinking_only_reply_are_both_retried_once():
+    out, events, seen, st, tid = _run([
+        {"content": "", "finish": "length"},
+        {"reasoning": "x", "content": "", "finish": "stop"},
+        {"content": "All timers are set."}])
+    assert len(seen["payloads"]) == 3
+    assert out["note"] == "retried after a length stop; retried after a thinking-only reply"
+    assert _text(events) == "All timers are set."

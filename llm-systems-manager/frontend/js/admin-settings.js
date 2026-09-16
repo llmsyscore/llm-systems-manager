@@ -428,7 +428,8 @@
     else if (!s.model) body = '<span class="d">No model loaded</span>';
     else {
       const chk = (window.TW && TW.checkChip) ? TW.checkChip(s.check) : null;
-      const age = s.check && s.check.at ? ` \u00b7 checked ${ageText(s.check.at)}` : '';
+      const at = s.check && s.check.at;
+      const age = at && window.TW && TW.ageText ? ` \u00b7 checked ${TW.ageText(Date.now() / 1000 - at)}` : '';
       body = `<b>${esc(s.model)}</b>`
         + (chk ? `<span class="st-chip ${chk.cls}" title="${esc(chk.title)}">${esc(chk.text)}</span>` : '<span class="d">not checked</span>')
         + `<span class="d">${esc(age)}</span>`
@@ -436,10 +437,6 @@
           + `${_towerBusy ? 'Checking\u2026' : 'Check model'}</button>` : '');
     }
     return `<div class="st-check" id="stTowerCheck"><span class="lbl">Model check</span>${body}</div>`;
-  }
-  function ageText(t) {
-    const s = Math.max(0, Math.round(Date.now() / 1000 - t));
-    return s < 60 ? 'just now' : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
   }
   // Re-renders (filter keystrokes, group switches) reuse a state read under 15 s old.
   async function loadTowerState(force) {

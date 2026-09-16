@@ -90,25 +90,54 @@ class Checks:
                 self._running.discard(key)
 
     def run(self, model: dict) -> dict:
-        """Runs the probe now (native first when supported, then fenced) and caches the grade."""
-        return self._run(model, self._key(model["model"]))
+        """Runs the probe now (native first when supported, then fenced) and caches the grade;
+        a run already in flight for this key is joined instead of probed again."""
+        key = self._key(model["model"])
+        with self._lock:
+            joined = key in self._running
+            if not joined:
+                self._running.add(key)
+        if joined:
+            hit = self._join(key)
+            if hit is not None:
+                return hit
+        try:
+            return self._run(model, key)
+        finally:
+            with self._lock:
+                self._running.discard(key)
+
+    def _join(self, key: tuple) -> Optional[dict]:
+        """Waits out the run already in flight for `key`; its result, or None if it never lands."""
+        deadline = time.monotonic() + int(getattr(self._cfg(), "request_timeout_s", 0) or 0) * 2 + 60
+        while time.monotonic() < deadline:
+            with self._lock:
+                hit = self._results.get(key)
+                if hit is not None or key not in self._running:
+                    return hit
+            time.sleep(0.05)
+        return None
 
     def _run(self, model: dict, key: tuple) -> dict:
-        """The probe body, cached under the caller's key."""
-        cfg = self._cfg()
-        tools = tower_tools.catalog(self._registry_factory(), cfg, "operator")
-        timeout = int(getattr(cfg, "request_timeout_s", 0) or 0)
-        args = self._server_args_of(model) if self._server_args_of else None
+        """The probe body, cached under the caller's key; any failure grades `failed`."""
         grade, mode, detail = "failed", "fenced", ""
-        modes = (["native"] if tower.native_supported(cfg, model.get("provider") or "llama", args) else []) + ["fenced"]
-        if str(getattr(cfg, "tool_mode", "auto") or "auto") == "native":
-            modes = ["native"]
-        for m in modes:
-            ok, detail = probe(self._cs, cfg, tools, model, native=(m == "native"), timeout=timeout)
-            mode = m
-            if ok:
-                grade = m
-                break
+        try:
+            cfg = self._cfg()
+            tools = tower_tools.catalog(self._registry_factory(), cfg, "operator")
+            timeout = int(getattr(cfg, "request_timeout_s", 0) or 0)
+            args = self._server_args_of(model) if self._server_args_of else None
+            modes = (["native"] if tower.native_supported(cfg, model.get("provider") or "llama", args) else []) + ["fenced"]
+            if str(getattr(cfg, "tool_mode", "auto") or "auto") == "native":
+                modes = ["native"]
+            for m in modes:
+                mode = m
+                ok, detail = probe(self._cs, cfg, tools, model, native=(m == "native"), timeout=timeout)
+                if ok:
+                    grade = m
+                    break
+        except Exception as e:  # noqa: BLE001
+            log.warning("tower check failed: %s: %s", type(e).__name__, e)
+            grade, detail = "failed", f"error: {type(e).__name__}"
         size = size_b(model["model"])
         result = {"model": model["model"], "grade": grade, "mode": mode, "size_b": size,
                   "small": bool(size is not None and size < SMALL_B), "at": float(self._now()), "detail": detail}

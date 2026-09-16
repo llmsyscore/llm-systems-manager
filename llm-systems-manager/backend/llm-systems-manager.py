@@ -6821,10 +6821,12 @@ def _tower_reload_config() -> None:
         live = getattr(settings.manager, "tower", None)
         if live is None:
             return
-        before = (live.model, live.tool_mode)
+        def _check_inputs(t):
+            return (t.model, t.tool_mode, t.capabilities, tuple(t.disabled_tools or []))
+        before = _check_inputs(live)
         for k in _TOWER_KEYS:
             setattr(live, k, getattr(snap, k))
-        if (live.model, live.tool_mode) != before:
+        if _check_inputs(live) != before:
             _tower_checks.forget()
     except Exception as e:
         log.warning("tower config reload failed (runtime keeps previous values): %s", e)

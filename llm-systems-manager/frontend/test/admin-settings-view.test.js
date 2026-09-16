@@ -649,7 +649,7 @@ describe('Tower model check row (#1039)', () => {
     const win = await towerCard({ tower: STATE });
     const row = win.document.getElementById('stTowerCheck');
     expect(row.textContent).toContain('qwen3-14b');
-    expect(row.textContent).toContain('checked just now');
+    expect(row.textContent).toContain('checked now');
     const chip = row.querySelector('.st-chip.warn');
     expect(chip.textContent).toBe('fenced ok · 4B');
     expect(chip.getAttribute('title')).toContain('Under 7B');

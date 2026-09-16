@@ -129,3 +129,37 @@ def test_ensure_caches_by_model_and_tool_mode_and_runs_once_in_the_background():
     c.forget()
     cfg.tool_mode = "auto"
     assert c.get("m") is None
+
+
+def test_a_raising_probe_body_is_graded_failed_and_cached():
+    cfg = _cfg()
+    def boom():
+        raise RuntimeError("no registry")
+    c = tc.Checks(complete_stream=_stream([FENCED_OK]), cfg=lambda: cfg, registry_factory=boom,
+                  server_args_of=lambda m: [None], now=lambda: 1000.0)
+    r = c.run({"model": "tiny-4b", "provider": "llama", "hosts": ["box"]})
+    assert r == {"model": "tiny-4b", "grade": "failed", "mode": "fenced", "size_b": 4, "small": True,
+                 "at": 1000.0, "detail": "error: RuntimeError"}
+    assert c.get("tiny-4b") == r
+
+
+def test_run_joins_a_background_run_instead_of_probing_twice():
+    cfg = _cfg()
+    started = threading.Event()
+    release = threading.Event()
+    seen = []
+    def slow(body, *, label, **kw):
+        seen.append(label); started.set(); release.wait(3)
+        yield {"choices": [{"delta": {"content": FENCED_OK}}]}
+    c = tc.Checks(complete_stream=slow, cfg=lambda: cfg, registry_factory=_registry, server_args_of=lambda m: [None])
+    model = {"model": "m", "provider": "llama", "hosts": ["box"]}
+    assert c.ensure(model)["grade"] == "pending"
+    assert started.wait(2)
+    got = []
+    t = threading.Thread(target=lambda: got.append(c.run(model)), daemon=True)
+    t.start()
+    time.sleep(0.1)
+    release.set()
+    t.join(5)
+    assert not t.is_alive() and len(seen) == 1
+    assert got[0] is c.get("m") and got[0]["grade"] == "fenced"
