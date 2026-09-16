@@ -9,6 +9,7 @@
   let _prefs = { open: false, pinned: false, width: 400, thread: null, noCtx: false };
   let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
   let _histOpen = false;
+  let _timers = [], _timersAt = 0, _timerPoll = null, _timerTick = null, _timersBusy = false, _reports = [];
   const _bootS = Date.now() / 1000;
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
@@ -44,6 +45,65 @@
       loadInsights().then(() => { paintInsights(); markInsightsSeen(); });
     } else if (isOpen()) paintInsights();
     if (isOpen() && bodyKey(_view) !== _lastKey) refreshBody();
+    if (!_view.off && (Number(_api.timers || 0) > 0 || TW.liveTimers(_timers).length)) loadTimers();
+    else if (_view.off) { _timers = []; paintTimers(); }
+  }
+
+  // Timers (#1029): the strip under the tabs lists the user's live timers; a finished one hands its report run to the drawer.
+  async function loadTimers() {
+    if (_timersBusy) return;
+    _timersBusy = true;
+    let list = null;
+    try { const r = await fetch('/api/tower/timers'); if (r.ok) { const d = await r.json(); if (d.ok) list = d.timers || []; } } catch (_) { /* next poll */ }
+    finally { _timersBusy = false; }
+    if (!list) return;
+    for (const t of TW.finishedTimers(_timers, list)) {
+      if (!_reports.some(r => r.run_id === t.run_id)) _reports.push({ run_id: t.run_id, thread_id: t.thread_id });
+    }
+    _timers = list; _timersAt = Date.now() / 1000;
+    paintTimers();
+    await attachReports();
+  }
+  // Hands finished timers' report runs to the drawer: the open thread's run is attached once the drawer is idle,
+  // other threads' runs only mark the button while the drawer is closed.
+  async function attachReports() {
+    const keep = [];
+    for (const r of _reports) {
+      if (!_thread || r.thread_id !== _thread.id) { if (!isOpen()) markUnread(); continue; }
+      if (_runId === r.run_id) continue;
+      if (_state && _state.status !== 'idle') { keep.push(r); continue; }
+      await reloadThread();
+      reopenLastTurn();
+      _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); paintBody({ toBottom: true });
+      attach(r.run_id);
+    }
+    _reports = keep;
+  }
+  function timerRowHtml(t) {
+    const line = TW.timerLine(t, Date.now() / 1000 - _timersAt);
+    return `<div class="tmr" data-tmr="${TW.esc(t.id)}"><span class="lbl" title="${TW.esc(t.label)}">⏱ ${TW.esc(t.label)}</span><span class="st">${TW.esc(line)}</span>`
+      + `<button type="button" class="lnk" data-tmr-cancel="${TW.esc(t.id)}">Cancel</button></div>`;
+  }
+  function paintTimers() {
+    const el = $('twTimers'); if (!el) return;
+    const live = _view && !_view.off ? TW.liveTimers(_timers) : [];
+    el.hidden = !live.length;
+    el.innerHTML = live.map(timerRowHtml).join('');
+    if (live.length && !_timerPoll) {
+      _timerPoll = setInterval(loadTimers, 5000);
+      _timerTick = setInterval(paintTimers, 1000);
+    } else if (!live.length && _timerPoll) {
+      clearInterval(_timerPoll); clearInterval(_timerTick); _timerPoll = _timerTick = null;
+    }
+  }
+  async function cancelTimer(id) {
+    let res = null;
+    try { res = await fetch(`/api/tower/timers/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); } catch (_) { /* offline */ }
+    const d = res ? await res.json().catch(() => ({})) : {};
+    if (!res || !res.ok || !d.ok) { _notice = d.error === 'not live' ? 'That timer already finished.' : 'Could not cancel the timer; try again.'; paintBody(); }
+    await loadTimers();
+    const t = d.timer;
+    if (t && _thread && t.thread_id === _thread.id && _state && _state.status === 'idle') reloadThread();
   }
 
   // One toast per fresh insight while the drawer is closed; nothing older than this page load.
@@ -161,6 +221,11 @@
   }
   // A reloaded thread takes its run back: a parked action card keeps Stop and the decision buttons (#956),
   // and a run still answering is re-attached so the reply lands instead of being cancelled.
+  // A stored turn still being answered (a timer report) takes the streamed answer instead of a new turn.
+  function reopenLastTurn() {
+    const turns = _state.turns.slice(), t = turns[turns.length - 1];
+    if (t && t.role === 'tower' && t.done && !t.text && !t.error) { turns[turns.length - 1] = { ...t, done: false }; _state = { ..._state, turns }; }
+  }
   function resumeRun(activeRun) {
     const live = TW.liveRun(_state.turns);
     if (live) {
@@ -170,7 +235,7 @@
       if (live.status === 'running') attach(live.runId); else _runId = live.runId;
       return;
     }
-    if (activeRun) { _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); attach(activeRun); }
+    if (activeRun) { reopenLastTurn(); _state = TW.reduce(_state, { event: 'status', state: 'thinking' }); attach(activeRun); }
   }
   async function newThread(opts) {
     await parkRun();
@@ -218,8 +283,9 @@
     const open = _openTicks.has(key);
     const label = String(t.summary || t.name || '').replace(/\s*·\s*\d+\s*ms\s*$/, '');
     const ms = t.ms == null ? '' : `${t.ms} ms`;
+    const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result)) : '';
     return `<button type="button" class="tick${t.ok ? '' : ' bad'}${open ? ' open' : ''}" data-tk="${TW.esc(key)}" aria-expanded="${open}">`
-      + `<span class="k">${t.ok ? '▸' : '✕'}</span>${TW.esc(label)}<span class="ms">${TW.esc(ms)}</span></button>${rawHtml(t)}`;
+      + `<span class="k">${t.ok ? '▸' : '✕'}</span>${TW.esc(label)}<span class="ms">${TW.esc(ms)}</span></button>${snap}${rawHtml(t)}`;
   }
   // Keeps the streaming caret inline at the end of the last rendered paragraph.
   function answerHtml(t) {
@@ -490,6 +556,7 @@
                        if (ev.event === 'truncated') dropped = true;
                        if (ev.event === 'action' && ev.action_id) delete _optSel[ev.action_id];
                        if (ev.event === 'answer' && ev.action_id) forgetQuestion(ev.action_id);
+                       if (ev.event === 'tool' && ev.name === 'schedule' && ev.ok) loadTimers();
                        if (ev.event === 'confirm' || ev.event === 'question') { closeStream(); if (!isOpen()) markUnread(); return; }
                        if (ev.event === 'done' || ev.event === 'error') { endRun(); if (!isOpen()) markUnread(); if (dropped) reloadThread(); drainPending(); }
                      },
@@ -647,8 +714,9 @@
   }
 
   function drainPending() {
-    if (!_pending.length || (_state && _state.status !== 'idle')) return;
-    send(_pending.shift());
+    if (_state && _state.status !== 'idle') return;
+    if (_reports.length) { attachReports(); return; }
+    if (_pending.length) send(_pending.shift());
   }
 
   // Stops the active run; only a 404 also tears the client stream down.
@@ -730,6 +798,10 @@
     $('twTabs')?.addEventListener('click', ev => {
       if (ev.target.closest('#twTabConv')) setTab('conv');
       else if (ev.target.closest('#twTabIns')) setTab('ins');
+    });
+    $('twTimers')?.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-tmr-cancel]');
+      if (b) cancelTimer(b.dataset.tmrCancel);
     });
     $('twInsNote')?.addEventListener('click', ev => {
       const b = ev.target.closest('[data-ins-view]');
@@ -893,4 +965,5 @@
   window.towerOpen = towerOpen;
   window.towerClose = towerClose;
   window.towerRefreshState = towerRefreshState;
+  window.towerLoadTimers = loadTimers;
 })();

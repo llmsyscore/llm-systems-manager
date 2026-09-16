@@ -152,7 +152,7 @@ CATALOG: list[dict] = [
        "Tools Tower may use. Turn one off here and it is gone everywhere; the capability tier still applies to actions.",
        "tower", MANAGER, hot=True, choices=list(tower_tools.TOOL_NAMES), exclude=True,
        groups={"Read tools": list(tower_tools.READ_TOOL_NAMES), "Questions": list(tower_tools.ASK_TOOL_NAMES),
-               "Actions": list(tower_tools.ACT_TOOL_NAMES)}),
+               "Timers": list(tower_tools.TIMER_TOOL_NAMES), "Actions": list(tower_tools.ACT_TOOL_NAMES)}),
     _e("manager.tower.diagnose_alarms", "bool", "Diagnose new alarms", "Read-only look at each new alert at or above the lowest severity; the result lands in the drawer as an insight.", "tower", MANAGER, hot=True, common=True),
     _e("manager.tower.min_severity", "choice", "Lowest severity", "Alerts below this are not diagnosed.", "tower", MANAGER, choices=["info", "warning", "critical"], hot=True),
     _e("manager.tower.playbooks_auto", "bool", "Apply safe playbooks", "Wake a sleeping server, reload a dropped model, ack a recovered alert without asking. Needs operate. Anything else is always proposed.", "tower", MANAGER, hot=True),

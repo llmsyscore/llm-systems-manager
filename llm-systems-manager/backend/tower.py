@@ -13,6 +13,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
+import tower_timers
 import tower_tools
 
 log = logging.getLogger("llm-systems-manager.tower")
@@ -181,6 +182,16 @@ def system_prompt(cfg, tools: "list[tower_tools.Tool]", page: Optional[dict], na
             "host or model name, then a few words of state); the card adds Other. Related picks (host and model) go "
             "in one call as questions with short labels; otherwise ask one thing at a time. Never ask what a tool can "
             "tell you, and continue with the answers it returns. If it returns no answer, say so in one line and stop."
+        )
+    if any(t.kind == "timer" for t in tools):
+        parts.append(
+            "When the operator wants something polled, watched, or checked later or repeatedly (every N minutes for M "
+            "minutes, in 10 minutes, a few times), call schedule once with a short label and either host + metric or "
+            "tool + args, then say in one line what was scheduled and when it reports; never poll with wait_until or "
+            "repeat reads yourself, and never wait for the timer. A turn that starts with 'Timer finished' carries that "
+            "timer's samples in its result: report them as asked, one tick per line with its time, then min, average, "
+            "max and the trend, and draw a text bar chart (\u2588 bars) of the values in a code block; call host_history "
+            "for the same window when a longer view helps."
         )
     if str(getattr(cfg, "off_topic", "refuse")) == "refuse":
         parts.append(f"If a request is not about this manager or its hosts, reply exactly: {REFUSAL}")
@@ -765,16 +776,24 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
               server_args_of: Optional[Callable[[dict], Any]] = None,
               approvals: Optional["Approvals"] = None, run_id: str = "", actor: str = "",
               report_violation: Optional[Callable[[dict], None]] = None,
-              stop_recorded: Optional[Callable[[], bool]] = None) -> dict:
+              stop_recorded: Optional[Callable[[], bool]] = None, user: str = "",
+              timers=None, prelude: Optional[dict] = None) -> dict:
     """One user turn: every model call streams; tool reads loop until a plain-text answer.
     A first-token timeout may hand this one question to `alternates(model)` when cfg.fallback is on.
-    `stop_recorded` is True when Stop already stored the turn's stop line (#961)."""
+    `stop_recorded` is True when Stop already stored the turn's stop line (#961). `prelude` is a finished
+    timer's samples (#1029): stored as a tool row the drawer reads, and given to the model with the user text."""
     t_start = time.monotonic()
     tools = tower_tools.catalog(registry, cfg, role)
     by_name = {t.name: t for t in tools}
     timeout = int(getattr(cfg, "request_timeout_s", 0) or 0)
     store.add_message(thread_id, "user", user_text)
     history = _history(store, thread_id, drop_refusals=str(getattr(cfg, "off_topic", "refuse")) != "refuse")[:-1]
+    model_text = user_text
+    if prelude:
+        pj = json.dumps(prelude.get("result"), default=str)
+        store.add_message(thread_id, "tool", pj, tool_name=str(prelude.get("name") or "timer"),
+                          tool_args=json.dumps(prelude.get("args") or {}, default=str), tool_ok=True, tool_ms=0)
+        model_text = f"{user_text}\n\nResult of {prelude.get('name') or 'timer'}:\n{pj}"
 
     native_used = False
 
@@ -788,7 +807,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         emit({"event": "model", "model": m["model"], "provider": m["provider"], "hosts": m.get("hosts") or [],
               **({"fallback": True, "from": fallback_from} if fallback_from else {})})
         msgs = [{"role": "system", "content": system_prompt(cfg, tools, page, native)}] + history
-        msgs.append({"role": "user", "content": user_text})
+        msgs.append({"role": "user", "content": model_text})
         b = {"model": m["model"], "temperature": float(getattr(cfg, "temperature", 0.2)),
              "max_tokens": int(getattr(cfg, "max_tokens", 1024))}
         if native and tools:
@@ -950,6 +969,12 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 elif tool.kind == "ask":
                     result, ok = _run_question(store, approvals, thread_id, run_id, actor, tool, args, emit, cancelled)
                     summary, acted = "", True
+                elif tool.kind == "timer" and timers is None:
+                    result, ok, summary = {"error": f"{name} needs a timer channel"}, False, f"{name} · no timer channel"
+                elif tool.kind == "timer":
+                    result = timers.schedule(thread_id=thread_id, user=user or actor, role=role, args=args)
+                    ok = bool(result.get("ok"))
+                    summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
                 else:
                     result, ok = tower_tools.run_tool(tool, args)
                     summary = tower_tools.summary_line(tool, args, result, int((time.monotonic() - t0) * 1000))
@@ -1071,6 +1096,11 @@ class Store:
             playbook_safe INTEGER, steps TEXT, checks TEXT, thread_id TEXT, status TEXT NOT NULL,
             created REAL, resolved REAL, applied_by TEXT, result TEXT, seen_at REAL, snapshot TEXT);
         CREATE INDEX IF NOT EXISTS idx_tower_insights_status ON tower_insights(status, created);
+        CREATE TABLE IF NOT EXISTS tower_timers (
+            id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user TEXT NOT NULL, role TEXT, label TEXT, spec TEXT,
+            every_s INTEGER, times INTEGER, samples TEXT, status TEXT NOT NULL, created REAL, next_tick REAL, ends REAL,
+            resolved REAL, message TEXT, run_id TEXT);
+        CREATE INDEX IF NOT EXISTS idx_tower_timers_status ON tower_timers(status, next_tick);
         """)
         have = {r[1] for r in c.execute("PRAGMA table_info(tower_insights)").fetchall()}
         for col, typ in (("seen_at", "REAL"), ("snapshot", "TEXT")):
@@ -1080,6 +1110,8 @@ class Store:
         c.execute("UPDATE tower_actions SET status='expired', resolved=?, result=? WHERE status IN ('pending','running')",
                   (time.time(), json.dumps({"ok": False, "message": "manager restarted"})))
         c.execute("UPDATE tower_insights SET status='new' WHERE status='applying'")
+        c.execute("UPDATE tower_timers SET status='failed', resolved=?, message='manager restarted', next_tick=NULL"
+                  " WHERE status IN ('queued','running','reporting')", (time.time(),))
         c.commit()
 
     def create_thread(self, user: str, title: str, page: Optional[dict]) -> str:
@@ -1128,6 +1160,8 @@ class Store:
             if n:
                 c.execute("DELETE FROM tower_messages WHERE thread_id=?", (tid,))
                 c.execute("DELETE FROM tower_actions WHERE thread_id=?", (tid,))
+                c.execute("UPDATE tower_timers SET status='cancelled', resolved=?, message='the conversation was deleted', next_tick=NULL"
+                          " WHERE thread_id=? AND status IN ('queued','running','reporting')", (time.time(), tid))
             c.commit()
         return bool(n)
 
@@ -1214,6 +1248,66 @@ class Store:
             return out
         return sorted(out + acts, key=lambda r: (r["ts"] or 0.0))
 
+    _TIMER_KEYS = ("id", "thread_id", "user", "role", "label", "spec", "every_s", "times", "samples", "status", "created",
+                   "next_tick", "ends", "resolved", "message", "run_id")
+    _TIMER_JSON = ("spec", "samples")
+
+    def _timer_row(self, r) -> dict:
+        row = dict(zip(self._TIMER_KEYS, r))
+        row["spec"] = json.loads(row["spec"] or "{}")
+        row["samples"] = json.loads(row["samples"] or "[]")
+        return row
+
+    def _timer_rows(self, where: str, params: tuple) -> "list[dict]":
+        rows = self._conn().execute(f"SELECT {', '.join(self._TIMER_KEYS)} FROM tower_timers WHERE {where}", params).fetchall()
+        return [self._timer_row(r) for r in rows]
+
+    def create_timer(self, tid: str, user: str, role: str, spec: dict, now: float) -> str:
+        """Queues a timer (#1029): the first tick lands one interval from now, the last one times intervals out."""
+        timer_id = uuid.uuid4().hex[:16]
+        every, times = int(spec["every_s"]), int(spec["times"])
+        with self._lock:
+            c = self._conn()
+            c.execute("INSERT INTO tower_timers (id, thread_id, user, role, label, spec, every_s, times, samples, status, created,"
+                      " next_tick, ends) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (timer_id, tid, user, role, spec["label"], json.dumps(spec, default=str), every, times, "[]", "queued",
+                       now, now + every, now + every * times))
+            c.execute("UPDATE tower_threads SET updated=? WHERE id=?", (now, tid))
+            c.commit()
+        return timer_id
+
+    def get_timer(self, timer_id: str) -> Optional[dict]:
+        rows = self._timer_rows("id=?", (timer_id,))
+        return rows[0] if rows else None
+
+    def live_timers(self) -> "list[dict]":
+        return self._timer_rows("status IN ('queued','running','reporting') ORDER BY created", ())
+
+    def due_timers(self, now: float) -> "list[dict]":
+        return self._timer_rows("status IN ('queued','running') AND next_tick <= ? ORDER BY next_tick", (now,))
+
+    def timers_by_status(self, status: str) -> "list[dict]":
+        return self._timer_rows("status=? ORDER BY created", (status,))
+
+    def user_timers(self, user: str, since: float) -> "list[dict]":
+        """The user's live timers and the ones resolved since `since`, newest first."""
+        return self._timer_rows("user=? AND (status IN ('queued','running','reporting') OR resolved >= ?) ORDER BY created DESC LIMIT 20",
+                                (user, since))
+
+    def update_timer(self, timer_id: str, *, only_live: bool = False, **fields) -> bool:
+        """Sets samples/status/next_tick/ends/resolved/message/run_id; with only_live, only while the timer is live."""
+        allowed = ("samples", "status", "next_tick", "ends", "resolved", "message", "run_id")
+        sets = {k: (json.dumps(v, default=str) if k in self._TIMER_JSON else v) for k, v in fields.items() if k in allowed}
+        if not sets:
+            return False
+        guard = " AND status IN ('queued','running','reporting')" if only_live else ""
+        with self._lock:
+            c = self._conn()
+            n = c.execute(f"UPDATE tower_timers SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?{guard}",
+                          (*sets.values(), timer_id)).rowcount
+            c.commit()
+        return bool(n)
+
     def sweep(self, days: int) -> int:
         """Deletes threads idle past `days` (with their messages and actions) and insights older than `days`."""
         cutoff = time.time() - max(1, int(days)) * 86400
@@ -1222,6 +1316,7 @@ class Store:
             n = c.execute("DELETE FROM tower_threads WHERE updated < ?", (cutoff,)).rowcount
             c.execute("DELETE FROM tower_messages WHERE thread_id NOT IN (SELECT id FROM tower_threads)")
             c.execute("DELETE FROM tower_actions WHERE thread_id NOT IN (SELECT id FROM tower_threads)")
+            c.execute("DELETE FROM tower_timers WHERE thread_id NOT IN (SELECT id FROM tower_threads)")
             c.execute("DELETE FROM tower_insights WHERE created < ?", (cutoff,))
             c.commit()
         return n
@@ -1374,8 +1469,10 @@ class Runs:
                  stream_max_s: "Optional[Callable[[], float]]" = None,
                  shutting_down: "Optional[Callable[[], bool]]" = None,
                  approvals: "Optional[Approvals]" = None,
-                 report_violation: "Optional[Callable[[dict], None]]" = None):
+                 report_violation: "Optional[Callable[[dict], None]]" = None,
+                 timers=None):
         self._store = store
+        self._timers = timers
         self._registry_factory, self._cs = registry_factory, complete_stream
         self._entries, self._server_args_of, self._cfg = entries, server_args_of, cfg
         self._stream_max_s = stream_max_s or (lambda: _STREAM_MAX_S)
@@ -1395,6 +1492,21 @@ class Runs:
     @property
     def approvals(self):
         return self._approvals
+
+    @property
+    def timers(self):
+        return self._timers
+
+    def count_tick(self, user: str) -> bool:
+        """Charges one timer tick to the user's per-minute budget (#1029); False when it is spent."""
+        now = _now()
+        with self._lock:
+            stamps = [t for t in self._rate.get(user, []) if now - t < _RATE_WINDOW_S]
+            if len(stamps) >= _RATE_PER_MIN:
+                self._rate[user] = stamps
+                return False
+            self._rate[user] = stamps + [now]
+            return True
 
     def _gc(self, now):
         """Drops finished-and-expired runs, then any active/rate bookkeeping left pointing at nothing live."""
@@ -1417,8 +1529,9 @@ class Runs:
         return run if run and not run["done"] else None
 
     def start(self, *, user: str, role: str, thread_id: str, text: str, page: dict,
-              cfg=None, actor: Optional[str] = None) -> "tuple[Optional[str], Optional[tuple[int, str]]]":
-        """`cfg` overrides the live settings view for this turn (Discord asks run read-only); `actor` the audit name."""
+              cfg=None, actor: Optional[str] = None, prelude: Optional[dict] = None) -> "tuple[Optional[str], Optional[tuple[int, str]]]":
+        """`cfg` overrides the live settings view for this turn (Discord asks run read-only); `actor` the audit name;
+        `prelude` a finished timer's samples (#1029)."""
         now = _now()
         with self._lock:
             self._gc(now)
@@ -1462,7 +1575,8 @@ class Runs:
                          alternates=lambda cur: alternate_model(cur, (_gateway_entries or self._entries)()),
                          approvals=self._approvals, run_id=rid, actor=actor or user,
                          report_violation=self._report_violation,
-                         stop_recorded=lambda: bool(run.get("stopped")))
+                         stop_recorded=lambda: bool(run.get("stopped")), user=user,
+                         timers=self._timers, prelude=prelude)
             except Exception as e:
                 log.warning("tower worker failed: %s: %s", type(e).__name__, e)
                 _drop_oldest_put(run, {"event": "error", "message": "Tower hit an internal error; try again."})
@@ -1614,9 +1728,10 @@ _ASK_TOO_LONG = "Tower took too long to answer."
 
 
 class ReadOnlyView:
-    """A settings view pinned to the read tier with no question cards; every other field reads through to the live config."""
+    """A settings view pinned to the read tier with no question cards or timers; every other field reads through to the live config."""
     capabilities = "read"
     questions = False
+    timers = False
 
     def __init__(self, cfg):
         self._cfg = cfg
@@ -1725,7 +1840,8 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
                         "diagnose_alarms": bool(cfg.diagnose_alarms),
                         "insights_new": runs.store.count_unseen(),
                         "latest_insight": insight_brief(runs.store.latest_unseen()),
-                        "insights_rev": runs.store.insights_rev()})
+                        "insights_rev": runs.store.insights_rev(),
+                        "timers": runs.timers.live_count(_user()) if runs.timers is not None else 0})
 
     @app.route("/api/tower/threads", methods=["GET"])
     def tower_threads():
@@ -1863,6 +1979,26 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting) -> 
         g._audit_extra = {"tool": out["tool"], "questions": [q.get("question") for q in card.get("questions") or []],
                           "answers": answers, "thread_id": out["thread_id"]}
         return jsonify({"ok": True, **{k: out[k] for k in ("run_id", "status", "tool", "thread_id")}})
+
+    @app.route("/api/tower/timers")
+    def tower_timers_list():
+        deny = _gate()
+        if deny: return deny
+        return jsonify({"ok": True, "timers": runs.timers.list(_user()) if runs.timers is not None else []})
+
+    @app.route("/api/tower/timers/<tid>/cancel", methods=["POST"])
+    def tower_timer_cancel(tid):
+        deny = _gate()
+        if deny: return deny
+        user = _user()
+        g._audit_actor = f"tower via {user}"
+        if runs.timers is None:
+            return jsonify({"ok": False, "error": "unknown timer"}), 404
+        row, err = runs.timers.cancel(tid, user)
+        if err:
+            return jsonify({"ok": False, "error": err[1]}), err[0]
+        g._audit_extra = {"label": row["label"], "thread_id": row["thread_id"], "samples": len(row["samples"])}
+        return jsonify({"ok": True, "timer": tower_timers.timer_view(row)})
 
     @app.route("/api/tower/model", methods=["PUT"])
     def tower_model_pin():

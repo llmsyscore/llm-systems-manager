@@ -176,9 +176,16 @@
   }
 
   function tickSummary(r) {
-    const verb = 'read', label = String(r.tool_name || '').replace(/_/g, ' ');
-    let tgt = '';
-    try { const a = JSON.parse(r.tool_args || '{}'); tgt = a.host || a.model || a.alert_id || a.path || a.window || ''; } catch (_) { /* no args */ }
+    const label = String(r.tool_name || '').replace(/_/g, ' ');
+    let a = {};
+    try { a = JSON.parse(r.tool_args || '{}') || {}; } catch (_) { /* no args */ }
+    if (r.tool_name === 'timer') {
+      const b = safeJson(r.content) || {};
+      const n = Number(b.ticks) || 0;
+      return `timer · ${a.label || b.label || ''} · ${n} tick${n === 1 ? '' : 's'}` + (b.ok ? '' : ` · ${b.message || b.status || 'failed'}`);
+    }
+    const verb = r.tool_name === 'schedule' ? 'scheduled' : 'read';
+    const tgt = r.tool_name === 'schedule' ? (a.label || '') : (a.host || a.model || a.alert_id || a.path || a.window || '');
     return verb + ' ' + label + (tgt ? ' · ' + tgt : '') + ' · ' + (r.tool_ms || 0) + ' ms';
   }
   // Folds a tool round's optional assistant preamble + tool rows + final
@@ -380,6 +387,33 @@
     return groups;
   }
 
+  // Timers (#1029): the strip line for one live timer, given the seconds since its view was fetched.
+  function timerLine(t, elapsedS) {
+    if (!t) return '';
+    const e = Math.max(0, Number(elapsedS) || 0);
+    const parts = [`${Number(t.count) || 0}/${Number(t.times) || 0}`];
+    if (t.status === 'reporting') parts.push('reporting…');
+    else {
+      if (t.next_in_s != null) parts.push(`next in ${Math.max(0, Math.round(Number(t.next_in_s) - e))} s`);
+      if (t.left_s != null) { const left = Math.max(0, Math.round(Number(t.left_s) - e)); parts.push(left >= 90 ? `${Math.round(left / 60)} min left` : `${left} s left`); }
+    }
+    return parts.join(' · ');
+  }
+  function liveTimers(list) { return (list || []).filter(t => t && (t.status === 'queued' || t.status === 'running' || t.status === 'reporting')); }
+  // Timers that were live in `prev` and now carry a report run: the drawer attaches to those runs.
+  function finishedTimers(prev, next) {
+    const was = new Set(liveTimers(prev).map(t => t.id));
+    return (next || []).filter(t => t && t.status === 'done' && t.run_id && was.has(t.id));
+  }
+  // A timer tool row's numeric series as a sparkline snapshot; null when there is nothing to draw.
+  function timerSnapshot(result) {
+    const r = result && typeof result === 'object' ? result : null;
+    if (!r || !Array.isArray(r.series) || r.series.length < 2) return null;
+    const first = Number(r.series[0][0]), last = Number(r.series[r.series.length - 1][0]);
+    return { points: r.series, unit: r.unit || '', metric: r.metric || r.pick || r.label || 'value',
+             minutes: Math.max(1, Math.round((last - first) / 60)) };
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
@@ -390,5 +424,6 @@
   }
 
   return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, esc, PROVIDER, waitText, HELP_SUGS,
-           ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt };
+           ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
+           timerLine, liveTimers, finishedTimers, timerSnapshot };
 });

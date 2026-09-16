@@ -33,6 +33,7 @@ class _ReadOnly:
     """cfg view for diagnosis runs: read tier, refuse off-topic, capped tool calls and first-token wait."""
     capabilities = "read"
     questions = False
+    timers = False
     off_topic = "refuse"
 
     def __init__(self, cfg):

@@ -83,7 +83,7 @@ class _TimeoutError(RuntimeError):
 
 
 def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=None, alternates=None,
-         approvals=None, role="operator", report_violation=None, registry=None):
+         approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None):
     """script: list of assistant messages the fake model returns, in order, delivered as
     stream deltas — "content" char by char, "chunks" verbatim as given, or one tool_calls
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
@@ -119,7 +119,8 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
                          registry=registry or _registry(), complete_stream=complete_stream,
                          store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates,
-                         approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation)
+                         approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation,
+                         user="adriel", timers=timers, prelude=prelude)
     return out, events, seen, st, tid
 
 
@@ -1877,3 +1878,77 @@ def test_system_prompt_names_support_help_and_waiting():
     assert "developed by llmsyscore" in p and "call support" in p and "wait_until" in p and "searches the shipped docs" in p
     assert "backups section" in p and "one metric per line" in p and "count 100" in p
     assert "support email" in p and "wait_until model_ready" in p and "backups area is bullets" in p
+
+
+# ── timers (#1029) ─────────────────────────────────────────────────
+
+_SCHEDULE_BLOCK = '```tool\n{"name":"schedule","args":{"label":"RAM on box","host":"box","metric":"ram_pct","every_s":30,"times":2}}\n```'
+
+
+class _FakeTimers:
+    def __init__(self):
+        self.calls = []
+
+    def schedule(self, **kw):
+        self.calls.append(kw)
+        return {"ok": True, "timer_id": "t1", "label": kw["args"].get("label"), "every_s": 30, "times": 2,
+                "message": "scheduled"}
+
+
+def test_schedule_call_goes_to_the_timer_channel_with_the_thread_and_user():
+    timers = _FakeTimers()
+    out, events, seen, st, tid = _run([{"content": _SCHEDULE_BLOCK}, {"content": "Scheduled; the report lands here in a minute."}], timers=timers)
+    assert out["ok"] and out["calls"] == 1
+    assert len(timers.calls) == 1
+    kw = timers.calls[0]
+    assert kw["thread_id"] == tid and kw["user"] == "adriel" and kw["role"] == "operator"
+    assert kw["args"]["host"] == "box" and kw["args"]["metric"] == "ram_pct" and kw["args"]["every_s"] == 30 and kw["args"]["times"] == 2
+    tick = next(e for e in events if e["event"] == "tool")
+    assert tick["name"] == "schedule" and tick["ok"] and tick["result"]["timer_id"] == "t1"
+    assert tick["summary"].startswith("scheduled schedule · RAM on box · every 30 s × 2")
+    tool_rows = [r for r in st.messages(tid) if r["role"] == "tool"]
+    assert tool_rows[0]["tool_name"] == "schedule" and json.loads(tool_rows[0]["content"])["timer_id"] == "t1"
+    assert "Result of schedule" in seen["payloads"][1]["messages"][-1]["content"]
+
+
+def test_schedule_without_a_timer_channel_is_an_error_result():
+    out, events, seen, st, tid = _run([{"content": _SCHEDULE_BLOCK}, {"content": "Timers are not available here."}])
+    tick = next(e for e in events if e["event"] == "tool")
+    assert not tick["ok"] and tick["result"] == {"error": "schedule needs a timer channel"}
+    assert tick["summary"] == "schedule · no timer channel"
+
+
+def test_prompt_mentions_timers_only_when_the_schedule_tool_is_offered():
+    reg = _registry()
+    with_timer = tower.system_prompt(_cfg(), tt.catalog(reg, _cfg(), "operator"), None, False)
+    assert "call schedule once" in with_timer and "(timer, reports later as a new turn)" in with_timer
+    without = tower.system_prompt(_cfg(), tt.catalog(reg, tower.ReadOnlyView(_cfg()), "operator"), None, False)
+    assert "call schedule once" not in without and "(timer, reports later" not in without
+
+
+def test_read_only_view_hides_the_schedule_tool():
+    reg = _registry()
+    assert "schedule" in {t.name for t in tt.catalog(reg, _cfg(), "operator")}
+    assert "schedule" not in {t.name for t in tt.catalog(reg, tower.ReadOnlyView(_cfg()), "operator")}
+    assert "schedule" not in {t.name for t in tt.catalog(reg, _cfg(timers=False), "operator")}
+
+
+def test_report_turn_stores_and_shows_the_samples_and_hands_them_to_the_model():
+    prelude = {"name": "timer", "args": {"label": "RAM on box", "timer_id": "t1"},
+               "result": {"ok": True, "label": "RAM on box", "ticks": 2, "min": 41.0, "max": 42.0, "series": [[1030, 41.0], [1060, 42.0]],
+                          "samples": [{"time": "10:00:30", "value": 41.0}, {"time": "10:01:00", "value": 42.0}]},
+               "summary": "timer · RAM on box · 2 ticks"}
+    text = "\u23f1 Timer finished: RAM on box · 2 ticks every 30 s. Report each tick."
+    out, events, seen, st, tid = _run([{"content": "RAM rose from 41 % to 42 %."}], user_text=text, prelude=prelude)
+    assert out["ok"]
+    # The stored row is the tick the drawer shows; no live tool event, so an attached drawer never draws it twice.
+    assert [e["event"] for e in events if e["event"] == "tool"] == []
+    rows = st.messages(tid)
+    assert [r["role"] for r in rows] == ["user", "tool", "assistant"]
+    assert rows[0]["content"] == text
+    assert rows[1]["tool_name"] == "timer" and json.loads(rows[1]["content"])["min"] == 41.0 and json.loads(rows[1]["tool_args"]) == prelude["args"]
+    sent = seen["payloads"][0]["messages"][-1]
+    assert sent["role"] == "user" and sent["content"].startswith(text) and "Result of timer:" in sent["content"] and '"series"' in sent["content"]
+    # The next turn's history carries the short line and the report, not the samples.
+    hist = tower._history(st, tid)
+    assert [m["role"] for m in hist] == ["user", "assistant"] and hist[0]["content"] == text

@@ -51,8 +51,10 @@ def client(monkeypatch):
     orig_store = M._tower_runs._store
     orig_shutting_down = M._tower_runs._shutting_down
     orig_stream_max_s = M._tower_runs._stream_max_s
+    orig_timer_store = M._tower_timers._store
     M._tower_runs._store = tower.Store(":memory:")
     M._tower_runs._store.init_tables()
+    M._tower_timers._store = M._tower_runs._store
     M._tower_runs._runs.clear()
     M._tower_runs._active_user.clear()
     M._tower_runs._rate.clear()
@@ -64,6 +66,7 @@ def client(monkeypatch):
             yield c
     finally:
         M._tower_runs._store = orig_store
+        M._tower_timers._store = orig_timer_store
         M._tower_runs._shutting_down = orig_shutting_down
         M._tower_runs._stream_max_s = orig_stream_max_s
         for k, v in orig_tower.model_dump().items():
@@ -1104,3 +1107,52 @@ def test_tower_run_rows_report_accept_rate_as_a_percentage():
                             "summary": {"bench": "qualitative", "accept_rate": 0.5496, "gen_tps": 68.4}}, {"A1": "box"})
     assert row["results"] == {"accept_rate_pct": 55.0, "gen_tps": 68.4} and row["config"] == {"bench": "qualitative"}
     assert M._tower_run_row({"tool": "benchmark", "summary": {"accept_rate": 61.2}}, {})["results"] == {"accept_rate_pct": 61.2}
+
+
+# ── timers (#1029) ─────────────────────────────────────────────────
+
+def _queue_timer(c, user="alice"):
+    tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    st = M._tower_runs._store
+    timer_id = st.create_timer(tid, user, "operator", {"kind": "metric", "host": "box", "metric": "ram_pct", "label": "RAM on box",
+                                                       "every_s": 30, "times": 4}, time.time())
+    return tid, timer_id
+
+
+def test_timers_route_lists_the_users_live_timers_and_state_counts_them(client):
+    c = client
+    assert c.get("/api/tower/timers").get_json() == {"ok": True, "timers": []}
+    assert c.get("/api/tower/state").get_json()["timers"] == 0
+    tid, timer_id = _queue_timer(c)
+    _queue_timer(c, user="bob")
+    d = c.get("/api/tower/timers").get_json()
+    assert d["ok"] and [t["id"] for t in d["timers"]] == [timer_id]
+    t = d["timers"][0]
+    assert t["thread_id"] == tid and t["label"] == "RAM on box" and t["status"] == "queued" and t["count"] == 0
+    assert t["times"] == 4 and t["every_s"] == 30 and 0 <= t["next_in_s"] <= 30 and 0 <= t["left_s"] <= 120
+    assert c.get("/api/tower/state").get_json()["timers"] == 1
+
+
+def test_timer_cancel_route_audits_and_refuses_repeats_and_other_users(client):
+    """#1029: POST cancel stops a live timer for its owner only; the audit row names the timer."""
+    c = client
+    tid, timer_id = _queue_timer(c)
+    assert c.post("/api/tower/timers/nope/cancel").status_code == 404
+    r = c.post(f"/api/tower/timers/{timer_id}/cancel")
+    assert r.status_code == 200 and r.get_json()["timer"]["status"] == "cancelled"
+    row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.timer.cancel' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] == "tower via alice" and row[1] == "tower.timer.cancel" and row[2] == timer_id
+    detail = json.loads(row[3])
+    assert detail["label"] == "RAM on box" and detail["thread_id"] == tid and detail["samples"] == 0
+    assert c.post(f"/api/tower/timers/{timer_id}/cancel").get_json() == {"ok": False, "error": "not live"}
+    tool_rows = [m for m in c.get(f"/api/tower/threads/{tid}").get_json()["messages"] if m["role"] == "tool"]
+    assert tool_rows and tool_rows[0]["tool_name"] == "timer" and json.loads(tool_rows[0]["content"])["status"] == "cancelled"
+    _, other = _queue_timer(c, user="bob")
+    assert c.post(f"/api/tower/timers/{other}/cancel").status_code == 404
+    assert M._tower_runs._store.get_timer(other)["status"] == "queued"
+
+
+def test_timer_routes_are_gated_like_the_rest(client):
+    settings.manager.tower.enabled = False
+    assert client.get("/api/tower/timers").status_code == 404
+    assert client.post("/api/tower/timers/x/cancel").status_code == 404

@@ -382,3 +382,45 @@ describe('links in answers (#1024)', () => {
     expect(mixed).not.toContain('mailto:');
   });
 });
+
+describe('timers (#1029)', () => {
+  const live = { id: 'tm1', label: 'RAM on box', status: 'running', count: 3, times: 10, next_in_s: 42, left_s: 430, thread_id: 't1', run_id: null };
+  test('timerLine counts down from the fetched view; reporting and short remainders read differently', () => {
+    expect(TW.timerLine(live, 0)).toBe('3/10 · next in 42 s · 7 min left');
+    expect(TW.timerLine(live, 30)).toBe('3/10 · next in 12 s · 7 min left');
+    expect(TW.timerLine({ ...live, left_s: 80, next_in_s: 5 }, 10)).toBe('3/10 · next in 0 s · 70 s left');
+    expect(TW.timerLine({ ...live, status: 'reporting', next_in_s: null, left_s: null }, 0)).toBe('3/10 · reporting…');
+    expect(TW.timerLine(null, 0)).toBe('');
+  });
+  test('liveTimers keeps queued, running and reporting; finishedTimers is the live-to-done set with a run', () => {
+    const rows = [live, { ...live, id: 'tm2', status: 'queued' }, { ...live, id: 'tm3', status: 'reporting' }, { ...live, id: 'tm4', status: 'done', run_id: 'r7' }, { ...live, id: 'tm5', status: 'cancelled' }];
+    expect(TW.liveTimers(rows).map(t => t.id)).toEqual(['tm1', 'tm2', 'tm3']);
+    const next = [{ ...live, status: 'done', run_id: 'r9' }, { ...live, id: 'tm2', status: 'failed', run_id: null }, { ...live, id: 'tm8', status: 'done', run_id: 'r1' }];
+    expect(TW.finishedTimers(rows, next).map(t => t.id)).toEqual(['tm1']);
+    expect(TW.finishedTimers([], next)).toEqual([]);
+  });
+  test('timerSnapshot turns a timer result series into a sparkline snapshot', () => {
+    const snap = TW.timerSnapshot({ label: 'RAM on box', metric: 'ram_pct', unit: '%', series: [[1000, 41], [1060, 42], [1120, 44]] });
+    expect(snap).toEqual({ points: [[1000, 41], [1060, 42], [1120, 44]], unit: '%', metric: 'ram_pct', minutes: 2 });
+    const sp = TW.sparkline(snap, 240, 36);
+    expect(sp.caption).toBe('ram_pct · last 2 min · 41%–44%');
+    expect(TW.timerSnapshot({ series: [[1, 2]] })).toBeNull();
+    expect(TW.timerSnapshot({ ok: true })).toBeNull();
+    expect(TW.timerSnapshot('nope')).toBeNull();
+    expect(TW.timerSnapshot({ pick: 'ram.used_pct', series: [[0, 1], [60, 2]] }).metric).toBe('ram.used_pct');
+  });
+});
+
+describe('timer rows in a stored thread (#1029)', () => {
+  test('tickSummary names the timer, its tick count and a failure', () => {
+    const v = TW.threadView([
+      { role: 'user', content: 'poll it' },
+      { role: 'tool', tool_name: 'schedule', tool_args: '{"label":"RAM on box","every_s":60}', tool_ok: 1, tool_ms: 2, content: '{"ok":true,"timer_id":"tm1"}' },
+      { role: 'assistant', content: 'Scheduled.' },
+      { role: 'tool', tool_name: 'timer', tool_args: '{"label":"RAM on box","timer_id":"tm1"}', tool_ok: 0, tool_ms: 0, content: '{"ok":false,"status":"cancelled","message":"cancelled by the operator","ticks":1,"label":"RAM on box"}' },
+    ]);
+    expect(v[1].ticks[0].summary).toBe('scheduled schedule · RAM on box · 2 ms');
+    expect(v[1].ticks[1].summary).toBe('timer · RAM on box · 1 tick · cancelled by the operator');
+    expect(v[1].ticks[1].ok).toBe(false);
+  });
+});
