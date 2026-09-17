@@ -850,6 +850,10 @@ def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
         repo, quant = model_id.rsplit(":", 1)
     elif not repo:
         return [], f"Could not derive repo from model_id={model_id!r}"
+    # Cards saved from the editor keep the quant in the repo key: hf-repo = owner/repo:QUANT
+    if repo and ":" in repo:
+        repo, suffix = repo.rsplit(":", 1)
+        quant = quant or suffix
 
     if not repo or not _hf_repo_valid(repo):
         return [], f"Repo missing or malformed: {repo!r}"
