@@ -662,11 +662,12 @@ _pip_filter() {
 #   Naive top-level YAML scalar reader. Handles  KEY: value  with optional
 #   single/double quotes. Doesn't try to parse nested structure — agent_config
 #   keeps MANAGER_URL + TOKEN at the top level so this is enough.
+# A quoted value is the quoted text; an unquoted one ends at a trailing " # comment".
 _yaml_scalar() {
   local file="$1" key="$2"
   grep -E "^${key}:" "$file" 2>/dev/null \
     | head -1 \
-    | sed -E "s/^${key}:[[:space:]]*//; s/^['\"]//; s/['\"]$//; s/[[:space:]]*\$//"
+    | sed -E "s/^${key}:[[:space:]]*//; s/^\"([^\"]*)\".*\$/\\1/; s/^'([^']*)'.*\$/\\1/; s/[[:space:]]+#.*\$//; s/[[:space:]]*\$//"
 }
 
 # _resolved_llama_unit
