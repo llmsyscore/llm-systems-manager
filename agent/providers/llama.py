@@ -911,18 +911,40 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
 
 
 def _model_gguf_size_bytes(model_id: str) -> "Optional[int]":
-    """Sum on-disk bytes of model_id's resolved .gguf snapshot file(s)."""
+    """On-disk bytes of model_id's .gguf file(s) in its newest snapshot; split parts are summed."""
     matches, err = _locate_quant_files(model_id)
     if err:
         return None
-    total = 0
+    per_snapshot: "dict[Path, dict[str, int]]" = {}
     for p in matches:
         try:
             target = p.resolve() if p.is_symlink() else p
-            total += target.stat().st_size
+            per_snapshot.setdefault(p.parent, {})[p.name] = target.stat().st_size
         except OSError:
             continue
-    return total or None
+    if not per_snapshot:
+        return None
+    chosen = _served_snapshot(per_snapshot)
+    return sum(per_snapshot[chosen].values()) or None
+
+
+def _served_snapshot(per_snapshot: "dict[Path, dict[str, int]]") -> Path:
+    """The snapshot dir refs/main names, else the newest by mtime (dir name breaks ties)."""
+    any_snap = next(iter(per_snapshot))
+    try:
+        ref = (any_snap.parent.parent / "refs" / "main").read_text(encoding="utf-8").strip()
+    except OSError:
+        ref = ""
+    for d in per_snapshot:
+        if ref and d.name == ref:
+            return d
+
+    def _key(d: Path) -> "tuple[float, str]":
+        try:
+            return (d.stat().st_mtime, d.name)
+        except OSError:
+            return (0.0, d.name)
+    return max(per_snapshot, key=_key)
 
 
 _NGL_RE = re.compile(r"(?<![\w-])(?:--n-gpu-layers|-ngl)[=\s]+(\d+)")

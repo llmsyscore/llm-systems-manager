@@ -110,6 +110,73 @@ def test_model_gguf_size_bytes_sums_matched_files(llama, monkeypatch, tmp_path):
     assert llama._model_gguf_size_bytes("org/repo:model-Q4_K_M.gguf") == 4096
 
 
+def test_model_gguf_size_bytes_sums_split_parts_within_one_snapshot(llama, monkeypatch, tmp_path):
+    cache_root = tmp_path / "hub"
+    _make_snapshot(cache_root, "org/repo", "model-Q4_K_M-00001-of-00002.gguf", 4096)
+    snap = cache_root / "models--org--repo" / "snapshots" / "abc123"
+    with open(snap / "model-Q4_K_M-00002-of-00002.gguf", "wb") as f:
+        f.truncate(1024)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 5120
+
+
+def _second_snapshot(cache_root: Path, repo: str, name: str, filename: str, size: int, mtime: float) -> Path:
+    snap = cache_root / f"models--{repo.replace('/', '--')}" / "snapshots" / name
+    snap.mkdir(parents=True)
+    with open(snap / filename, "wb") as f:
+        f.truncate(size)
+    os.utime(snap, (mtime, mtime))
+    return snap
+
+
+def test_model_gguf_size_bytes_counts_a_repo_with_two_snapshots_once(llama, monkeypatch, tmp_path):
+    """#1059: a re-fetched repo leaves two snapshot dirs with the same file; the size is one file, not two."""
+    cache_root = tmp_path / "hub"
+    first = _make_snapshot(cache_root, "org/repo", "model-Q4_K_M.gguf", 4096).parent
+    os.utime(first, (1_000_000, 1_000_000))
+    _second_snapshot(cache_root, "org/repo", "def456", "model-Q4_K_M.gguf", 4096, 2_000_000)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 4096
+
+
+def test_model_gguf_size_bytes_prefers_the_newest_snapshot(llama, monkeypatch, tmp_path):
+    cache_root = tmp_path / "hub"
+    old = _make_snapshot(cache_root, "org/repo", "model-Q4_K_M.gguf", 9000).parent
+    os.utime(old, (2_000_000, 2_000_000))
+    _second_snapshot(cache_root, "org/repo", "def456", "model-Q4_K_M.gguf", 3000, 1_000_000)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 9000
+
+
+def test_model_gguf_size_bytes_follows_refs_main_over_mtime(llama, monkeypatch, tmp_path):
+    """refs/main names the snapshot llama-server resolves, even when another dir is newer."""
+    cache_root = tmp_path / "hub"
+    served = _make_snapshot(cache_root, "org/repo", "model-Q4_K_M.gguf", 4444).parent
+    os.utime(served, (1_000_000, 1_000_000))
+    _second_snapshot(cache_root, "org/repo", "def456", "model-Q4_K_M.gguf", 8888, 2_000_000)
+    refs = cache_root / "models--org--repo" / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("abc123\n", encoding="utf-8")
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 4444
+
+
+def test_model_gguf_size_bytes_breaks_mtime_ties_by_dir_name(llama, monkeypatch, tmp_path):
+    """Equal mtimes (restore, coarse filesystems) pick the lexically greatest snapshot name."""
+    cache_root = tmp_path / "hub"
+    a = _make_snapshot(cache_root, "org/repo", "model-Q4_K_M.gguf", 1111).parent   # abc123
+    os.utime(a, (1_000_000, 1_000_000))
+    _second_snapshot(cache_root, "org/repo", "zzz999", "model-Q4_K_M.gguf", 2222, 1_000_000)
+    _second_snapshot(cache_root, "org/repo", "mmm555", "model-Q4_K_M.gguf", 3333, 1_000_000)
+    monkeypatch.setattr(llama, "_hf_cache_root", lambda: cache_root)
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
+    assert llama._model_gguf_size_bytes("org/repo:Q4_K_M") == 2222
+
+
 def test_model_gguf_size_bytes_none_when_validation_rejects(llama, monkeypatch):
     monkeypatch.setattr(llama, "_llama_read_ini", lambda: _FakeCP({}))
 
