@@ -124,6 +124,26 @@ const MetricNames = {
         const text = this._words(name) || m.metric_name;
         return unit ? `${text} (${unit})` : text;
     },
+
+    // Friendly label for a source/metric pair; the catalog entry supplies the unit when it exists.
+    pretty(source, name, host) {
+        const list = typeof MetricsManager !== 'undefined' ? MetricsManager.visible() : [];
+        const hit = list.find(x => x.metric_name === name && (!source || x.source === source) && (!host || (x.hostname || '') === host))
+            || list.find(x => x.metric_name === name && (!source || x.source === source));
+        const m = hit || { source: source || '', metric_name: name || '' };
+        const text = this.label(m);
+        // Process metrics keep the process name: "manager_running" → "Manager · Running".
+        const pm = m.source === 'processes' ? this._procRe.exec(m.metric_name || '') : null;
+        return pm ? `${this._words(pm[1])} · ${text}` : text;
+    },
+
+    // "mac_power" → "Mac power", "gpu" → "GPU".
+    sourceLabel(source) { return this._words(String(source || '')) || String(source || ''); },
+
+    // "System · CPU usage (%)" with the raw id for tooltips.
+    pair(source, name, host) {
+        return { text: `${this.sourceLabel(source)} · ${this.pretty(source, name, host)}`, raw: `${source}/${name}` };
+    },
 };
 
 const MetricsView = {

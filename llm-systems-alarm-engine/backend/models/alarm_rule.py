@@ -114,6 +114,10 @@ class AlarmRuleCreate(BaseModel):
         description="Close active alerts once metric stays below threshold for this many "
                     "consecutive eval cycles (0 = never auto-resolve, manual close only)",
     )
+    min_trigger_cycles: int = Field(
+        default=1, ge=1,
+        description="Consecutive breaching eval cycles required before an alert is created (1 = first breach)",
+    )
     correlation_group: Optional[str] = Field(default=None, description="Group key for correlating alerts across rules")
 
     @field_validator("metric_source", "metric_name")
@@ -138,6 +142,7 @@ class AlarmRuleCreate(BaseModel):
             quiet_hours_start=self.quiet_hours_start,
             quiet_hours_end=self.quiet_hours_end,
             auto_resolve_cycles=self.auto_resolve_cycles,
+            min_trigger_cycles=self.min_trigger_cycles,
             correlation_group=self.correlation_group,
             created_at=now_utc(),
             updated_at=now_utc(),
@@ -161,6 +166,7 @@ class AlarmRuleUpdate(BaseModel):
     quiet_hours_start: Optional[str] = None
     quiet_hours_end: Optional[str] = None
     auto_resolve_cycles: Optional[int] = Field(default=None, ge=0)
+    min_trigger_cycles: Optional[int] = Field(default=None, ge=1)
     correlation_group: Optional[str] = None
 
     @field_validator("metric_source", "metric_name")
@@ -185,6 +191,7 @@ class AlarmRule(BaseModel):
     quiet_hours_start: Optional[str]
     quiet_hours_end: Optional[str]
     auto_resolve_cycles: int = DEFAULT_AUTO_RESOLVE_CYCLES
+    min_trigger_cycles: int = 1
     correlation_group: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -208,6 +215,7 @@ class AlarmRule(BaseModel):
             "quiet_hours_start": self.quiet_hours_start,
             "quiet_hours_end": self.quiet_hours_end,
             "auto_resolve_cycles": self.auto_resolve_cycles,
+            "min_trigger_cycles": self.min_trigger_cycles,
             "correlation_group": self.correlation_group,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),

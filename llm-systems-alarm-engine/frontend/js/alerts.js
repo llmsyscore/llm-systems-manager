@@ -4,7 +4,7 @@
 const AlertManager = {
     _inflight: new Set(),
     _events: new Map(),
-    _deliveries: { at: 0, rows: [], promise: null },
+    _deliveries: new Map(),
 
     get all() { return AppState.alerts; },
 
@@ -145,7 +145,7 @@ const AlertManager = {
         return this._events.get(key);
     },
 
-    forgetEvents(id) { this._events.delete(String(id)); },
+    forgetEvents(id) { this._events.delete(String(id)); this._deliveries.delete(String(id)); },
 
     // Drop the cached log and refetch it for the alert open in the drawer.
     async refreshEvents(id) {
@@ -218,7 +218,7 @@ const AlertManager = {
 
     async _afterChange() {
         try { await this.load(); } catch (_) { /* stale list is still shown */ }
-        this._deliveries.at = 0;
+        this._deliveries.clear();
         if (AppState.currentTab === 'console') ConsoleView.render();
         else if (AppState.currentTab === 'alerts') AlertsView.render();
         else if (AppState.currentTab === 'rules') RuleManager.render();
@@ -250,17 +250,16 @@ const AlertManager = {
         else if (AppState.currentTab === 'alerts') AlertsView.render();
     },
 
-    // Delivery rows tagged with this alert id (history cached for 30 s).
+    // Delivery log for the drawer timeline; cached per alert for 10 s, concurrent callers share the fetch (#1023).
     async deliveriesFor(alertId) {
-        const now = Date.now();
-        if (now - this._deliveries.at > 30000 && !this._deliveries.promise) {
-            this._deliveries.promise = ApiClient.notifications.getHistory({ limit: 200 })
-                .then(rows => { this._deliveries.rows = Array.isArray(rows) ? rows : []; this._deliveries.at = Date.now(); })
-                .catch(() => {})
-                .finally(() => { this._deliveries.promise = null; });
+        const key = String(alertId);
+        const hit = this._deliveries.get(key);
+        if (!hit || Date.now() - hit.at > 10000) {
+            this._deliveries.set(key, { at: Date.now(), p: ApiClient.alerts.deliveries(key)
+                .then(r => (Array.isArray(r?.deliveries) ? r.deliveries : []))
+                .catch(() => []) });
         }
-        if (this._deliveries.promise) await this._deliveries.promise;
-        return this._deliveries.rows.filter(d => d.metadata && String(d.metadata.alert_id) === String(alertId));
+        return this._deliveries.get(key).p;
     },
 };
 
@@ -578,7 +577,8 @@ const AlertsView = {
     _rowHtml({ alert: a, children, child }) {
         const id = escapeHtml(String(a.alert_id));
         const d = AlertManager.describe(a);
-        const sub = `${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}`;
+        const mp = MetricNames.pair(a.metric_source, a.metric_name, a.source_host);
+        const sub = `${escapeHtml(a.source_host || 'any host')} · <span title="${escapeHtml(mp.raw)}">${escapeHtml(mp.text)}</span>`;
         const inc = children ? `<button type="button" class="inc" data-inc="${id}">+${children} related</button>` : '';
         const childAttr = child ? ` data-child="${escapeHtml(child)}" hidden` : '';
         const cls = [child ? 'child' : '', this._sel === String(a.alert_id) ? 'sel' : '', (a.status === 'closed' || a.status === 'ignored') ? 'off' : '', 'pick'].filter(Boolean).join(' ');
@@ -699,7 +699,7 @@ const AlertsView = {
             : '';
 
         const facts = [
-            ['Metric', `<button class="mlink" ${METRIC_LINK}>${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</button>`],
+            ['Metric', `<button class="mlink" ${METRIC_LINK} title="${escapeHtml(`${a.metric_source}/${a.metric_name}`)}">${escapeHtml(MetricNames.pair(a.metric_source, a.metric_name, a.source_host).text)}</button>`],
             ['Host', escapeHtml(a.source_host || 'any host')],
             ['Triggered', `${escapeHtml(fmtWhen(a.created_at, true))} <span class="t">· ${escapeHtml(firedAgo)}</span>`],
             a.status === 'closed'
@@ -708,6 +708,7 @@ const AlertsView = {
             ['Count', `${escapeHtml(String(a.trigger_count ?? 1))} cycle${(a.trigger_count ?? 1) === 1 ? '' : 's'}`],
             ['Duration', `${escapeHtml(alertSpan(a))}${stillOn ? ' <span class="t">· still open</span>' : ''}`],
             d.detector ? ['Detector', escapeHtml(d.detector)] : null,
+            rule && rule.min_trigger_cycles > 1 ? ['Trigger', `after ${rule.min_trigger_cycles} breaching cycles`] : null,
             rule ? ['Auto-resolve', rule.auto_resolve_cycles > 0 ? `after ${rule.auto_resolve_cycles} clean cycle${rule.auto_resolve_cycles === 1 ? '' : 's'}` : 'manual close only'] : null,
             ['Alert id', `${escapeHtml(String(a.alert_id).slice(0, 8))}…`],
         ].filter(Boolean).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
@@ -770,22 +771,16 @@ const AlertsView = {
             if (this._sel !== selAt) return;
             const box = document.getElementById('alertTimeline');
             if (!box) return;
-            const byType = new Map();
-            rows.forEach(r => {
+            // One entry per delivery: channel, recipient, result (#1023).
+            const extra = rows.map(r => {
                 const k = String(r.channel_type || '').toLowerCase();
-                if (!byType.has(k)) byType.set(k, { ok: 0, fail: 0, ts: parseTs(r.delivered_at) });
-                const e = byType.get(k);
-                if (r.success) e.ok++; else e.fail++;
+                const label = k === 'toast' ? 'Popup' : (k.charAt(0).toUpperCase() + k.slice(1));
+                const to = k === 'toast' ? '' : (r.recipient ? ` to ${escapeHtml(r.recipient)}` : '');
+                const ok = r.success !== false;
+                const verb = ok ? (k === 'toast' ? 'shown' : 'sent') : 'failed';
+                const err = !ok && r.error_message ? ` · ${escapeHtml(r.error_message)}` : '';
+                return { cls: ok ? 'ok' : 'critical', html: `<b>${escapeHtml(label)} ${verb}</b>${to}${err}`, t: fmtWhen(r.delivered_at, true), ts: parseTs(r.delivered_at) };
             });
-            const extra = [];
-            if (byType.size) {
-                const parts = Array.from(byType.entries()).map(([k, e]) => {
-                    const label = CHANNEL_META[k]?.code === 'toast' ? 'Toast' : (k.charAt(0).toUpperCase() + k.slice(1));
-                    return `<b>${escapeHtml(label)}</b> ${e.fail && !e.ok ? 'failed' : e.fail ? `sent · ${e.fail} failed` : (k === 'toast' ? 'shown' : 'sent')}`;
-                });
-                const ts = rows.map(r => parseTs(r.delivered_at)).filter(Boolean).sort((x, y) => x - y)[0];
-                extra.push({ cls: 'ok', html: parts.join(' · '), t: fmtWhen(ts, true), ts });
-            }
             box.innerHTML = tlHtml(extra);
         });
     },

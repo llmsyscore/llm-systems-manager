@@ -180,9 +180,13 @@ const RuleManager = {
         const id = escapeHtml(String(r.rule_id));
         const st = this.stateOf(r);
         const quiet = r.quiet_hours_start && r.quiet_hours_end ? ` <span class="q">· quiet ${escapeHtml(r.quiet_hours_start)} – ${escapeHtml(r.quiet_hours_end)}</span>` : '';
-        const sub = `${escapeHtml(r.source_host || 'any host')} · ${escapeHtml(r.metric_source)}/${escapeHtml(r.metric_name)}${quiet}`;
+        const mp = MetricNames.pair(r.metric_source, r.metric_name, r.source_host);
+        const sub = `${escapeHtml(r.source_host || 'any host')} · <span title="${escapeHtml(mp.raw)}">${escapeHtml(mp.text)}</span>${quiet}`;
+        const need = Math.max(1, parseInt(r.min_trigger_cycles, 10) || 1);
+        const pending = st.key === 'quiet' && r.breaching > 0 && need > 1;
         const state = st.key === 'firing'
             ? `<span class="st firing ${escapeHtml(r.severity)}"><span class="dot ${r.severity === 'critical' ? 'crit' : r.severity === 'warning' ? 'warn' : 'info'}"></span>triggered · ${st.count} alert${st.count === 1 ? '' : 's'}</span>`
+            : pending ? `<span class="st quiet" title="Breaching, alert after ${need} cycles in a row"><span class="dot warn"></span>breaching ${r.breaching}/${need}</span>`
             : st.key === 'quiet' ? '<span class="st quiet"><span class="dot"></span>quiet</span>' : '<span class="st off"><span class="dot"></span>off</span>';
         const pill = { critical: 'crit', warning: 'warn', info: 'info' }[r.severity] || 'dim';
         const menu = menuHtml([
@@ -237,7 +241,7 @@ const RuleManager = {
     },
 
     create(type) {
-        this.openEditor({ rule: { rule_type: type || 'threshold_above', severity: 'warning', enabled: true, auto_resolve_cycles: 2, config: {} }, mode: 'new' });
+        this.openEditor({ rule: { rule_type: type || 'threshold_above', severity: 'warning', enabled: true, auto_resolve_cycles: 2, min_trigger_cycles: 1, config: {} }, mode: 'new' });
     },
 
     async delete(id) {
@@ -328,6 +332,7 @@ const RuleManager = {
                     <div class="cfg" data-cfg="moving_average"><div class="st-field"><label for="rf-ma">Deviation from the mean</label><div class="row">${num('rf-ma', v(cfg.moving_average?.deviation_factor, 2))}<span class="unit">σ</span></div></div><div class="st-field"><label>Window</label><div class="row">${num('rf-ma-win', v(cfg.moving_average?.window_minutes, 15), 'min="1"')}<span class="unit">minutes · at least</span>${num('rf-ma-min', v(cfg.moving_average?.min_data_points, 5), 'min="1"')}<span class="unit">samples</span></div></div></div>
                     <div class="cfg" data-cfg="percentile"><div class="st-field"><label for="rf-pct">Above the percentile</label><div class="row"><span class="unit">p</span>${num('rf-pct', v(cfg.percentile?.percentile, 95), 'min="50" max="99.9"')}</div></div><div class="st-field"><label>Baseline window</label><div class="row">${num('rf-pct-win', v(cfg.percentile?.window_minutes, 60), 'min="1"')}<span class="unit">minutes · at least</span>${num('rf-pct-min', v(cfg.percentile?.min_data_points, 10), 'min="1"')}<span class="unit">samples</span></div></div></div>
                     <div class="cfg" data-cfg="rate_of_change"><div class="st-field"><label for="rf-roc">Change per minute above</label><div class="row">${num('rf-roc', v(cfg.rate_of_change?.max_change_per_minute, 10))}</div></div><div class="st-field"><label>Window</label><div class="row">${num('rf-roc-win', v(cfg.rate_of_change?.window_minutes, 5), 'min="1"')}<span class="unit">minutes · at least</span>${num('rf-roc-min', v(cfg.rate_of_change?.min_data_points, 2), 'min="2"')}<span class="unit">samples</span></div></div></div>
+                    <div class="st-field"><label for="rf-mtc">Trigger</label><div class="row"><span>after</span>${num('rf-mtc', v(rule.min_trigger_cycles, 1), 'min="1" step="1" style="width:64px"')}<span class="unit">breaching cycles in a row</span></div><div class="help">1 raises the alert on the first breach.</div></div>
                     <div class="st-field"><label for="rf-arc">Auto-resolve</label><div class="row"><span>after</span>${num('rf-arc', v(rule.auto_resolve_cycles, 2), 'min="0" step="1" style="width:64px"')}<span class="unit">clean cycles</span></div><div class="help">0 keeps alerts open until someone closes them.</div></div>
                 </div>
             </div>
@@ -369,22 +374,22 @@ const RuleManager = {
             sel.value = val;
             if (sel.value === val) return;
             const opt = document.createElement('option');
-            opt.value = val; opt.textContent = `${val} (not currently reporting)`;
+            opt.value = val; opt.textContent = `${sel === srcSel ? MetricNames.sourceLabel(val) : MetricNames.pretty(srcSel?.value || '', val)} (not currently reporting)`;
             sel.appendChild(opt); sel.value = val;
         };
         const hosts = MetricsManager.hosts();
         hostSel.innerHTML = '<option value="">Any host</option>' + hosts.map(h => `<option value="${escapeHtml(h)}">${escapeHtml(h)}</option>`).join('');
         const fillSources = (host, pre) => {
             const list = [...new Set(all().filter(m => byHost(m, host)).map(m => m.source))].sort();
-            srcSel.innerHTML = '<option value="">Select source…</option>' + list.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+            srcSel.innerHTML = '<option value="">Select source…</option>' + list.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(MetricNames.sourceLabel(s))}</option>`).join('');
             force(srcSel, pre);
         };
         const fillMetrics = (host, source, pre) => {
             const seen = new Map();
             all().filter(m => m.source === source && byHost(m, host)).forEach(m => { if (!seen.has(m.metric_name)) seen.set(m.metric_name, m); });
-            const items = [...seen.values()].sort((a, b) => a.metric_name.localeCompare(b.metric_name));
+            const items = [...seen.values()].map(m => [m, MetricNames.label(m)]).sort((a, b) => a[1].localeCompare(b[1]));
             metSel.innerHTML = items.length
-                ? '<option value="">Select metric…</option>' + items.map(m => `<option value="${escapeHtml(m.metric_name)}">${escapeHtml(m.metric_name)}${m.unit ? ` (${escapeHtml(m.unit)})` : ''}</option>`).join('')
+                ? '<option value="">Select metric…</option>' + items.map(([m, lbl]) => `<option value="${escapeHtml(m.metric_name)}" title="${escapeHtml(m.metric_name)}">${escapeHtml(lbl)}</option>`).join('')
                 : '<option value="">No metrics for this source</option>';
             force(metSel, pre);
         };
@@ -436,6 +441,8 @@ const RuleManager = {
         if (config.threshold && !config.threshold.unit) delete config.threshold.unit;
         const arc = num('rf-arc');
         const auto_resolve_cycles = arc != null && arc >= 0 ? Math.floor(arc) : 2;
+        const mtc = num('rf-mtc');
+        const min_trigger_cycles = mtc != null && mtc >= 1 ? Math.floor(mtc) : 1;
         const qs = val('rf-qh-start'), qe = val('rf-qh-end');
         const hhmm = /^\d{1,2}:\d{2}$/;
         mark('rf-qh-start', (qs && !hhmm.test(qs)) || (qe && !hhmm.test(qe)) || (!!qs !== !!qe));
@@ -443,7 +450,7 @@ const RuleManager = {
         if (!!qs !== !!qe) throw new Error('Quiet hours need both a start and an end');
         return {
             name, description, source_host, metric_source, metric_name, rule_type, severity, enabled, config,
-            auto_resolve_cycles, correlation_group: val('rf-group') || null,
+            auto_resolve_cycles, min_trigger_cycles, correlation_group: val('rf-group') || null,
             quiet_hours_start: qs || null, quiet_hours_end: qe || null,
         };
     },

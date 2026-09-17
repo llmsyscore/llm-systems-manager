@@ -292,8 +292,11 @@ class NotificationDispatcher:
                         # never dispatched a firing notification for this
                         # alert via this policy — don't send a stray clear
                         continue
-                    for cid in (policy.channels or []):
+                    if not policy.channels:
+                        continue
+                    for cid in policy.channels:
                         matched.add(str(cid))
+                    self._bump_policy_trigger(policy)
                 except Exception as e:
                     logger.warning("policy %s clear-eval failed: %s",
                                    getattr(policy, "config_id", "?"), e)
@@ -342,6 +345,7 @@ class NotificationDispatcher:
                 verdicts.append(f"{pname}=matched({len(cids)}ch)")
                 self._last_dispatch_ts[key] = now
                 self._dispatched_first.add(key)
+                self._bump_policy_trigger(policy)
             except Exception as e:
                 verdicts.append(f"{pname}=eval_error:{e}")
                 logger.warning("policy %s firing-eval failed: %s", pid, e)
@@ -355,6 +359,18 @@ class NotificationDispatcher:
             len(matched),
         )
         return matched
+
+    def _bump_policy_trigger(self, policy) -> None:
+        """Stamp trigger_count / last_triggered_at on a policy that dispatched."""
+        repo = self.notification_repository
+        bump = getattr(repo, "increment_trigger_count", None)
+        if bump is None:
+            return
+        try:
+            bump(policy.config_id)
+        except Exception as e:
+            logger.warning("policy %s trigger bump failed: %s",
+                           getattr(policy, "config_id", "?"), e)
 
     def _is_incident_joiner(self, alert) -> bool:
         iid = getattr(alert, "incident_id", None)

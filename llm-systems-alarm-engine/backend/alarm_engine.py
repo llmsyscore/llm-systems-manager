@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.15-1"
+__version__ = "v2026.09.17-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -556,7 +556,8 @@ async def _on_startup() -> None:
     metrics.set_repository(metric_repo)
     notifications.set_repository(notification_repo)
     notifications.set_ws_send(_dispatch_ws_notification)
-    rules.set_dependencies({"rule_repository": rule_repo, "alert_manager": alert_manager})
+    rules.set_dependencies({"rule_repository": rule_repo, "alert_manager": alert_manager,
+                            "rule_engine": rule_engine})
 
     # 6. Start background rule evaluation task. evaluate_all() blocks the
     # event loop briefly per cycle (cache hits ~5 ms, but cold paths can

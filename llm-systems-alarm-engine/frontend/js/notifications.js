@@ -140,14 +140,17 @@ const NotificationsManager = {
         }).join('');
     },
 
-    _when(p) {
+    // plain=true returns text with no markup (used for the tooltip).
+    _when(p, plain = false) {
         const parts = [];
-        parts.push(p.min_severity ? `severity ≥ <b>${escapeHtml(p.min_severity)}</b>` : 'any severity');
+        parts.push(p.min_severity ? (plain ? `severity ≥ ${p.min_severity}` : `severity ≥ <b>${escapeHtml(p.min_severity)}</b>`) : 'any severity');
         const n = (l, one, many) => (l && l.length) ? `${l.length} ${l.length === 1 ? one : many}` : null;
         parts.push(n(p.source_hosts, 'host', 'hosts') || 'any host');
         const src = n(p.metric_sources, 'source', 'sources'), met = n(p.metric_names, 'metric', 'metrics');
         if (src) parts.push(src);
         if (met) parts.push(met);
+        const rules = n(p.rule_ids, 'rule', 'rules');
+        if (rules) parts.push(rules);
         return parts.join(' · ');
     },
 
@@ -180,9 +183,9 @@ const NotificationsManager = {
                 <td class="c-sel">${toggleHtml(on, '', `data-tip="${on ? 'Turn off' : 'Turn on'}"`)}</td>
                 <td class="n"><span class="pname" title="Edit policy">${escapeHtml(p.name)}</span>${p.description ? `<span class="sub">${escapeHtml(p.description)}</span>` : ''}</td>
                 <td><div class="chips">${chips}</div></td>
-                <td class="cond">${this._when(p)}</td>
+                <td class="cond" title="${escapeHtml(this._when(p, true))}">${this._when(p)}</td>
                 <td class="t">${escapeHtml(this._cadence(p))}</td>
-                <td class="t">${escapeHtml(fired)}</td>
+                <td class="t" title="${escapeHtml(fired)}">${escapeHtml(fired)}</td>
                 <td class="c-act"><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
             </tr>`;
         }).join('');
@@ -437,7 +440,7 @@ const NotificationsManager = {
     },
 
     // ── policy editor ─────────────────────────────────────────────────
-    newConfig() { this._openPolicyEditor({ enabled: true, auto_dismiss: true, channels: [], min_severity: null, source_hosts: [], metric_sources: [], metric_names: [], repeat_interval_minutes: 30, min_alarm_count: 1, notify_on_clear: false }, 'new'); },
+    newConfig() { this._openPolicyEditor({ enabled: true, auto_dismiss: true, channels: [], min_severity: null, source_hosts: [], metric_sources: [], metric_names: [], rule_ids: [], repeat_interval_minutes: 30, min_alarm_count: 1, notify_on_clear: false }, 'new'); },
     editConfig(id) { const p = this.cfgById(id); if (p) this._openPolicyEditor(p, 'edit'); },
     copyConfig(id) {
         const p = this.cfgById(id);
@@ -448,21 +451,30 @@ const NotificationsManager = {
     },
 
     _catalog() {
-        const list = MetricsManager.visible();
-        return {
+        const list = MetricsManager.visible().filter(m => !MetricNames.hidden(m));
+        const bySource = new Map();
+        list.forEach(m => { if (m.source && m.metric_name) { if (!bySource.has(m.source)) bySource.set(m.source, new Set()); bySource.get(m.source).add(m.metric_name); } });
+        const cat = {
             hosts: [...new Set(list.map(m => m.hostname).filter(Boolean))].sort(),
             sources: [...new Set(list.map(m => m.source).filter(Boolean))].sort(),
             names: [...new Set(list.map(m => m.metric_name).filter(Boolean))].sort(),
         };
+        // Metric names offered for a policy: only those reported by the selected sources.
+        cat.namesFor = (sources) => sources.length
+            ? [...new Set(sources.flatMap(s => [...(bySource.get(s) || [])]))].sort()
+            : cat.names;
+        return cat;
     },
 
     async _openPolicyEditor(p, mode) {
         if (!MetricsManager.visible().length) await MetricsManager.load().catch(() => {});
+        if (!AppState.rules.length) await RuleManager.load().catch(() => {});
         const isEdit = mode === 'edit';
         const meta = isEdit ? `${p.name} · created ${fmtWhen(p.created_at)} · ${p.trigger_count ? `triggered ${p.trigger_count} time${p.trigger_count === 1 ? '' : 's'}` : 'never triggered'}` : (mode === 'copy' ? 'copy of an existing policy' : '');
         const state = {
             channels: new Set((p.channels || []).map(String)),
             hosts: [...(p.source_hosts || [])], sources: [...(p.metric_sources || [])], names: [...(p.metric_names || [])],
+            rules: new Set((p.rule_ids || []).map(String)),
         };
         const catalog = this._catalog();
         ModalManager.open({
@@ -483,10 +495,18 @@ const NotificationsManager = {
         });
     },
 
-    _chipsHtml(kind, values, catalog, anyLabel) {
-        const chips = values.map(vv => `<span class="c" data-v="${escapeHtml(vv)}">${escapeHtml(vv)}${catalog.includes(vv) ? '' : ' <span class="nr">not reporting</span>'}<button type="button" class="rm" data-rm="${escapeHtml(vv)}" aria-label="Remove">×</button></span>`).join('');
-        const left = catalog.filter(x => !values.includes(x));
-        const menu = `<div class="mc-menu">${left.length ? left.map(x => `<button type="button" data-add="${escapeHtml(x)}">${escapeHtml(x)}</button>`).join('') : '<button type="button" disabled>nothing else reported</button>'}</div>`;
+    // Chips and menu entries show the friendly metric label; the raw id stays in the tooltip.
+    _chipLabel(kind, v) {
+        if (kind === 'names') return MetricNames.pretty('', v);
+        if (kind === 'sources') return MetricNames.sourceLabel(v);
+        return v;
+    },
+
+    _chipsHtml(kind, values, catalog, anyLabel, menuList) {
+        const show = (v) => this._chipLabel(kind, v);
+        const chips = values.map(vv => `<span class="c" data-v="${escapeHtml(vv)}" title="${escapeHtml(vv)}">${escapeHtml(show(vv))}${catalog.includes(vv) ? '' : ' <span class="nr">not reporting</span>'}<button type="button" class="rm" data-rm="${escapeHtml(vv)}" aria-label="Remove">×</button></span>`).join('');
+        const left = (menuList || catalog).filter(x => !values.includes(x)).map(x => [x, show(x)]).sort((a, b) => a[1].localeCompare(b[1]));
+        const menu = `<div class="mc-menu">${left.length ? left.map(([x, lbl]) => `<button type="button" data-add="${escapeHtml(x)}" title="${escapeHtml(x)}">${escapeHtml(lbl)}</button>`).join('') : '<button type="button" disabled>nothing else reported</button>'}</div>`;
         return `${chips}${values.length ? '' : `<span class="any">${anyLabel}</span>`}<button type="button" class="add" data-menu>+ add</button>${menu}`;
     },
 
@@ -506,7 +526,8 @@ const NotificationsManager = {
                     <div class="st-field"><label>Minimum severity</label><div class="row"><span class="mc-seg" id="pf-sev"><button type="button" data-v=""${sev === '' ? ' class="on"' : ''}>any</button><button type="button" data-v="info"${sev === 'info' ? ' class="on"' : ''}>info</button><button type="button" class="warn${sev === 'warning' ? ' on' : ''}" data-v="warning">warning</button><button type="button" class="crit${sev === 'critical' ? ' on' : ''}" data-v="critical">critical</button></span></div></div>
                     <div class="st-field"><label>Hosts</label><div class="chipsin" data-kind="hosts">${this._chipsHtml('hosts', state.hosts, catalog.hosts, 'any host')}</div></div>
                     <div class="st-field"><label>Metric sources</label><div class="chipsin" data-kind="sources">${this._chipsHtml('sources', state.sources, catalog.sources, 'any source')}</div></div>
-                    <div class="st-field"><label>Metric names</label><div class="chipsin" data-kind="names">${this._chipsHtml('names', state.names, catalog.names, 'any metric')}</div></div>
+                    <div class="st-field"><label>Metric names</label><div class="chipsin" data-kind="names">${this._chipsHtml('names', state.names, catalog.names, 'any metric', catalog.namesFor(state.sources))}</div><div class="help">Lists the metrics of the selected sources, or every metric when no source is picked.</div></div>
+                    <div class="st-field"><label>Rules</label><div class="chipsin" id="pf-rules">${this._ruleChipsHtml(state)}</div><div class="help">Only alerts raised by these rules. Empty means any rule.</div></div>
                 </div>
             </div>
             <div class="grp"><span class="microlbl">Cadence</span>
@@ -533,8 +554,28 @@ const NotificationsManager = {
         return `${chosen.map(chip).join('')}${chosen.length ? '' : '<span class="any">no channels — this policy sends nothing</span>'}<button type="button" class="add" data-menu>+ add</button>${menu}`;
     },
 
+    // Selected rules as chips; "+ add" lists the rest by name.
+    _ruleChipsHtml(state) {
+        const all = AppState.rules || [];
+        const nameOf = (id) => { const r = all.find(x => String(x.rule_id) === String(id)); return r ? r.name : null; };
+        const chosen = Array.from(state.rules);
+        const rest = all.filter(r => !state.rules.has(String(r.rule_id)));
+        const chip = (id) => { const nm = nameOf(id); return `<span class="c${nm ? '' : ' off'}">${escapeHtml(nm || `${String(id).slice(0, 8)}…`)}${nm ? '' : ' <span class="nr">deleted</span>'}<button type="button" class="rm" data-rmrule="${escapeHtml(String(id))}" aria-label="Remove">×</button></span>`; };
+        const menu = `<div class="mc-menu">${rest.length ? rest.map(r => `<button type="button" data-addrule="${escapeHtml(String(r.rule_id))}">${escapeHtml(r.name)}${r.enabled === false ? ' <span class="nr">off</span>' : ''}</button>`).join('') : `<button type="button" disabled>${all.length ? 'every rule is already added' : 'no rules yet'}</button>`}</div>`;
+        return `${chosen.map(chip).join('')}${chosen.length ? '' : '<span class="any">any rule</span>'}<button type="button" class="add" data-menu>+ add</button>${menu}`;
+    },
+
     _wirePolicyForm(body, state, catalog) {
         UI.seg(body.querySelector('#pf-sev'), () => {});
+        const ruleBox = body.querySelector('#pf-rules');
+        ruleBox?.addEventListener('click', (e) => {
+            const rm = e.target.closest('[data-rmrule]');
+            const add = e.target.closest('[data-addrule]');
+            if (rm) state.rules.delete(rm.dataset.rmrule);
+            else if (add) { state.rules.add(add.dataset.addrule); UI.closeMenus(); }
+            else return;
+            ruleBox.innerHTML = this._ruleChipsHtml(state);
+        });
         UI.bindToggle(body.querySelector('#pf-clear'), 'Also notify when the alert clears', 'Also notify when the alert clears');
         UI.bindToggle(body.querySelector('#pf-dismiss'), 'Popups auto-dismiss', 'Popups auto-dismiss', (on) => { const r = body.querySelector('#pf-dismiss-row'); if (r) r.hidden = !on; });
         UI.bindToggle(body.querySelector('#pf-enabled'), 'Policy enabled', 'Policy disabled');
@@ -550,7 +591,7 @@ const NotificationsManager = {
             const wrap = body.querySelector('#pf-toast-wrap');
             if (wrap) wrap.hidden = !hasToast;
         });
-        body.querySelectorAll('.chipsin').forEach(box => {
+        body.querySelectorAll('.chipsin[data-kind]').forEach(box => {
             box.addEventListener('click', (e) => {
                 const kind = box.dataset.kind;
                 const rm = e.target.closest('[data-rm]');
@@ -559,7 +600,11 @@ const NotificationsManager = {
                 else if (add) { if (!state[kind].includes(add.dataset.add)) state[kind].push(add.dataset.add); UI.closeMenus(); }
                 else return;
                 const anyLabel = { hosts: 'any host', sources: 'any source', names: 'any metric' }[kind];
-                box.innerHTML = this._chipsHtml(kind, state[kind], catalog[kind], anyLabel);
+                box.innerHTML = this._chipsHtml(kind, state[kind], catalog[kind], anyLabel, kind === 'names' ? catalog.namesFor(state.sources) : null);
+                if (kind === 'sources') {
+                    const nb = body.querySelector('.chipsin[data-kind="names"]');
+                    if (nb) nb.innerHTML = this._chipsHtml('names', state.names, catalog.names, 'any metric', catalog.namesFor(state.sources));
+                }
             });
         });
     },
@@ -578,6 +623,7 @@ const NotificationsManager = {
             toast_dismiss_seconds: Math.min(600, Math.max(1, parseInt(val('pf-dismiss-s'), 10) || 10)),
             min_severity: minSev || null,
             metric_sources: [...state.sources], metric_names: [...state.names], source_hosts: [...state.hosts],
+            rule_ids: Array.from(state.rules),
             repeat_interval_minutes: Math.max(0, parseInt(val('pf-repeat'), 10) || 0),
             min_alarm_count: Math.max(1, parseInt(val('pf-min'), 10) || 1),
             notify_on_clear: on('pf-clear'),

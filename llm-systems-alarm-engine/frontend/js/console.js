@@ -176,7 +176,7 @@ const ConsoleView = {
             <div class="who">
                 <div class="t"><span class="nm" title="Open in the alerts ledger">${escapeHtml(a.rule_name || 'Alert')}</span>${hostHtml(a.source_host)}${inc}</div>
                 <div class="m">${d.sentence}${escapeHtml(cyc)}</div>
-                <div class="s"><span class="metric">${escapeHtml(a.metric_source)}/<b>${escapeHtml(a.metric_name)}</b></span>${d.detector ? `<span class="metric">${escapeHtml(d.detector)}</span>` : ''}</div>
+                <div class="s"><span class="metric" title="${escapeHtml(`${a.metric_source}/${a.metric_name}`)}">${escapeHtml(MetricNames.sourceLabel(a.metric_source))} · <b>${escapeHtml(MetricNames.pretty(a.metric_source, a.metric_name, a.source_host))}</b></span>${d.detector ? `<span class="metric">${escapeHtml(d.detector)}</span>` : ''}</div>
             </div>
             <div class="when"><b>${escapeHtml(fmtWhen(a.created_at))}</b><br>last seen ${escapeHtml(fmtTime(a.last_evaluated_at || a.created_at))}</div>
             <div class="cnt${cycles >= 5 ? ' hot' : ''}">×${escapeHtml(String(cycles))}</div>
@@ -277,7 +277,7 @@ const ConsoleView = {
                 cleared = `until ${escapeHtml(when)}`;
                 clearedText = `until ${when}`;
             }
-            return `<tr class="pick" data-id="${escapeHtml(String(a.alert_id))}"><td class="c-state">${stateGlyph(a)}</td><td class="n"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub">${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(a.metric_source)}/${escapeHtml(a.metric_name)}</span></td><td class="msg">${d.sentence}</td><td title="${escapeHtml(fmtWhen(a.created_at, true))}">${escapeHtml(fmtWhenCell(a.created_at))}</td><td class="t" title="${escapeHtml(clearedText)}">${cleared}</td></tr>`;
+            return `<tr class="pick" data-id="${escapeHtml(String(a.alert_id))}"><td class="c-state">${stateGlyph(a)}</td><td class="n"><span class="nm">${escapeHtml(a.rule_name || 'Alert')}</span><span class="sub" title="${escapeHtml(`${a.metric_source}/${a.metric_name}`)}">${escapeHtml(a.source_host || 'any host')} · ${escapeHtml(MetricNames.pair(a.metric_source, a.metric_name, a.source_host).text)}</span></td><td class="msg">${d.sentence}</td><td title="${escapeHtml(fmtWhen(a.created_at, true))}">${escapeHtml(fmtWhenCell(a.created_at))}</td><td class="t" title="${escapeHtml(clearedText)}">${cleared}</td></tr>`;
         }).join('');
         el.innerHTML = `<table class="tbl"><colgroup><col style="width:36px"><col><col><col style="width:132px"><col style="width:228px"></colgroup><thead><tr><th class="c-state" data-tip="Colour is severity · shape is status: ● active  ◉ acknowledged  ○ closed  ◌ ignored"></th><th>Rule</th><th>Message</th><th class="sort${f.sort === 'fired' ? ' on' : ''}${f.sort === 'fired' && f.dir === 'asc' ? ' asc' : ''}" data-sort="fired">Triggered</th><th class="sort${f.sort === 'cleared' ? ' on' : ''}${f.sort === 'cleared' && f.dir === 'asc' ? ' asc' : ''}" data-sort="cleared">Cleared</th></tr></thead><tbody>${rows}</tbody></table>`;
     },

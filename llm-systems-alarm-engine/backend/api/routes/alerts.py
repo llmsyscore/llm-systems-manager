@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 from ..auth import require_management_token
 from ...models.alert import Alert, AlertStatus
 from ...storage.repositories import AlertRepository
-from ...engine.alert_manager import AlertManager
+from ...engine.alert_manager import AlertManager, AlertStateError
 
 logger = logging.getLogger(__name__)
 
@@ -197,13 +197,31 @@ async def get_alert_events(
     return {"alert_id": alert_id, "events": alert_repo.get_events(alert_id, limit=limit)}
 
 
+@router.get("/{alert_id}/deliveries")
+async def get_alert_deliveries(
+    alert_id: str,
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict:
+    """Notification deliveries recorded for one alert, oldest first."""
+    from . import notifications as _notif
+    try:
+        repo = _notif._get_repo()
+    except RuntimeError:
+        return {"alert_id": alert_id, "deliveries": []}
+    rows = repo.get_deliveries_for_alert(alert_id, limit=limit)
+    return {"alert_id": alert_id, "deliveries": [r.model_dump(mode="json") for r in rows]}
+
+
 @router.post("/{alert_id}/read")
 async def mark_alert_read(
     alert_id: str,
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
     """Mark an alert as read."""
-    result = alert_mgr.mark_as_read(alert_id)
+    try:
+        result = alert_mgr.mark_as_read(alert_id)
+    except AlertStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     _try_notify("notify_alert_acknowledged", result)
@@ -217,7 +235,10 @@ async def acknowledge_alert(
 ) -> dict:
     """Acknowledge an alert. Later breach cycles stay silent on every
     channel; only a policy's clear notification can still follow."""
-    result = alert_mgr.mark_as_read(alert_id)
+    try:
+        result = alert_mgr.mark_as_read(alert_id)
+    except AlertStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     _try_notify("notify_alert_acknowledged", result)
@@ -258,7 +279,10 @@ async def ignore_alert(
     alert_mgr: AlertManager = Depends(get_alert_mgr),
 ) -> dict:
     """Temporarily ignore an alert for a specified duration."""
-    result = alert_mgr.ignore_alert(alert_id, duration_hours)
+    try:
+        result = alert_mgr.ignore_alert(alert_id, duration_hours)
+    except AlertStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not result:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     return {

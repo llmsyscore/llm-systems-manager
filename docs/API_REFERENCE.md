@@ -1536,13 +1536,18 @@ Returns full detail for a single alert, including its history of state changes.
 
 ---
 
+### `GET /api/alarm/alerts/<alert_id>/deliveries`
+Returns the notification deliveries recorded for one alert, oldest first: `{"alert_id", "deliveries": [ {channel_type, recipient, success, error_message, delivered_at, …} ]}`. The alert detail timeline shows one entry per row.
+
+---
+
 ### `POST /api/alarm/alerts/<alert_id>/read`
 Marks an alert as read (seen) without changing its status.
 
 ---
 
 ### `POST /api/alarm/alerts/<alert_id>/acknowledge`
-Acknowledges a firing alert, indicating that an operator is aware of it. The alert remains in the system until it resolves or is closed.
+Acknowledges a firing alert, indicating that an operator is aware of it. The alert remains in the system until it resolves or is closed. A closed alert cannot be acknowledged: returns `409`.
 
 ---
 
@@ -1552,7 +1557,7 @@ Closes a resolved alert, removing it from the active view. Only resolved alerts 
 ---
 
 ### `POST /api/alarm/alerts/<alert_id>/ignore`
-Ignores an alert, suppressing future notifications for it.
+Ignores an alert, suppressing future notifications for it. A closed alert cannot be ignored: returns `409`.
 
 ---
 
@@ -1613,6 +1618,7 @@ Creates a new alarm rule.
 - `rule_type`: `threshold_above` (alert when value exceeds threshold), `threshold_below` (alert when value falls below), `threshold_range` (alert outside a range)
 - `severity`: `info`, `warning`, `critical`
 - `auto_resolve_cycles`: number of consecutive OK evaluations before auto-closing the alert (0 = never auto-close)
+- `min_trigger_cycles`: consecutive breaching evaluations required before the alert is created (default 1 = first breach)
 
 ---
 
@@ -1723,7 +1729,7 @@ Returns all notification policies — the rules that determine which channels re
 ### `POST /api/alarm/notifications/configs`
 Creates a new notification policy.
 
-**Body:** A policy object specifying which severity levels and rule tags trigger delivery to which channel. Includes `toast_dismiss_seconds` (1–600, default 10) — how long a Toast-channel delivery stays on screen when `auto_dismiss` is on.
+**Body:** A policy object specifying which severity levels and rule tags trigger delivery to which channel. Includes `toast_dismiss_seconds` (1–600, default 10) — how long a Toast-channel delivery stays on screen when `auto_dismiss` is on, and `rule_ids` (list of rule ids; empty = any rule) alongside the `min_severity` / `source_hosts` / `metric_sources` / `metric_names` filters. `trigger_count` / `last_triggered_at` advance each time the policy dispatches a firing or clear notification.
 
 ---
 

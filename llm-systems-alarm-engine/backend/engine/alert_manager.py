@@ -27,6 +27,10 @@ from config.unified_config import settings
 logger = logging.getLogger(__name__)
 
 
+class AlertStateError(ValueError):
+    """Raised when an alert's current status does not allow the transition."""
+
+
 class AlertManager:
     """Manages alert lifecycle."""
 
@@ -191,6 +195,8 @@ class AlertManager:
         if alert is None:
             logger.warning(f"Alert not found: {alert_id}")
             return None
+        if alert.status == AlertStatus.CLOSED:
+            raise AlertStateError(f"Alert {alert_id} is closed and cannot be acknowledged")
 
         update = AlertUpdate(status=AlertStatus.ACKNOWLEDGED)
         result = self.alert_repository.update(uid, update)
@@ -282,6 +288,8 @@ class AlertManager:
         if alert is None:
             logger.warning(f"Alert not found: {alert_id}")
             return None
+        if alert.status == AlertStatus.CLOSED:
+            raise AlertStateError(f"Alert {alert_id} is closed and cannot be ignored")
 
         until = now_utc() + timedelta(hours=duration_hours)
         update = AlertUpdate(status=AlertStatus.IGNORED, ignored_until=until)
