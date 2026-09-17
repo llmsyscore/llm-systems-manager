@@ -7,6 +7,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  const SVG_LOG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 2.5h9v11h-9z"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>';
   const SVG_RESTART = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8.6A5.3 5.3 0 1 1 11.8 4.2"/><path d="M12 1.8v3h-3"/></svg>';
   const NODE_NAME = { agents: 'Agents', manager: 'Manager', browsers: 'Browsers', ae: 'Alarm Engine', influx: 'InfluxDB' };
   const MARKER = { ok: 'url(#hcAhOk)', warn: 'url(#hcAhWarn)', crit: 'url(#hcAhCrit)', off: 'url(#hcAhOff)' };
@@ -120,12 +121,15 @@
       + (s.ak ? `<span class="lk warn" title="${esc(s.ak.tip)}">${esc(s.ak.chip)}</span>` : '')
       + (s.rp ? '<span class="lk warn" title="Saved settings apply after a restart">restart pending</span>' : '');
     const up = s.up ? `<span class="l">up</span>${esc(s.up)}` : esc(s.upTxt);
+    const logBtn = s.svc
+      ? `<button type="button" class="ib" data-log-svc="${esc(s.svc)}" data-tip="View ${esc(s.n)} log">${SVG_LOG}</button>`
+      : '<span class="ib none"></span>';
     const btn = s.act
       ? `<button type="button" class="ib warnh" data-restart-svc="${esc(s.svc)}" data-tip="${esc(s.act)}">${SVG_RESTART}</button>`
       : '<span class="ib none"></span>';
     return `<div class="hc-svcr"><span class="dot ${s.st}"></span>`
       + `<div class="n"><span class="nt">${esc(s.n)}</span>${lk}</div><div class="v">${esc(s.ver)}</div>`
-      + `<div class="up ${s.upCls || ''}">${up}</div>${btn}</div>`;
+      + `<div class="up ${s.upCls || ''}">${up}</div><span class="acts">${logBtn}${btn}</span></div>`;
   }
 
   // ── data-flow edges ──────────────────────────────────────────────────
@@ -432,6 +436,8 @@
       if (!svcEl._hcBound) {
         svcEl._hcBound = true;
         svcEl.addEventListener('click', e => {
+          const lb = e.target.closest('[data-log-svc]');
+          if (lb && typeof adminServiceLogs === 'function') { adminServiceLogs(lb.getAttribute('data-log-svc')); return; }
           const btn = e.target.closest('[data-restart-svc]');
           if (btn && typeof _restartService === 'function') _restartService(btn.getAttribute('data-restart-svc'));
         });
