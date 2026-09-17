@@ -34,6 +34,10 @@ hsts_max_age_s = 0                                       # Strict-Transport-Secu
 tls_cert_file = ""
 tls_key_file  = ""
 
+# Extra hostnames/IPs added to the manager TLS cert SAN beyond the auto-detected
+# loopback/routable IPs (e.g. a docker host's LAN IP).
+public_hosts = []
+
 # Fixed worker-thread pool size shared by both servers (HTTP + TLS). Each
 # worker is a real OS thread (~8 MB); requests past the ceiling queue ~10s
 # then are refused. Floor for a kiosk + several operators is ~32.
@@ -217,7 +221,7 @@ generic_http = 30.0                                      # outbound HTTP default
 [manager.agents]
 stale_after_s = 150                                      # heartbeats missed → "stale"
 down_after_s = 600                                       # heartbeats missed → "down"
-liveness_watch_interval_s = 65                           # how often the watcher loop runs
+liveness_watch_interval_s = 60                           # how often the watcher loop runs
 
 [manager.security]
 # CIDR ranges allowed to call admin-only endpoints (rule/channel CRUD, etc.).
@@ -332,7 +336,7 @@ evaluation_interval = 15                                 # rule eval cadence (s)
 metric_max_age_s = 600                                   # skip a rule whose newest point is older (s)
 keepalive_interval = 30                                  # WebSocket keepalive (s)
 manager_url = "http://localhost:5000"                    # back-channel to the manager
-cors_origins = "http://localhost:5000"
+cors_origins = "http://localhost:5000,http://localhost:8081"
 log_level = "INFO"                                       # per-service override
 
 # ★ Secret. Bearer token required on the ingest surface (agent metric POSTs
