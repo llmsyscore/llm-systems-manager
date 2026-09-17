@@ -1,0 +1,55 @@
+name: Perf-unit merge test
+
+# End-to-end oracle for the installer's perf-unit merge (#976) on a systemd
+# runner: agent/install/install.sh installs over an old-shape
+# performance.service with operator edits, updates against a stub manager that
+# serves unchanged and changed upstream examples, and runs the unprivileged
+# self-update path. tools/installer/ci-perf-unit-merge-smoke.sh holds the
+# scenario and the asserts. Gated to the installer, merge helper and example
+# units; nightly for drift; workflow_dispatch for anything else.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "agent/install/install.sh"
+      - "agent/install/merge_perf_unit.py"
+      - "agent/install/examples/**"
+      - "tools/installer/ci-perf-unit-merge-smoke.sh"
+      - ".github/workflows/perf-unit-merge-test.yml"
+  schedule:
+    - cron: "29 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: perf-unit-merge-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    name: install, update, self-update
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Non-TTY runs refuse to auto-apt missing prerequisites; provide them
+      # up front (the runner image already has git/curl/python3).
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-venv python3-pip python3-dev build-essential
+
+      - name: Run the perf-unit merge oracle
+        run: sudo bash tools/installer/ci-perf-unit-merge-smoke.sh
+
+      - name: Show the merged units on failure
+        if: failure()
+        run: |
+          for u in performance powersave; do
+            echo "── /etc/systemd/system/$u.service"; sudo cat "/etc/systemd/system/$u.service" 2>/dev/null || echo "(absent)"
+          done
+          find /etc/systemd/system -maxdepth 1 \( -name 'performance.service*' -o -name 'powersave.service*' \) -exec ls -la {} +
