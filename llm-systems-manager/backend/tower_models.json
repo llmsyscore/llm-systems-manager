@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "updated": "2026-09-17",
+  "note": "Recommended Tower models per VRAM tier. model id on the host = repo:quant; sizes are the GGUF file size.",
+  "models": [
+    {"key": "qwen3-8b-q4", "name": "Qwen3 8B", "tier_gb": 8, "repo": "Qwen/Qwen3-8B-GGUF", "file": "Qwen3-8B-Q4_K_M.gguf",
+     "quant": "Q4_K_M", "size_gb": 5.0, "params_b": 8, "expected": "good",
+     "notes": "Thinking model: give Answer length 2048 or more. The smallest model with dependable tool calls."},
+    {"key": "llama31-8b-q4", "name": "Llama 3.1 8B Instruct", "tier_gb": 8, "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+     "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "quant": "Q4_K_M", "size_gb": 4.9, "params_b": 8, "expected": "good",
+     "notes": "No thinking phase, so first tokens arrive fast; plain answers."},
+    {"key": "gemma3-12b-q4", "name": "Gemma 3 12B", "tier_gb": 12, "repo": "unsloth/gemma-3-12b-it-GGUF", "file": "gemma-3-12b-it-Q4_K_M.gguf",
+     "quant": "Q4_K_M", "size_gb": 7.3, "params_b": 12, "expected": "good",
+     "notes": "Uses the text tool format on most builds; steady on host and alert questions."},
+    {"key": "qwen3-14b-q4", "name": "Qwen3 14B", "tier_gb": 12, "repo": "Qwen/Qwen3-14B-GGUF", "file": "Qwen3-14B-Q4_K_M.gguf",
+     "quant": "Q4_K_M", "size_gb": 9.0, "params_b": 14, "expected": "high",
+     "notes": "Thinking model: give Answer length 2048 or more. Strong tool calls at this size."},
+    {"key": "gemma3-27b-q4", "name": "Gemma 3 27B", "tier_gb": 24, "repo": "unsloth/gemma-3-27b-it-GGUF", "file": "gemma-3-27b-it-Q4_K_M.gguf",
+     "quant": "Q4_K_M", "size_gb": 16.5, "params_b": 27, "expected": "high",
+     "notes": "Needs a 24 GB card on its own; slower first token than the 12B."},
+    {"key": "qwen3-32b-q4", "name": "Qwen3 32B", "tier_gb": 24, "repo": "Qwen/Qwen3-32B-GGUF", "file": "Qwen3-32B-Q4_K_M.gguf",
+     "quant": "Q4_K_M", "size_gb": 19.8, "params_b": 32, "expected": "high",
+     "notes": "Thinking model: give Answer length 2048 or more. Fills a 24 GB card; leaves no room for a second model."}
+  ]
+}

@@ -13,6 +13,8 @@
   let _group = MOST_USED;       // active rail group key
   let _filter = '';
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
+  // Conversation eval + curated models (#1047): one read each, polled while a job runs.
+  let _towerEval = null, _towerModels = null, _towerExtrasAt = 0, _towerExtrasPoll = 0, _towerActBusy = '';
 
   const esc = s => _esc(String(s ?? ''));
   const $ = id => document.getElementById(id);
@@ -464,6 +466,7 @@
     try { const r = await fetch('/api/tower/state'); if (r.ok) { _towerState = await r.json(); _towerAt = Date.now(); } } catch (_) { /* offline */ }
     const el = $('stTowerCheck');
     if (el) el.outerHTML = towerCheckHtml();
+    renderTowerExtras();
     clearTimeout(_towerPoll);
     if (towerPending(_towerState)) _towerPoll = setTimeout(() => loadTowerState(true), 8000);
   }
@@ -479,13 +482,156 @@
     const el2 = $('stTowerCheck'); if (el2) el2.outerHTML = towerCheckHtml();
   }
 
+  // ── Conversation eval + Get a Tower model (#1047) ──
+  function towerNowS() { return Date.now() / 1000; }
+  function evalCasesHtml(r) {
+    const cases = (r && r.cases) || [];
+    if (!cases.length) return '';
+    const rows = cases.map(c => `<tr><td class="${c.passed ? 'ok' : 'bad'}">${c.passed ? '✓' : '✗'}</td><td>${esc(c.title)}</td>`
+      + `<td>${esc(String(c.calls ?? 0))}</td><td>${esc(String(Math.max(1, Math.round((c.ms || 0) / 1000))))} s</td><td class="det">${esc(c.detail || '')}</td></tr>`).join('');
+    return `<details class="st-evalcases"><summary>Questions</summary><table><tr><th></th><th>Question</th><th>Calls</th><th>Time</th><th>Result</th></tr>${rows}</table></details>`;
+  }
+  function evalResultHtml(r, label) {
+    const v = (window.TW && TW.evalSummary) ? TW.evalSummary(r, towerNowS()) : null;
+    if (!v) return `<div class="row ev"><span class="d w">${esc(label)}</span><span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></div>`;
+    return `<div class="row ev"><span class="d w">${esc(label)}</span><span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span>`
+      + `<span class="d line">${esc(v.line)}${v.meta ? ' · ' + esc(v.meta) : ''}${v.when ? ' · ' + esc(v.when === 'now' ? 'just now' : v.when + ' ago') : ''}</span></div>`;
+  }
+  function towerLiveHtml(job) {
+    const txt = (window.TW && TW.evalProgress) ? TW.evalProgress(job) : 'Running…';
+    const cancel = job.can_cancel ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tower-cancel="${esc(job.id)}">Stop</button>` : '';
+    return `<div class="row ev"><span class="d w">Running</span><span class="d line">${esc(job.label || '')} · ${esc(txt)}</span>${cancel}</div>`;
+  }
+  function towerEvalHtml() {
+    const s = _towerState, e = _towerEval;
+    let control, btn = '';
+    if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
+    else if (!s.model) control = '<div class="row"><span class="d">No model loaded</span></div>';
+    else {
+      const live = (e && e.live) || (_towerModels && _towerModels.live) || null;
+      const mine = e ? (e.results || []).find(r => r.model === s.model) : null;
+      const others = e ? (e.results || []).filter(r => r.model !== s.model) : [];
+      if (s.admin) {
+        btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerEvalBtn"${live || _towerActBusy ? ' disabled' : ''}>`
+          + `${_towerActBusy === 'eval' ? 'Starting…' : 'Run eval'}</button>`
+          + (mine ? `<a class="mcbtn mcbtn-ghost mcbtn-sm" href="/api/tower/eval/${esc(mine.id)}?export=1" download>Export</a>` : '') + '</span>';
+      }
+      control = (live && live.kind === 'tower_eval' ? towerLiveHtml(live) : '')
+        + evalResultHtml(mine, 'Primary') + (mine ? evalCasesHtml(mine) : '')
+        + others.slice(0, 3).map(r => evalResultHtml(r, r.model.length > 18 ? r.model.slice(0, 17) + '…' : r.model)).join('');
+    }
+    return '<div class="settings-row st-fld st-checkrow" id="stTowerEval">'
+      + `<div class="st-lb"><label>Conversation eval</label>${btn}</div>`
+      + '<div class="help">Runs a few canned questions through Tower against the primary model and scores each one: the right tool was called with the right arguments, a question card or timer or action proposal appeared when it should, and the answer was a real answer. More tool calls per question, corrections and retries mean a weaker model. Takes a minute or two; nothing is changed on any host.</div>'
+      + `<div class="st-ct">${control}</div></div>`;
+  }
+  function towerModelOptions(m) {
+    const tiers = {};
+    (m.models || []).forEach(x => { (tiers[x.tier_gb] = tiers[x.tier_gb] || []).push(x); });
+    return Object.keys(tiers).map(Number).sort((a, b) => a - b).map(t => `<optgroup label="${t} GB VRAM">` + tiers[t].map(x => {
+      const ev = x.eval ? ` · scored ${x.eval.passed}/${x.eval.total}` : ` · expected ${x.expected}`;
+      const have = x.loaded ? ' · loaded' : x.present ? ' · on host' : '';
+      return `<option value="${esc(x.key)}">${esc(`${x.name} · ${x.quant} · ${x.size_gb} GB${ev}${have}`)}</option>`;
+    }).join('') + '</optgroup>').join('');
+  }
+  function towerModelsHtml() {
+    const s = _towerState, m = _towerModels;
+    let control, btn = '';
+    if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
+    else if (!m) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!m.host) control = '<div class="row"><span class="d">No primary llama.cpp host: pick one in Admin › Agents</span></div>';
+    else {
+      const live = m.live, last = m.last;
+      const busy = !!(live || (_towerEval && _towerEval.live) || _towerActBusy);
+      if (s.admin) {
+        btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerGetBtn"${busy ? ' disabled' : ''}>`
+          + `${_towerActBusy === 'get' ? 'Starting…' : 'Get'}</button></span>`;
+      }
+      let done = '';
+      if (!live && last && last.status !== 'queued' && last.status !== 'running') {
+        const res = last.result || {};
+        if (last.status === 'done' && res.model) {
+          const pinned = s.model === res.model && (_data && _data.values && _data.values['manager.tower.model'] === res.model);
+          const pin = s.admin && !pinned ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerPinBtn" data-model="${esc(res.model)}">Pin as primary</button>` : '';
+          done = `<div class="row ev"><span class="d w">Ready</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}</span>${pin}</div>`;
+        } else if (last.status === 'failed') {
+          done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}</span></div>`;
+        }
+      }
+      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel"${busy ? ' disabled' : ''}>${towerModelOptions(m)}</select></div>`
+        + (live ? towerLiveHtml(live) : '') + done
+        + `<div class="note">Downloads to ${esc(m.host)}, adds it to llama.cpp, loads it, then runs the tool check and the eval. A model kept for Tower takes VRAM away from what the host serves; pick the tier that leaves room for your working models.</div>`;
+    }
+    return '<div class="settings-row st-fld st-checkrow st-getrow" id="stTowerGet">'
+      + `<div class="st-lb"><label>Get a Tower model</label>${btn}</div>`
+      + '<div class="help">Recommended models that drive Tower well, by the VRAM they need. Get downloads one on the primary llama.cpp host through the usual download path and scores it; Pin as primary makes it the Primary model (the fallback stays as configured).</div>'
+      + `<div class="st-ct">${control}</div></div>`;
+  }
+  function towerExtrasLive() {
+    return !!((_towerEval && _towerEval.live) || (_towerModels && _towerModels.live));
+  }
+  function renderTowerExtras() {
+    const e = $('stTowerEval'); if (e) e.outerHTML = towerEvalHtml();
+    const g = $('stTowerGet'); if (g) g.outerHTML = towerModelsHtml();
+  }
+  async function loadTowerExtras(force) {
+    if (!force && _towerEval && _towerModels && Date.now() - _towerExtrasAt < 15000) { renderTowerExtras(); return; }
+    _towerExtrasAt = Date.now();
+    try {
+      const [er, mr] = await Promise.all([fetch('/api/tower/eval'), fetch('/api/tower/models')]);
+      if (er.ok) _towerEval = await er.json();
+      if (mr.ok) _towerModels = await mr.json();
+    } catch (_) { /* offline */ }
+    renderTowerExtras();
+    clearTimeout(_towerExtrasPoll);
+    if (towerExtrasLive()) _towerExtrasPoll = setTimeout(() => loadTowerExtras(true), 5000);
+  }
+  async function towerAct(kind, url, opts) {
+    _towerActBusy = kind;
+    renderTowerExtras();
+    let msg = '';
+    try {
+      const r = await fetch(url, opts);
+      const d = await r.json().catch(() => null);
+      if (!r.ok) msg = (d && d.error) || `HTTP ${r.status}`;
+    } catch (_) { msg = 'offline'; }
+    _towerActBusy = '';
+    if (msg && typeof showToast === 'function') showToast('Tower', msg, 'warning');
+    await loadTowerExtras(true);
+    if (kind === 'pin') loadTowerState(true);
+  }
+  function onTowerExtrasClick(ev) {
+    const cancel = ev.target.closest('[data-tower-cancel]');
+    if (cancel) { ev.preventDefault(); towerAct('cancel', `/api/jobs/${encodeURIComponent(cancel.dataset.towerCancel)}/cancel`, { method: 'POST' }); return true; }
+    if (ev.target.closest('#stTowerEvalBtn')) {
+      ev.preventDefault();
+      towerAct('eval', '/api/tower/eval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      return true;
+    }
+    if (ev.target.closest('#stTowerGetBtn')) {
+      ev.preventDefault();
+      const sel = $('stTowerGetSel');
+      if (sel && sel.value) towerAct('get', '/api/tower/models/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: sel.value }) });
+      return true;
+    }
+    const pin = ev.target.closest('#stTowerPinBtn');
+    if (pin) {
+      ev.preventDefault();
+      towerAct('pin', '/api/tower/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: pin.dataset.model }) });
+      return true;
+    }
+    return false;
+  }
+
   function groupCardHtml(g, entries, all) {
     const hot = all.filter(e => e.hot).length;
     const restart = all.length - hot;
     const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
-      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? { after: 'manager.tower.tool_mode', html: towerCheckHtml() } : null)}</div></div>`;
+      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? { after: 'manager.tower.tool_mode', html: towerCheckHtml() + towerEvalHtml() + towerModelsHtml() } : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {
@@ -513,7 +659,7 @@
     applyDirtyValues(root, _dirty, _entryByPath);
     renderSummary();
     bindOnce(root);
-    if (root.querySelector('#stTowerCheck')) loadTowerState();
+    if (root.querySelector('#stTowerCheck')) { loadTowerState(); loadTowerExtras(); }
   }
 
   function renderSummary() {
@@ -732,6 +878,7 @@
 
   function onClick(ev) {
     if (ev.target.closest('#stTowerCheckBtn')) { ev.preventDefault(); runTowerCheck(); return; }
+    if (onTowerExtrasClick(ev)) return;
     const tedit = ev.target.closest('.st-tools [data-tools-edit]');
     if (tedit) {
       ev.preventDefault();

@@ -56,6 +56,15 @@ async function boot(data, opts) {
       dom.window.__posts.push(url);
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, check: (opts && opts.towerCheck) || null }) });
     }
+    if (url === '/api/tower/eval' || url === '/api/tower/models' || url === '/api/tower/models/get') {
+      if (fetchOpts && fetchOpts.method === 'POST') {
+        dom.window.__posts.push(url + ' ' + (fetchOpts.body || ''));
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, job: { id: 'j1', kind: 'tower_eval', status: 'queued' } }) });
+      }
+      const body = url === '/api/tower/eval' ? ((opts && opts.towerEval) || { ok: true, results: [], live: null, model: null, admin: true })
+        : ((opts && opts.towerModels) || { ok: true, models: [], host: '', live: null, last: null, admin: true });
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(body))) });
+    }
     if (fetchOpts && fetchOpts.method === 'PUT') {
       dom.window.__puts.push(JSON.parse(fetchOpts.body));
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, applied: [] }) });
@@ -657,7 +666,7 @@ describe('Tower model check row (#1039)', () => {
     win.adminSettingsOpenGroup('tower');
     await flush();
     const rows = [...win.document.querySelectorAll('.st-rows > .settings-row')].map(r => r.id || r.dataset.path);
-    expect(rows).toEqual(['manager.tower.enabled', 'manager.tower.tool_mode', 'stTowerCheck', 'manager.tower.max_tool_calls']);
+    expect(rows).toEqual(['manager.tower.enabled', 'manager.tower.tool_mode', 'stTowerCheck', 'stTowerEval', 'stTowerGet', 'manager.tower.max_tool_calls']);
     const row = win.document.getElementById('stTowerCheck');
     expect(row.querySelector('.st-lb label').textContent).toBe('Tool response check');
     expect(row.querySelector('.key')).toBeNull();
@@ -701,6 +710,74 @@ describe('Tower model check row (#1039)', () => {
     expect(chip.classList.contains('ok')).toBe(true);
     expect(chip.classList.contains('outline')).toBe(false);
     expect(win.document.querySelector('#stTowerCheck .st-ct .st-chip.warn')).toBeNull();
+  });
+
+  const EVAL = { id: 'e1', model: 'qwen3-14b', provider: 'llama', quant: 'Q4_K_M', server: 'llama.cpp b6400', at: Date.now() / 1000 - 120,
+                 ms: 48000, passed: 7, total: 8, calls: 11, calls_per_case: 1.4, corrections: 1, retries: 0, score_pct: 87.5,
+                 cases: [{ id: 'hosts', title: 'Plain read', passed: true, calls: 1, ms: 900, detail: 'ok' },
+                         { id: 'timer', title: 'Timer', passed: false, calls: 2, ms: 3000, detail: 'no tool call' }] };
+  const MODELS = { ok: true, host: 'box', live: null, last: null, admin: true, models: [
+    { key: 'qwen3-8b-q4', name: 'Qwen3 8B', tier_gb: 8, quant: 'Q4_K_M', size_gb: 5.0, expected: 'good', present: false, loaded: false, eval: null },
+    { key: 'qwen3-14b-q4', name: 'Qwen3 14B', tier_gb: 12, quant: 'Q4_K_M', size_gb: 9.0, expected: 'high', present: true, loaded: true,
+      eval: { passed: 8, total: 8 } }] };
+
+  test('the eval row scores the primary model, lists its questions, exports, and Run eval posts (#1047)', async () => {
+    const win = await towerCard({ tower: STATE, towerEval: { ok: true, results: [EVAL], live: null, model: 'qwen3-14b', admin: true }, towerModels: MODELS });
+    const row = win.document.getElementById('stTowerEval');
+    expect(row.querySelector('.st-lb label').textContent).toBe('Conversation eval');
+    const chip = row.querySelector('.st-ct .row.ev .st-chip');
+    expect(chip.textContent).toBe('7/8');
+    expect(chip.classList.contains('warn')).toBe(true);
+    expect(chip.getAttribute('data-tip')).toContain('qwen3-14b · Q4_K_M · llama.cpp b6400 · 2 min ago');
+    expect(row.querySelector('.row.ev .d.line').textContent).toBe('7/8 passed · 1.4 calls per question · 1 corrected · 48 s · Q4_K_M · llama.cpp b6400 · 2 min ago');
+    const cases = [...row.querySelectorAll('.st-evalcases tbody tr, .st-evalcases tr')].slice(1);
+    expect(cases).toHaveLength(2);
+    expect(cases[1].querySelector('td.bad').textContent).toBe('✗');
+    expect(cases[1].querySelector('td.det').textContent).toBe('no tool call');
+    expect(row.querySelector('.st-lb a[download]').getAttribute('href')).toBe('/api/tower/eval/e1?export=1');
+    win.document.getElementById('stTowerEvalBtn').click();
+    await flush();
+    expect(win.__posts).toEqual(['/api/tower/eval {}']);
+  });
+
+  test('the Get a Tower model row groups the list by VRAM tier, shows what the host has, and Get posts the key (#1047)', async () => {
+    const win = await towerCard({ tower: STATE, towerModels: MODELS });
+    const row = win.document.getElementById('stTowerGet');
+    expect(row.querySelector('.st-lb label').textContent).toBe('Get a Tower model');
+    const groups = [...row.querySelectorAll('optgroup')].map(g => g.label);
+    expect(groups).toEqual(['8 GB VRAM', '12 GB VRAM']);
+    const opts = [...row.querySelectorAll('option')].map(o => o.textContent);
+    expect(opts).toEqual(['Qwen3 8B · Q4_K_M · 5 GB · expected good', 'Qwen3 14B · Q4_K_M · 9 GB · scored 8/8 · loaded']);
+    expect(row.querySelector('.note').textContent).toContain('Downloads to box');
+    expect(row.querySelector('.note').textContent).toContain('VRAM');
+    win.document.getElementById('stTowerGetSel').value = 'qwen3-14b-q4';
+    win.document.getElementById('stTowerGetBtn').click();
+    await flush();
+    expect(win.__posts).toEqual(['/api/tower/models/get {"key":"qwen3-14b-q4"}']);
+  });
+
+  test('a live job shows progress with Stop, a finished download offers Pin as primary, and non-admins get no buttons (#1047)', async () => {
+    const live = { id: 'j9', kind: 'tower_get_model', status: 'running', label: 'Get Tower model · Qwen3 8B', can_cancel: true,
+                   state: { phase: 'download', pct: 40 } };
+    const win = await towerCard({ tower: STATE, towerModels: { ...MODELS, live } });
+    const row = win.document.getElementById('stTowerGet');
+    expect(row.textContent).toContain('Downloading · 40 %');
+    expect(row.querySelector('[data-tower-cancel]').dataset.towerCancel).toBe('j9');
+    expect(row.querySelector('#stTowerGetBtn').disabled).toBe(true);
+    expect(win.document.querySelector('#stTowerEvalBtn').disabled).toBe(true);
+    const last = { id: 'j8', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 8/8 passed',
+                   result: { model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M', host: 'box', pin_offer: true } };
+    const done = await towerCard({ tower: STATE, towerModels: { ...MODELS, last } });
+    const pin = done.document.getElementById('stTowerPinBtn');
+    expect(pin.dataset.model).toBe('Qwen/Qwen3-8B-GGUF:Q4_K_M');
+    expect(done.document.getElementById('stTowerGet').textContent).toContain('Qwen3 8B ready · 8/8 passed');
+    pin.click();
+    await flush();
+    expect(done.__puts).toEqual([{ model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }]);
+    const ro = await towerCard({ tower: { ...STATE, admin: false }, towerModels: MODELS });
+    expect(ro.document.getElementById('stTowerEvalBtn')).toBeNull();
+    expect(ro.document.getElementById('stTowerGetBtn')).toBeNull();
+    expect(ro.document.querySelector('#stTowerEval .st-chip.dim').textContent).toBe('Not run');
   });
 
   test('a non-admin sees the grade without the button, and a model-less Tower says so', async () => {

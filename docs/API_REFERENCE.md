@@ -1155,6 +1155,31 @@ Resolve an action card Tower raised in this user's thread. The server re-checks 
 
 ---
 
+### `GET /api/tower/eval`
+Conversation eval results (#1047): `{ok, results, live, model, admin}`. `results` is the newest result per model, newest first (`?model=<id>` lists that model's history, up to 20), each `{id, model, provider, quant, server, tool_mode, grade, at, ms, passed, total, calls, calls_per_case, corrections, retries, score_pct, actor, hosts, cases[{id, title, passed, calls, corrections, retries, ms, detail}]}`. `live` is the running or queued `tower_eval` / `tower_get_model` job view (with `state` progress: `{phase, case, total, title, passed}` for an eval; `{phase: download|config|load|check|eval, pct, line, waited_s}` for a model download) or `null`; `model` is the model Tower would use now. 404 while Tower is off.
+
+---
+
+### `POST /api/tower/eval`
+**Access:** [Admin]. Queues one eval as a `tower_eval` job: canned questions (plain reads, host resolution, a two-step read, a timer, an action proposal, and a question card when two hostnames share a prefix) through the real Tower loop against `{"model": "<resident id>"}` (blank = the model Tower would use). The eval runs with Fallback off and act tools present; every action card is denied and every question card takes its first choice, so nothing changes on any host. Returns `{ok, job}`; 409 while an eval or model download is already running, 503 when the model is not resident. Cancel through `POST /api/jobs/<id>/cancel`. The result lands in `GET /api/tower/eval`, as a `tower_eval` row in the Tools tab ledger, and in the job's `result`.
+
+---
+
+### `GET /api/tower/eval/<id>`
+One stored result with the per-question prompts and answers: `{ok, result}`. `?export=1` returns the same JSON as a file download (`Content-Disposition: attachment`). 404 when unknown.
+
+---
+
+### `GET /api/tower/models`
+The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok, models[{key, name, tier_gb, repo, file, quant, size_gb, params_b, expected, notes, model_id, present, loaded, eval}], host, live, last, admin}`. `model_id` is the id the llama.cpp host uses (`repo:quant`); `present` means a host lists it, `loaded` that it is resident; `eval` is its newest eval result or `null`. `host` is the primary llama.cpp host (blank when none), `live` the running `tower_get_model` job view and `last` the newest one in any state (its `result` carries `{model, host, check, eval, pin_offer}` once done).
+
+---
+
+### `POST /api/tower/models/get`
+**Access:** [Admin]. **Body:** `{"key": "<list key>"}`. Queues a `tower_get_model` job on the primary llama.cpp host: downloads the GGUF through the host's own download path, adds a `repo:quant` section to its config.ini (existing sections are kept) and restarts llama-server, loads the model, waits for it to become resident, then runs the tool check and the eval. Returns `{ok, job}`; 404 for an unknown key, 409 while another eval or download runs, 503 without a primary llama.cpp host. Pinning is a separate `PUT /api/tower/model`.
+
+---
+
 ### `GET /api/tower/insights`
 Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after about a minute), and `checks` lists what it read. Insights are shared by every session.
 
