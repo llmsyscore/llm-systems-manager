@@ -15,8 +15,8 @@
 # Two ways to extend without editing this file:
 #   1. Drop a snippet at /etc/systemd/system/powersave.service.d/override.conf
 #      with [Service] and additional ExecStart= lines.
-#   2. Edit this file in place — but the installer will refuse to clobber
-#      it on re-run (use --force-overwrite-perf-units to bypass).
+#   2. Edit this file in place — the installer merges upstream changes into
+#      it on --update and keeps your lines (backup written first).
 # =============================================================================
 
 [Unit]

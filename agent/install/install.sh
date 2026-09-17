@@ -19,12 +19,13 @@
 #                                  interactive consent)
 #                [--no-prereq-install]  (refuse missing-prereq install path,
 #                                  exit 1 with the manual command instead)
-#                [--install-perf-units]  (drop example performance/powersave
+#                [--install-perf-units]  (install example performance/powersave
 #                                  systemd units to /etc/systemd/system/ —
-#                                  Linux only; refuses to overwrite existing
-#                                  units unless --force-overwrite-perf-units)
-#                [--force-overwrite-perf-units]  (allow clobbering tuned units;
-#                                  destructive — backs up to .bak first)
+#                                  Linux only; existing units are merged with
+#                                  the shipped example, operator edits kept)
+#                [--force-overwrite-perf-units]  (replace tuned units with the
+#                                  examples outright; backs up first)
+#                [--verbose]      (print the perf-unit merge diff)
 #
 # Uninstall:
 #   ./install.sh --uninstall [--install-dir DIR] [-y|--yes]
@@ -116,7 +117,9 @@ SKIP_PREREQ_INSTALL=false  # never offer to install prereqs; exit with the
                            # suggested command instead
 DO_UNINSTALL=false          # --uninstall mode
 INSTALL_PERF_UNITS=false    # drop example performance/powersave systemd units
-FORCE_OVERWRITE_PERF=false  # allow clobbering existing perf units (backs up first)
+FORCE_OVERWRITE_PERF=false  # replace existing perf units outright (backs up first)
+VERBOSE=false               # print the perf-unit merge diff
+PERF_BASE_DIR=""            # previous shipped examples, snapshotted before --update fetches
 
 # Banner version — read from the agent source so it tracks
 # llm-systems-agent.py's VERSION instead of drifting out of date.
@@ -281,14 +284,20 @@ INSTALL — system integration
       when to start. Linux + macOS.
 
   --install-perf-units
-      Drop example performance.service + powersave.service into
-      /etc/systemd/system/. Refuses to overwrite existing units (preserves
-      tuned hosts). Linux only. The example units only set the CPU
-      governor; tune for your hardware via 'sudo systemctl edit performance'.
+      Install example performance.service + powersave.service into
+      /etc/systemd/system/. An existing unit is MERGED with the shipped
+      example: uncommented / edited / added lines stay, upstream header
+      and example comments refresh, lines upstream dropped go away, and a
+      <unit>.bak-<timestamp> backup is written first. --update does the
+      same merge for units already installed. Drop-ins under
+      <unit>.d/override.conf are never touched. Linux only.
 
   --force-overwrite-perf-units
-      Allow --install-perf-units to replace existing units. Backs up the
-      originals to <unit>.bak.<epoch_seconds> first.
+      Replace existing units with the examples outright instead of
+      merging. Backs up the originals to <unit>.bak-<timestamp> first.
+
+  --verbose
+      Print the unified diff for each merged perf unit.
 
 INSTALL — prompts
   --no-prereq-install
@@ -439,6 +448,7 @@ while [[ $# -gt 0 ]]; do
     --no-prereq-install) SKIP_PREREQ_INSTALL=true; shift ;;
     --install-perf-units) INSTALL_PERF_UNITS=true; shift ;;
     --force-overwrite-perf-units) FORCE_OVERWRITE_PERF=true; shift ;;
+    --verbose)      VERBOSE=true; shift ;;
     --uninstall)    DO_UNINSTALL=true; shift ;;
     --update)       DO_UPDATE=true; shift ;;
     --no-pull)      NO_PULL=true; shift ;;
@@ -811,6 +821,83 @@ _ensure_agent_state_dir() {
   fi
 }
 
+# _merge_perf_units install|update
+#   Install the example performance/powersave units (install) or merge the
+#   shipped example into units already on the host (both modes). Linux only.
+_merge_perf_units() {
+  local mode="$1" ex_dir="$TMPL_DIR/examples" merge_py="$TMPL_DIR/merge_perf_unit.py"
+  [[ "$AGENT_OS" == "linux" ]] || return 0
+  if [[ ! -d "$ex_dir" || ! -f "$merge_py" ]]; then
+    if [[ "$mode" == "install" ]]; then
+      echo "ERROR: example unit dir or merge helper not found under: $TMPL_DIR" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  local py="${PYTHON3:-}"
+  [[ -n "$py" && -x "$py" ]] || py="$INSTALL_DIR/venv/bin/python3"
+  [[ -x "$py" ]] || py="$(command -v python3 || true)"
+  if [[ -z "$py" ]]; then
+    echo "  ⚠ python3 not found — perf units left as they are" >&2
+    return 0
+  fi
+  local unit src dest header=false status line out
+  local -a changed=() args
+  for unit in performance.service powersave.service; do
+    src="$ex_dir/$unit"
+    dest="/etc/systemd/system/$unit"
+    if [[ ! -f "$src" ]]; then
+      echo "  WARNING: $src missing in source — skipping" >&2
+      continue
+    fi
+    # update never adds units; it only refreshes the ones already installed.
+    [[ -f "$dest" || "$mode" == "install" ]] || continue
+    if ! $header; then
+      echo
+      echo "── Perf units (performance / powersave) ─────────────────────────────────"
+      header=true
+    fi
+    args=(--example "$src" --dest "$dest")
+    [[ -n "$PERF_BASE_DIR" && -f "$PERF_BASE_DIR/$unit" ]] && args+=(--base "$PERF_BASE_DIR/$unit")
+    $FORCE_OVERWRITE_PERF && args+=(--force)
+    $VERBOSE && args+=(--verbose)
+    # Self-update runs unprivileged: report what a merge would change and
+    # leave the root-owned unit for the operator's next root update.
+    $FROM_SELF_UPDATE && args+=(--dry-run)
+    if ! out="$($SUDO "$py" "$merge_py" "${args[@]}")"; then
+      echo "  ✗ $unit: merge failed" >&2
+      exit 1
+    fi
+    line="${out%%$'\n'*}"
+    status="${line%% *}"
+    case "$status" in
+      unchanged) echo "  = $dest unchanged" ;;
+      installed) changed+=("$unit"); echo "  ✓ installed $dest" ;;
+      merged|replaced) changed+=("$unit"); echo "  ✓ ${line/$unit/$dest}" ;;
+      would-*)
+        echo "  ⚠ $dest: the shipped example changed; merging needs root. Run on this host:"
+        echo "      sudo bash agent/install/install.sh --update   (from any agent checkout or tarball)"
+        ;;
+    esac
+    if $VERBOSE && [[ "$out" == *$'\n'* ]]; then
+      printf '%s\n' "${out#*$'\n'}" | sed 's/^/      /'
+    fi
+  done
+  if (( ${#changed[@]} > 0 )); then
+    $SUDO systemctl daemon-reload
+    echo "  daemon-reload complete (${changed[*]})"
+    echo "  trigger them with:  sudo systemctl reload-or-restart performance"
+    echo "                      sudo systemctl reload-or-restart powersave"
+    echo "  (the agent will trigger them automatically on model load/unload)"
+    echo
+    echo "  Tune for your hardware by editing the unit in place (edits survive"
+    echo "  --update) or via:  sudo systemctl edit performance"
+    echo "  See $ex_dir/README.md for examples."
+  fi
+  $header && echo "─────────────────────────────────────────────────────────────────────────"
+  return 0
+}
+
 # _ensure_hf_cli USER HOME
 #   Install the HuggingFace 'hf' CLI into the agent venv and symlink it to
 #   ~/.local/bin/hf — the path the agent resolves for llama model downloads.
@@ -1164,6 +1251,16 @@ if $DO_UPDATE; then
   # install-mode block below). The tarball-extract path replaces
   # src/agent atomically and scrubs everything else under src/.
   REPO_DIR_FOR_UPDATE="$INSTALL_DIR/src"
+
+  # Keep the previously shipped perf examples so the unit merge can tell
+  # operator edits from upstream changes (3-way when available).
+  for _unit in performance.service powersave.service; do
+    if [[ -f "$REPO_DIR_FOR_UPDATE/agent/install/examples/$_unit" ]]; then
+      [[ -n "$PERF_BASE_DIR" ]] || PERF_BASE_DIR="$(mktemp -d -t lsa-perf-base.XXXXXX)"
+      cp "$REPO_DIR_FOR_UPDATE/agent/install/examples/$_unit" "$PERF_BASE_DIR/$_unit"
+    fi
+  done
+  unset _unit
 
   # Detect run-as user from the existing systemd unit (Linux) or fall back
   # to the dir owner. macOS keeps the plist under the user's LaunchAgents
@@ -1747,6 +1844,9 @@ PYEOF
       echo "  ✓ plist refreshed: $PLIST_DEST"
     fi
   fi
+
+  # Perf units already on the host pick up the shipped example's changes.
+  _merge_perf_units update
 
   if $SKIP_SERVICE_RESTART; then
     echo
@@ -4278,61 +4378,13 @@ fi
 # 6b. Agent state dir (power arbiter durable record).
 _ensure_agent_state_dir
 
-# 7. Example perf-controller systemd units (opt-in via --install-perf-units)
+# 7. Example perf-controller systemd units (opt-in via --install-perf-units;
+#    existing units are merged with the shipped example, edits kept).
 if $INSTALL_PERF_UNITS; then
   if [[ "$AGENT_OS" != "linux" ]]; then
     echo "WARNING: --install-perf-units is Linux-only; ignoring on $AGENT_OS." >&2
   else
-    EX_DIR="$TMPL_DIR/examples"
-    if [[ ! -d "$EX_DIR" ]]; then
-      echo "ERROR: example unit dir not found: $EX_DIR" >&2
-      exit 1
-    fi
-    echo
-    echo "── Installing example perf units ────────────────────────────────────────"
-    PERF_INSTALLED=()
-    PERF_SKIPPED=()
-    for unit in performance.service powersave.service; do
-      src="$EX_DIR/$unit"
-      dest="/etc/systemd/system/$unit"
-      if [[ ! -f "$src" ]]; then
-        echo "  WARNING: $src missing in source — skipping" >&2
-        continue
-      fi
-      if [[ -f "$dest" ]] && ! $FORCE_OVERWRITE_PERF; then
-        PERF_SKIPPED+=("$unit")
-        echo "  ⓘ $dest already exists — leaving alone (use --force-overwrite-perf-units to clobber, .bak first)"
-        continue
-      fi
-      if [[ -f "$dest" ]] && $FORCE_OVERWRITE_PERF; then
-        BAK="$dest.bak.$(date +%s)"
-        $SUDO cp -p "$dest" "$BAK"
-        echo "  ⚠ overwriting $dest (backup at $BAK)"
-      fi
-      $SUDO install -m 0644 -o root -g root "$src" "$dest"
-      PERF_INSTALLED+=("$unit")
-      echo "  ✓ installed $dest"
-    done
-    if (( ${#PERF_INSTALLED[@]} > 0 )); then
-      $SUDO systemctl daemon-reload
-      echo "  daemon-reload complete"
-      echo "  trigger them with:  sudo systemctl reload-or-restart performance"
-      echo "                      sudo systemctl reload-or-restart powersave"
-      echo "  (the agent will trigger them automatically on llama-server transitions)"
-      echo
-      echo "  These units only set the CPU governor by default. Tune for your"
-      echo "  hardware via:"
-      echo "      sudo systemctl edit performance     # add ExecStart= overrides"
-      echo "      sudo systemctl edit powersave"
-      echo "  See $EX_DIR/README.md for examples."
-    fi
-    if (( ${#PERF_SKIPPED[@]} > 0 )); then
-      echo
-      echo "  Skipped (already present): ${PERF_SKIPPED[*]}"
-      echo "  Re-run with --force-overwrite-perf-units if you want to replace"
-      echo "  them with the examples (originals preserved as .bak)."
-    fi
-    echo "─────────────────────────────────────────────────────────────────────────"
+    _merge_perf_units install
   fi
 fi
 
