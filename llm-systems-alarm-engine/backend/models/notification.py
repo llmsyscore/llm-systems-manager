@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChannelType(str, Enum):
@@ -196,6 +196,15 @@ class NotificationConfigCreate(BaseModel):
         default_factory=list,
         description="Whitelist of alert.source_host values. Empty = match all hosts.",
     )
+    rule_ids: list[str] = Field(
+        default_factory=list,
+        description="Whitelist of alert.rule_id values. Empty = match all rules.",
+    )
+
+    @field_validator("rule_ids", mode="before")
+    @classmethod
+    def _rule_ids_as_str(cls, v: Any) -> list[str]:
+        return [str(x) for x in (v or []) if str(x)]
 
     # Delivery cadence / clear-event knobs.
     repeat_interval_minutes: int = Field(
@@ -224,7 +233,13 @@ class NotificationConfigUpdate(BaseModel):
     metric_sources: Optional[list[str]] = None
     metric_names: Optional[list[str]] = None
     source_hosts: Optional[list[str]] = None
+    rule_ids: Optional[list[str]] = None
     repeat_interval_minutes: Optional[int] = Field(default=None, ge=0)
+
+    @field_validator("rule_ids", mode="before")
+    @classmethod
+    def _rule_ids_as_str(cls, v: Any) -> Optional[list[str]]:
+        return None if v is None else [str(x) for x in v if str(x)]
     notify_on_clear: Optional[bool] = None
     min_alarm_count: Optional[int] = Field(default=None, ge=1)
 
@@ -247,6 +262,7 @@ class NotificationConfig(BaseModel):
     metric_sources: list[str] = Field(default_factory=list)
     metric_names: list[str] = Field(default_factory=list)
     source_hosts: list[str] = Field(default_factory=list)
+    rule_ids: list[str] = Field(default_factory=list)
 
     # Delivery cadence / clear-event knobs.
     repeat_interval_minutes: int = 30
@@ -276,6 +292,9 @@ class NotificationConfig(BaseModel):
             host = str(getattr(alert, "source_host", "") or "")
             if host not in self.source_hosts:
                 return False
+        if self.rule_ids:
+            if str(getattr(alert, "rule_id", "") or "") not in self.rule_ids:
+                return False
         return True
 
     def to_dict(self) -> dict[str, Any]:
@@ -295,6 +314,7 @@ class NotificationConfig(BaseModel):
             "metric_sources": list(self.metric_sources),
             "metric_names": list(self.metric_names),
             "source_hosts": list(self.source_hosts),
+            "rule_ids": [str(r) for r in self.rule_ids],
             "repeat_interval_minutes": int(self.repeat_interval_minutes),
             "notify_on_clear": bool(self.notify_on_clear),
             "min_alarm_count": int(self.min_alarm_count),

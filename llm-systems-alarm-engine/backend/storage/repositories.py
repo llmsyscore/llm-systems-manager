@@ -272,6 +272,7 @@ class RuleRepository:
 
         cycles_raw = data.get("auto_resolve_cycles")
         auto_resolve_cycles = int(cycles_raw) if cycles_raw is not None else DEFAULT_AUTO_RESOLVE_CYCLES
+        min_trigger_cycles = max(1, int(data.get("min_trigger_cycles") or 1))
 
         rule_id_raw = data["rule_id"]
         return AlarmRule(
@@ -289,6 +290,7 @@ class RuleRepository:
             quiet_hours_start=data.get("quiet_hours_start"),
             quiet_hours_end=data.get("quiet_hours_end"),
             auto_resolve_cycles=auto_resolve_cycles,
+            min_trigger_cycles=min_trigger_cycles,
             correlation_group=data.get("correlation_group"),
             created_at=_parse_dt(data.get("created_at")) or now_utc(),
             updated_at=_parse_dt(data.get("updated_at")) or now_utc(),
@@ -785,6 +787,7 @@ class NotificationRepository:
             metric_sources=_list_field("metric_sources"),
             metric_names=_list_field("metric_names"),
             source_hosts=_list_field("source_hosts"),
+            rule_ids=_list_field("rule_ids"),
             repeat_interval_minutes=int(item.get("repeat_interval_minutes") or 30),
             notify_on_clear=bool(item.get("notify_on_clear", False)),
             min_alarm_count=int(item.get("min_alarm_count") or 1),
@@ -808,6 +811,7 @@ class NotificationRepository:
             metric_sources=list(config_create.metric_sources or []),
             metric_names=list(config_create.metric_names or []),
             source_hosts=list(config_create.source_hosts or []),
+            rule_ids=[str(r) for r in (config_create.rule_ids or [])],
             repeat_interval_minutes=int(config_create.repeat_interval_minutes or 30),
             notify_on_clear=bool(config_create.notify_on_clear),
             min_alarm_count=int(config_create.min_alarm_count or 1),
@@ -975,6 +979,18 @@ class NotificationRepository:
         )
         result: list[NotificationDelivery] = []
         for item in rows:
+            try:
+                result.append(NotificationDelivery(**item))
+            except Exception:
+                continue
+        return result
+
+    def get_deliveries_for_alert(self, alert_id: str, limit: int = 200) -> list[NotificationDelivery]:
+        """Delivery rows for one alert, oldest first (#1023)."""
+        if self.settings_db is None:
+            return []
+        result: list[NotificationDelivery] = []
+        for item in self.settings_db.query_deliveries_for_alert(str(alert_id), limit=limit):
             try:
                 result.append(NotificationDelivery(**item))
             except Exception:

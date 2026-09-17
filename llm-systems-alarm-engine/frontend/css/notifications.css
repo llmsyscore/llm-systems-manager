@@ -2,5 +2,5 @@
 #channelsTable td.n .sub, #policiesTable td.n .sub { font-family: var(--font-mono); }
 #policiesTable td.n .sub { font-family: var(--font-sans); }
 #policiesTable td.n .pname { cursor: pointer; }
-.chipsin .mc-menu { max-height: 260px; overflow: auto; }
+.chipsin .mc-menu { max-height: 260px; overflow: auto; overscroll-behavior: contain; }
 .policy-form .st-field .mc-seg button { text-transform: none; }

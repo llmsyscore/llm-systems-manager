@@ -121,6 +121,9 @@ const ApiClient = {
         async events(alertId) {
             return ApiClient._request(`/alerts/${alertId}/events`);
         },
+        async deliveries(alertId) {
+            return ApiClient._request(`/alerts/${alertId}/deliveries`);
+        },
 
         async resume(alertId) {
             return ApiClient._request(`/alerts/${alertId}/resume`, {

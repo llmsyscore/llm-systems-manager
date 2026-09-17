@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS rules (
   updated_at TEXT NOT NULL,
   last_evaluated_at TEXT,
   last_alert_at TEXT,
-  correlation_group TEXT
+  correlation_group TEXT,
+  min_trigger_cycles INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS rules_enabled_idx ON rules(enabled);
 
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS configs (
   repeat_interval_minutes INTEGER NOT NULL DEFAULT 30,
   notify_on_clear INTEGER NOT NULL DEFAULT 0,
   min_alarm_count INTEGER NOT NULL DEFAULT 1,
-  toast_dismiss_seconds INTEGER NOT NULL DEFAULT 10
+  toast_dismiss_seconds INTEGER NOT NULL DEFAULT 10,
+  rule_ids_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -123,6 +125,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "toast_dismiss_seconds" not in ccols:
         conn.execute("ALTER TABLE configs ADD COLUMN toast_dismiss_seconds INTEGER NOT NULL DEFAULT 10")
         logger.info("ae_settings.db migrated: configs.toast_dismiss_seconds added")
+    if "rule_ids_json" not in ccols:
+        conn.execute("ALTER TABLE configs ADD COLUMN rule_ids_json TEXT NOT NULL DEFAULT '[]'")
+        logger.info("ae_settings.db migrated: configs.rule_ids_json added")
+    if "min_trigger_cycles" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN min_trigger_cycles INTEGER NOT NULL DEFAULT 1")
+        logger.info("ae_settings.db migrated: rules.min_trigger_cycles added")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (2)")
     conn.execute("INSERT OR IGNORE INTO schema_version VALUES (3)")
     conn.commit()
@@ -178,6 +186,7 @@ class AeSettingsDB:
             _to_iso(rule.get("last_evaluated_at")),
             _to_iso(rule.get("last_alert_at")),
             rule.get("correlation_group") or None,
+            max(1, int(rule.get("min_trigger_cycles") or 1)),
         )
         with self._lock:
             self._conn.execute(
@@ -188,8 +197,8 @@ class AeSettingsDB:
                   severity, enabled, notification_channel_ids_json,
                   quiet_hours_start, quiet_hours_end, auto_resolve_cycles,
                   created_at, updated_at, last_evaluated_at, last_alert_at,
-                  correlation_group
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  correlation_group, min_trigger_cycles
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(rule_id) DO UPDATE SET
                   name=excluded.name,
                   description=excluded.description,
@@ -207,7 +216,8 @@ class AeSettingsDB:
                   updated_at=excluded.updated_at,
                   last_evaluated_at=excluded.last_evaluated_at,
                   last_alert_at=excluded.last_alert_at,
-                  correlation_group=excluded.correlation_group
+                  correlation_group=excluded.correlation_group,
+                  min_trigger_cycles=excluded.min_trigger_cycles
                 """,
                 cols,
             )
@@ -254,6 +264,7 @@ class AeSettingsDB:
             "last_evaluated_at": r["last_evaluated_at"],
             "last_alert_at": r["last_alert_at"],
             "correlation_group": r["correlation_group"],
+            "min_trigger_cycles": (r["min_trigger_cycles"] if "min_trigger_cycles" in r.keys() else 1) or 1,
         }
 
     # ── Channels ─────────────────────────────────────────────────────────
@@ -350,6 +361,7 @@ class AeSettingsDB:
             1 if cfg.get("notify_on_clear") else 0,
             int(cfg.get("min_alarm_count") or 1),
             int(cfg.get("toast_dismiss_seconds") or 10),
+            _to_json([str(r) for r in (cfg.get("rule_ids") or [])]),
         )
         with self._lock:
             self._conn.execute(
@@ -360,8 +372,8 @@ class AeSettingsDB:
                   trigger_count, min_severity, metric_sources_json,
                   metric_names_json, source_hosts_json,
                   repeat_interval_minutes, notify_on_clear, min_alarm_count,
-                  toast_dismiss_seconds
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  toast_dismiss_seconds, rule_ids_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(config_id) DO UPDATE SET
                   name=excluded.name,
                   description=excluded.description,
@@ -377,7 +389,8 @@ class AeSettingsDB:
                   repeat_interval_minutes=excluded.repeat_interval_minutes,
                   notify_on_clear=excluded.notify_on_clear,
                   min_alarm_count=excluded.min_alarm_count,
-                  toast_dismiss_seconds=excluded.toast_dismiss_seconds
+                  toast_dismiss_seconds=excluded.toast_dismiss_seconds,
+                  rule_ids_json=excluded.rule_ids_json
                 """,
                 cols,
             )
@@ -430,6 +443,7 @@ class AeSettingsDB:
             "notify_on_clear": bool(r["notify_on_clear"]),
             "min_alarm_count": r["min_alarm_count"],
             "toast_dismiss_seconds": (r["toast_dismiss_seconds"] if "toast_dismiss_seconds" in r.keys() else 10) or 10,
+            "rule_ids": _from_json(r["rule_ids_json"], []) if "rule_ids_json" in r.keys() else [],
         }
 
     # ── Deliveries (notification send records) ───────────────────────────
@@ -479,6 +493,17 @@ class AeSettingsDB:
         args.extend([int(limit), int(offset)])
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
+        return [self._row_to_delivery(r) for r in rows]
+
+    def query_deliveries_for_alert(self, alert_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Delivery rows tagged with one alert id, oldest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM deliveries "
+                "WHERE json_extract(metadata_json, '$.alert_id') = ? "
+                "ORDER BY delivered_at ASC LIMIT ?",
+                (str(alert_id), int(limit)),
+            ).fetchall()
         return [self._row_to_delivery(r) for r in rows]
 
     def get_delivery(self, delivery_id: str) -> Optional[dict[str, Any]]:

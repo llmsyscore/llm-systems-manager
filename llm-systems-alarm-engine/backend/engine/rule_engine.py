@@ -77,6 +77,8 @@ class RuleEngine:
         # at the threshold). N is configured per-rule via auto_resolve_cycles;
         # a value of 0 disables auto-resolve for that rule.
         self._ok_streak: dict[str, int] = {}
+        # Per-rule consecutive breaching cycles, gated by min_trigger_cycles.
+        self._breach_streak: dict[str, int] = {}
 
     def _expire_ignore_windows(self, snapshot: list) -> list:
         """Return elapsed-window alerts to active so they alert again (#938)."""
@@ -202,6 +204,7 @@ class RuleEngine:
                 rule.name, scope, rule.metric_source, rule.metric_name, age_s,
             )
             self._ok_streak.pop(str(rule.rule_id), None)  # recovery must be re-proven on fresh data
+            self._breach_streak.pop(str(rule.rule_id), None)
             self._log_evaluation(rule, current_value, "stale", False)
             return False
 
@@ -244,6 +247,8 @@ class RuleEngine:
                     recovered_now = False
                     break
 
+        if not alert_triggered:
+            self._breach_streak.pop(rule_key, None)
         if not alert_triggered and resolve_after > 0:
             if recovered_now:
                 self._ok_streak[rule_key] = self._ok_streak.get(rule_key, 0) + 1
@@ -293,7 +298,15 @@ class RuleEngine:
                 and a.status in ONGOING_STATUSES
             ]
 
+            need = max(1, int(getattr(rule, "min_trigger_cycles", 1) or 1))
+            streak = self._breach_streak.get(rule_key, 0) + 1
             if not existing:
+                self._breach_streak[rule_key] = streak
+            if not existing and streak < need:
+                logger.debug("Rule %s breaching %d/%d cycles — alert deferred",
+                             rule.name, streak, need)
+            elif not existing:
+                self._breach_streak.pop(rule_key, None)
                 t0 = time.perf_counter()
                 created_alert = self.alert_manager.process_alert(alert_create)
                 proc_ms = (time.perf_counter() - t0) * 1000.0

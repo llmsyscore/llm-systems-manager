@@ -55,10 +55,13 @@ async def list_rules(
     """List rules with optional filters."""
     repo = _get_repo()
     rules = repo.get_all(enabled_only=False)
+    # Consecutive breaching cycles still waiting on min_trigger_cycles, per rule.
+    streaks = getattr(_dependency_map.get("rule_engine"), "_breach_streak", {}) or {}
 
     filtered = []
     for r in rules:
         rule_dict = r.to_dict()
+        rule_dict["breaching"] = int(streaks.get(str(r.rule_id), 0) or 0)
         if enabled is not None and r.enabled != enabled:
             continue
         if metric_source is not None and r.metric_source != metric_source:

@@ -244,7 +244,10 @@ const UI = {
                 if (box) { e.preventDefault(); box.focus(); box.select(); }
             }
         });
-        window.addEventListener('scroll', () => { this.closeMenus(); this.hideTip(); }, true);
+        window.addEventListener('scroll', (e) => {
+            if (this._openMenu && e.target instanceof Element && this._openMenu.contains(e.target)) return;
+            this.closeMenus(); this.hideTip();
+        }, true);
         window.addEventListener('resize', () => { this.closeMenus(); this.hideTip(); });
         document.addEventListener('mouseover', (e) => { const t = e.target.closest('[data-tip]'); if (t) this.showTip(t); });
         document.addEventListener('mouseout', (e) => { const t = e.target.closest('[data-tip]'); if (t && !t.contains(e.relatedTarget)) this.hideTip(); });
@@ -507,7 +510,10 @@ const ModalManager = {
         document.getElementById('modalClose')?.addEventListener('click', () => this.close());
         document.getElementById('modalCancel')?.addEventListener('click', () => this.close());
         document.getElementById('modalSubmit')?.addEventListener('click', () => this._submit());
-        overlay?.addEventListener('mousedown', (e) => { if (e.target === overlay) this.close(); });
+        // Backdrop click only dismisses small dialogs; editors close via Cancel, × or Esc.
+        overlay?.addEventListener('mousedown', (e) => {
+            if (e.target === overlay && document.getElementById('modalBox')?.classList.contains('dialog')) this.close();
+        });
         overlay?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.target && e.target.tagName === 'INPUT') { e.preventDefault(); this._submit(); }
         });
