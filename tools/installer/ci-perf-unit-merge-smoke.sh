@@ -12,7 +12,7 @@
 # repo checkout.
 set -euo pipefail
 
-REPO="${REPO:-$PWD}"
+CHECKOUT="${REPO:-$PWD}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/llm-systems-agent}"
 AGENT_USER="${AGENT_USER:-llmsys}"
 MGR_PORT="${MGR_PORT:-5000}"
@@ -20,6 +20,9 @@ MGR_URL="http://127.0.0.1:$MGR_PORT"
 SD=/etc/systemd/system
 PERF="$SD/performance.service"
 SAVE="$SD/powersave.service"
+# The installer runs pip as the agent user against the source tree, so it
+# works from a world-readable copy of agent/ (the runner checkout is not).
+REPO=/opt/llm-systems-perf-oracle-src
 INSTALL_SH="$REPO/agent/install/install.sh"
 EXAMPLE="$REPO/agent/install/examples/performance.service"
 WORK="$(mktemp -d -t perf-oracle.XXXXXX)"
@@ -28,12 +31,15 @@ STUB_PID=""
 
 pass() { echo "  ✓ $*"; }
 fail() { echo "  ✗ FAIL: $*"; [[ -f "$LOG" ]] && { echo "── last installer output ──"; tail -60 "$LOG"; }; exit 1; }
-cleanup() { if [[ -n "$STUB_PID" ]]; then kill "$STUB_PID" 2>/dev/null || true; fi; rm -rf "$WORK"; }
+cleanup() { if [[ -n "$STUB_PID" ]]; then kill "$STUB_PID" 2>/dev/null || true; fi; rm -rf "$WORK" "$REPO"; }
 trap cleanup EXIT
 
 [[ "$(id -u)" == "0" ]] || fail "run as root"
-[[ -f "$INSTALL_SH" && -f "$EXAMPLE" ]] || fail "run from the repo checkout (REPO=$REPO)"
+[[ -f "$CHECKOUT/agent/install/install.sh" ]] || fail "run from the repo checkout (REPO=$CHECKOUT)"
 [[ -d /run/systemd/system ]] || fail "systemd is not running here"
+rm -rf "$REPO"; mkdir -p "$REPO"
+cp -a "$CHECKOUT/agent" "$REPO/agent"
+chmod -R a+rX "$REPO"
 
 # ── stub manager: registry probe + the agent tarball the update fetches ──────
 mkdir -p "$WORK/stub"
