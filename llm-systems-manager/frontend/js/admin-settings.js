@@ -348,12 +348,14 @@
         return isList(e) ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
-    const rows = entries.map(e => fieldHtml(e, opt));
-    if (extra && extra.html) {
-      const at = entries.findIndex(e => e.path === extra.after);
-      rows.splice(at >= 0 ? at + 1 : rows.length, 0, extra.html);
-    }
-    return `<div class="st-rows">${rows.join('')}</div>`;
+    const rows = entries.map(e => ({ path: e.path, html: fieldHtml(e, opt) }));
+    // extra: {after, html} or a list of them — each lands right after its anchor field (or last).
+    (Array.isArray(extra) ? extra : extra ? [extra] : []).forEach(x => {
+      if (!x || !x.html) return;
+      const at = rows.findIndex(r => r.path === x.after);
+      rows.splice(at >= 0 ? at + 1 : rows.length, 0, { path: null, html: x.html });
+    });
+    return `<div class="st-rows">${rows.map(r => r.html).join('')}</div>`;
   }
 
   // ── validation ────────────────────────────────────────────────────
@@ -491,11 +493,13 @@
       + `<td>${esc(String(c.calls ?? 0))}</td><td>${esc(String(Math.max(1, Math.round((c.ms || 0) / 1000))))} s</td><td class="det">${esc(c.detail || '')}</td></tr>`).join('');
     return `<details class="st-evalcases"><summary>Questions</summary><table><tr><th></th><th>Question</th><th>Calls</th><th>Time</th><th>Result</th></tr>${rows}</table></details>`;
   }
-  function evalResultHtml(r, label) {
+  // label: the fixed-width lead ("Primary"); model: shown in the summary line instead (other models).
+  function evalResultHtml(r, label, model) {
     const v = (window.TW && TW.evalSummary) ? TW.evalSummary(r, towerNowS()) : null;
-    if (!v) return `<div class="row ev"><span class="d w">${esc(label)}</span><span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></div>`;
-    return `<div class="row ev"><span class="d w">${esc(label)}</span><span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span>`
-      + `<span class="d line">${esc(v.line)}${v.meta ? ' · ' + esc(v.meta) : ''}${v.when ? ' · ' + esc(v.when === 'now' ? 'just now' : v.when + ' ago') : ''}</span></div>`;
+    const lead = `<span class="d w">${esc(label || '')}</span>`;
+    if (!v) return `<div class="row ev">${lead}<span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></div>`;
+    const line = (model ? `<b>${esc(v.short || model)}</b> · ` : '') + esc(v.line);
+    return `<div class="row ev">${lead}<span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span><span class="d line">${line}</span></div>`;
   }
   function towerLiveHtml(job) {
     const txt = (window.TW && TW.evalProgress) ? TW.evalProgress(job) : 'Running…';
@@ -514,16 +518,16 @@
       const others = e ? (e.results || []).filter(r => r.model !== s.model) : [];
       if (s.admin) {
         btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerEvalBtn"${live || _towerActBusy ? ' disabled' : ''}>`
-          + `${_towerActBusy === 'eval' ? 'Starting…' : 'Run eval'}</button>`
+          + `${_towerActBusy === 'eval' ? 'Starting…' : 'Run'}</button>`
           + (mine ? `<a class="mcbtn mcbtn-ghost mcbtn-sm" href="/api/tower/eval/${esc(mine.id)}?export=1" download>Export</a>` : '') + '</span>';
       }
       control = (live && live.kind === 'tower_eval' ? towerLiveHtml(live) : '')
         + evalResultHtml(mine, 'Primary') + (mine ? evalCasesHtml(mine) : '')
-        + others.slice(0, 3).map(r => evalResultHtml(r, r.model.length > 18 ? r.model.slice(0, 17) + '…' : r.model)).join('');
+        + others.slice(0, 3).map(r => evalResultHtml(r, 'Other', r.model)).join('');
     }
     return '<div class="settings-row st-fld st-checkrow" id="stTowerEval">'
-      + `<div class="st-lb"><label>Conversation eval</label>${btn}</div>`
-      + '<div class="help">Runs a few canned questions through Tower against the primary model and scores each one: the right tool was called with the right arguments, a question card or timer or action proposal appeared when it should, and the answer was a real answer. More tool calls per question, corrections and retries mean a weaker model. Takes a minute or two; nothing is changed on any host.</div>'
+      + `<div class="st-lb"><label>Model evaluation</label>${btn}</div>`
+      + '<div class="help">Asks the primary model a set of canned questions through Tower and scores each. Fewer calls, corrections and retries mean a stronger model.</div>'
       + `<div class="st-ct">${control}</div></div>`;
   }
   function towerModelOptions(m) {
@@ -531,7 +535,7 @@
     (m.models || []).forEach(x => { (tiers[x.tier_gb] = tiers[x.tier_gb] || []).push(x); });
     return Object.keys(tiers).map(Number).sort((a, b) => a - b).map(t => `<optgroup label="${t} GB VRAM">` + tiers[t].map(x => {
       const ev = x.eval ? ` · scored ${x.eval.passed}/${x.eval.total}` : ` · expected ${x.expected}`;
-      const have = x.loaded ? ' · loaded' : x.present ? ' · on host' : '';
+      const have = (x.small ? ' · small' : '') + (x.loaded ? ' · loaded' : x.present ? ' · on host' : '');
       return `<option value="${esc(x.key)}">${esc(`${x.name} · ${x.quant} · ${x.size_gb} GB${ev}${have}`)}</option>`;
     }).join('') + '</optgroup>').join('');
   }
@@ -541,13 +545,13 @@
     if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
     else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
     else if (!m) control = '<div class="row"><span class="d">Loading…</span></div>';
-    else if (!m.host) control = '<div class="row"><span class="d">No primary llama.cpp host: pick one in Admin › Agents</span></div>';
+    else if (!(m.hosts || []).length) control = '<div class="row"><span class="d">No primary llama.cpp or LM Studio host: pick one in Admin › Agents</span></div>';
     else {
       const live = m.live, last = m.last;
       const busy = !!(live || (_towerEval && _towerEval.live) || _towerActBusy);
       if (s.admin) {
         btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerGetBtn"${busy ? ' disabled' : ''}>`
-          + `${_towerActBusy === 'get' ? 'Starting…' : 'Get'}</button></span>`;
+          + `${_towerActBusy === 'get' ? 'Starting…' : 'Download'}</button></span>`;
       }
       let done = '';
       if (!live && last && last.status !== 'queued' && last.status !== 'running') {
@@ -560,13 +564,19 @@
           done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}</span></div>`;
         }
       }
-      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel"${busy ? ' disabled' : ''}>${towerModelOptions(m)}</select></div>`
+      const hosts = m.hosts || [];
+      const hostText = h => h.host + ' · ' + h.label + (h.primary ? ' · primary' : '');
+      const hostCtl = hosts.length > 1
+        ? `<select id="stTowerGetHost" class="sel st-input"${busy ? ' disabled' : ''}>${hosts.map(h => `<option value="${esc(h.agent_id)}" data-provider="${esc(h.provider)}">${esc(hostText(h))}</option>`).join('')}</select>`
+        : `<span class="d line" id="stTowerGetHostOne" data-agent="${esc(hosts[0].agent_id)}" data-provider="${esc(hosts[0].provider)}">${esc(hostText(hosts[0]))}</span>`;
+      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m)}</select></div>`
+        + `<div class="row ev"><span class="d w">Host</span>${hostCtl}</div>`
         + (live ? towerLiveHtml(live) : '') + done
-        + `<div class="note">Downloads to ${esc(m.host)}, adds it to llama.cpp, loads it, then runs the tool check and the eval. A model kept for Tower takes VRAM away from what the host serves; pick the tier that leaves room for your working models.</div>`;
+        + '<div class="note">A Tower model takes VRAM from the models the host serves. On a llama.cpp host the server restarts after the download, which unloads what it was serving.</div>';
     }
     return '<div class="settings-row st-fld st-checkrow st-getrow" id="stTowerGet">'
-      + `<div class="st-lb"><label>Get a Tower model</label>${btn}</div>`
-      + '<div class="help">Recommended models that drive Tower well, by the VRAM they need. Get downloads one on the primary llama.cpp host through the usual download path and scores it; Pin as primary makes it the Primary model (the fallback stays as configured).</div>'
+      + `<div class="st-lb"><label>Download a Tower model</label>${btn}</div>`
+      + '<div class="help">Recommended models by the VRAM they need. Download fetches one to the primary llama.cpp or LM Studio host, loads it and scores it; Pin as primary then makes it the Primary model.</div>'
       + `<div class="st-ct">${control}</div></div>`;
   }
   function towerExtrasLive() {
@@ -576,13 +586,27 @@
     const e = $('stTowerEval'); if (e) e.outerHTML = towerEvalHtml();
     const g = $('stTowerGet'); if (g) g.outerHTML = towerModelsHtml();
   }
+  // The Primary model choices follow the live gateway index: a model deleted on a host drops out
+  // on the next read, the value in the field is kept even when it is gone.
+  function refreshModelChoices(ids) {
+    const next = ids.filter(Boolean);
+    if (next.join('\n') === _gatewayModels.join('\n')) return;
+    _gatewayModels = next;
+    document.querySelectorAll('select.st-input[data-path="manager.tower.model"]').forEach(sel => {
+      const cur = sel.value || 'auto';
+      const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
+      if (!opts.includes(cur)) opts.push(cur);
+      sel.innerHTML = opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('');
+    });
+  }
   async function loadTowerExtras(force) {
     if (!force && _towerEval && _towerModels && Date.now() - _towerExtrasAt < 15000) { renderTowerExtras(); return; }
     _towerExtrasAt = Date.now();
     try {
-      const [er, mr] = await Promise.all([fetch('/api/tower/eval'), fetch('/api/tower/models')]);
+      const [er, mr, gr] = await Promise.all([fetch('/api/tower/eval'), fetch('/api/tower/models'), fetch('/api/gateway/v1/models')]);
       if (er.ok) _towerEval = await er.json();
       if (mr.ok) _towerModels = await mr.json();
+      if (gr.ok) refreshModelChoices(((await gr.json()).data || []).map(m => m.id));
     } catch (_) { /* offline */ }
     renderTowerExtras();
     clearTimeout(_towerExtrasPoll);
@@ -602,6 +626,30 @@
     await loadTowerExtras(true);
     if (kind === 'pin') loadTowerState(true);
   }
+  // Download: confirm first (a llama.cpp host restarts its server after the download), then queue the job.
+  async function towerDownloadClick() {
+    const sel = $('stTowerGetSel'), hostSel = $('stTowerGetHost'), one = $('stTowerGetHostOne');
+    const key = sel ? sel.value : '';
+    if (!key) return;
+    const opt = hostSel ? hostSel.options[hostSel.selectedIndex] : null;
+    const agentId = opt ? opt.value : (one ? one.dataset.agent : '');
+    const provider = opt ? opt.dataset.provider : (one ? one.dataset.provider : '');
+    const host = (opt ? opt.textContent : (one ? one.textContent : '')).split(' · ')[0];
+    const name = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent.split(' · ')[0] : key;
+    if (typeof _themedConfirm === 'function') {
+      const restart = provider === 'llama'
+        ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again.</p>` : '';
+      const ok = await _themedConfirm({
+        title: `Download ${name} to ${host}?`,
+        bodyHtml: `<p>The download runs on the host, then the model is loaded, checked and scored. It takes VRAM from what the host serves.</p>${restart}`,
+        confirmLabel: 'Download', cancelLabel: 'Cancel', danger: provider === 'llama',
+      });
+      if (!ok) return;
+    }
+    const body = { key };
+    if (agentId) body.agent_id = agentId;
+    towerAct('get', '/api/tower/models/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }
   function onTowerExtrasClick(ev) {
     const cancel = ev.target.closest('[data-tower-cancel]');
     if (cancel) { ev.preventDefault(); towerAct('cancel', `/api/jobs/${encodeURIComponent(cancel.dataset.towerCancel)}/cancel`, { method: 'POST' }); return true; }
@@ -612,8 +660,7 @@
     }
     if (ev.target.closest('#stTowerGetBtn')) {
       ev.preventDefault();
-      const sel = $('stTowerGetSel');
-      if (sel && sel.value) towerAct('get', '/api/tower/models/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: sel.value }) });
+      towerDownloadClick();
       return true;
     }
     const pin = ev.target.closest('#stTowerPinBtn');
@@ -631,7 +678,8 @@
     const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
-      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? { after: 'manager.tower.tool_mode', html: towerCheckHtml() + towerEvalHtml() + towerModelsHtml() } : null)}</div></div>`;
+      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? [{ after: 'manager.tower.tool_mode', html: towerCheckHtml() },
+                                                                                          { after: 'manager.tower.model', html: towerEvalHtml() + towerModelsHtml() }] : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {
@@ -1139,6 +1187,7 @@
 
   window.adminSettingsLoad = load;
   window.adminSettingsOpenGroup = openGroup;
+  window.adminSettingsRefreshTower = () => loadTowerExtras(true);
   window.SettingsFields = {
     render: (entries, values, defs, over) => renderFields(entries, values, defs, over),
     fieldHtml, validate, splitUnit, groupMeta, readInput, firstSentence, applyDirtyValues,

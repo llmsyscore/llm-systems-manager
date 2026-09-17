@@ -60,7 +60,7 @@ def _fenced(name, args=None):
 # ── cases ──
 
 def test_quant_and_ambiguous_token():
-    assert te.quant_of("Qwen/Qwen3-8B-GGUF:Q4_K_M") == "Q4_K_M"
+    assert te.quant_of("unsloth/Qwen3.5-9B-GGUF:Q4_K_M") == "Q4_K_M"
     assert te.quant_of("gemma-3-12b-it-iq3_xs.gguf") == "IQ3_XS"
     assert te.quant_of("qwen3-14b") is None
     assert te.ambiguous_token(["llm-agent-llama1", "llm-agent-llama2", "mac-mini"]) == "llm-agent-llama"
@@ -261,9 +261,13 @@ def test_curated_list_ships_valid_entries():
     models = te.load_curated()
     assert len(models) >= 5
     for m in models:
-        assert m["model_id"] == f"{m['repo']}:{m['quant']}" and m["file"].endswith(".gguf") and m["quant"] in m["file"]
-        assert m["tier_gb"] in (8, 12, 16, 24, 32, 48) and m["expected"] in ("good", "high") and m["size_gb"] < m["tier_gb"]
+        assert m["model_id"] == f"{m['repo']}:{m['quant']}" and m["file"].endswith(".gguf")
+        assert m["quant"].lower() in m["file"].lower()
+        assert m["tier_gb"] in (6, 8, 12, 16, 24, 32, 48) and m["expected"] in ("good", "high") and m["size_gb"] < m["tier_gb"]
+        assert (m["params_b"] <= 14) or "MoE" in m["name"], m["key"]   # capped: 14B dense, MoE excepted
+        assert bool(m.get("small")) == (m["params_b"] < 7 and "E4B" not in m["name"]), m["key"]
     assert len({m["key"] for m in models}) == len(models)
+    assert [m["tier_gb"] for m in models] == sorted(m["tier_gb"] for m in models)
 
 
 class _Resp:
@@ -284,9 +288,16 @@ class _Resp:
         pass
 
 
-def _fake_agent_request(log, sections, lines, load_ok=True):
+def _fake_agent_request(log, sections, lines, load_ok=True, listed=None):
+    """`listed` counts /llama/models polls; the new model is listed from the second poll on."""
+    listed = listed if listed is not None else {"n": 0}
+
     def req(method, agent, path, **kw):
         log.append((method, path, kw.get("json")))
+        if path == "/llama/models":
+            listed["n"] += 1
+            ids = ["old-model"] + (["unsloth/Qwen3.5-9B-GGUF:Q4_K_M"] if listed["n"] >= 2 else [])
+            return _Resp({"data": [{"id": i, "status": {"value": "unloaded"}} for i in ids]}), [], None
         if path == "/llama/download":
             return _Resp({"ok": True}), [], None
         if path == "/llama/download/stream":
@@ -306,12 +317,13 @@ def _fake_agent_request(log, sections, lines, load_ok=True):
 
 def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
     log, sections = [], {"__DEFAULTS__": {"x": "1"}, "old-model": {"ctx-size": "4096"}}
-    lines = ['data: {"type": "start", "cmd": "hf download"}', 'data: {"type": "line", "text": "Qwen3-8B-Q4_K_M.gguf: 40%", "progress": true}',
-             '', 'data: {"type": "line", "text": "Qwen3-8B-Q4_K_M.gguf: 100%", "progress": true}', 'data: {"type": "done", "ok": true, "rc": 0}']
+    lines = ['data: {"type": "start", "cmd": "hf download"}', 'data: {"type": "line", "text": "Qwen3.5-9B-Q4_K_M.gguf: 40%", "progress": true}',
+             '', 'data: {"type": "line", "text": "Qwen3.5-9B-Q4_K_M.gguf: 100%", "progress": true}', 'data: {"type": "done", "ok": true, "rc": 0}']
     entries = list(ENTRIES)
     agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
     ev, svc = _evaluator([], entries=entries, agent_request=_fake_agent_request(log, sections, lines),
-                         primary_agent=lambda: agent, refresh_index=lambda w: None)
+                         download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": agent}],
+                         refresh_index=lambda w: None)
     monkeypatch.setattr(te.time, "sleep", lambda s: None)
     import agent_registry
     monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent if aid == "a1" else None)
@@ -326,45 +338,142 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
         ev.store.save(r)
         return r
     monkeypatch.setattr(ev, "run_eval", fake_eval)
-    mid = "Qwen/Qwen3-8B-GGUF:Q4_K_M"
+    mid = "unsloth/Qwen3.5-9B-GGUF:Q4_K_M"
+
+    fake = _fake_agent_request(log, sections, lines)
 
     def req_then_resident(method, agent_, path, **kw):
-        out = _fake_agent_request(log, sections, lines)(method, agent_, path, **kw)
+        out = fake(method, agent_, path, **kw)
         if path == "/llama/load":
             entries.append({"id": mid, "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"], "agent_ids": ["a1"]})
         return out
     ev._agent_request = req_then_resident
-    row, err = ev.start_get("qwen3-8b-q4", "alice")
-    assert err is None and row["spec"]["model_id"] == mid and row["label"].startswith("Get Tower model · Qwen3 8B")
+    monkeypatch.setattr(te, "SERVER_WAIT_S", 5.0)
+    row, err = ev.start_get("qwen35-9b-q4", "alice")
+    assert err is None and row["spec"]["model_id"] == mid and row["label"].startswith("Download Tower model · Qwen3.5 9B")
+    assert row["spec"]["provider"] == "llama" and row["spec"]["host"] == "box"
     assert ev.start("qwen3-14b", "alice") == (None, "busy")
     svc.tick()
     done = svc.get(row["id"])
     assert done["status"] == "done", done
     assert done["result"]["pin_offer"] and done["result"]["model"] == mid and done["result"]["eval"]["passed"] == 1
     paths = [p for _m, p, _j in log]
-    assert paths == ["/llama/download", "/llama/download/stream", "/llama/config", "/llama/config", "/llama/server/restart", "/llama/load"]
+    assert paths == ["/llama/download", "/llama/download/stream", "/llama/config", "/llama/config", "/llama/server/restart",
+                     "/llama/models", "/llama/models", "/llama/load"]
+    assert any(s.get("phase") == "restart" for s in states)
     assert sections[mid] == te.NEW_MODEL_INI and "__DEFAULTS__" not in sections and "old-model" in sections
     assert any(s.get("phase") == "download" and s.get("pct") == 40 for s in states)
     assert any(s.get("phase") == "load" for s in states) and any(s.get("phase") == "check" for s in states)
     view = ev.curated_view()
-    got = next(m for m in view["models"] if m["key"] == "qwen3-8b-q4")
+    got = next(m for m in view["models"] if m["key"] == "qwen35-9b-q4")
     assert got["present"] and got["loaded"] and got["eval"]["passed"] == 1 and view["host"] == "box"
+    assert view["hosts"] == [{"provider": "llama", "label": "llama.cpp", "host": "box", "agent_id": "a1", "primary": True}]
+    assert "agent" not in view["hosts"][0] and '"token": "t"' not in json.dumps(view)
 
 
 def test_get_model_job_fails_cleanly_on_a_download_error(monkeypatch):
     log, sections = [], {}
     lines = ['data: {"type": "done", "ok": false, "rc": 1}']
     agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
-    ev, svc = _evaluator([], agent_request=_fake_agent_request(log, sections, lines), primary_agent=lambda: agent)
+    ev, svc = _evaluator([], agent_request=_fake_agent_request(log, sections, lines),
+                         download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": agent}])
     import agent_registry
     monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent)
-    row, err = ev.start_get("qwen3-8b-q4", "alice")
+    row, err = ev.start_get("qwen35-9b-q4", "alice")
     assert err is None
     svc.tick()
     done = svc.get(row["id"])
     assert done["status"] == "failed" and "download failed" in done["message"]
     assert [p for _m, p, _j in log] == ["/llama/download", "/llama/download/stream"]
     assert ev.start_get("nope", "alice") == (None, "unknown model")
+    assert ev.start_get("qwen35-9b-q4", "alice", "zz") == (None, "unknown host")
+    ev._download_hosts = lambda: []
+    assert ev.start_get("qwen35-9b-q4", "alice") == (None, "no llama.cpp or LM Studio host to download to")
+
+
+def test_hosts_list_every_capable_host_primaries_first_and_errors_name_the_provider_reason():
+    a = {"agent_id": "a1", "hostname": "box", "token": "t"}
+    b = {"agent_id": "a2", "hostname": "mac", "token": "t"}
+    c = {"agent_id": "a3", "hostname": "alpha", "token": "t"}
+    d = {"agent_id": "a4", "hostname": "notoken"}
+    ev, _svc = _evaluator([], download_hosts=lambda: [
+        {"provider": "lms", "host": "mac", "agent_id": "a2", "primary": True, "agent": b},
+        {"provider": "llama", "host": "alpha", "agent_id": "a3", "primary": False, "agent": c},
+        {"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": a},
+        {"provider": "llama", "host": "notoken", "agent_id": "a4", "primary": False, "agent": d},
+        {"provider": "vllm", "host": "v", "agent_id": "a5", "primary": True, "agent": a}])
+    assert [(h["host"], h["primary"]) for h in ev.hosts()] == [("box", True), ("mac", True), ("alpha", False)]
+    row, err = ev.start_get("qwen35-9b-q4", "alice")
+    assert err is None and row["spec"]["agent_id"] == "a1"
+    why = te.Evaluator._why
+    assert why({"ok": False, "response": {"error": {"message": "repo not found", "type": "model_not_found"}}}, None, _Resp({})) == "repo not found"
+    assert why({"ok": False, "error": "boom"}, None, None) == "boom"
+    assert why(None, "dial failed", None) == "dial failed"
+    assert why(None, None, _Resp(status=500)) == "HTTP 500"
+    assert why(None, None, None) == "no response"
+
+
+def test_get_model_job_fails_when_the_restarted_server_never_lists_the_model(monkeypatch):
+    log, sections = [], {}
+    lines = ['data: {"type": "done", "ok": true, "rc": 0}']
+    agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    listed = {"n": -10_000}   # never reaches the second poll
+    ev, svc = _evaluator([], agent_request=_fake_agent_request(log, sections, lines, listed=listed),
+                         download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": agent}])
+    monkeypatch.setattr(te, "SERVER_WAIT_S", 0.01)
+    monkeypatch.setattr(te.time, "sleep", lambda s: None)
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent)
+    row, _err = ev.start_get("qwen35-9b-q4", "alice")
+    svc.tick()
+    done = svc.get(row["id"])
+    assert done["status"] == "failed" and "came back without unsloth/Qwen3.5-9B-GGUF:Q4_K_M" in done["message"]
+    assert "/llama/load" not in [p for _m, p, _j in log]
+
+
+def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monkeypatch):
+    log = []
+    listed = {"n": 0}
+    lms_id = "qwen3.5-9b"
+
+    def req(method, agent_, path, **kw):
+        log.append((method, path, kw.get("json")))
+        if path == "/lms/download":
+            return _Resp({"ok": True, "response": {"status": "downloading"}}), [], None
+        if path == "/lms/models":
+            listed["n"] += 1
+            data = [{"id": "gemma-3-12b"}] + ([{"id": lms_id}] if listed["n"] >= 3 else [])
+            return _Resp({"data": data}), [], None
+        if path == "/lms/load":
+            entries.append({"id": lms_id, "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]})
+            return _Resp({"ok": True}), [], None
+        raise AssertionError(path)
+    entries = list(ENTRIES)
+    mac = {"agent_id": "a2", "hostname": "mac", "token": "t", "status": "approved"}
+    box = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    ev, svc = _evaluator([], entries=entries, agent_request=req, refresh_index=lambda w: None,
+                         download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": box},
+                                                 {"provider": "lms", "host": "mac", "agent_id": "a2", "primary": True, "agent": mac}])
+    monkeypatch.setattr(te.time, "sleep", lambda s: None)
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: {"a1": box, "a2": mac}.get(aid))
+    monkeypatch.setattr(ev, "run_eval", lambda model, **kw: ev.store.save(te.summarize(
+        model, [{"id": "hosts", "title": "Plain read", "passed": True, "calls": 1, "corrections": 0, "retries": 0, "ms": 3, "detail": "ok"}],
+        quant=None, server="LM Studio", tool_mode="auto", grade="native", ms=3, actor="eval", at=9.0)))
+    assert [(h["host"], h["provider"]) for h in ev.hosts()] == [("box", "llama"), ("mac", "lms")]
+    row, err = ev.start_get("qwen35-9b-q4", "alice", "a2")
+    assert err is None and row["spec"]["provider"] == "lms" and row["spec"]["host"] == "mac"
+    svc.tick()
+    done = svc.get(row["id"])
+    assert done["status"] == "done", done
+    assert done["result"]["model"] == lms_id and done["result"]["host"] == "mac" and done["result"]["pin_offer"]
+    assert log[0] == ("POST", "/lms/download", {"model": "unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
+    assert [p for _m, p, _j in log].count("/lms/models") == 3 and log[-1][1] == "/lms/load" and log[-1][2] == {"model": lms_id}
+    assert "/llama/config" not in [p for _m, p, _j in log]
+    view = ev.curated_view()
+    got = next(m for m in view["models"] if m["key"] == "qwen35-9b-q4")
+    assert got["present"] and got["loaded"] and got["eval"]["model"] == lms_id
+    assert te.Evaluator._lms_key("unsloth/Qwen3.5-9B-GGUF") == "qwen359b"
 
 
 # ── routes ──
@@ -431,7 +540,7 @@ def test_routes_are_gated(client):
     import manager_mod as M
     with client.session_transaction() as s:
         s["role"] = "operator"
-    assert client.post("/api/tower/models/get", json={"key": "qwen3-8b-q4"}).status_code == 403
+    assert client.post("/api/tower/models/get", json={"key": "qwen35-9b-q4"}).status_code == 403
     M.ctx.settings.manager.tower.enabled = False
     assert client.get("/api/tower/eval").status_code == 404
     assert client.get("/api/tower/models").status_code == 404

@@ -24,6 +24,11 @@ EVAL_KEEP = 20
 EVAL_MAX_RUN_S = 1800.0
 GET_MAX_RUN_S = 4 * 3600.0
 LOAD_WAIT_S = 600.0
+LMS_DOWNLOAD_WAIT_S = 3 * 3600.0
+LMS_POLL_S = 10.0
+SERVER_WAIT_S = 180.0
+SERVER_POLL_S = 5.0
+PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio"}
 NEW_MODEL_INI = {"ctx-size": "32768", "n-gpu-layers": "99", "flash-attn": "on", "jinja": "on"}
 CURATED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tower_models.json")
 
@@ -344,22 +349,24 @@ class Evaluator:
     def __init__(self, *, service, store: EvalStore, cfg: Callable[[], Any], registry_factory: Callable[[], dict],
                  complete_stream: Callable, entries: Callable[[], list], server_args_of=None, server_of=None,
                  checks=None, record_run: Optional[Callable[[dict], None]] = None,
-                 agent_request=None, primary_agent: Optional[Callable[[], Optional[dict]]] = None,
+                 agent_request=None, download_hosts: Optional[Callable[[], list]] = None,
                  refresh_index: Optional[Callable[[float], None]] = None, curated: Optional[Callable[[], list]] = None,
                  now: Callable[[], float] = time.time):
+        """`download_hosts()` lists every llama.cpp / LM Studio host a download can go to:
+        [{provider, host, agent_id, primary, agent}], primaries first."""
         self._svc, self.store = service, store
         self._cfg, self._registry_factory, self._cs, self._entries = cfg, registry_factory, complete_stream, entries
         self._server_args_of, self._server_of, self._checks, self._record_run = server_args_of, server_of, checks, record_run
-        self._agent_request, self._primary_agent, self._refresh_index = agent_request, primary_agent, refresh_index
+        self._agent_request, self._download_hosts, self._refresh_index = agent_request, download_hosts, refresh_index
         self._curated = curated or load_curated
         self._now = now
         if service is not None:
             service.register(jobs.Kind(KIND_EVAL, "Tower eval", run=self._run_eval_job, api=True, resume="fail",
                                        max_run_s=EVAL_MAX_RUN_S, exclusive=lambda spec: [KIND_EVAL],
                                        label=lambda spec: f"Tower eval · {spec.get('model') or 'model'}"[:80]))
-            service.register(jobs.Kind(KIND_GET, "Get a Tower model", run=self._run_get_job, api=True, resume="fail",
+            service.register(jobs.Kind(KIND_GET, "Download Tower model", run=self._run_get_job, api=True, resume="fail",
                                        max_run_s=GET_MAX_RUN_S, exclusive=lambda spec: [KIND_EVAL, KIND_GET],
-                                       label=lambda spec: f"Get Tower model · {spec.get('name') or spec.get('key') or ''}"[:80]))
+                                       label=lambda spec: f"Download Tower model · {spec.get('name') or spec.get('key') or ''}"[:80]))
 
     # ── model lookup ──
     def resident(self, model_id: Optional[str]) -> Optional[dict]:
@@ -465,31 +472,63 @@ class Evaluator:
             log.warning("tower curated list unreadable: %s: %s", type(e).__name__, e)
             return []
 
+    def hosts(self) -> "list[dict]":
+        """Every llama.cpp / LM Studio host a download can go to, primaries first; the agent record stays out of the API."""
+        out = []
+        for h in (self._download_hosts() if self._download_hosts else []) or []:
+            a = h.get("agent") or {}
+            if h.get("provider") not in PROVIDER_LABEL or not a.get("token"):
+                continue
+            out.append({"provider": h["provider"], "label": PROVIDER_LABEL[h["provider"]], "host": str(h.get("host") or a.get("hostname") or ""),
+                        "agent_id": str(a.get("agent_id") or h.get("agent_id") or ""), "primary": bool(h.get("primary")), "agent": a})
+        out.sort(key=lambda h: (not h["primary"], h["provider"] != "llama", h["host"].lower()))
+        return out
+
+    @staticmethod
+    def _public(h: dict) -> dict:
+        return {k: v for k, v in h.items() if k != "agent"}
+
+    @staticmethod
+    def _lms_key(repo: str) -> str:
+        """The part of a repo name LM Studio keeps in its model key: the basename without a -GGUF suffix, squeezed."""
+        base = re.sub(r"-gguf$", "", str(repo or "").split("/")[-1], flags=re.I)
+        return re.sub(r"[^a-z0-9]", "", base.lower())
+
+    def _lms_match(self, repo: str, model_ids: "list[str]") -> Optional[str]:
+        key = self._lms_key(repo)
+        return next((m for m in model_ids if key and key in re.sub(r"[^a-z0-9]", "", str(m).lower())), None)
+
     def curated_view(self) -> dict:
         """The list with what the fleet already has: present in a catalog, resident, and the newest eval."""
         entries = self._entries() or []
         by_id = {e.get("id"): e for e in entries}
-        agent = self._primary_agent() if self._primary_agent else None
-        host = str((agent or {}).get("hostname") or "")
+        lms_ids = [str(e.get("id")) for e in entries if (e.get("provider") or "llama") == "lms" and e.get("id")]
+        hosts = self.hosts()
         out = []
         for m in self.curated():
             e = by_id.get(m["model_id"])
-            out.append({**m, "present": e is not None, "loaded": bool(e and tower._resident(e)),
-                        "eval": brief(self.store.latest_for(m["model_id"]))})
+            lms_id = self._lms_match(m["repo"], lms_ids)
+            le = by_id.get(lms_id) if lms_id else None
+            out.append({**m, "present": e is not None or le is not None,
+                        "loaded": bool((e and tower._resident(e)) or (le and tower._resident(le))),
+                        "eval": brief(self.store.latest_for(m["model_id"]) or (self.store.latest_for(lms_id) if lms_id else None))})
         last = self._svc.list("all", kind=KIND_GET, limit=1) if self._svc is not None else []
-        return {"models": out, "host": host, "live": self.view(self.live(KIND_GET)), "last": self.view(last[0] if last else None)}
+        return {"models": out, "hosts": [self._public(h) for h in hosts], "host": (hosts[0]["host"] if hosts else ""),
+                "live": self.view(self.live(KIND_GET)), "last": self.view(last[0] if last else None)}
 
-    def start_get(self, key: str, actor: str) -> "tuple[Optional[dict], Optional[str]]":
+    def start_get(self, key: str, actor: str, agent_id: str = "") -> "tuple[Optional[dict], Optional[str]]":
         m = next((x for x in self.curated() if x["key"] == key), None)
         if m is None:
             return None, "unknown model"
         if self.live() is not None:
             return None, "busy"
-        agent = self._primary_agent() if self._primary_agent else None
-        if not agent or not agent.get("token"):
-            return None, "no primary llama host"
+        hosts = self.hosts()
+        target = next((h for h in hosts if h["agent_id"] == agent_id), None) if agent_id else (hosts[0] if hosts else None)
+        if target is None:
+            return None, "no llama.cpp or LM Studio host to download to" if not hosts else "unknown host"
         spec = {"key": m["key"], "name": m["name"], "repo": m["repo"], "file": m["file"], "quant": m["quant"],
-                "model_id": m["model_id"], "agent_id": agent.get("agent_id"), "host": agent.get("hostname"), "actor": actor}
+                "model_id": m["model_id"], "provider": target["provider"], "agent_id": target["agent_id"],
+                "host": target["host"], "actor": actor}
         row = self._svc.submit(KIND_GET, spec, user=actor, role="admin", source="api")
         return row, None
 
@@ -515,36 +554,70 @@ class Evaluator:
             return None
         return body if isinstance(body, dict) else None
 
+    @staticmethod
+    def _why(body: Optional[dict], err, r) -> str:
+        """The most specific error text an agent reply carries (its own, the provider's nested one, or the HTTP status)."""
+        if body:
+            if body.get("error"):
+                return str(body["error"])
+            resp = body.get("response")
+            if isinstance(resp, dict):
+                inner = resp.get("error")
+                if isinstance(inner, dict) and inner.get("message"):
+                    return str(inner["message"])
+                if inner:
+                    return str(inner)
+                if resp.get("message"):
+                    return str(resp["message"])
+        if err:
+            return str(err)
+        if r is not None:
+            text = str(getattr(r, "text", "") or "")[:160].strip()
+            return f"HTTP {getattr(r, 'status_code', '?')}" + (f": {text}" if text else "")
+        return "no response"
+
     def _run_get_job(self, job) -> jobs.Outcome:
         spec = job.spec or {}
         agent = self._agent(spec)
         if agent is None:
-            return jobs.fail("the primary llama host is no longer registered", alert=False)
+            return jobs.fail("the download host is no longer registered", alert=False)
+        provider = str(spec.get("provider") or "llama")
         host, model_id = str(spec.get("host") or agent.get("hostname") or ""), str(spec.get("model_id") or "")
 
         def progress(**state) -> None:
-            self._svc.set_state(job.id, {"host": host, "model_id": model_id, **state})
+            self._svc.set_state(job.id, {"host": host, "provider": provider, "model_id": model_id, **state})
 
         # 1. download through the host's own download path
         progress(phase="download", pct=0)
-        err = self._download(agent, spec, job.cancelled, progress)
+        if provider == "lms":
+            model_id, err = self._download_lms(agent, spec, job.cancelled, progress)
+        else:
+            err = self._download(agent, spec, job.cancelled, progress)
         if err == "cancelled":
             return jobs.fail("stopped", alert=False)
         if err:
             return jobs.fail(f"download failed: {err}")
-        # 2. a config.ini section for the new quant, then a server restart so the router sees it
-        progress(phase="config")
-        err = self._register(agent, model_id)
-        if err:
-            return jobs.fail(f"configuration failed: {err}")
+        # 2. llama.cpp: a config.ini section for the new quant, a server restart so the router sees it,
+        #    then wait for the restarted server to list the model before asking for a load
+        if provider != "lms":
+            progress(phase="config")
+            err = self._register(agent, model_id)
+            if err:
+                return jobs.fail(f"configuration failed: {err}")
+            progress(phase="restart")
+            err = self._wait_listed(agent, model_id, job.cancelled, progress)
+            if err == "cancelled":
+                return jobs.fail("stopped", alert=False)
+            if err:
+                return jobs.fail(err)
         if job.cancelled():
             return jobs.fail("stopped", alert=False)
         # 3. load and wait until the gateway sees it resident
-        progress(phase="load")
-        r, _tried, rerr = self._call(agent, "POST", "/llama/load", json={"model": model_id}, timeout=180)
+        progress(phase="load", model_id=model_id)
+        r, _tried, rerr = self._call(agent, "POST", f"/{provider}/load", json={"model": model_id}, timeout=300)
         body = self._json(r)
         if body is None or body.get("ok") is False:
-            return jobs.fail(f"load failed: {(body or {}).get('error') or rerr or getattr(r, 'status_code', 'no response')}")
+            return jobs.fail(f"load failed: {self._why(body, rerr, r)}")
         m = self._wait_resident(model_id, job.cancelled, progress)
         if m is None:
             return jobs.fail("stopped" if job.cancelled() else f"{model_id} did not become resident within {int(LOAD_WAIT_S)} s",
@@ -563,7 +636,7 @@ class Evaluator:
                                     json={"repo": spec["repo"], "patterns": [spec["file"]]}, timeout=30)
         body = self._json(r)
         if body is None or body.get("ok") is False:
-            return str((body or {}).get("error") or err or getattr(r, "status_code", "no response"))
+            return self._why(body, err, r)
         r, _tried, err = self._call(agent, "GET", "/llama/download/stream", stream=True, timeout=(5, 120))
         if r is None or not getattr(r, "ok", False):
             return f"progress stream unavailable: {err or getattr(r, 'status_code', 'no response')}"
@@ -600,11 +673,52 @@ class Evaluator:
                 pass
         return "progress stream ended early"
 
+    def _download_lms(self, agent: dict, spec: dict, cancelled: Callable[[], bool], progress: Callable) -> "tuple[str, Optional[str]]":
+        """Asks LM Studio to fetch the repo at the quant, then waits for its model key to appear: (model id, error)."""
+        r, _tried, err = self._call(agent, "POST", "/lms/download",
+                                    json={"model": spec["repo"], "quantization": spec["quant"]}, timeout=60)
+        body = self._json(r)
+        if body is None or body.get("ok") is False:
+            return "", self._why(body, err, r)
+        deadline = time.monotonic() + LMS_DOWNLOAD_WAIT_S
+        t0 = time.monotonic()
+        while time.monotonic() < deadline:
+            if cancelled():
+                return "", "cancelled"
+            r, _tried, err = self._call(agent, "GET", "/lms/models", timeout=15)
+            listing = self._json(r) or {}
+            ids = [str(m.get("id")) for m in (listing.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            found = self._lms_match(spec["repo"], ids)
+            if found:
+                return found, None
+            progress(phase="download", waited_s=int(time.monotonic() - t0), line="waiting for LM Studio to finish the download")
+            time.sleep(LMS_POLL_S)
+        return "", f"LM Studio did not list the model within {int(LMS_DOWNLOAD_WAIT_S // 3600)} h"
+
+    def _wait_listed(self, agent: dict, model_id: str, cancelled: Callable[[], bool], progress: Callable) -> Optional[str]:
+        """Waits for the restarted llama-server to answer and list `model_id`; an error line when it never does."""
+        deadline = time.monotonic() + SERVER_WAIT_S
+        t0 = time.monotonic()
+        seen: "list[str]" = []
+        while time.monotonic() < deadline:
+            if cancelled():
+                return "cancelled"
+            r, _tried, _err = self._call(agent, "GET", "/llama/models", timeout=15)
+            listing = self._json(r) or {}
+            seen = [str(m.get("id")) for m in (listing.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            if model_id in seen:
+                return None
+            progress(phase="restart", waited_s=int(time.monotonic() - t0))
+            time.sleep(SERVER_POLL_S)
+        if not seen:
+            return f"llama-server did not come back within {int(SERVER_WAIT_S)} s of the restart"
+        return f"llama-server came back without {model_id}; it lists {', '.join(seen[:5])}"
+
     def _register(self, agent: dict, model_id: str) -> Optional[str]:
         r, _tried, err = self._call(agent, "GET", "/llama/config", timeout=30)
         sections = self._json(r)
         if sections is None:
-            return f"could not read config.ini: {err or getattr(r, 'status_code', 'no response')}"
+            return f"could not read config.ini: {self._why(None, err, r)}"
         sections = {k: v for k, v in sections.items() if k != "__DEFAULTS__" and isinstance(v, dict)}
         if model_id in sections:
             return None
@@ -612,11 +726,11 @@ class Evaluator:
         r, _tried, err = self._call(agent, "POST", "/llama/config", json=sections, timeout=30)
         body = self._json(r)
         if body is None or body.get("ok") is False:
-            return str((body or {}).get("error") or err or getattr(r, "status_code", "no response"))
+            return self._why(body, err, r)
         r, _tried, err = self._call(agent, "POST", "/llama/server/restart", timeout=120)
         body = self._json(r)
         if body is None or body.get("ok") is False:
-            return f"server restart failed: {(body or {}).get('error') or err or getattr(r, 'status_code', 'no response')}"
+            return f"server restart failed: {self._why(body, err, r)}"
         return None
 
     def _wait_resident(self, model_id: str, cancelled: Callable[[], bool], progress: Callable) -> Optional[dict]:
@@ -714,10 +828,10 @@ def register_routes(app, ctx, *, evaluator: Evaluator, write_setting=None) -> No
         if deny is not None:
             return deny
         body = flask_request.get_json(silent=True) or {}
-        row, err = evaluator.start_get(str(body.get("key") or "")[:64], _actor())
+        row, err = evaluator.start_get(str(body.get("key") or "")[:64], _actor(), str(body.get("agent_id") or "")[:64])
         if err == "busy":
             return jsonify({"ok": False, "error": "an eval or model download is already running"}), 409
-        if err == "unknown model":
+        if err in ("unknown model", "unknown host"):
             return jsonify({"ok": False, "error": err}), 404
         if err:
             return jsonify({"ok": False, "error": err}), 503

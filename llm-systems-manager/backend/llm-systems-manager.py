@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-3"
+__version__ = "v2026.09.17-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6140,8 +6140,18 @@ def _tower_eval_ledger_row(result: dict) -> None:
     conn.commit()
 
 
-def _tower_primary_llama_agent() -> "dict | None":
-    return agent_registry.resolve_agent_by_id(agent_registry.default_agent_id_for("llama") or "")
+def _tower_download_hosts() -> list:
+    """Every approved llama.cpp / LM Studio host a Tower model can be downloaded to, primaries marked (#1047)."""
+    agents = agent_registry.load_agents().get("agents") or {}
+    out = []
+    for prov in ("llama", "lms"):
+        spec = providers.get(prov)
+        cap = spec.capability_key if spec else prov
+        primary = agent_registry.default_agent_id_for(prov)
+        for aid, a in agents.items():
+            if a.get("status") == "approved" and (a.get("capabilities") or {}).get(cap) and a.get("token"):
+                out.append({"provider": prov, "host": a.get("hostname") or aid[:8], "agent_id": aid, "primary": aid == primary, "agent": a})
+    return out
 
 
 def _tower_refresh_index(wait_s: float) -> None:
@@ -6361,7 +6371,7 @@ _tower_evals = tower_eval.Evaluator(service=_jobs_service, store=tower_eval.Eval
                                     registry_factory=lambda: tower_tools.build_registry(_tower_deps),
                                     complete_stream=gateway.complete_stream, entries=_tower_gateway_entries,
                                     server_args_of=_tower_server_args, server_of=_tower_server_of, checks=_tower_checks,
-                                    record_run=_tower_eval_ledger_row, primary_agent=_tower_primary_llama_agent,
+                                    record_run=_tower_eval_ledger_row, download_hosts=_tower_download_hosts,
                                     refresh_index=_tower_refresh_index)
 tower_eval.register_routes(app, ctx, evaluator=_tower_evals)
 discord_bot.HOOKS["tower_ask"] = _tower_discord_ask

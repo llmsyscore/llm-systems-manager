@@ -478,12 +478,14 @@ describe('conversation eval (#1047)', () => {
     const v = TW.evalSummary(R, 1000 + 3600 * 3);
     expect(v.text).toBe('7/8');
     expect(v.cls).toBe('warn');
-    expect(v.line).toBe('7/8 passed · 1.4 calls per question · 1 corrected · 2 retries · 48 s');
+    expect(v.line).toBe('1.4 calls per question · 1 corrected · 2 retries · 48 s');
     expect(v.meta).toBe('Q4_K_M · llama.cpp b6400');
     expect(v.when).toBe('3 h');
-    expect(v.title).toBe('qwen3-14b · Q4_K_M · llama.cpp b6400 · 3 h ago');
+    expect(v.short).toBe('qwen3-14b');
+    expect(v.title).toBe('7/8 passed · qwen3-14b · Q4_K_M · llama.cpp b6400 · 3 h ago');
+    expect(TW.evalSummary({ ...R, model: 'bartowski/Qwen3.8-27B-GGUF:Q4_K_M' }).short).toBe('Qwen3.8-27B-GGUF:Q4_K_M');
     expect(TW.evalSummary({ ...R, passed: 8, score_pct: 100, corrections: 0, retries: 1 }, 1010).cls).toBe('ok');
-    expect(TW.evalSummary({ ...R, passed: 8, score_pct: 100, corrections: 0, retries: 1 }, 1010).line).toBe('8/8 passed · 1.4 calls per question · 1 retry · 48 s');
+    expect(TW.evalSummary({ ...R, passed: 8, score_pct: 100, corrections: 0, retries: 1 }, 1010).line).toBe('1.4 calls per question · 1 retry · 48 s');
     expect(TW.evalSummary({ ...R, passed: 2, score_pct: 25 }).cls).toBe('crit');
     expect(TW.evalSummary({ ...R, quant: null, server: null }).meta).toBe('');
     expect(TW.evalSummary(null)).toBeNull();
@@ -495,6 +497,7 @@ describe('conversation eval (#1047)', () => {
     expect(TW.evalProgress({ status: 'running', state: { phase: 'check' } })).toBe('Checking tool calls…');
     expect(TW.evalProgress({ status: 'running', state: { phase: 'eval', case: 3, total: 8, title: 'Timer', passed: 2 } })).toBe('Question 3/8 · Timer · 2 passed so far');
     expect(TW.evalProgress({ status: 'running', state: { phase: 'config' } })).toBe('Adding it to the host…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'restart', waited_s: 12 } })).toBe('Restarting llama.cpp · 12 s…');
     expect(TW.evalProgress(null)).toBe('');
   });
 });

@@ -1171,12 +1171,12 @@ One stored result with the per-question prompts and answers: `{ok, result}`. `?e
 ---
 
 ### `GET /api/tower/models`
-The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok, models[{key, name, tier_gb, repo, file, quant, size_gb, params_b, expected, notes, model_id, present, loaded, eval}], host, live, last, admin}`. `model_id` is the id the llama.cpp host uses (`repo:quant`); `present` means a host lists it, `loaded` that it is resident; `eval` is its newest eval result or `null`. `host` is the primary llama.cpp host (blank when none), `live` the running `tower_get_model` job view and `last` the newest one in any state (its `result` carries `{model, host, check, eval, pin_offer}` once done).
+The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok, models[{key, name, tier_gb, repo, file, quant, size_gb, params_b, expected, small, notes, model_id, present, loaded, eval}], hosts, host, live, last, admin}`. `model_id` is the id the llama.cpp host uses (`repo:quant`; LM Studio derives its own key from the repo name); `present` means a host lists it, `loaded` that it is resident; `eval` is its newest eval result or `null`. `hosts` lists the download targets, `[{provider: llama|lms, label, host, agent_id, primary}]`, every approved llama.cpp / LM Studio host with the primaries first (`host` is the first one, blank when none); `live` is the running `tower_get_model` job view and `last` the newest one in any state (its `result` carries `{model, host, check, eval, pin_offer}` once done).
 
 ---
 
 ### `POST /api/tower/models/get`
-**Access:** [Admin]. **Body:** `{"key": "<list key>"}`. Queues a `tower_get_model` job on the primary llama.cpp host: downloads the GGUF through the host's own download path, adds a `repo:quant` section to its config.ini (existing sections are kept) and restarts llama-server, loads the model, waits for it to become resident, then runs the tool check and the eval. Returns `{ok, job}`; 404 for an unknown key, 409 while another eval or download runs, 503 without a primary llama.cpp host. Pinning is a separate `PUT /api/tower/model`.
+**Access:** [Admin]. **Body:** `{"key": "<list key>", "agent_id": "<from hosts>"}` (`agent_id` defaults to the first entry of `hosts`). Queues a `tower_get_model` job on that host. llama.cpp: downloads the GGUF through the host's own download path, adds a `repo:quant` section to its config.ini (existing sections are kept), restarts llama-server and waits for it to list the model (up to 180 s), loads the model, waits for it to become resident, then runs the tool check and the eval. LM Studio: asks the host's LM Studio to download the repo at that quant, polls its model list until the new key appears (up to 3 h), loads it, then check and eval. Returns `{ok, job}`; 404 for an unknown key or host, 409 while another eval or download runs, 503 without any host. Pinning is a separate `PUT /api/tower/model`.
 
 ---
 
