@@ -303,9 +303,20 @@
     function tickHtml(t, key) {
       const open = c.openTicks.has(key);
       const label = String(t.summary || t.name || '').replace(/\s*·\s*\d+\s*ms\s*$/, '');
-      const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result)) : '';
+      const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result))
+        : t.name === 'host_history' ? TW.historyCharts(t.result).map(historyChartHtml).join('') : '';
       return `<button type="button" class="tick${t.ok ? '' : ' bad'}${open ? ' open' : ''}" data-tk="${esc(key)}" aria-expanded="${open}">`
         + `<span class="k">${t.ok ? '▸' : '✕'}</span>${esc(label)}<span class="ms">${t.ms == null ? '' : esc(t.ms + ' ms')}</span></button>${snap}${open ? rawHtml(t) : ''}`;
+    }
+    // A host_history result's chart under its tick (#1043): same geometry as the drawer.
+    function historyChartHtml(chart) {
+      const c = TW.historyChart(chart, 240, 60);
+      if (!c) return '';
+      return `<div class="snap hchart"><div class="ax"><span>${esc(c.hi)}</span><span class="pk">${esc(c.peak)}</span></div>`
+        + `<div class="plot"><svg viewBox="0 0 ${c.w} ${c.h}" preserveAspectRatio="none" aria-hidden="true"><path d="${c.d}"/></svg>`
+        + `<span class="dot" style="left:${c.peakPct.x.toFixed(1)}%;top:${c.peakPct.y.toFixed(1)}%"></span></div>`
+        + `<div class="ax"><span>${esc(c.lo)}</span><span>${esc(c.first)} → ${esc(c.last)}</span></div>`
+        + `<span class="snapc">${esc(c.caption)}</span></div>`;
     }
     function answerHtml(t) {
       const html = TW.md(t.text);

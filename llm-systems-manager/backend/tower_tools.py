@@ -797,11 +797,28 @@ def history_summary(points: list, metric: str, window: str, host: str, unit: str
     third = max(1, len(v) // 3)
     head, tail = sum(v[:third]) / third, sum(v[-third:]) / third
     trend = "flat" if hi == lo or abs(tail - head) < 0.05 * (hi - lo) else ("rising" if tail > head else "falling")
-    return {**base, "first": local_ts(vals[0][0]), "last": local_ts(vals[-1][0]),
-            "min": round(lo, 2), "avg": round(sum(v) / len(v), 2), "max": round(hi, 2), "latest": round(v[-1], 2),
-            "trend": trend, "sparkline": spark,
-            "series": [{"t": local_ts(ts), "v": round(x, 2)} for ts, x in vals[-max(1, int(max_points)):]],
-            **({"groups": history_buckets(vals, group_by)} if group_by in ("day", "hour") else {})}
+    span_s = vals[-1][0] - vals[0][0]
+    peak_ts = next(ts for ts, x in vals if x == hi)
+    out = {**base, "first": local_ts(vals[0][0]), "last": local_ts(vals[-1][0]),
+           "min": round(lo, 2), "avg": round(sum(v) / len(v), 2), "max": round(hi, 2), "latest": round(v[-1], 2),
+           "first_value": round(v[0], 2), "peak_at": local_ts(peak_ts),
+           "slope_per_day": round((v[-1] - v[0]) / (span_s / 86400.0), 2) if span_s >= 60 else None,
+           "trend": trend, "sparkline": spark,
+           "series": [{"t": local_ts(ts), "v": round(x, 2)} for ts, x in vals[-max(1, int(max_points)):]],
+           **({"groups": history_buckets(vals, group_by)} if group_by in ("day", "hour") else {})}
+    out["_chart"] = history_chart(vals, metric, unit, host)
+    return out
+
+
+def history_chart(vals: list, metric: str, unit: str, host: str, max_points: int = HISTORY_POINTS_MAX) -> dict:
+    """The drawer's chart data for a history series: at most max_points [epoch, value] pairs, evenly strided (#1043).
+    Keys starting with "_" are UI-only: the model never sees them."""
+    step = max(1, int(math.ceil(len(vals) / max(1, int(max_points)))))
+    pts = vals[::step]
+    if pts[-1] != vals[-1]:
+        pts.append(vals[-1])
+    return {"points": [[round(float(ts)), round(x, 2)] for ts, x in pts], "unit": unit, "metric": metric, "host": host,
+            "minutes": max(1, int(round((vals[-1][0] - vals[0][0]) / 60)))}
 
 
 _OVERVIEW_SORTS = ("hostname", "watts", "cpu_pct", "ram_pct", "gpu_pct", "gpu_temp_c", "age_s")
@@ -1048,9 +1065,10 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              "totals are energy_summary; benchmark results are recent_runs and bench_speed.",
              _obj({"host": {"type": "string"}, "section": {"type": "string", "enum": list(_SECTIONS), "default": "all"}}, ["host"]),
              "read", "read", lambda a: deps["host"](a["host"], a.get("section", "all")) or {"error": "unknown host"}),
-        Tool("host_history", "One metric's history: min/avg/max, latest, trend, a sparkline and up to `points` bucketed points "
-             "(default 24). Several hosts (comma-separated) or all return one summary per host, plus each series when "
-             "series is true. since/until or a span like 4h replace the window; group_by adds per-day or per-hour stats.",
+        Tool("host_history", "One metric's history: min/avg/max, first and latest values, peak time, slope per day, trend and "
+             "up to `points` bucketed points (default 24); the operator's screen draws its chart. Several hosts "
+             "(comma-separated) or all return one summary per host, plus each series when series is true. since/until "
+             "or a span like 4h replace the window; group_by adds per-day or per-hour stats.",
              _obj({"host": {"type": "string"},
                    "metric": {"type": "string", "description": "One of " + ", ".join(HISTORY_METRICS) + ", or an alarm-engine source/name such as system/cpu_total"},
                    "window": {"type": "string", "default": "24h", "description": "1h, 6h, 24h, 7d, 30d or a span like 4h"},

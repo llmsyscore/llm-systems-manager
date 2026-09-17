@@ -68,16 +68,27 @@ def _fleet_names(registry: dict) -> str:
     return ", ".join(tower_tools.fleet_hosts(registry))
 
 
-def _host_known(allowed: dict, registry: dict, host: str) -> Optional[str]:
-    """None when host_detail resolves `host`; else an error naming the fleet (or skips when host_detail is unavailable)."""
+def _host_known(allowed: dict, registry: dict, host: str) -> "tuple[Optional[str], Optional[dict]]":
+    """(None, summary) when host_detail resolves `host`; else an error naming the fleet (skipped when host_detail is unavailable)."""
     tool = allowed.get("host_detail") if isinstance(allowed, dict) else None
     if tool is None:
-        return None
+        return None, None
     result, ok = tower_tools.run_tool(tool, {"host": host, "section": "summary"})
     if ok and isinstance(result, dict) and not result.get("error"):
-        return None
+        return None, result
     names = _fleet_names(registry)
-    return f"unknown host: {host}; hosts are {names}" if names else f"unknown host: {host}"
+    return (f"unknown host: {host}; hosts are {names}" if names else f"unknown host: {host}"), None
+
+
+def _metric_live(summary: Optional[dict], host: str, metric: str) -> Optional[str]:
+    """None when the host's summary carries a live numeric `metric`; else why a timer on it would fail (#1041)."""
+    if summary is None:
+        return None
+    if _num(summary.get(metric)):
+        return None
+    if not summary.get("online"):
+        return f"no live sample for {host}; only history (host_history) is available"
+    return f"{host} does not report {metric} live; only history (host_history) is available"
 
 
 def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Optional[dict], Optional[str]]":
@@ -108,7 +119,8 @@ def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Option
             return None, "metric needs one host"
         if "host_detail" not in allowed:
             return None, "host_detail cannot be polled"
-        err = _host_known(allowed, registry, host)
+        err, summary = _host_known(allowed, registry, host)
+        err = err or _metric_live(summary, host, metric)
         if err:
             return None, err
         spec.update({"kind": "metric", "host": host, "metric": metric})
@@ -125,7 +137,7 @@ def timer_spec(args: dict, registry: dict, cfg: Any, role: str) -> "tuple[Option
             return None, f"{name}: {err}"
         thost = targs.get("host")
         if isinstance(thost, str) and thost and "," not in thost and thost.lower() != "all":
-            err = _host_known(allowed, registry, thost)
+            err, _summary = _host_known(allowed, registry, thost)
             if err:
                 return None, err
         pick = str(a.get("pick") or "").strip()[:80]
@@ -187,6 +199,55 @@ def report_request(row: dict) -> "tuple[str, dict]":
     prelude = {"name": TICK_TOOL, "args": {"label": row["label"], "timer_id": row["id"]}, "result": result,
                "summary": f"timer · {row['label']} · {n} tick{'s' if n != 1 else ''}"}
     return text, prelude
+
+
+_FAILURE_ACTIONS = (
+    ("unknown host", "Check the host name against the hosts list (hosts_overview) and schedule the timer again."),
+    ("no live sample", "The host pushes no live sample to the manager: check its agent is running and reporting; "
+                       "host_history still has its history."),
+    ("not reported", "The host does not report that metric live: check the host's agent role and collectors; "
+                     "host_history still has its history."),
+    ("does not report", "The host does not report that metric live: check the host's agent role and collectors; "
+                        "host_history still has its history."),
+    ("Tower was turned off", "Turn Tower back on in Admin \u203a Settings and schedule the timer again."),
+    ("could not report", "The report turn could not start; the samples are kept in the conversation."),
+    ("rate limited", "Tower's tool rate limit was hit on every tick; use a longer interval."),
+)
+
+
+def failure_action(message: str) -> str:
+    """The suggested next step for a timer failure message."""
+    low = str(message or "").lower()
+    for needle, action in _FAILURE_ACTIONS:
+        if needle.lower() in low:
+            return action
+    return "Read the tool's error, fix its cause, and schedule the timer again."
+
+
+def failure_insight(row: dict, message: str, now: float) -> dict:
+    """The insight row for a failed timer: summary, the failure with its last errors, a next step and the samples graph (#1042)."""
+    spec = row.get("spec") or {}
+    errors = [str(s.get("error")) for s in (row.get("samples") or []) if s.get("error")]
+    seen: "list[str]" = []
+    for e in reversed(errors):
+        if e not in seen:
+            seen.append(e)
+        if len(seen) == 3:
+            break
+    detail = message
+    if seen:
+        detail += f" · last errors: {'; '.join(seen)}"
+    result = samples_result(row, "failed")
+    series = result.get("series") or []
+    snapshot = None
+    if len(series) >= 2:
+        snapshot = {"points": series, "unit": result.get("unit") or "", "metric": result.get("metric") or result.get("pick") or row["label"],
+                    "minutes": max(1, int(round((series[-1][0] - series[0][0]) / 60)))}
+    host = spec.get("host") or (spec.get("args") or {}).get("host")
+    return {"alert_id": f"timer:{row['id']}", "rule": "Timer failed", "host": host if isinstance(host, str) else None,
+            "severity": "warning", "summary": f"Timer failed: {row['label']}"[:160], "detail": detail[:600],
+            "suggested_action": failure_action(message), "playbook_id": None, "playbook_title": None, "playbook_safe": None,
+            "steps": [], "checks": [], "thread_id": row.get("thread_id"), "created": now, "snapshot": snapshot}
 
 
 def timer_row(job: dict) -> dict:
@@ -334,15 +395,25 @@ class Timers:
         return jobs.again(POLL_S, state=state, message=f"waiting to report: {err[1]}")
 
     def _finished(self, job) -> None:
-        """Failed and cancelled timers leave their samples in a live thread; only a failure adds an audit row."""
+        """Failed and cancelled timers leave their samples in a live thread; a failure also adds an audit row and an insight."""
         row = timer_row(job.row())
-        if job.status in ("failed", "cancelled") and self._store.thread_user(job.thread_id):
+        live_thread = bool(self._store.thread_user(job.thread_id))
+        if job.status in ("failed", "cancelled") and live_thread:
             self._note_thread(row, job.status)
         if job.status == "failed":
             self._log_audit("tower.timer.failed", row, False, {"message": job.message})
+            if live_thread:
+                self._note_insight(row, str(job.message or "failed"))
         rid = (job.state or {}).get("run_id")
         if job.status == "cancelled" and rid and self.runs is not None:
             self.runs.stop(rid, job.user)
+
+    def _note_insight(self, row: dict, message: str) -> None:
+        """One Insights-tab row per failed timer, with its last errors and the suggested next step (#1042)."""
+        try:
+            self._store.create_insight(failure_insight(row, message, self._now()))
+        except Exception as e:  # noqa: BLE001 — the timer row still records the outcome
+            log.warning("tower timer insight failed: %s: %s", type(e).__name__, e)
 
     def _note_thread(self, row: dict, status: str) -> None:
         """Leaves the samples in the thread as a timer tool row when no report turn will carry them."""

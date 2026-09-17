@@ -110,16 +110,19 @@ def init_table(conn) -> None:
             spec TEXT, state TEXT, status TEXT NOT NULL, not_before REAL, period_s REAL, runs_left INTEGER,
             next_run REAL, last_run REAL, started REAL, run_count INTEGER NOT NULL DEFAULT 0,
             attempts INTEGER NOT NULL DEFAULT 0, lease REAL, exclusive TEXT, result TEXT, message TEXT,
-            thread_id TEXT, created REAL NOT NULL, resolved REAL);
+            thread_id TEXT, created REAL NOT NULL, resolved REAL, acked_at REAL);
         CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_run);
     """)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "acked_at" not in have:
+        conn.execute("ALTER TABLE jobs ADD COLUMN acked_at REAL")
     conn.commit()
 
 
 class Store:
     KEYS = ("id", "kind", "label", "user", "role", "source", "spec", "state", "status", "not_before", "period_s",
             "runs_left", "next_run", "last_run", "started", "run_count", "attempts", "lease", "exclusive", "result",
-            "message", "thread_id", "created", "resolved")
+            "message", "thread_id", "created", "resolved", "acked_at")
     JSON = ("spec", "state", "exclusive", "result")
 
     def __init__(self, conn_factory: Callable[[], sqlite3.Connection]):
@@ -191,7 +194,8 @@ class Store:
             c = self._conn()
             q = c.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
             r = c.execute("SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0]
-            f = c.execute("SELECT COUNT(*) FROM jobs WHERE status='failed' AND resolved >= ?", (now - FAILED_WINDOW_S,)).fetchone()[0]
+            f = c.execute("SELECT COUNT(*) FROM jobs WHERE status='failed' AND acked_at IS NULL AND resolved >= ?",
+                          (now - FAILED_WINDOW_S,)).fetchone()[0]
             nxt = c.execute("SELECT MIN(next_run) FROM jobs WHERE status='queued'").fetchone()[0]
         return {"queued": int(q), "running": int(r), "failed_24h": int(f), "next_due": nxt}
 
@@ -245,7 +249,7 @@ class Service:
                "period_s": float(period_s) if period_s else None, "runs_left": int(runs_left) if runs_left is not None else None,
                "next_run": nb, "last_run": None, "started": None, "run_count": 0, "attempts": 0, "lease": None,
                "exclusive": list(k.exclusive(spec) or []) if k.exclusive else [], "result": None, "message": "queued",
-               "thread_id": thread_id, "created": now, "resolved": None}
+               "thread_id": thread_id, "created": now, "resolved": None, "acked_at": None}
         self._store.insert(row)
         self._log("jobs.submit", row, True, actor=user or source)
         return row
@@ -286,6 +290,11 @@ class Service:
     def summary(self) -> dict:
         return self._store.summary(self._now())
 
+    def failed_recent(self, limit: int = 20) -> "list[dict]":
+        """Failed rows of the last FAILED_WINDOW_S that nobody has acknowledged, newest first (#1044)."""
+        since = self._now() - FAILED_WINDOW_S
+        return self._store.rows("status='failed' AND acked_at IS NULL AND resolved >= ?", (since,), order="resolved DESC", limit=limit)
+
     def view(self, row: dict, *, role: Optional[str] = None, user: Optional[str] = None, detail: bool = False) -> dict:
         k = self._kinds.get(row["kind"])
         out = {key: row.get(key) for key in ("id", "kind", "label", "status", "user", "source", "created", "not_before", "next_run",
@@ -294,7 +303,10 @@ class Service:
         out["kind_title"] = k.title if k else row["kind"]
         for key in ("created", "not_before", "next_run", "last_run", "started", "resolved"):
             out[f"{key}_local"] = local(row.get(key))
-        out["can_cancel"] = row["status"] in LIVE and (role == "admin" or (role == "operator" and bool(user) and row.get("user") == user))
+        own = role == "admin" or (role == "operator" and bool(user) and row.get("user") == user)
+        out["can_cancel"] = row["status"] in LIVE and own
+        out["acked"] = bool(row.get("acked_at"))
+        out["can_ack"] = row["status"] == "failed" and not out["acked"] and own
         if detail:
             out.update({"spec": row.get("spec"), "state": row.get("state"), "result": row.get("result")})
         return out
@@ -315,6 +327,19 @@ class Service:
         row = self._store.get(job_id) or row
         self._log("jobs.cancel", row, True, actor=actor or row.get("user") or "system", detail={"message": message})
         self._hook(self._kinds.get(row["kind"]), "on_finish", row)
+        return row
+
+    def ack(self, job_id: str, *, actor: str = "") -> Optional[dict]:
+        """Marks a failed row as seen so it leaves the warnings; None unless the row is failed and unacked (#1044)."""
+        now = self._now()
+        with self._store.lock:
+            row = self._store.get(job_id)
+            if not row or row["status"] != "failed" or row.get("acked_at"):
+                return None
+            if not self._store.update(job_id, only=("failed",), acked_at=now):
+                return None
+        row = self._store.get(job_id) or {**row, "acked_at": now}
+        self._log("jobs.ack", row, True, actor=actor or row.get("user") or "system")
         return row
 
     def cancel_where(self, kind: str, *, thread_id: Optional[str] = None, spec_match: Optional[dict] = None,
@@ -536,7 +561,8 @@ class Service:
 
 
 def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str]], user_of: Callable[[], str]) -> None:
-    """GET /api/jobs, GET /api/jobs/<id>, POST /api/jobs (api kinds, operator+), POST /api/jobs/<id>/cancel (owner or admin)."""
+    """GET /api/jobs, GET /api/jobs/<id>, POST /api/jobs (api kinds, operator+), POST /api/jobs/<id>/cancel and
+    /ack (owner or admin)."""
     from flask import g, jsonify, request as flask_request
 
     def _who() -> "tuple[Optional[str], str]":
@@ -613,6 +639,28 @@ def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str
         out = service.cancel(row["id"], actor=user)
         if out is None:
             return jsonify({"ok": False, "error": f"job is {row['status']}"}), 409
+        g._audit_extra = {"job_id": out["id"], "kind": out["kind"], "label": out["label"]}
+        return jsonify({"ok": True, "job": service.view(out, role=role, user=user)})
+
+
+    @app.route("/api/jobs/<job_id>/ack", methods=["POST"])
+    def jobs_ack(job_id):
+        role, user = _who()
+        if role is None:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        row = service.get(job_id[:32])
+        if not row:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        view = service.view(row, role=role, user=user)
+        if not view["can_ack"]:
+            if row["status"] != "failed":
+                return jsonify({"ok": False, "error": f"job is {row['status']}"}), 409
+            if view["acked"]:
+                return jsonify({"ok": False, "error": "already acknowledged"}), 409
+            return jsonify({"ok": False, "error": "not your job"}), 403
+        out = service.ack(row["id"], actor=user)
+        if out is None:
+            return jsonify({"ok": False, "error": "already acknowledged"}), 409
         g._audit_extra = {"job_id": out["id"], "kind": out["kind"], "label": out["label"]}
         return jsonify({"ok": True, "job": service.view(out, role=role, user=user)})
 

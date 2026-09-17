@@ -170,6 +170,13 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .snap .thr { stroke: var(--crit); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 #towerAside .snapc { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #towerAside .log .snap { margin: 2px 0 6px 18px; }
+/* host_history chart (#1043): full width, labelled axes, the peak marked. */
+#towerAside .snap.hchart { gap: 1px; margin: 4px 0 8px 18px; }
+#towerAside .snap.hchart .plot { position: relative; }
+#towerAside .snap.hchart svg { height: 60px; }
+#towerAside .snap.hchart .dot { position: absolute; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: var(--crit); border: 1px solid var(--bg-card); }
+#towerAside .snap.hchart .ax { display: flex; justify-content: space-between; gap: 8px; font: 10.5px var(--font-mono); color: var(--fg-dim); min-width: 0; }
+#towerAside .snap.hchart .ax .pk { color: var(--crit); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Live timers (#1029): one row per timer under the tabs. */
 #towerAside .tw-timers { display: flex; flex-direction: column; gap: 4px; padding: 6px 16px; border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--accent) 6%, var(--bg-card)); font-size: 12px; flex-shrink: 0; }
 #towerAside .tmr { display: flex; align-items: center; gap: 8px; min-width: 0; }

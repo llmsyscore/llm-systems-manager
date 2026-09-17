@@ -2292,3 +2292,12 @@ def test_a_security_probe_with_reporting_off_is_quiet():
     assert text == tower._security_reply(False) and not text.endswith(tower._VIOLATION_SUFFIX)
     # The canned block never replays into the model's history.
     assert all(not m["content"].startswith(tower._SECURITY_HEAD) for m in tower._history(st, tid) if m["role"] == "assistant")
+
+
+def test_prompt_tells_the_model_the_screen_draws_metric_trends():
+    """#1043: a trend ask gets one summary line; text charts stay for alarm counts only."""
+    p = tower.system_prompt(_cfg(), tt.catalog(_registry(), _cfg(), "operator"), None, False)
+    assert "For a metric's trend, call host_history and answer with one summary line" in p
+    assert "never draw a text chart or sparkline for it" in p and "For alert counts over time, use alarm_history" in p
+    assert tower._for_model({"min": 1, "_chart": {"points": []}, "series": []}) == {"min": 1, "series": []}
+    assert tower._for_model(["x"]) == ["x"]

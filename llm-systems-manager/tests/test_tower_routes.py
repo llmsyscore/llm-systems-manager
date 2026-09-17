@@ -1120,12 +1120,17 @@ def test_tower_run_rows_report_accept_rate_as_a_percentage():
 # ── timers (#1029) ─────────────────────────────────────────────────
 
 def _queue_timer(c, monkeypatch, user="alice"):
-    """Schedules a timer on a fake "box" host: timer_spec now probes host_detail, so agent_registry needs one."""
+    """Schedules a timer on a fake "box" host: timer_spec probes host_detail for a live ram_pct, so the host needs a sample."""
     import agent_registry
+    import provider_state
     monkeypatch.setattr(agent_registry, "load_agents", lambda: {"agents": {"a1": {"status": "approved", "hostname": "box"}}})
+    provider_state.STORE.put("system", "a1", {"cpu_total": 5.0, "ram": {"percent": 41.0}})
     tid = c.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
-    out = M._tower_timers.schedule(thread_id=tid, user=user, role="operator",
-                                   args={"label": "RAM on box", "host": "box", "metric": "ram_pct", "every_s": 30, "times": 4})
+    try:
+        out = M._tower_timers.schedule(thread_id=tid, user=user, role="operator",
+                                       args={"label": "RAM on box", "host": "box", "metric": "ram_pct", "every_s": 30, "times": 4})
+    finally:
+        provider_state.STORE.evict("a1")
     assert out["ok"], out
     return tid, out["timer_id"]
 

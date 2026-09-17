@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.16-5"
+__version__ = "v2026.09.16-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2652,10 +2652,20 @@ def _request_json_object() -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
+# Live-only bucket pushed by agents with no inference provider (#1041); never an inference provider.
+SYSTEM_PROVIDER = "system"
+
+
+def _provider_cap_key(provider: str) -> str:
+    spec = providers.get(provider)
+    if spec:
+        return spec.capability_key
+    return "sysperf" if provider == SYSTEM_PROVIDER else provider
+
+
 def _refuse_unadvertised_provider(agent: dict, provider: str):
     """403 response when the agent doesn't advertise the provider's capability, else None."""
-    spec = providers.get(provider)
-    cap_key = spec.capability_key if spec else provider
+    cap_key = _provider_cap_key(provider)
     caps = agent.get("capabilities")
     if isinstance(caps, dict) and caps.get(cap_key):
         return None
@@ -2706,7 +2716,7 @@ def receive_provider_state():
     sample = body.get("sample") or {}
     if not isinstance(sample, dict):
         return jsonify({"ok": False, "error": "sample must be a JSON object"}), 400
-    if providers.get(provider) is None:
+    if provider != SYSTEM_PROVIDER and providers.get(provider) is None:
         return jsonify({"ok": False, "error": f"unknown provider: {provider}"}), 404
     refused = _refuse_unadvertised_provider(agent, provider)
     if refused is not None:
@@ -3576,6 +3586,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
     "jobs.submit": "Submitted a job", "jobs.cancel": "Cancelled a job", "jobs.failed": "A job failed",
+    "jobs.ack": "Acknowledged a failed job",
 }
 
 # (method-or-None, path regex, action, event). Groups: t = target, v = verb
@@ -3652,6 +3663,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/tower/timers/(?P<t>[^/]+)/cancel$"), "tower.timer.cancel", "tower.action"),
     ("POST",   re.compile(r"^/api/jobs$"),                              "jobs.submit",        "jobs"),
     ("POST",   re.compile(r"^/api/jobs/(?P<t>[^/]+)/cancel$"),          "jobs.cancel",        "jobs"),
+    ("POST",   re.compile(r"^/api/jobs/(?P<t>[^/]+)/ack$"),             "jobs.ack",           "jobs"),
 ]
 
 # Actions whose target is the model id in the JSON body, not in the path.
@@ -5291,13 +5303,15 @@ def admin_system_health():
     try:
         summ = _jobs_service.summary()
         rows = [_jobs_service.view(r, role="admin", user="") for r in _jobs_service.recent(8)]
-        health["jobs"] = {**summ, "rows": rows}
-        for r in _jobs_service.list("failed", limit=20, order="resolved DESC"):
-            if (r.get("resolved") or 0) >= now - jobs.FAILED_WINDOW_S:
-                health["warnings"].append(f"job failed: {r['label']} — {r.get('message') or 'failed'}")
+        failed = _jobs_service.failed_recent(20)
+        health["jobs"] = {**summ, "rows": rows,
+                          "failed": [{"id": r["id"], "label": r["label"], "message": r.get("message") or "failed",
+                                      "resolved": r.get("resolved")} for r in failed]}
+        for r in failed:
+            health["warnings"].append(f"job failed: {r['label']} — {r.get('message') or 'failed'}")
     except Exception as _e:  # noqa: BLE001 — health never fails because the ledger is unreadable
         log.debug("system-health jobs block failed: %s", type(_e).__name__)
-        health["jobs"] = {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None, "rows": []}
+        health["jobs"] = {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None, "rows": [], "failed": []}
 
     health["flow"] = {
         "agent_pushes_per_s": round(_AGENT_PUSH_RATE.per_s(now), 2),

@@ -171,6 +171,23 @@ describe('Tower drawer', () => {
     expect(body.classList.contains('tw-docked')).toBe(false);
   });
 
+  test('a host_history tick draws the chart under it with the peak marked (#1043)', async () => {
+    const w = await ready(ENABLED);
+    await ask(w, 'ram trend on box');
+    const chart = { points: [[1000, 10], [1060, 30], [1120, 20]], unit: '%', metric: 'ram_pct', host: 'box', minutes: 2 };
+    w.__sse.onEvent({ event: 'tool', name: 'host_history', ok: true, ms: 40, summary: 'read history · box', result: { min: 10, max: 30, _chart: chart } });
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 1, elapsed_ms: 100 });
+    const snap = w.document.querySelector('#twBody .snap.hchart');
+    expect(snap).not.toBeNull();
+    expect(snap.querySelector('svg path').getAttribute('d')).toMatch(/^M/);
+    expect(snap.querySelector('.dot').style.left).toBe('50%');
+    expect(snap.querySelector('.ax .pk').textContent).toMatch(/^peak 30% at /);
+    expect(snap.querySelector('.snapc').textContent).toBe('ram_pct · box · 10% → 20% · 10%–30%');
+    // No chart data, no chart.
+    w.__sse.onEvent({ event: 'tool', name: 'host_history', ok: true, ms: 40, summary: 'read history · box', result: { points: 0 } });
+    expect(w.document.querySelectorAll('#twBody .snap.hchart').length).toBe(1);
+  });
+
   test('closing hands focus back to the header button', async () => {
     const w = await ready(ENABLED);
     w.towerClose();

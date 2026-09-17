@@ -899,7 +899,7 @@ Legacy endpoint: receives a host metrics snapshot from an agent. Superseded by `
 ---
 
 ### `POST /api/remote/provider-state`
-Receives the current provider state (llama or LMS) from an agent, including model name, slots, throughput, and server state. This is the current primary path for live dashboard updates.
+Receives the current provider state (llama, LMS or vLLM) from an agent, including model name, slots, throughput, and server state. This is the current primary path for live dashboard updates. **Body:** `{"provider": "llama"|"lms"|"vllm"|"system", "sample": {...}}`. The agent must advertise the provider's capability (403 otherwise); unknown providers answer 404. `system` (#1041) is the live-only bucket pushed by agents that run no inference provider: it feeds the Tower host views and timers but not energy accounting, and needs only the `sysperf` capability.
 
 **Access:** (Agent-facing)
 
@@ -1044,7 +1044,7 @@ Sends a test notification via web push (VAPID). **Body (optional):** `{"endpoint
 One ledger and dispatcher for scheduled and queued manager work (#915). Kinds today: `tower_timer` (Tower's `schedule` tool) and `autotune_batch` (the overnight batch's start). Every route needs a dashboard session.
 
 ### `GET /api/jobs`
-Query `status` (`live` default = queued + running, `all`, or one of `queued|running|done|failed|cancelled`), `kind`, `user`, `limit` (≤ 100). Returns `{ok, jobs: [view], summary: {queued, running, failed_24h, next_due}}`. A view carries `id, kind, kind_title, label, status, user, source, created, not_before, next_run, last_run, started, resolved, run_count, attempts, message, thread_id, exclusive, can_cancel` plus `*_local` strings for every timestamp.
+Query `status` (`live` default = queued + running, `all`, or one of `queued|running|done|failed|cancelled`), `kind`, `user`, `limit` (≤ 100). Returns `{ok, jobs: [view], summary: {queued, running, failed_24h, next_due}}`. A view carries `id, kind, kind_title, label, status, user, source, created, not_before, next_run, last_run, started, resolved, run_count, attempts, message, thread_id, exclusive, can_cancel, acked, can_ack` plus `*_local` strings for every timestamp. `failed_24h` counts only failures nobody has acknowledged.
 
 ---
 
@@ -1060,6 +1060,11 @@ Operator or admin. **Body:** `{"kind", "spec", "label"?, "not_before"? (epoch se
 
 ### `POST /api/jobs/<id>/cancel`
 The job's own user (operator) or any admin. A queued job ends at once; a running one is signalled and its kind's cancel hook runs (an autotune batch stops after its current item). 409 when the job is not live.
+
+---
+
+### `POST /api/jobs/<id>/ack`
+The job's own user (operator) or any admin (#1044). Marks a failed job as seen: it leaves the System Health warnings, the `failed_24h` count and `jobs.failed`, and its strip row dims. Audited as `jobs.ack`. 409 when the job is not failed or is already acknowledged, 403 for someone else's job.
 
 ---
 

@@ -818,10 +818,22 @@ def test_history_summary_stats_trend_and_sparkline(new_york):
     assert out["points"] == 6 and out["min"] == 10 and out["max"] == 80 and out["avg"] == 33.0 and out["latest"] == 80
     assert out["trend"] == "rising" and out["sparkline"] == "▁▁▁▃▅█" and out["unit"] == "C"
     assert out["first"] == "2026-09-13T20:00:00-04:00" and out["series"][-1] == {"t": "2026-09-14T01:00:00-04:00", "v": 80.0}
+    # #1043: the summary line's inputs and the UI-only chart.
+    assert out["first_value"] == 10 and out["peak_at"] == "2026-09-14T01:00:00-04:00" and out["slope_per_day"] == 336.0
+    assert out["_chart"] == {"points": [[1789344000 + h * 3600, float(v)] for h, v in enumerate([10, 12, 11, 30, 55, 80])],
+                             "unit": "C", "metric": "gpu_temp_c", "host": "box", "minutes": 300}
     flat = tt.history_summary([{"timestamp": "2026-09-14T00:00:00Z", "value": 5}, {"timestamp": "2026-09-14T01:00:00Z", "value": 5}], "cpu_pct", "1h", "box")
     assert flat["trend"] == "flat" and flat["sparkline"] == "▄▄"
     assert tt.history_summary([], "cpu_pct", "1h", "box") == {"host": "box", "metric": "cpu_pct", "unit": "", "window": "1h", "points": 0, "note": "no samples in this window"}
     assert tt.history_summary([{"timestamp": "junk", "value": 1}, {"timestamp": "2026-09-14T00:00:00Z", "value": "x"}], "cpu_pct", "1h", "box")["points"] == 0
+
+
+def test_history_chart_strides_long_series_to_the_point_cap():
+    vals = [(1000.0 + i * 60, float(i)) for i in range(1000)]
+    chart = tt.history_chart(vals, "cpu_pct", "%", "box")
+    assert len(chart["points"]) <= tt.HISTORY_POINTS_MAX + 1 and chart["points"][0] == [1000, 0.0] and chart["points"][-1] == [1000 + 999 * 60, 999.0]
+    assert chart["minutes"] == 999
+    assert tt.history_chart(vals[:3], "cpu_pct", "%", "box")["points"] == [[1000, 0.0], [1060, 1.0], [1120, 2.0]]
 
 
 def test_prod_host_history_reads_the_alarm_engine_series(monkeypatch):

@@ -291,9 +291,20 @@
     const open = _openTicks.has(key);
     const label = String(t.summary || t.name || '').replace(/\s*·\s*\d+\s*ms\s*$/, '');
     const ms = t.ms == null ? '' : `${t.ms} ms`;
-    const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result)) : '';
+    const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result))
+      : t.name === 'host_history' ? TW.historyCharts(t.result).map(historyChartHtml).join('') : '';
     return `<button type="button" class="tick${t.ok ? '' : ' bad'}${open ? ' open' : ''}" data-tk="${TW.esc(key)}" aria-expanded="${open}">`
       + `<span class="k">${t.ok ? '▸' : '✕'}</span>${TW.esc(label)}<span class="ms">${TW.esc(ms)}</span></button>${snap}${rawHtml(t)}`;
+  }
+  // A host_history result's chart under its tick: full width, min/max and first/last labels, the peak marked (#1043).
+  function historyChartHtml(chart) {
+    const c = TW.historyChart(chart, 240, 60);
+    if (!c) return '';
+    return `<div class="snap hchart"><div class="ax"><span>${TW.esc(c.hi)}</span><span class="pk">${TW.esc(c.peak)}</span></div>`
+      + `<div class="plot"><svg viewBox="0 0 ${c.w} ${c.h}" preserveAspectRatio="none" aria-hidden="true"><path d="${c.d}"/></svg>`
+      + `<span class="dot" style="left:${c.peakPct.x.toFixed(1)}%;top:${c.peakPct.y.toFixed(1)}%"></span></div>`
+      + `<div class="ax"><span>${TW.esc(c.lo)}</span><span>${TW.esc(c.first)} → ${TW.esc(c.last)}</span></div>`
+      + `<span class="snapc">${TW.esc(c.caption)}</span></div>`;
   }
   // Keeps the streaming caret inline at the end of the last rendered paragraph.
   function answerHtml(t) {
