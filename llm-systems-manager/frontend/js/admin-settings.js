@@ -952,6 +952,23 @@
     if (f && !f._stBound) {
       f._stBound = true;
       f.addEventListener('input', () => { _filter = f.value.trim(); render(); });
+      f.addEventListener('keydown', ev => {
+        if (ev.key === 'Escape') { f.value = ''; _filter = ''; render(); f.blur(); }
+      });
+    }
+    if (!document._stSlashBound) {
+      document._stSlashBound = true;
+      // `/` focuses the filter while Admin › Settings is showing (matches Audit).
+      document.addEventListener('keydown', ev => {
+        if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const tag = (document.activeElement && document.activeElement.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (typeof _subTabState !== 'undefined' && _subTabState.admin !== 'settings') return;
+        if (typeof _activeTab !== 'undefined' && _activeTab !== 'admin') return;
+        const box = $('stFilter');
+        if (!box) return;
+        ev.preventDefault(); box.focus();
+      });
     }
     const nav = $('stNav');
     if (nav && !nav._stBound) {

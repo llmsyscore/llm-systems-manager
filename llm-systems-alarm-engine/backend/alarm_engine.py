@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-2"
+__version__ = "v2026.09.17-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1299,6 +1299,74 @@ async def ae_log_tail(_auth: None = Depends(require_management_token)) -> dict:
         return {"ok": True, "lines": [], "note": "log file does not exist yet"}
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"log unreadable: {type(e).__name__}")
+
+
+def _tail_log_sse(path: str, keepalive_s: float = 15.0, max_lifetime_s: float = 600.0):
+    """Open path and seek to its end now; returns the SSE frame generator."""
+    f = open(path, "rb")
+    try:
+        f.seek(0, os.SEEK_END)
+    except Exception:
+        f.close()
+        raise
+    return _tail_log_frames(f, path, keepalive_s, max_lifetime_s)
+
+
+def _tail_log_frames(f, path: str, keepalive_s: float, max_lifetime_s: float):
+    """Yield SSE frames for lines appended to f; reopens on rotation, keepalive on idle."""
+    def frame(obj: dict) -> bytes:
+        return f"data: {json.dumps(obj)}\n\n".encode()
+    try:
+        inode = os.fstat(f.fileno()).st_ino
+        buf = b""
+        idle = 0
+        started = last_keepalive = time.time()
+        while time.time() - started < max_lifetime_s:
+            chunk = f.read(65536)
+            if chunk:
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    yield frame({"line": raw.decode("utf-8", errors="replace").rstrip()})
+                last_keepalive = time.time()
+                idle = 0
+                continue
+            idle += 1
+            if idle % 4 == 0:
+                try:
+                    st = os.stat(path)
+                    rotated = st.st_ino != inode or st.st_size < f.tell()
+                except FileNotFoundError:
+                    rotated = False
+                if rotated:
+                    f.close()
+                    f = open(path, "rb")
+                    inode = os.fstat(f.fileno()).st_ino
+                    buf = b""
+                    continue
+            time.sleep(0.5)
+            if time.time() - last_keepalive > keepalive_s:
+                yield frame({"keepalive": True})
+                last_keepalive = time.time()
+    finally:
+        f.close()
+
+
+@app.get("/api/alarm/admin/log/stream")
+async def ae_log_stream(_auth: None = Depends(require_management_token)):
+    """SSE tail -f of the alarm engine log (management-token guarded; the manager proxies it)."""
+    from fastapi.responses import StreamingResponse
+
+    def generate():
+        try:
+            yield from _tail_log_sse(LOG_FILE)
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'error': 'log file does not exist yet'})}\n\n".encode()
+        except OSError as e:
+            yield f"data: {json.dumps({'error': 'log unreadable: ' + type(e).__name__})}\n\n".encode()
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/alarm/admin/self-restart")

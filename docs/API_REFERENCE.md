@@ -879,6 +879,33 @@ Opens an SSE proxy stream of the specified agent's own process log (the agent da
 **Access:** [Admin]
 
 ---
+### `GET /api/admin/log/tail`
+Returns the last ~50 KB of the Manager's own rotating log as lines (`{"ok": true, "lines": [...]}`; `note` when the file does not exist yet). Backs the View log button on the Manager row of Admin › System Health.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/log/stream`
+SSE `tail -f` of the Manager's own log: one `{"line": ...}` frame per appended line, `{"keepalive": true}` on idle, reopens on rotation. Holds a Manager stream-pool slot and ends at the stream lifetime cap (the browser reconnects).
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/alarm-engine/log/tail`
+Admin-gated proxy to the Alarm Engine's management-token `GET /api/alarm/admin/log/tail`. On an engine rejection or transport failure returns 502 with `{"ok": false, "error": <remedy>, "failure": {kind, status, detail, remedy}}` (`kind` is `unauthorized`, `unsupported`, `http`, or `unreachable`).
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/admin/alarm-engine/log/stream`
+Admin-gated SSE proxy to the Alarm Engine's `GET /api/alarm/admin/log/stream`; bytes pass through verbatim under the Manager's stream pool and keepalive clock. Same 502 failure shape as the tail proxy when the engine refuses the stream.
+
+**Access:** [Admin]
+
+---
 
 ### `POST /api/agents/<agent_id>/self-update`
 Triggers an in-place agent self-update: the agent runs its installer with `--update --from-self-update` (git pull, redeploy code, refresh its venv — no systemd unit changes) and streams stdout/stderr back over SSE. On success the agent exits and systemd's `Restart=always` brings the updated code back up.

@@ -1943,22 +1943,40 @@ let _adminLogEventSrc = null;
 let _adminLogPaused = false;
 
 async function adminLogs(aid) {
-  const name = _adminAgentName(aid);
+  return _adminLogsStart('Agent log', _adminAgentName(aid),
+    `/api/agents/${aid}/log/tail`, `/api/agents/${aid}/log/stream`);
+}
+
+// Manager / alarm engine log (System Health service rows, #985).
+const _ADMIN_SVC_LOGS = {
+  manager: { label: 'Manager', tail: '/api/admin/log/tail', stream: '/api/admin/log/stream' },
+  alarm_engine: { label: 'Alarm Engine', tail: '/api/admin/alarm-engine/log/tail', stream: '/api/admin/alarm-engine/log/stream' },
+};
+async function adminServiceLogs(svc) {
+  const c = _ADMIN_SVC_LOGS[svc];
+  if (!c) return;
+  return _adminLogsStart('Service log', c.label, c.tail, c.stream);
+}
+
+async function _adminLogsStart(kind, name, tailUrl, streamUrl) {
   _adminLogsClose();  // close any existing stream
-  _adminLogsOpen(name);
+  _adminLogsOpen(name, kind);
 
   // Seed with tail
   _adminLogsAppend('── fetching tail…', 'meta');
   try {
-    const r = await fetch(`/api/agents/${aid}/log/tail`);
+    const r = await fetch(tailUrl);
     if (r.ok) {
       const d = await r.json();
       if (d.path) _adminLogsAppend(`── ${d.path}`, 'meta');
       if (d.note) _adminLogsAppend(`── ${d.note}`, 'meta');
+      if (d.ok === false && d.error) _adminLogsAppend(`tail unavailable: ${d.error}`, 'err');
       (d.lines || []).forEach(l => _adminLogsAppend(l));
       _adminLogsAppend('── streaming new lines (Pause to stop scroll) ──', 'meta');
     } else {
-      _adminLogsAppend(`tail fetch HTTP ${r.status}`, 'err');
+      let detail = '';
+      try { const d = await r.json(); if (d && d.error) detail = ` — ${d.error}`; } catch {}
+      _adminLogsAppend(`tail fetch HTTP ${r.status}${detail}`, 'err');
     }
   } catch (e) {
     _adminLogsAppend(`tail fetch failed: ${e.message}`, 'err');
@@ -1966,7 +1984,7 @@ async function adminLogs(aid) {
 
   // Open SSE stream
   try {
-    const es = new EventSource(`/api/agents/${aid}/log/stream`);
+    const es = new EventSource(streamUrl);
     _adminLogEventSrc = es;
     es.onmessage = (ev) => {
       if (_adminLogPaused || LivePause.on) return;
@@ -2004,7 +2022,7 @@ function _adminLogsClear() {
   if (body) body.textContent = '';
 }
 
-function _adminLogsOpen(label) {
+function _adminLogsOpen(label, kind) {
   let p = document.getElementById('adminLogsPanel');
   if (!p) {
     p = document.createElement('div');
@@ -2012,7 +2030,7 @@ function _adminLogsOpen(label) {
     p.className = 'adm-dock left';
     p.innerHTML = `
       <div class="adm-dock-h">
-        <span class="microlbl">Agent log</span>
+        <span class="microlbl" id="adminLogsKind">Agent log</span>
         <span class="name" id="adminLogsTitle"></span>
         <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminLogsPauseBtn" onclick="_adminLogsTogglePause()">‖ Pause</button>
         <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="_adminLogsClear()">Clear</button>
@@ -2022,6 +2040,7 @@ function _adminLogsOpen(label) {
     document.body.appendChild(p);
   }
   p.style.display = 'flex';
+  document.getElementById('adminLogsKind').textContent = kind || 'Agent log';
   document.getElementById('adminLogsTitle').textContent = label;
   document.getElementById('adminLogsBody').textContent = '';
   _adminLogPaused = false;
@@ -2033,13 +2052,22 @@ function _adminLogsAppend(text, level) {
   const body = document.getElementById('adminLogsBody');
   if (!body) return;
   const line = document.createElement('div');
-  if (level === 'err' || level === 'meta') line.className = 'l-' + level;
+  if (!level) level = _adminLogLevelOf(text);
+  if (level === 'err' || level === 'meta' || level === 'warn') line.className = 'l-' + level;
   line.textContent = text;
   body.appendChild(line);
   // Auto-scroll only if user is already near the bottom — preserves their
   // scroll position when they're reviewing earlier lines.
   const nearBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 60;
   if (nearBottom) body.scrollTop = body.scrollHeight;
+}
+
+// Tint a log line by its level token (ERROR/CRITICAL/Traceback → err, WARNING → warn).
+function _adminLogLevelOf(text) {
+  const head = String(text || '').slice(0, 160);
+  if (/\b(ERROR|CRITICAL|Traceback)\b/.test(head)) return 'err';
+  if (/\bWARN(ING)?\b/.test(head)) return 'warn';
+  return '';
 }
 
 // ── Self-update output panel (one shared instance) ────────────────────

@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.16-6"
+__version__ = "v2026.09.17-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -7606,6 +7606,186 @@ def agents_log_stream(agent_id: str):
                 last_err = f"{full}: {type(e).__name__}: {e}"
                 continue
         return _err_json("all callback URLs failed", 502, detail=last_err)
+    finally:
+        if not slot_handed:
+            stream_pool.POOL.release()
+
+
+def _read_log_tail(path: str, tail_bytes: int = 50 * 1024) -> dict:
+    """Last tail_bytes of a log file as whole lines; {ok, lines[, note]}."""
+    try:
+        size = os.path.getsize(path)
+        offset = max(0, size - tail_bytes)
+        with open(path, "rb") as f:
+            if offset:
+                f.seek(offset)
+                f.readline()
+            data = f.read()
+        return {"ok": True, "lines": [ln.decode("utf-8", errors="replace").rstrip()
+                                      for ln in data.splitlines()]}
+    except FileNotFoundError:
+        return {"ok": True, "lines": [], "note": "log file does not exist yet"}
+
+
+def _tail_log_sse(path: str, keepalive_s: float, max_lifetime_s: float,
+                  is_shutting_down=lambda: False):
+    """Open path and seek to its end now; returns the SSE frame generator."""
+    f = open(path, "rb")
+    try:
+        f.seek(0, os.SEEK_END)
+    except Exception:
+        f.close()
+        raise
+    return _tail_log_frames(f, path, keepalive_s, max_lifetime_s, is_shutting_down)
+
+
+def _tail_log_frames(f, path: str, keepalive_s: float, max_lifetime_s: float,
+                     is_shutting_down=lambda: False):
+    """Yield SSE frames for lines appended to f; reopens on rotation, keepalive on idle."""
+    def frame(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+    try:
+        inode = os.fstat(f.fileno()).st_ino
+        buf = b""
+        idle = 0
+        started = last_keepalive = time.time()
+        while time.time() - started < max_lifetime_s and not is_shutting_down():
+            chunk = f.read(65536)
+            if chunk:
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    yield frame({"line": raw.decode("utf-8", errors="replace").rstrip()})
+                last_keepalive = time.time()
+                idle = 0
+                continue
+            idle += 1
+            if idle % 4 == 0:
+                try:
+                    st = os.stat(path)
+                    rotated = st.st_ino != inode or st.st_size < f.tell()
+                except FileNotFoundError:
+                    rotated = False
+                if rotated:
+                    f.close()
+                    f = open(path, "rb")
+                    inode = os.fstat(f.fileno()).st_ino
+                    buf = b""
+                    continue
+            time.sleep(0.5)
+            if time.time() - last_keepalive > keepalive_s:
+                yield frame({"keepalive": True})
+                last_keepalive = time.time()
+    finally:
+        f.close()
+
+
+@app.route("/api/admin/log/tail", methods=["GET"])
+def admin_log_tail():
+    """Admin-gated tail of the manager's own log (last 50 KB as lines)."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    try:
+        return jsonify(_read_log_tail(LOG_FILE))
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"log unreadable: {type(e).__name__}"}), 500
+
+
+@app.route("/api/admin/log/stream", methods=["GET"])
+def admin_log_stream():
+    """Admin-gated SSE tail -f of the manager's own log; holds a stream-pool slot."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    if not stream_pool.POOL.try_acquire():
+        return jsonify({"ok": False,
+                        "error": "manager at stream capacity; retry shortly"}), 503
+
+    def generate():
+        try:
+            yield from _tail_log_sse(
+                LOG_FILE,
+                keepalive_s=float(getattr(settings.manager, "stream_keepalive_s", 8.0) or 8.0),
+                max_lifetime_s=float(getattr(settings.manager, "stream_max_lifetime_s", 120.0) or 120.0),
+                is_shutting_down=lambda: _shutting_down)
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'error': 'log file does not exist yet'})}\n\n"
+        except OSError as e:
+            yield f"data: {json.dumps({'error': 'log unreadable: ' + type(e).__name__})}\n\n"
+
+    from flask import stream_with_context
+    try:
+        resp = app.response_class(
+            stream_with_context(generate()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+        resp.call_on_close(stream_pool.POOL.release)
+    except Exception:
+        stream_pool.POOL.release()
+        raise
+    return resp
+
+
+@app.route("/api/admin/alarm-engine/log/tail", methods=["GET"])
+def admin_ae_log_tail():
+    """Admin-gated proxy to the alarm engine's management-token log tail."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return jsonify({"ok": False, "error": "alarm engine URL not configured"}), 500
+    route = "/api/alarm/admin/log/tail"
+    try:
+        r = _ae_session.get(base + route, timeout=(3, 10))
+    except Exception as e:
+        fail = _ae_config_failure(None, _ae_exc_phrase(e), route=route)
+        return jsonify({"ok": False, "error": fail["remedy"], "failure": fail}), 502
+    if not r.ok:
+        fail = _ae_config_failure(r.status_code, f"HTTP {r.status_code}", route=route)
+        return jsonify({"ok": False, "error": fail["remedy"], "failure": fail}), 502
+    try:
+        return jsonify(r.json())
+    except ValueError:
+        return jsonify({"ok": False, "error": "alarm engine returned a non-JSON body"}), 502
+
+
+@app.route("/api/admin/alarm-engine/log/stream", methods=["GET"])
+def admin_ae_log_stream():
+    """Admin-gated SSE proxy to the alarm engine's log stream; bytes pass through verbatim."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base:
+        return jsonify({"ok": False, "error": "alarm engine URL not configured"}), 500
+    route = "/api/alarm/admin/log/stream"
+    if not stream_pool.POOL.try_acquire():
+        return jsonify({"ok": False,
+                        "error": "manager at stream capacity; retry shortly"}), 503
+    slot_handed = False
+    try:
+        try:
+            upstream = _ae_session.get(base + route, stream=True, timeout=(5, 60))
+        except Exception as e:
+            fail = _ae_config_failure(None, _ae_exc_phrase(e), route=route)
+            return jsonify({"ok": False, "error": fail["remedy"], "failure": fail}), 502
+        if not upstream.ok:
+            status = upstream.status_code
+            upstream.close()
+            fail = _ae_config_failure(status, f"HTTP {status}", route=route)
+            return jsonify({"ok": False, "error": fail["remedy"], "failure": fail}), 502
+        resp = app.response_class(
+            proxies.thread_pumped(upstream, route),
+            mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            status=upstream.status_code,
+        )
+        resp.call_on_close(stream_pool.POOL.release)
+        slot_handed = True
+        return resp
     finally:
         if not slot_handed:
             stream_pool.POOL.release()
