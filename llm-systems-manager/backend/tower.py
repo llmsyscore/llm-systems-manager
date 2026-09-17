@@ -896,6 +896,7 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         msgs.append({"role": "user", "content": model_text})
         b = {"model": m["model"], "temperature": float(getattr(cfg, "temperature", 0.2)),
              "max_tokens": int(getattr(cfg, "max_tokens", 1024))}
+        b.update(thinking_params(cfg, m["provider"], b["max_tokens"]))
         if native and tools:
             b["tools"] = [tower_tools.openai_schema(t) for t in tools]
         return msgs, b
@@ -1568,6 +1569,29 @@ _DETACH_GRACE_S = 30.0
 _RUN_TTL_S = 600.0
 _QUEUE_MAX = 4096
 MAX_TOKENS_CAP = 32768
+THINKING_LEVELS = ("off", "low", "medium", "high")
+THINKING_BUDGET = {"low": 1024, "medium": 2048, "high": 6144}   # reasoning tokens per model call
+_BUDGET_MESSAGE = "Reasoning budget exhausted, answering now."
+
+
+def thinking_params(cfg, provider: str, max_tokens: int) -> dict:
+    """Request fields for the Thinking setting: off disables it, a level sets the reasoning budget
+    and adds that room to max_tokens; llama.cpp also gets the budget as a hard stop."""
+    level = str(getattr(cfg, "thinking", "medium") or "medium").lower()
+    if level not in THINKING_LEVELS:
+        level = "medium"
+    kwargs = provider in ("llama", "vllm")   # servers that take chat_template_kwargs
+    if level == "off":
+        out = {"reasoning_effort": "none"}
+        return {**out, "chat_template_kwargs": {"enable_thinking": False}} if kwargs else out
+    budget = THINKING_BUDGET[level]
+    out = {"reasoning_effort": level, "max_tokens": min(MAX_TOKENS_CAP, int(max_tokens) + budget)}
+    if kwargs:
+        out["chat_template_kwargs"] = {"enable_thinking": True}
+    if provider == "llama":
+        out["reasoning_budget_tokens"] = budget
+        out["reasoning_budget_message"] = _BUDGET_MESSAGE
+    return out
 _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0

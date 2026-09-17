@@ -416,6 +416,9 @@ def lms_server_log_endpoint(authorization: Optional[str] = Header(default=None))
         return {"ok": False, "lines": [], "error": str(e)}
 
 
+_LMS_LOAD_OPTIONS = ("context_length", "eval_batch_size", "flash_attention", "num_experts", "offload_kv_cache_to_gpu")
+
+
 def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     ctx = _require_ctx()
     ctx.check_bearer(authorization); _lms_check_enabled()
@@ -429,10 +432,15 @@ def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=
         log.info("lms load %s: already resident as %s", model_id, resident)
         return {"ok": True, "already_loaded": True, "instances": resident}
     timeout = _cfg_timeout("LMS_LOAD_TIMEOUT_S", _LMS_LOAD_TIMEOUT_DEFAULT_S)
+    payload = {"model": model_id}
+    # Load-time options LM Studio accepts; anything else in the body is ignored.
+    for key in _LMS_LOAD_OPTIONS:
+        if body.get(key) is not None:
+            payload[key] = body[key]
     try:
         resp = _get_session().post(
             f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/load",
-            json={"model": model_id}, timeout=timeout,
+            json=payload, timeout=timeout,
         )
     except requests.exceptions.Timeout:
         log.warning("lms load %s: timed out after %ss", model_id, timeout)
@@ -484,6 +492,28 @@ def lms_download_endpoint(body: dict, authorization: Optional[str] = Header(defa
         except Exception:
             body_resp = {"raw": resp.text[:500]}
         return {"ok": resp.ok, "response": body_resp}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+_LMS_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def lms_download_status_endpoint(job_id: str, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """LM Studio's download job status: {ok, http, response}; ok is False with http 404 once LM Studio forgot the job."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _lms_check_enabled()
+    if not _LMS_JOB_ID_RE.match(job_id or ""):
+        raise HTTPException(status_code=400, detail="invalid job id")
+    try:
+        resp = _get_session().get(
+            f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/download/status/{job_id}", timeout=15,
+        )
+        try:
+            body_resp = resp.json()
+        except Exception:
+            body_resp = {"raw": resp.text[:500]}
+        return {"ok": resp.ok, "http": resp.status_code, "response": body_resp}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -625,6 +655,7 @@ _ROUTES: tuple = (
     ("GET",  "/lms/server/log",     lms_server_log_endpoint),
     ("POST", "/lms/load",           lms_load_endpoint),
     ("POST", "/lms/download",       lms_download_endpoint),
+    ("GET",  "/lms/download/status/{job_id}", lms_download_status_endpoint),
     ("POST", "/lms/unload",         lms_unload_endpoint),
     ("POST", "/lms/delete",         lms_delete_endpoint),
     ("POST", "/lms/openai/chat/completions", lms_openai_chat),

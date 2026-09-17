@@ -820,6 +820,64 @@ describe('Tower model check row (#1039)', () => {
     expect([...sel().options].map(o => o.value)).toEqual(['auto', 'qwen3-14b']);
   });
 
+  test('Pin as primary only for a model the gateway still lists and that is not the primary yet; Stop on LM Studio says so (#1047)', async () => {
+    const last = { id: 'j8', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 8/8 passed',
+                   result: { model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M', host: 'box', pin_offer: true } };
+    const gone = await towerCard({ tower: STATE, towerModels: { ...MODELS, last }, gatewayModels: [{ id: 'qwen3-14b' }] });
+    expect(gone.document.getElementById('stTowerPinBtn')).toBeNull();
+    expect(gone.document.getElementById('stTowerGet').textContent).toContain('no longer on the host');
+    const MODEL = { path: 'manager.tower.model', label: 'Primary model', help: 'Which.', group: 'tower', service: 'manager', type: 'str', datalist: 'gateway_models', hot: true };
+    const pinned = await boot(payload({ groups: [{ key: 'tower', title: 'Tower' }], entries: [TOWER, MODEL],
+      values: { 'manager.tower.enabled': true, 'manager.tower.model': 'Qwen/Qwen3-8B-GGUF:Q4_K_M' },
+      defaults: { 'manager.tower.enabled': false, 'manager.tower.model': 'auto' }, secrets: {} }),
+      { tower: STATE, towerModels: { ...MODELS, last }, gatewayModels: [{ id: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }] });
+    pinned.adminSettingsOpenGroup('tower');
+    await flush();
+    expect(pinned.document.getElementById('stTowerPinBtn')).toBeNull();
+    expect(pinned.document.getElementById('stTowerGet').textContent).toContain('· primary');
+    const stopped = { id: 'j7', kind: 'tower_get_model', status: 'cancelled', label: 'Download Tower model · Gemma 4 12B',
+                      message: 'cancelled by the operator', spec: { provider: 'lms' } };
+    const lms = await towerCard({ tower: STATE, towerModels: { ...MODELS, last: stopped } });
+    expect(lms.document.getElementById('stTowerGet').textContent).toContain('LM Studio keeps downloading, cancel it there');
+  });
+
+  test('the Primary model choices name the server and hosts, and mark a pinned model the index lost (#1047)', async () => {
+    const MODEL = { path: 'manager.tower.model', label: 'Primary model', help: 'Which.', group: 'tower', service: 'manager', type: 'str', datalist: 'gateway_models', hot: true };
+    const index = [{ id: 'qwen3-14b', provider: 'llama', hosts: ['box', 'box-two'], loaded: true }, { id: 'gemma-3-12b', provider: 'lms', hosts: ['mac'], loaded: false }];
+    const win = await boot(payload({ groups: [{ key: 'tower', title: 'Tower' }], entries: [TOWER, MODEL],
+      values: { 'manager.tower.enabled': true, 'manager.tower.model': 'gone-model' },
+      defaults: { 'manager.tower.enabled': false, 'manager.tower.model': 'auto' }, secrets: {} }),
+      { tower: STATE, towerModels: { ...MODELS, index }, gatewayModels: [{ id: 'qwen3-14b' }, { id: 'gemma-3-12b' }] });
+    win.adminSettingsOpenGroup('tower');
+    await flush();
+    const sel = win.document.querySelector('select.st-input[data-path="manager.tower.model"]');
+    expect([...sel.options].map(o => o.textContent)).toEqual(['auto', 'qwen3-14b · llama.cpp · box, box-two · loaded', 'gemma-3-12b · LM Studio · mac', 'gone-model · not available']);
+    expect(sel.value).toBe('gone-model');
+  });
+
+  test('Pin as primary shows the pinned model in the Primary model field without a reload (#1047)', async () => {
+    const MODEL = { path: 'manager.tower.model', label: 'Primary model', help: 'Which.', group: 'tower', service: 'manager', type: 'str', datalist: 'gateway_models', hot: true };
+    const last = { id: 'j8', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 8/8 passed',
+                   result: { model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M', host: 'box', pin_offer: true } };
+    const win = await boot(payload({ groups: [{ key: 'tower', title: 'Tower' }], entries: [TOWER, MODEL],
+      values: { 'manager.tower.enabled': true, 'manager.tower.model': 'auto' },
+      defaults: { 'manager.tower.enabled': false, 'manager.tower.model': 'auto' }, secrets: {} }),
+      { tower: STATE, towerModels: { ...MODELS, last }, gatewayModels: [{ id: 'qwen3-14b' }, { id: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }] });
+    win.adminSettingsOpenGroup('tower');
+    await flush();
+    const sel = () => win.document.querySelector('select.st-input[data-path="manager.tower.model"]');
+    sel().value = 'qwen3-14b';
+    sel().dispatchEvent(new win.Event('change', { bubbles: true }));
+    win.document.getElementById('stTowerPinBtn').click();
+    await flush();
+    expect(win.__puts).toEqual([{ model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }]);
+    expect(sel().value).toBe('Qwen/Qwen3-8B-GGUF:Q4_K_M');
+    expect(sel().classList.contains('dirty')).toBe(false);
+    await win.adminSettingsRefreshTower();
+    await flush();
+    expect(sel().value).toBe('Qwen/Qwen3-8B-GGUF:Q4_K_M');
+  });
+
   test('a live job shows progress with Stop, a finished download offers Pin as primary, and non-admins get no buttons (#1047)', async () => {
     const live = { id: 'j9', kind: 'tower_get_model', status: 'running', label: 'Get Tower model · Qwen3 8B', can_cancel: true,
                    state: { phase: 'download', pct: 40 } };
@@ -831,7 +889,7 @@ describe('Tower model check row (#1039)', () => {
     expect(win.document.querySelector('#stTowerEvalBtn').disabled).toBe(true);
     const last = { id: 'j8', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 8/8 passed',
                    result: { model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M', host: 'box', pin_offer: true } };
-    const done = await towerCard({ tower: STATE, towerModels: { ...MODELS, last } });
+    const done = await towerCard({ tower: STATE, towerModels: { ...MODELS, last }, gatewayModels: [{ id: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }] });
     const pin = done.document.getElementById('stTowerPinBtn');
     expect(pin.dataset.model).toBe('Qwen/Qwen3-8B-GGUF:Q4_K_M');
     expect(done.document.getElementById('stTowerGet').textContent).toContain('Qwen3 8B ready · 8/8 passed');

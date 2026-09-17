@@ -2785,7 +2785,7 @@ def _public_endpoint_map() -> dict[str, list[str]]:
             "/lms/server/status", "/lms/server/start", "/lms/server/stop",
             "/lms/server/restart", "/lms/server/log",
             "/lms/models", "/lms/ps",
-            "/lms/load", "/lms/unload", "/lms/download", "/lms/delete",
+            "/lms/load", "/lms/unload", "/lms/download", "/lms/download/status/{job_id}", "/lms/delete",
             "/lms/openai/chat/completions", "/lms/openai/completions",
         ],
         "llama": [

@@ -307,8 +307,10 @@ def _fake_agent_request(log, sections, lines, load_ok=True, listed=None):
         if path == "/llama/config":
             sections.clear(); sections.update(kw.get("json") or {})
             return _Resp({"ok": True}), [], None
-        if path in ("/llama/server/restart", "/llama/download/cancel"):
+        if path in ("/llama/server/restart", "/llama/download/cancel", "/llama/cache/rm"):
             return _Resp({"ok": True}), [], None
+        if path == "/llama/cache/gguf":
+            return _Resp({"ok": True, "data": []}), [], None
         if path == "/llama/load":
             return _Resp({"ok": load_ok} if load_ok else {"ok": False, "error": "no such model"}), [], None
         raise AssertionError(path)
@@ -321,9 +323,10 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
              '', 'data: {"type": "line", "text": "Qwen3.5-9B-Q4_K_M.gguf: 100%", "progress": true}', 'data: {"type": "done", "ok": true, "rc": 0}']
     entries = list(ENTRIES)
     agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    named, profiles = [], []
     ev, svc = _evaluator([], entries=entries, agent_request=_fake_agent_request(log, sections, lines),
                          download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": agent}],
-                         refresh_index=lambda w: None)
+                         refresh_index=lambda w: None, profile_put=lambda *a: profiles.append(a), alias_set=lambda m, a: named.append((m, a)))
     monkeypatch.setattr(te.time, "sleep", lambda s: None)
     import agent_registry
     monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent if aid == "a1" else None)
@@ -362,6 +365,9 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
                      "/llama/models", "/llama/models", "/llama/load"]
     assert any(s.get("phase") == "restart" for s in states)
     assert sections[mid] == te.NEW_MODEL_INI and "__DEFAULTS__" not in sections and "old-model" in sections
+    assert te.NEW_MODEL_INI["ubatch-size"] == "1024" and te.NEW_MODEL_INI["temperature"] == "0.2"
+    assert te.NEW_MODEL_INI["reasoning"] == "on" and te.NEW_MODEL_INI["reasoning-budget"] == "2048" and te.NEW_MODEL_INI["ctx-size"] == "32768"
+    assert profiles == [("a1", mid, "tower", te.NEW_MODEL_INI)] and named == [(mid, "Tower Model")]
     assert any(s.get("phase") == "download" and s.get("pct") == 40 for s in states)
     assert any(s.get("phase") == "load" for s in states) and any(s.get("phase") == "check" for s in states)
     view = ev.curated_view()
@@ -369,6 +375,7 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
     assert got["present"] and got["loaded"] and got["eval"]["passed"] == 1 and view["host"] == "box"
     assert view["hosts"] == [{"provider": "llama", "label": "llama.cpp", "host": "box", "agent_id": "a1", "primary": True}]
     assert "agent" not in view["hosts"][0] and '"token": "t"' not in json.dumps(view)
+    assert {"id": mid, "provider": "llama", "hosts": ["box"], "loaded": True} in view["index"]
 
 
 def test_get_model_job_fails_cleanly_on_a_download_error(monkeypatch):
@@ -383,12 +390,119 @@ def test_get_model_job_fails_cleanly_on_a_download_error(monkeypatch):
     assert err is None
     svc.tick()
     done = svc.get(row["id"])
-    assert done["status"] == "failed" and "download failed" in done["message"]
-    assert [p for _m, p, _j in log] == ["/llama/download", "/llama/download/stream"]
+    assert done["status"] == "failed" and done["message"] == "download failed: hf exited 1; the partial download was removed from the cache"
+    assert [p for _m, p, _j in log] == ["/llama/download", "/llama/download/stream", "/llama/cache/gguf", "/llama/cache/rm"]
     assert ev.start_get("nope", "alice") == (None, "unknown model")
     assert ev.start_get("qwen35-9b-q4", "alice", "zz") == (None, "unknown host")
     ev._download_hosts = lambda: []
     assert ev.start_get("qwen35-9b-q4", "alice") == (None, "no llama.cpp or LM Studio host to download to")
+
+
+def test_lm_studio_download_reports_a_failed_job_at_once():
+    ev, _svc = _evaluator([], agent_request=lambda *a, **k: (_Resp({"ok": True, "response": {"status": "failed", "error": "no space"}}), [], None))
+    assert ev._download_lms({"token": "t"}, {"repo": "org/repo", "quant": "Q4_K_M"}, lambda: False, lambda **k: None) == ("", "no space")
+
+
+def test_lm_studio_quant_names_drop_the_unsloth_prefix():
+    assert te.Evaluator._lms_quant("UD-Q4_K_M") == "Q4_K_M" and te.Evaluator._lms_quant("Q6_K") == "Q6_K"
+
+
+def _lms_status_agent(log, statuses, listed_after):
+    """Fake agent: a download that returns a job id, then the given status replies, then a model list."""
+    calls = {"status": 0, "models": 0}
+
+    def req(method, agent_, path, **kw):
+        log.append((method, path, kw.get("json")))
+        if path == "/lms/download":
+            return _Resp({"ok": True, "response": {"job_id": "job_1", "status": "downloading"}}), [], None
+        if path.startswith("/lms/download/status/"):
+            i = min(calls["status"], len(statuses) - 1)
+            calls["status"] += 1
+            st = statuses[i]
+            if st == "route-missing":
+                r = _Resp({"detail": "Not Found"}); r.ok, r.status_code = False, 404
+                return r, [], None
+            return _Resp(st), [], None
+        if path == "/lms/models":
+            calls["models"] += 1
+            return _Resp({"data": [{"id": "qwen3.5-9b"}] if calls["models"] >= listed_after else []}), [], None
+        raise AssertionError(path)
+    return req
+
+
+def test_lm_studio_download_follows_the_job_status(monkeypatch):
+    monkeypatch.setattr(te.time, "sleep", lambda s: None)
+    spec = {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "UD-Q4_K_M"}
+    log, seen = [], []
+    st = [{"ok": True, "http": 200, "response": {"status": "downloading", "total_size_bytes": 1000, "downloaded_bytes": 500}},
+          {"ok": True, "http": 200, "response": {"status": "completed"}}]
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, st, 1))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: seen.append(k)) == ("qwen3.5-9b", None)
+    assert log[0][2] == {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"}
+    assert any(k.get("pct") == 50 and "0.0 of 0.0 GB" in k.get("line", "") for k in seen)
+    assert [p for _m, p, _j in log].count("/lms/models") == 1
+    # failed in LM Studio, or cancelled there (the job vanishes): the manager job ends at once
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent([], [{"ok": True, "http": 200, "response": {"status": "failed", "error": "disk full"}}], 9))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("", "disk full")
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent([], [{"ok": False, "http": 404, "response": {}}], 9))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None)[1].startswith("the download is gone from LM Studio")
+    # an agent without the status route: back to polling the model list
+    log = []
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, ["route-missing"], 2))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("qwen3.5-9b", None)
+    assert [p for _m, p, _j in log].count("/lms/download/status/job_1") == 1 and [p for _m, p, _j in log].count("/lms/models") == 2
+    # Stop: the job ends here, the message says LM Studio keeps going
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent([], [], 9))
+    assert ev._download_lms({"token": "t"}, spec, lambda: True, lambda **k: None) == ("", "cancelled; LM Studio keeps downloading, cancel it there")
+
+
+def _stopped_llama_agent(log, cached, rm_replies):
+    def req(method, agent_, path, **kw):
+        log.append((method, path, kw.get("json")))
+        if path == "/llama/download":
+            return _Resp({"ok": True}), [], None
+        if path == "/llama/download/stream":
+            return _Resp(lines=['data: {"type": "line", "text": "x: 10%", "progress": true}']), [], None
+        if path == "/llama/download/cancel":
+            return _Resp({"ok": True}), [], None
+        if path == "/llama/cache/gguf":
+            return _Resp({"ok": True, "data": cached}), [], None
+        if path == "/llama/cache/rm":
+            code = rm_replies.pop(0)
+            r = _Resp({"ok": code == 200} if code == 200 else {"detail": "busy"})
+            r.ok, r.status_code = code == 200, code
+            return r, [], None
+        raise AssertionError(path)
+    return req
+
+
+def test_a_stopped_llama_download_is_removed_from_the_cache_unless_the_repo_has_finished_files(monkeypatch):
+    import types as _t
+    monkeypatch.setattr(te.time, "sleep", lambda s: None)
+    agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent)
+    hosts = lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": agent}]  # noqa: E731
+    log = []
+    ev, svc = _evaluator([], agent_request=_stopped_llama_agent(log, [], [409, 200]), download_hosts=hosts)
+    row, err = ev.start_get("qwen35-9b-q4", "alice")
+    assert err is None
+    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice"))
+    assert out.message == "stopped; the partial download was removed from the cache" and out.alert is False
+    paths = [p for _m, p, _j in log]
+    assert paths == ["/llama/download", "/llama/download/stream", "/llama/download/cancel", "/llama/cache/gguf", "/llama/cache/rm", "/llama/cache/rm"]
+    assert log[-1][2] == {"repo": "unsloth/Qwen3.5-9B-GGUF"}
+    # the repo already holds a finished quant: nothing is removed
+    log = []
+    ev, svc = _evaluator([], agent_request=_stopped_llama_agent(log, [{"repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q6_K.gguf"}], []),
+                         download_hosts=hosts)
+    row, _err = ev.start_get("qwen35-9b-q4", "alice")
+    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice"))
+    assert out.message.startswith("stopped; unsloth/Qwen3.5-9B-GGUF keeps its finished files")
+    assert "/llama/cache/rm" not in [p for _m, p, _j in log]
+    # the note lands on the cancelled row
+    svc.cancel(row["id"], actor="alice")
+    assert svc.annotate(row["id"], "stopped; note") and svc.get(row["id"])["message"] == "stopped; note"
 
 
 def test_hosts_list_every_capable_host_primaries_first_and_errors_name_the_provider_reason():
@@ -451,9 +565,11 @@ def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monk
     entries = list(ENTRIES)
     mac = {"agent_id": "a2", "hostname": "mac", "token": "t", "status": "approved"}
     box = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    named, profiles = [], []
     ev, svc = _evaluator([], entries=entries, agent_request=req, refresh_index=lambda w: None,
                          download_hosts=lambda: [{"provider": "llama", "host": "box", "agent_id": "a1", "primary": True, "agent": box},
-                                                 {"provider": "lms", "host": "mac", "agent_id": "a2", "primary": True, "agent": mac}])
+                                                 {"provider": "lms", "host": "mac", "agent_id": "a2", "primary": True, "agent": mac}],
+                         profile_put=lambda *a: profiles.append(a), alias_set=lambda m, a: named.append((m, a)))
     monkeypatch.setattr(te.time, "sleep", lambda s: None)
     import agent_registry
     monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: {"a1": box, "a2": mac}.get(aid))
@@ -467,8 +583,10 @@ def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monk
     done = svc.get(row["id"])
     assert done["status"] == "done", done
     assert done["result"]["model"] == lms_id and done["result"]["host"] == "mac" and done["result"]["pin_offer"]
-    assert log[0] == ("POST", "/lms/download", {"model": "unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
-    assert [p for _m, p, _j in log].count("/lms/models") == 3 and log[-1][1] == "/lms/load" and log[-1][2] == {"model": lms_id}
+    assert log[0] == ("POST", "/lms/download", {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
+    assert named == [(lms_id, "Tower Model")] and profiles == []
+    assert [p for _m, p, _j in log].count("/lms/models") == 3 and log[-1][1] == "/lms/load"
+    assert log[-1][2] == {"model": lms_id, "context_length": 32768, "eval_batch_size": 1024}
     assert "/llama/config" not in [p for _m, p, _j in log]
     view = ev.curated_view()
     got = next(m for m in view["models"] if m["key"] == "qwen35-9b-q4")
@@ -523,6 +641,11 @@ def test_routes_list_start_export_and_models(client):
     r = client.get("/api/tower/eval").get_json()
     assert r["live"] is None and len(r["results"]) == 1 and r["results"][0]["model"] == "qwen3-14b"
     eid = r["results"][0]["id"]
+    # a result for a model the gateway no longer lists stays in the store but leaves the list
+    M._tower_evals.store.save(te.summarize({"model": "deleted-model", "provider": "llama", "hosts": []}, [], quant=None, server=None,
+                                           tool_mode="auto", grade=None, ms=1, actor="x", at=99.0))
+    assert [x["model"] for x in client.get("/api/tower/eval").get_json()["results"]] == ["qwen3-14b"]
+    assert client.get("/api/tower/eval?model=deleted-model").get_json()["results"][0]["model"] == "deleted-model"
     assert client.get("/api/tower/eval?model=qwen3-14b").get_json()["results"][0]["id"] == eid
     full = client.get(f"/api/tower/eval/{eid}").get_json()["result"]
     assert full["cases"] and "prompt" in full["cases"][0]

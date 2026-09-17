@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-4"
+__version__ = "v2026.09.17-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6154,6 +6154,20 @@ def _tower_download_hosts() -> list:
     return out
 
 
+def _tower_profile_put(agent_id: str, model_id: str, name: str, values: dict) -> None:
+    """Stores a downloaded Tower model's config profile and makes it the active one (#1047)."""
+    if model_profiles.STORE is not None and agent_id and model_id:
+        model_profiles.STORE.put_profile(agent_id, model_id, name, values, make_active=True)
+
+
+def _tower_alias_set(model_id: str, alias: str) -> None:
+    """Names a downloaded Tower model unless the operator already gave it an alias (#1047)."""
+    data = load_aliases()
+    if model_id and not data.get(model_id):
+        data[model_id] = alias
+        save_aliases(data)
+
+
 def _tower_refresh_index(wait_s: float) -> None:
     gateway._refresh_model_index_async()
     gateway._await_model_index(float(wait_s))
@@ -6372,7 +6386,7 @@ _tower_evals = tower_eval.Evaluator(service=_jobs_service, store=tower_eval.Eval
                                     complete_stream=gateway.complete_stream, entries=_tower_gateway_entries,
                                     server_args_of=_tower_server_args, server_of=_tower_server_of, checks=_tower_checks,
                                     record_run=_tower_eval_ledger_row, download_hosts=_tower_download_hosts,
-                                    refresh_index=_tower_refresh_index)
+                                    refresh_index=_tower_refresh_index, profile_put=_tower_profile_put, alias_set=_tower_alias_set)
 tower_eval.register_routes(app, ctx, evaluator=_tower_evals)
 discord_bot.HOOKS["tower_ask"] = _tower_discord_ask
 _tower_registry = lambda: tower_tools.build_registry(_tower_deps)  # noqa: E731
@@ -6935,7 +6949,7 @@ _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
 
 _TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations",
                "disabled_tools", "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
-               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days", "discord", "debug")
+               "max_tokens", "temperature", "thinking", "request_timeout_s", "fallback", "history_days", "discord", "debug")
 
 
 def _tower_reload_config() -> None:

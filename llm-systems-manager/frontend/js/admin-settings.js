@@ -6,6 +6,15 @@
   let _data = null;
   let _entryByPath = new Map();
   let _gatewayModels = [];
+  let _gatewayInfo = {};        // id -> {provider, hosts, loaded} from the Tower model index
+  const _SERVER = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
+  function modelOptionText(id) {
+    if (id === 'auto') return 'auto';
+    const i = _gatewayInfo[id];
+    if (!i) return _gatewayModels.includes(id) ? id : `${id} · not available`;
+    const where = [_SERVER[i.provider] || i.provider, (i.hosts || []).join(', ')].filter(Boolean).join(' · ');
+    return `${id}${where ? ' · ' + where : ''}${i.loaded ? ' · loaded' : ''}`;
+  }
   const _dirty = new Map();     // path -> raw value to submit (null = clear/default)
   const _invalid = new Map();   // path -> message
   const _toolsOpen = new Set();  // chips paths whose editor is expanded
@@ -23,6 +32,7 @@
     if (_dirty.size && !window.confirm('Discard unsaved settings changes?')) return;
     _dirty.clear();
     _invalid.clear();
+    _towerAt = 0; _towerExtrasAt = 0;   // the Tower rows re-read on every entry too
     const root = $('adminSettingsRoot');
     if (!root) return;
     try {
@@ -254,7 +264,7 @@
       const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
       if (!opts.includes(cur)) opts.push(cur);
       return `<div class="row"><select class="sel st-input${dirty}" data-path="${p}">`
-        + opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('')
+        + opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(modelOptionText(c))}</option>`).join('')
         + '</select></div>' + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
     }
     const numeric = e.type === 'int' || e.type === 'float';
@@ -557,11 +567,15 @@
       if (!live && last && last.status !== 'queued' && last.status !== 'running') {
         const res = last.result || {};
         if (last.status === 'done' && res.model) {
-          const pinned = s.model === res.model && (_data && _data.values && _data.values['manager.tower.model'] === res.model);
-          const pin = s.admin && !pinned ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerPinBtn" data-model="${esc(res.model)}">Pin as primary</button>` : '';
-          done = `<div class="row ev"><span class="d w">Ready</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}</span>${pin}</div>`;
-        } else if (last.status === 'failed') {
-          done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}</span></div>`;
+          const listed = _gatewayModels.includes(res.model);
+          const pinned = !!(_data && _data.values && _data.values['manager.tower.model'] === res.model);
+          const pin = s.admin && listed && !pinned ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerPinBtn" data-model="${esc(res.model)}">Pin as primary</button>` : '';
+          const tail = listed ? (pinned ? ' · primary' : '') : ' · no longer on the host';
+          done = `<div class="row ev"><span class="d w">${listed ? 'Ready' : 'Gone'}</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}${tail}</span>${pin}</div>`;
+        } else if (last.status === 'failed' || last.status === 'cancelled') {
+          const lms = last.status === 'cancelled' && last.spec && last.spec.provider === 'lms' && !/LM Studio/.test(last.message || '');
+          done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}`
+            + `${lms ? ' · LM Studio keeps downloading, cancel it there' : ''}</span></div>`;
         }
       }
       const hosts = m.hosts || [];
@@ -588,15 +602,19 @@
   }
   // The Primary model choices follow the live gateway index: a model deleted on a host drops out
   // on the next read, the value in the field is kept even when it is gone.
-  function refreshModelChoices(ids) {
+  function refreshModelChoices(ids, index) {
     const next = ids.filter(Boolean);
-    if (next.join('\n') === _gatewayModels.join('\n')) return;
+    const info = {};
+    (index || []).forEach(m => { if (m && m.id) info[m.id] = { provider: m.provider, hosts: m.hosts || [], loaded: !!m.loaded }; });
+    const same = next.join('\n') === _gatewayModels.join('\n') && JSON.stringify(info) === JSON.stringify(_gatewayInfo);
     _gatewayModels = next;
+    _gatewayInfo = info;
+    if (same) return;
     document.querySelectorAll('select.st-input[data-path="manager.tower.model"]').forEach(sel => {
       const cur = sel.value || 'auto';
       const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
       if (!opts.includes(cur)) opts.push(cur);
-      sel.innerHTML = opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('');
+      sel.innerHTML = opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(modelOptionText(c))}</option>`).join('');
     });
   }
   async function loadTowerExtras(force) {
@@ -606,23 +624,36 @@
       const [er, mr, gr] = await Promise.all([fetch('/api/tower/eval'), fetch('/api/tower/models'), fetch('/api/gateway/v1/models')]);
       if (er.ok) _towerEval = await er.json();
       if (mr.ok) _towerModels = await mr.json();
-      if (gr.ok) refreshModelChoices(((await gr.json()).data || []).map(m => m.id));
+      if (gr.ok) refreshModelChoices(((await gr.json()).data || []).map(m => m.id), (_towerModels && _towerModels.index) || []);
     } catch (_) { /* offline */ }
-    renderTowerExtras();
+    try { renderTowerExtras(); } catch (e) { console.error('tower rows', e); }
     clearTimeout(_towerExtrasPoll);
     if (towerExtrasLive()) _towerExtrasPoll = setTimeout(() => loadTowerExtras(true), 5000);
   }
-  async function towerAct(kind, url, opts) {
+  // A pin writes manager.tower.model server-side: show it in the field and drop any unsaved edit of it.
+  function setModelField(model) {
+    if (!model || !_data) return;
+    const path = 'manager.tower.model';
+    _data.values[path] = model;
+    _dirty.delete(path);
+    document.querySelectorAll('select.st-input[data-path="' + path + '"]').forEach(sel => {
+      if (![...sel.options].some(o => o.value === model)) sel.add(new Option(model, model));
+      sel.value = model;
+      sel.classList.remove('dirty');
+    });
+  }
+  async function towerAct(kind, url, opts, model) {
     _towerActBusy = kind;
     renderTowerExtras();
-    let msg = '';
+    let msg = '', d = null;
     try {
       const r = await fetch(url, opts);
-      const d = await r.json().catch(() => null);
+      d = await r.json().catch(() => null);
       if (!r.ok) msg = (d && d.error) || `HTTP ${r.status}`;
     } catch (_) { msg = 'offline'; }
     _towerActBusy = '';
     if (msg && typeof showToast === 'function') showToast('Tower', msg, 'warning');
+    if (kind === 'pin' && !msg) setModelField((d && d.model) || model || '');
     await loadTowerExtras(true);
     if (kind === 'pin') loadTowerState(true);
   }
@@ -638,7 +669,8 @@
     const name = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent.split(' · ')[0] : key;
     if (typeof _themedConfirm === 'function') {
       const restart = provider === 'llama'
-        ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again.</p>` : '';
+        ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again. Stop removes a half-finished download from the host.</p>`
+        : '<p>Stop ends the job here only: LM Studio keeps downloading until you cancel it there.</p>';
       const ok = await _themedConfirm({
         title: `Download ${name} to ${host}?`,
         bodyHtml: `<p>The download runs on the host, then the model is loaded, checked and scored. It takes VRAM from what the host serves.</p>${restart}`,
@@ -666,7 +698,7 @@
     const pin = ev.target.closest('#stTowerPinBtn');
     if (pin) {
       ev.preventDefault();
-      towerAct('pin', '/api/tower/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: pin.dataset.model }) });
+      towerAct('pin', '/api/tower/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: pin.dataset.model }) }, pin.dataset.model);
       return true;
     }
     return false;

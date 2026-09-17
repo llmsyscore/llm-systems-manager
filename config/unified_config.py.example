@@ -145,6 +145,7 @@ class ManagerTower(BaseModel):
     max_tool_calls: int = 16
     max_tokens: int = 1024
     temperature: float = 0.2
+    thinking: str = "medium"           # off | low | medium | high: reasoning budget per model call
     request_timeout_s: int = 45       # seconds to wait for the model to start answering
     fallback: bool = False             # on timeout, ask the next loaded chat model this one question
     history_days: int = 30
