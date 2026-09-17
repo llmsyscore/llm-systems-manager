@@ -40,6 +40,33 @@ class ProfileStore:
         with self._lock:
             return self._load().get(agent_id, {}).get(model_id)
 
+    def snapshot(self) -> dict:
+        with self._lock:
+            return self._load()
+
+    def drop_agent(self, agent_id: str) -> bool:
+        """Removes every entry saved under the agent id; True when something was removed."""
+        with self._lock:
+            data = self._load()
+            if agent_id not in data:
+                return False
+            del data[agent_id]
+            self._save(data)
+            return True
+
+    def drop_model(self, agent_id: str, model_id: str) -> bool:
+        """Removes one model's entry (all its profiles); an emptied agent goes too."""
+        with self._lock:
+            data = self._load()
+            a = data.get(agent_id)
+            if not isinstance(a, dict) or model_id not in a:
+                return False
+            del a[model_id]
+            if not a:
+                del data[agent_id]
+            self._save(data)
+            return True
+
     def put_profile(self, agent_id: str, model_id: str, name: str,
                     values: dict, make_active: bool = False) -> dict:
         with self._lock:

@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.16-3"
+__version__ = "v2026.09.16-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1975,10 +1975,16 @@ def llm_delete_config(model_id):
     """
     if _traversal_in_path(model_id):
         return jsonify({"ok": False, "error": "invalid model id"}), 400
+
+    def _cascade(agent, r):
+        if getattr(r, "ok", False):
+            _store_reconciler.on_model_deleted(agent["agent_id"], model_id)
+
     return proxies.proxy_to_primary(
         "llama", "DELETE",
         f"/llama/config/{model_id}",
         params={"delete_cache": "true"} if (flask_request.args.get("delete_cache") or "").lower() == "true" else {},
+        on_target=_cascade,
     )
 
 # ---------------------------------------------------------------------------
@@ -3537,6 +3543,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "model.profile.save": "Saved a model profile", "model.profile.activate": "Activated a model profile",
     "model.profile.rename": "Renamed a model profile", "model.profile.delete": "Deleted a model profile",
     "model.alias.save": "Saved a model alias", "model.alias.delete": "Deleted a model alias",
+    "model.stores.clean": "Removed leftover model profiles / names",
     "model.download": "Started a model download", "model.download-cancel": "Cancelled a download",
     "model.build": "Started a llama.cpp build", "model.cache-prune": "Pruned the model cache",
     "model.cache-rm": "Removed a cached model",
@@ -3613,6 +3620,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("DELETE", re.compile(r"^/api/llm/config/(?P<t>.+)$"),             "model.config.delete", "model.config"),
     ("POST",   re.compile(r"^/api/llm/profiles/(?P<t>.+)/(?P<v>save|activate|rename|delete)$"), "model.profile.{v}", "model.config"),
     ("POST",   re.compile(r"^/api/llm/aliases$"),                      "model.alias.save",   "model.config"),
+    ("POST",   re.compile(r"^/api/admin/stores/clean$"),               "model.stores.clean", "model.config"),
     ("DELETE", re.compile(r"^/api/llm/aliases/(?P<t>.+)$"),            "model.alias.delete", "model.config"),
     ("POST",   re.compile(r"^/api/llm/download/cancel$"),              "model.download-cancel", "model.downloads"),
     ("POST",   re.compile(r"^/api/llm/(?P<v>download|build)$"),        "model.{v}",          "model.downloads"),
@@ -5551,6 +5559,43 @@ openclaw.register_routes(app, ctx)
 model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profiles.json")
 import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
+import store_reconcile  # type: ignore[import-not-found]  # sibling; #1009
+
+
+def _refresh_model_index_blocking() -> None:
+    gateway._refresh_model_index_async()
+    gateway._await_model_index(store_reconcile.INDEX_WAIT_S)
+
+
+_store_reconciler = store_reconcile.Reconciler(
+    model_profiles.STORE, load_aliases, save_aliases, agent_registry.load_agents,
+    gateway._index_snapshot, refresh_index=_refresh_model_index_blocking)
+agent_registry.on_agent_deleted = _store_reconciler.on_agent_deleted
+
+
+@app.route("/api/admin/stores/leftovers", methods=["GET"])
+def admin_stores_leftovers():
+    """Saved profiles and names that no longer match a registered agent or a model it reports."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    if flask_request.args.get("refresh"):
+        _refresh_model_index_blocking()
+        return jsonify({"ok": True, **_store_reconciler.run("operator check")})
+    return jsonify({"ok": True, **_store_reconciler.leftovers()})
+
+
+@app.route("/api/admin/stores/clean", methods=["POST"])
+def admin_stores_clean():
+    """Removes the selected leftovers: {"all": true} or {"agents", "models", "aliases"} lists."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(force=True, silent=True)
+    if not isinstance(body, dict) or not (body.get("all") or any(
+            isinstance(body.get(k), list) for k in ("agents", "models", "aliases"))):
+        return _err_json("selection required", 400)
+    return jsonify({"ok": True, **_store_reconciler.clean(body)})
 
 
 @app.route("/api/admin/gateway/flow", methods=["GET"])
@@ -8798,6 +8843,12 @@ if __name__ == "__main__":
 
     # Audit log retention purge (#794): at start, then every 24 h.
     _start_audit_purge_thread()
+
+    # Profile / alias store reconcile (#1009): after a short grace, then every 6 h.
+    try:
+        _store_reconciler.start_thread(lambda: _shutting_down)
+    except Exception as _e:
+        log.warning("stores reconcile startup failed: %s", _e)
 
     # optionally serve HTTPS on a second port using the
     # manager's own server cert (signed by the internal CA). Defaults

@@ -573,7 +573,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.13-1">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.04-1">
-<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.16-3">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.16-4">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.16-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
@@ -772,6 +772,28 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <select class="sel" id="adminPinAgentSelect" aria-label="Host"><option value="">choose host</option></select>
               <button type="button" class="mcbtn mcbtn-pri mcbtn-sm" onclick="adminAddPin()">Add pin</button>
               <span class="note" id="adminPinsResult"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model Profile Maintenance (#1009): profiles / names that no longer match the fleet or could not be checked -->
+        <div class="card" id="adminStoresCard">
+          <div class="card-h">
+            <h3>Model Profile Maintenance</h3>
+            <span class="meta">saved profiles and display names that no longer match a registered agent or a model it reports, or could not be verified</span>
+            <span class="gap"></span>
+            <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="adminStoresCheck" onclick="adminLoadStores(true)" data-tip="Ask every host for its model list again, then re-check the saved entries">Check now</button>
+          </div>
+          <div class="card-b flush">
+            <table class="tbl">
+              <thead><tr><th>Entry</th><th style="width:240px">Reason</th><th class="r" style="width:96px">Action</th></tr></thead>
+              <tbody id="adminStoresTbody"><tr><td colspan="3"><div class="empty">Checking…</div></td></tr></tbody>
+            </table>
+            <div class="ledger-f">
+              <span class="note" id="adminStoresNote"></span>
+              <span class="gap"></span>
+              <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm mcbtn-del" id="adminStoresCleanAll" onclick="adminCleanStores()" hidden>Delete all</button>
+              <span class="note" id="adminStoresResult"></span>
             </div>
           </div>
         </div>
@@ -2613,7 +2635,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.11-5"></script>
+<script src="/static/js/admin.js?v=2026.09.16-4"></script>
 <script src="/static/js/admin-agents.js?v=2026.09.14-1"></script>
 <script src="/static/js/admin-health.js?v=2026.09.16-1"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>

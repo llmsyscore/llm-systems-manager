@@ -41,10 +41,10 @@ describe('routing sub-tab consolidation (#476)', () => {
     expect(document.querySelector('#admin-routing #apProposalsBody')).toBeTruthy();
   });
 
-  it('cards run gateway → autopilot → proposals → pool → pins (#797)', () => {
+  it('cards run gateway → autopilot → proposals → pool → pins → saved settings (#797, #1009)', () => {
     const ids = [...document.querySelectorAll('#admin-routing > .card')].map(c => c.id);
     expect(ids).toEqual(['rtGatewayCard', 'apEntriesCard', 'apProposalsCard',
-                         'adminPoolCard', 'adminPinsCard']);
+                         'adminPoolCard', 'adminPinsCard', 'adminStoresCard']);
   });
 
   it('one provider mc-seg drives both pool and pins; the old chip rows are gone', () => {
