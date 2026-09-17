@@ -9,6 +9,7 @@ then the unified diff when --verbose. Exit 1 on error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import difflib
 import os
@@ -71,15 +72,15 @@ def parse(text: str) -> list[Line]:
     return out
 
 
-def identity(key: str | None, norm: str):
-    """What makes two lines 'the same setting' even when a value was edited."""
+def identity(key: str | None, norm: str) -> tuple:
+    """What makes two lines 'the same setting' even when a value was edited: (key, kind, shape)."""
     if key in SINGLE_VALUED:
-        return (key,)
+        return (key, "single", "")
     value = norm.split("=", 1)[1] if "=" in norm else norm
     m = re.search(r"/sys/[^\s'\";]+", value)
     if m:
         return (key, "sysfs", m.group(0))
-    return (key, " ".join(re.sub(r"\d+", "", value).split()))
+    return (key, "text", " ".join(re.sub(r"\d+", "", value).split()))
 
 
 def merge(ours: str, theirs: str, base: str | None = None) -> str:
@@ -230,10 +231,8 @@ def _write_atomic(path: str, text: str) -> None:
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):   # the temp file may already be gone
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
