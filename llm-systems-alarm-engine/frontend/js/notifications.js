@@ -140,9 +140,10 @@ const NotificationsManager = {
         }).join('');
     },
 
-    _when(p) {
+    // plain=true returns text with no markup (used for the tooltip).
+    _when(p, plain = false) {
         const parts = [];
-        parts.push(p.min_severity ? `severity ≥ <b>${escapeHtml(p.min_severity)}</b>` : 'any severity');
+        parts.push(p.min_severity ? (plain ? `severity ≥ ${p.min_severity}` : `severity ≥ <b>${escapeHtml(p.min_severity)}</b>`) : 'any severity');
         const n = (l, one, many) => (l && l.length) ? `${l.length} ${l.length === 1 ? one : many}` : null;
         parts.push(n(p.source_hosts, 'host', 'hosts') || 'any host');
         const src = n(p.metric_sources, 'source', 'sources'), met = n(p.metric_names, 'metric', 'metrics');
@@ -182,7 +183,7 @@ const NotificationsManager = {
                 <td class="c-sel">${toggleHtml(on, '', `data-tip="${on ? 'Turn off' : 'Turn on'}"`)}</td>
                 <td class="n"><span class="pname" title="Edit policy">${escapeHtml(p.name)}</span>${p.description ? `<span class="sub">${escapeHtml(p.description)}</span>` : ''}</td>
                 <td><div class="chips">${chips}</div></td>
-                <td class="cond" title="${escapeHtml(this._when(p).replace(/<[^>]+>/g, ''))}">${this._when(p)}</td>
+                <td class="cond" title="${escapeHtml(this._when(p, true))}">${this._when(p)}</td>
                 <td class="t">${escapeHtml(this._cadence(p))}</td>
                 <td class="t" title="${escapeHtml(fired)}">${escapeHtml(fired)}</td>
                 <td class="c-act"><div class="act">${ibtn('edit', 'Edit', '', 'data-act="edit"')}${ibtn('copy', 'Duplicate', '', 'data-act="copy"')}${kebabBtn()}${menu}</div></td>
