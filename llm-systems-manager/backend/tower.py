@@ -50,6 +50,29 @@ _BYPASS = re.compile("|".join((
 )), re.I)
 
 
+# Messages that probe the manager's security internals; answered with a fixed report-it block, never by the model.
+_SECURITY = re.compile("|".join((
+    r"vulnerab", r"exploit", r"\bcve\b", r"pen(?:etration)?[ -]?test", r"(?:hack|break) into",
+    r"security (?:hole|flaw|weakness|bug|issue|gap|risk|audit|assessment|problem)s?",
+    r"attack (?:surface|vector)s?",
+    r"(?:weak|insecure|unsafe|unprotected) (?:point|spot|part|endpoint|default|route|setting)s?",
+    r"(?:get around|circumvent|defeat|evade|crack|steal)" + _G3
+    + r"(?:auth|login|password|token|session|approval|the admin gate|tls|encryption)",
+)), re.I)
+_SECURITY_HEAD = ("Tower does not discuss the manager's security internals. If you believe you have found a "
+                  "vulnerability, report it to the developer:")
+_SECURITY_TAIL = ("Include what you tried and what happened, the manager, alarm engine and agent versions, "
+                  "the host OS and provider, and the relevant log lines.")
+
+
+def _security_reply(reported: bool) -> str:
+    s = tower_tools.SUPPORT
+    links = "\n".join(f"- {label}: {s[key]}" for label, key in (
+        ("Developer", "developer"), ("Website", "website"), ("Support email", "email"),
+        ("Repository", "repository"), ("Issues", "issues"), ("Docs", "docs")))
+    return f"{_SECURITY_HEAD}\n\n{links}\n\n{_SECURITY_TAIL}" + (_VIOLATION_SUFFIX if reported else "")
+
+
 def _norm(text: str) -> str:
     """Whitespace-normalised copy of a message, for phrase matching."""
     return re.sub(r"\s+", " ", text or "").strip()
@@ -60,7 +83,7 @@ _TIMEOUT_LINE = re.compile(r"\S.*" + re.escape(_TIMEOUT_MARK) + r"\d+ s\.")
 _CANNED = frozenset({_FALLBACK_GENERIC, _FALLBACK_LENGTH, _FALLBACK_REASONING, _FALLBACK_STOPPED, _FALLBACK_PROSE,
                      _ERR_GATEWAY, _ERR_INTERNAL, _VIOLATION_LINE, _VIOLATION_LINE_QUIET})
 _FALLBACK_LAST = "The model stopped without an answer. Last step: "
-_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ", _FALLBACK_LAST)
+_CANNED_PREFIXES = ("The model ran out of tokens before answering", "I stopped after ", _FALLBACK_LAST, _SECURITY_HEAD)
 _WRITE_THE_BLOCK = "Write the tool block itself; a sentence like 'Let me check' without the block calls nothing."
 CHAT_EXCLUDE = re.compile(r"embed|rerank|whisper|sd-|stable-diffusion|clip|tts", re.I)
 _TOOL_OPEN = "```tool"
@@ -1007,6 +1030,13 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                "note": "rule-bypass attempt"}
         emit({"event": "done", **out})
         _end(True, "rule-bypass attempt")
+        return out
+    if _SECURITY.search(_norm(user_text)):
+        _finish_answer(store, thread_id, emit, "", _security_reply(_flag_violation("security")))
+        out = {"ok": True, "calls": 0, "elapsed_ms": int((time.monotonic() - t_start) * 1000),
+               "note": "security probe"}
+        emit({"event": "done", **out})
+        _end(True, "security probe")
         return out
 
     chk0 = checks(model["model"]) if checks else None

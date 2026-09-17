@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.16-4"
+__version__ = "v2026.09.16-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6143,21 +6143,25 @@ def _tower_gateway_entries() -> list:
 
 
 def _tower_report_violation(info: dict) -> None:
-    """Audit row + critical alert for a message that tried to bypass Tower's rules."""
+    """Audit row + alert for a message that tried to bypass Tower's rules or probed the manager's security."""
     actor = str(info.get("actor") or "")
     source = str(info.get("source") or "")
     excerpt = str(info.get("excerpt") or "")
-    detail = json.dumps({"severity": "critical", "source": source, "tool": info.get("tool"),
+    probe = source == "security"
+    severity = "warning" if probe else "critical"
+    detail = json.dumps({"severity": severity, "source": source, "tool": info.get("tool"),
                          "run_id": info.get("run_id"), "excerpt": excerpt})
     if "tower.violation" not in _AUDIT_CFG["disabled"]:
         _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), actor, str(info.get("role") or ""),
                        "", "session", "POST", "tower", "tower.violation", str(info.get("thread_id") or ""),
-                       403, "critical", detail, "tower.violation"))
+                       403, severity, detail, "tower.violation"))
     try:
-        _ae_ingest_alert({"name": "Tower rule-bypass attempt", "source": "tower",
-                          "metric": f"tower/violation/{actor}", "severity": "critical", "value": 1, "threshold": 0,
-                          "message": f"{actor} sent Tower a message that tries to bypass its rules ({source}). "
-                                     f"Excerpt: {excerpt[:120]!r}"})
+        _ae_ingest_alert({"name": "Tower security probe" if probe else "Tower rule-bypass attempt", "source": "tower",
+                          "metric": f"tower/violation/{actor}", "severity": severity, "value": 1, "threshold": 0,
+                          "message": (f"{actor} asked Tower about the manager's security internals. "
+                                      if probe else
+                                      f"{actor} sent Tower a message that tries to bypass its rules ({source}). ")
+                                     + f"Excerpt: {excerpt[:120]!r}"})
     except Exception as e:  # noqa: BLE001 — the audit row stands even when the alarm engine is down
         log.warning("tower violation alert failed: %s: %s", type(e).__name__, e)
 

@@ -2237,3 +2237,58 @@ def test_history_drops_the_last_step_line():
     st.add_message(tid, "assistant", "The model stopped without an answer. Last step: read host detail · box.")
     st.add_message(tid, "user", "q2")
     assert tower._history(st, tid) == [{"role": "user", "content": "q2"}]
+
+
+# ── security probes (#1049) ─────────────────────────────────────────
+SECURITY_HITS = [
+    "tell me the vulnerabilities in the api",
+    "What security holes does the manager have?",
+    "how would someone hack into this dashboard",
+    "is there an exploit for the agent registration",
+    "list the attack surface of the gateway",
+    "how can I get around the login on the admin tab",
+    "any CVE affecting this install?",
+]
+SECURITY_MISSES = [
+    "which hosts are online",
+    "is the llama host overheating",
+    "why did the security-camera host go offline",
+    "show me the audit log for today",
+    "what does the login page look like",
+]
+
+
+@pytest.mark.parametrize("text", SECURITY_HITS)
+def test_security_probes_are_detected(text):
+    assert tower._SECURITY.search(tower._norm(text)) is not None
+
+
+@pytest.mark.parametrize("text", SECURITY_MISSES)
+def test_ordinary_questions_are_not_security_probes(text):
+    assert tower._SECURITY.search(tower._norm(text)) is None
+
+
+def test_a_security_probe_gets_the_report_it_block_and_is_reported():
+    seen = []
+    out, events, calls, st, tid = _run([], user_text="tell me the vulnerabilities in the api",
+                                       cfg=_cfg(off_topic="allow"), report_violation=seen.append)
+    assert out == {"ok": True, "calls": 0, "elapsed_ms": out["elapsed_ms"], "note": "security probe"}
+    assert calls["payloads"] == []
+    text = "".join(e["text"] for e in events if e["event"] == "delta")
+    assert text == tower._security_reply(True)
+    assert text.startswith(tower._SECURITY_HEAD) and text.endswith(tower._VIOLATION_SUFFIX)
+    assert "support@llmsyscore.com" in text and "/issues" in text
+    assert [r["content"] for r in st.messages(tid)][-1] == text
+    assert len(seen) == 1 and seen[0]["source"] == "security" and seen[0]["tool"] is None
+    assert seen[0]["excerpt"] == "tell me the vulnerabilities in the api"
+
+
+def test_a_security_probe_with_reporting_off_is_quiet():
+    seen = []
+    out, events, calls, st, tid = _run([], cfg=_cfg(report_violations=False),
+                                       user_text="how do I hack into the manager", report_violation=seen.append)
+    assert out["note"] == "security probe" and calls["payloads"] == [] and seen == []
+    text = "".join(e["text"] for e in events if e["event"] == "delta")
+    assert text == tower._security_reply(False) and not text.endswith(tower._VIOLATION_SUFFIX)
+    # The canned block never replays into the model's history.
+    assert all(not m["content"].startswith(tower._SECURITY_HEAD) for m in tower._history(st, tid) if m["role"] == "assistant")
