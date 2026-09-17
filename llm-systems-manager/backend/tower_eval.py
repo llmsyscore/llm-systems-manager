@@ -26,7 +26,7 @@ GET_MAX_RUN_S = 4 * 3600.0
 LOAD_WAIT_S = 600.0
 LMS_DOWNLOAD_WAIT_S = 3 * 3600.0
 LMS_POLL_S = 10.0
-LMS_LOAD = {"context_length": 32768, "eval_batch_size": 1024}   # load-time options for an LM Studio Tower model
+LMS_LOAD = {"context_length": 32768, "eval_batch_size": 2048}   # load-time options for an LM Studio Tower model
 CLEANUP_TRIES = 6
 SERVER_WAIT_S = 180.0
 SERVER_POLL_S = 5.0
@@ -523,7 +523,8 @@ class Evaluator:
                         "loaded": bool((e and tower._resident(e)) or (le and tower._resident(le))),
                         "eval": brief(self.store.latest_for(m["model_id"]) or (self.store.latest_for(lms_id) if lms_id else None))})
         last = self._svc.list("all", kind=KIND_GET, limit=1) if self._svc is not None else []
-        index = [{"id": str(e.get("id")), "provider": str(e.get("provider") or ""), "hosts": list(e.get("hosts") or []),
+        index = [{"id": str(e.get("id")), "provider": str(e.get("provider") or ""),
+                  "hosts": list(e.get("catalog_hosts") or e.get("hosts") or []),
                   "loaded": bool(tower._resident(e))} for e in entries if e.get("id")]
         return {"models": out, "hosts": [self._public(h) for h in hosts], "host": (hosts[0]["host"] if hosts else ""),
                 "live": self.view(self.live(KIND_GET)), "last": self.view(last[0] if last else None), "index": index}

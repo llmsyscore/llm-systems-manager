@@ -376,6 +376,8 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
     assert view["hosts"] == [{"provider": "llama", "label": "llama.cpp", "host": "box", "agent_id": "a1", "primary": True}]
     assert "agent" not in view["hosts"][0] and '"token": "t"' not in json.dumps(view)
     assert {"id": mid, "provider": "llama", "hosts": ["box"], "loaded": True} in view["index"]
+    entries.append({"id": "idle-model", "provider": "llama", "status": {"value": "unloaded"}, "hosts": [], "catalog_hosts": ["box"]})
+    assert {"id": "idle-model", "provider": "llama", "hosts": ["box"], "loaded": False} in ev.curated_view()["index"]
 
 
 def test_get_model_job_fails_cleanly_on_a_download_error(monkeypatch):
@@ -586,7 +588,7 @@ def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monk
     assert log[0] == ("POST", "/lms/download", {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
     assert named == [(lms_id, "Tower Model")] and profiles == []
     assert [p for _m, p, _j in log].count("/lms/models") == 3 and log[-1][1] == "/lms/load"
-    assert log[-1][2] == {"model": lms_id, "context_length": 32768, "eval_batch_size": 1024}
+    assert log[-1][2] == {"model": lms_id, "context_length": 32768, "eval_batch_size": 2048}
     assert "/llama/config" not in [p for _m, p, _j in log]
     view = ev.curated_view()
     got = next(m for m in view["models"] if m["key"] == "qwen35-9b-q4")
