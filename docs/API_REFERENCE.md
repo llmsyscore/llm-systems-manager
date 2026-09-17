@@ -125,7 +125,7 @@ The configuration is stored in INI format. Key names correspond to llama-server 
 ---
 
 ### `DELETE /api/llm/config/<model_id>`
-Deletes the saved configuration for the named model, reverting it to defaults on next load.
+Deletes the saved configuration for the named model, reverting it to defaults on next load. On success the manager also drops the model's saved profiles for that host and its display name when no other host lists the model (#1009).
 
 ---
 
@@ -742,7 +742,7 @@ Disables an approved agent, stopping it from pushing data without removing its r
 ---
 
 ### `DELETE /api/agents/<agent_id>`
-Permanently removes an agent's registration record.
+Permanently removes an agent's registration record, every global reference to it, and the model profiles saved under its id (#1009).
 
 **Access:** [Admin]
 
@@ -1404,6 +1404,20 @@ Renames a saved profile.
 Deletes a saved profile for the specified model.
 
 **Body:** `{"profile_name": "<name>"}`
+
+---
+
+### `GET /api/admin/stores/leftovers`
+Admin only. Lists saved profiles and display names that no longer match a registered agent or a model it reports (Admin › Gateway › Model Profile Maintenance). Deletes made through the manager cascade on their own (model delete drops its profiles and name, agent delete drops its profiles); this listing catches what changed outside the manager. Smoke-test artefacts are pruned automatically; everything else is only listed. Add `?refresh=1` to ask every host for its model list again before checking.
+
+**Response fields:** `removed_agents` (`[{agent, models, profiles}]` — profiles saved under an agent id that is no longer registered), `absent_models` (`[{agent, host, model, profiles}]` — the host reports a model list without this model), `absent_aliases` (`[{model, alias}]` — no host lists the model), `unverified_models` / `unverified_aliases` (entries a host could not vouch for — no model list yet — listed so the admin can decide), `unverified` (those hostnames), `aliases_checked`, `counts`, `total`, `at`, `pruned_smoke`.
+
+---
+
+### `POST /api/admin/stores/clean`
+Admin only. Removes the selected leftovers and returns the fresh listing plus `removed: {agents, models, aliases}`.
+
+**Body:** `{"all": true}` or any of `{"agents": ["<agent id>"], "models": [{"agent": "<agent id>", "model": "<model id>"}], "aliases": ["<model id>"]}`. `400` when nothing is selected.
 
 ---
 

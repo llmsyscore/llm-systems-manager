@@ -699,6 +699,14 @@ def _cached_model_entries() -> "list | None":
     return list(entries) if (fresh and entries is not None) else None
 
 
+def _index_snapshot() -> "tuple[dict, dict] | None":
+    """(catalog, serving) maps from the last full fan-out, or None before the first one (#1009)."""
+    with _model_index_lock:
+        if _model_index.get("entries") is None:
+            return None
+        return (dict(_model_index.get("catalog") or {}), dict(_model_index.get("serving") or {}))
+
+
 def _serving_agent_ids(provider, model_id) -> set:
     with _model_index_lock:
         return set((_model_index["serving"] or {})

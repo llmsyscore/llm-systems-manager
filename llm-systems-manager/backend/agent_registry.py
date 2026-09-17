@@ -1620,6 +1620,10 @@ def _agents_disable(agent_id: str):
     return jsonify({"ok": True, "status": "disabled"})
 
 
+# Called with the agent id after a successful delete (#1009); set by the manager.
+on_agent_deleted: "Optional[Callable[[str], None]]" = None
+
+
 def _agents_delete(agent_id: str):
     deny = _deps.require_admin()
     if deny is not None:
@@ -1636,6 +1640,9 @@ def _agents_delete(agent_id: str):
     provider_state.STORE.evict(agent_id)
     with _dial_pref_lock:
         _dial_pref.pop(agent_id, None)
+    if on_agent_deleted is not None:
+        with best_effort("agent delete: on_agent_deleted hook", log=log):
+            on_agent_deleted(agent_id)
     log.warning("agent deleted by %s: id=%s", flask_request.remote_addr, agent_id)
     return jsonify({"ok": True})
 

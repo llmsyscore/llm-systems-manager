@@ -37,6 +37,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | openclaw | Reads session files and produces usage and cost analytics for the OpenClaw tab |
 | provider_state | Holds the most recent hardware and AI metrics pushed by each agent; serves as the fast in-memory state store |
 | model_profiles | Stores named configuration presets per AI model so operators can save and restore settings |
+| store_reconcile | Finds saved profiles and display names that no longer match a registered agent or a model it reports; prunes smoke-test artefacts and serves the Admin cleanup card |
 | manager_users | Manages user accounts: creation, password hashing, role assignment, lockout tracking |
 | _pki | Implements the internal Certificate Authority: generates the root cert on first boot, signs agent and service certs |
 | _archive | Handles encrypted export and import of the system configuration for backup and restore |

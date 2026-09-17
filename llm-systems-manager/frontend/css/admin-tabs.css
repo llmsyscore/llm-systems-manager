@@ -26,6 +26,10 @@
 #adminTab .ib:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #adminTab .ib.warnh:hover { color: var(--warn); }
 #adminTab .ib.crith:hover { color: var(--crit); }
+#adminTab .mcbtn-del:hover { color: var(--crit); border-color: var(--crit); }
+#adminStoresCard .tbl td { padding: 5px 14px; }
+#adminStoresCard .tbl td.r .mcbtn { margin: 0; padding: 3px 10px; }
+#adminStoresCard .tbl td.n .t { font-weight: 400; color: var(--fg-dim); }
 #adminTab .ib.on { color: var(--warn); }
 #adminTab .ib svg { width: 14px; height: 14px; display: block; }
 #adminTab .ib:disabled { opacity: .3; cursor: default; }

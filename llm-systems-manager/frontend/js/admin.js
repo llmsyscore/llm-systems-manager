@@ -495,6 +495,115 @@ async function adminLoadPins() {
   adminRenderPins();
 }
 
+// ── Model Profile Maintenance (#1009): leftovers in the profile / alias stores ──
+let _adminStores = null;
+let _adminStoresBusy = false;
+
+// Rows the card shows, each with the selection its ✕ sends to the clean route.
+function adminStoreRows(d) {
+  const rows = [];
+  for (const r of (d && d.removed_agents) || []) {
+    const n = (r.models || []).length;
+    rows.push({ entry: `Profiles for ${n} model${n === 1 ? '' : 's'}`, sub: `agent ${String(r.agent || '').slice(0, 8)}…`,
+      why: 'Agent no longer registered', tip: (r.models || []).join(', '), sel: { agents: [r.agent] } });
+  }
+  for (const r of (d && d.absent_models) || []) {
+    rows.push({ entry: r.model, sub: r.host, why: 'Model not on this host',
+      tip: `${r.profiles} saved profile${r.profiles === 1 ? '' : 's'}`, sel: { models: [{ agent: r.agent, model: r.model }] } });
+  }
+  for (const r of (d && d.absent_aliases) || []) {
+    rows.push({ entry: r.model, sub: `named “${r.alias}”`, why: 'No host has this model', tip: '', sel: { aliases: [r.model] } });
+  }
+  for (const r of (d && d.unverified_models) || []) {
+    rows.push({ entry: r.model, sub: r.host, why: 'Unverified', unverified: true,
+      tip: `${r.host} has not reported a model list yet · ${r.profiles} saved profile${r.profiles === 1 ? '' : 's'}`,
+      sel: { models: [{ agent: r.agent, model: r.model }] } });
+  }
+  for (const r of (d && d.unverified_aliases) || []) {
+    rows.push({ entry: r.model, sub: `named “${r.alias}”`, why: 'Unverified', unverified: true,
+      tip: 'No host has reported a model list yet', sel: { aliases: [r.model] } });
+  }
+  return rows;
+}
+
+function adminRenderStores(d) {
+  const tbody = document.getElementById('adminStoresTbody');
+  if (!tbody) return;
+  _adminStores = d || null;
+  const rows = adminStoreRows(d);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3"><div class="empty">Nothing to review — every saved profile and name matches a registered agent and a model it reports.</div></td></tr>';
+  } else {
+    tbody.innerHTML = rows.map((r, i) => `<tr>
+        <td class="n mono"${r.tip ? ` data-tip="${adminEsc(r.tip)}"` : ''}>${adminEsc(r.entry)}${r.sub ? ` <span class="t">· ${adminEsc(r.sub)}</span>` : ''}</td>
+        <td${r.unverified ? ' class="t"' : ''}>${adminEsc(r.why)}</td>
+        <td class="r"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm mcbtn-del" onclick="adminCleanStores(${i})">Delete</button></td>
+      </tr>`).join('');
+  }
+  const note = document.getElementById('adminStoresNote');
+  if (note) {
+    const bits = [];
+    if (d && d.at) bits.push(`checked ${_adminAgoShort(d.at)}`);
+    const skipped = (d && d.unverified) || [];
+    if (skipped.length) bits.push(`not checked: ${skipped.join(', ')} (no model list yet)`);
+    if (d && d.aliases_checked === false) bits.push('display names not checked (no model list yet)');
+    note.textContent = bits.join(' · ');
+  }
+  const all = document.getElementById('adminStoresCleanAll');
+  if (all) all.hidden = !rows.length;
+}
+
+async function adminLoadStores(refresh) {
+  if (_adminStoresBusy) return;
+  const btn = document.getElementById('adminStoresCheck');
+  const resultEl = document.getElementById('adminStoresResult');
+  if (refresh) {
+    _adminStoresBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  }
+  try {
+    const r = await fetch('/api/admin/stores/leftovers' + (refresh ? '?refresh=1' : ''));
+    const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      if (resultEl) resultEl.textContent = 'failed: ' + (d.error || r.status);
+      return;
+    }
+    adminRenderStores(d);
+    if (resultEl && refresh) resultEl.textContent = '';
+  } catch (e) {
+    if (resultEl) resultEl.textContent = 'request failed: ' + e.message;
+  } finally {
+    if (refresh) {
+      _adminStoresBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Check now'; }
+    }
+  }
+}
+
+// One row's selection when idx is given, else everything listed.
+async function adminCleanStores(idx) {
+  const resultEl = document.getElementById('adminStoresResult');
+  const rows = adminStoreRows(_adminStores);
+  const body = idx == null ? { all: true } : (rows[idx] || {}).sel;
+  if (!body) return;
+  try {
+    const r = await fetch('/api/admin/stores/clean', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) {
+      if (resultEl) resultEl.textContent = 'failed: ' + (d.error || r.status);
+      return;
+    }
+    const n = d.removed || {};
+    const total = (n.agents || 0) + (n.models || 0) + (n.aliases || 0);
+    if (resultEl) resultEl.textContent = `removed ${total} entr${total === 1 ? 'y' : 'ies'}`;
+    adminRenderStores(d);
+  } catch (e) {
+    if (resultEl) resultEl.textContent = 'request failed: ' + e.message;
+  }
+}
+
 async function adminAddPin() {
   const modelEl = document.getElementById('adminPinModelSelect');
   const agentEl = document.getElementById('adminPinAgentSelect');
@@ -576,6 +685,7 @@ async function adminLoadAgents() {
     adminRenderPins();
     adminRenderPoolOrder();
     adminLoadProviderModels();   // fire-and-forget; populates datalist
+    if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing') adminLoadStores();
   } catch(e) {
     _adminLog('error: ' + e.message, 'err');
   }
