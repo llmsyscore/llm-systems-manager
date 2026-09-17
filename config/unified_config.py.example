@@ -27,7 +27,6 @@ Sections:
     [notifications]      — SMTP (★ secret) + Twilio + Discord + per-channel timeouts
     [paths]              — log dir + rotation
     [logging]            — single level/format/datefmt knob for both services
-    [agent]              — schema-only documentation; agents read agent_config.yaml directly
 """
 
 from __future__ import annotations
@@ -627,24 +626,6 @@ class LoggingConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# [agent] — schema-only. Agents read agent_config.yaml directly; this
-# section exists so the central TOML can describe agents declaratively
-# (and so adding agent-related metadata later doesn't require a new file).
-# ---------------------------------------------------------------------------
-class AgentConfig(BaseModel):
-    model_config = _MODEL_CFG
-    dashboard_url: str = "http://localhost:5000/api/remote/lmstudio"
-    lmstudio_api_url: str = "http://localhost:1235"
-    lmstudio_cli_path: str = "/Users/llmsys/.lmstudio/bin/lms"
-    post_interval: int = 15
-    heartbeat_interval: int = 300
-    log_dir: str = "/Users/llmsys/Library/Logs/llm-systems-agent/"
-    log_file: str = "/Users/llmsys/Library/Logs/llm-systems-agent/agent.log"
-    log_max_bytes: int = 5 * 1024 * 1024
-    log_backup_count: int = 3
-
-
-# ---------------------------------------------------------------------------
 # Top-level — loads the TOML
 # ---------------------------------------------------------------------------
 class Settings(BaseSettings):
@@ -665,7 +646,6 @@ class Settings(BaseSettings):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
-    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -701,5 +681,5 @@ __all__ = [
     "Settings",
     # Sub-models (consumers rarely need these directly):
     "ManagerConfig", "AlarmEngineConfig", "OpenClawConfig", "InfluxDBConfig",
-    "NotificationsConfig", "PathsConfig", "LoggingConfig", "AgentConfig",
+    "NotificationsConfig", "PathsConfig", "LoggingConfig",
 ]
