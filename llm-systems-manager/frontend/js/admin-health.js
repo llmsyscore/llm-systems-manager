@@ -320,8 +320,13 @@
   function warnRows(d, rel) {
     const rows = [];
     for (const w of ((d && d.warnings) || [])) {
+      if (/^job failed: /.test(String(w))) continue;
       const crit = CRIT_RE.test(String(w));
       rows.push({ k: crit ? 'crit' : 'warn', g: crit ? '▲' : '!', t: esc(w) });
+    }
+    // Failed jobs come from the structured list so each row can be dismissed (#1044).
+    for (const j of ((d && d.jobs && d.jobs.failed) || [])) {
+      rows.push({ k: 'warn', g: '!', t: `job failed: ${esc(j.label)} — ${esc(j.message || 'failed')}`, ack: j.id });
     }
     if (rel && rel.enabled && rel.update_available === true) {
       const url = `https://github.com/${rel.repo || ''}/releases/latest`;
@@ -367,17 +372,25 @@
       else if (st === 'running') when = `started ${ago(now - (r.started || now))} ago`;
       else when = `${st} ${ago(now - (r.resolved || now))} ago` + (st === 'failed' && r.message ? ` — ${r.message}` : '');
       if (st === 'queued' && r.message && /^waiting for /.test(r.message)) when = r.message;
-      return { id: r.id, k: st, label: r.label || r.id, kind: r.kind_title || r.kind || '', when, by: r.user || r.source || '', cancel: !!r.can_cancel, live: st === 'queued' || st === 'running' };
+      return { id: r.id, k: st, label: r.label || r.id, kind: r.kind_title || r.kind || '', when, by: r.user || r.source || '',
+               cancel: !!r.can_cancel, ack: !!r.can_ack, acked: !!r.acked, live: st === 'queued' || st === 'running' };
     });
   }
   const DOT = { queued: 'ok', running: 'ok pulse', failed: 'crit', done: '', cancelled: '' };
   function jobsHtml(rows) {
     if (!rows.length) return '<div class="w-none">None</div>';
-    return rows.map(r => `<div class="hj ${r.k}${r.live ? ' live' : ''}" data-job="${esc(r.id)}"><span class="dot ${DOT[r.k] || ''}"></span>`
+    return rows.map(r => `<div class="hj ${r.k}${r.live ? ' live' : ''}${r.acked ? ' acked' : ''}" data-job="${esc(r.id)}"><span class="dot ${r.acked ? '' : (DOT[r.k] || '')}"></span>`
       + `<span class="hj-l" title="${esc(r.label)}">${esc(r.label)}</span><span class="hj-k">${esc(r.kind)}</span>`
       + `<span class="hj-w" title="${esc(r.when)}">${esc(r.when)}</span><span class="hj-by">${esc(r.by)}</span>`
-      + (r.cancel ? `<button type="button" class="ib" data-cancel-job="${esc(r.id)}" aria-label="Cancel job">✕</button>` : '<span class="ib none"></span>')
+      + (r.cancel ? `<button type="button" class="ib" data-cancel-job="${esc(r.id)}" aria-label="Cancel job">✕</button>`
+        : r.ack ? `<button type="button" class="ib" data-ack-job="${esc(r.id)}" aria-label="Dismiss failed job" title="Dismiss">✕</button>`
+        : '<span class="ib none"></span>')
       + '</div>').join('');
+  }
+  // Marks one failed job as seen; the next health poll drops it from the warnings and dims its row.
+  async function ackJob(id) {
+    try { await fetch(`/api/jobs/${encodeURIComponent(id)}/ack`, { method: 'POST' }); } catch (_) { /* next poll repaints */ }
+    if (typeof adminLoadHealth === 'function') adminLoadHealth();
   }
   function jobsSummary(d) {
     const j = (d && d.jobs) || {};
@@ -479,12 +492,16 @@
     const warnEl = $('adminHealthWarnings');
     if (warnEl) {
       warnEl.innerHTML = rows.length
-        ? rows.map(r => `<div class="w ${r.k}"><span class="g">${r.g}</span><div>${r.t}</div></div>`).join('')
+        ? rows.map(r => `<div class="w ${r.k}${r.ack ? ' ack' : ''}"><span class="g">${r.g}</span><div>${r.t}</div>`
+          + (r.ack ? `<button type="button" class="ib" data-ack-job="${esc(r.ack)}" aria-label="Dismiss failed job" title="Dismiss">✕</button>` : '')
+          + '</div>').join('')
         : '<div class="w-none">None</div>';
       if (!warnEl._hcBound) {
         warnEl._hcBound = true;
         warnEl.addEventListener('click', e => {
           if (e.target.closest('[data-act="updateall"]') && typeof adminUpdateAll === 'function') adminUpdateAll();
+          const ack = e.target.closest('[data-ack-job]');
+          if (ack) { ack.disabled = true; ackJob(ack.getAttribute('data-ack-job')); }
         });
       }
     }
@@ -497,6 +514,8 @@
       if (!jobsEl._hcBound) {
         jobsEl._hcBound = true;
         jobsEl.addEventListener('click', async e => {
+          const ack = e.target.closest('[data-ack-job]');
+          if (ack) { ack.disabled = true; ackJob(ack.getAttribute('data-ack-job')); return; }
           const btn = e.target.closest('[data-cancel-job]');
           if (!btn) return;
           btn.disabled = true;

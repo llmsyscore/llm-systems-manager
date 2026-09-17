@@ -22,6 +22,8 @@ AGENT_EVICT_S = 24 * 3600.0
 PRUNE_INTERVAL_S = 3600.0
 
 PROVIDERS = ("llama", "vllm", "lms")
+# Live buckets also carry the system-only push (#1041); energy accounting reads PROVIDERS only.
+LIVE_PROVIDERS = PROVIDERS + ("system",)
 
 # Cloud list-price defaults for the savings estimate ($ per Mtok).
 # Config [manager.energy] overrides; the UI can override per request.
@@ -595,11 +597,11 @@ def _window_from_args(args, now: float) -> "tuple[int, int, str] | None":
     return start, end, month
 
 
-def store_view_from_provider_state() -> dict:
-    """{agent_id: {provider: (sample, last_seen)}} across every provider."""
+def store_view_from_provider_state(names: tuple = LIVE_PROVIDERS) -> dict:
+    """{agent_id: {provider: (sample, last_seen)}} across the named providers (default: every live bucket)."""
     import provider_state
     out: dict = {}
-    for prov in PROVIDERS:
+    for prov in names:
         for aid, wrap in (provider_state.STORE.all_for(prov) or {}).items():
             sample = (wrap or {}).get("sample")
             last_seen = float((wrap or {}).get("last_seen") or 0)
@@ -736,7 +738,7 @@ def start_thread(ctx=None) -> None:
         log.warning("energy: register_routes must run before start_thread")
         return
     import gateway_usage
-    _ACCUM = Accumulator(store_view_from_provider_state,
+    _ACCUM = Accumulator(lambda: store_view_from_provider_state(PROVIDERS),
                          lambda incs: upsert_increments(_conn_factory(), incs),
                          usage_view=gateway_usage.counters)
 

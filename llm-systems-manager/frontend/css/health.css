@@ -129,6 +129,9 @@
 #adminHealthCard .hj .ib.none { visibility: hidden; }
 #adminHealthCard .hj:not(.live) .hj-l { color: var(--fg-muted); font-weight: 500; }
 #adminHealthCard .hj:not(.live) .dot { opacity: .55; }
+#adminHealthCard .hj.acked .hj-l, #adminHealthCard .hj.acked .hj-w { color: var(--fg-dim); }
+#adminHealthCard .w.ack { grid-template-columns: 16px 1fr 22px; }
+#adminHealthCard .w.ack .ib { width: 22px; height: 22px; font-size: 11px; }
 #adminHealthCard .hj .dot.pulse { animation: hc-pulse 1.2s ease-in-out infinite; }
 
 @media (max-width: 1100px) {

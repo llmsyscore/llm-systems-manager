@@ -58,7 +58,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | tower_playbooks.py | Declarative Tower playbooks: match an alert row, step templates over the act tools, safe flag, pin requirement |
 | tower_watch.py | Tower alert watcher: 30 s poll of open alerts, read-only diagnosis runs → insights, apply guards (tier, role, live alert re-check, atomic claim), safe-playbook auto-apply, insight routes |
 | tower_check.py | Tower model capability check: one canned tool probe per model graded native / fenced / failed, size hint from the model id, cached per model and tool mode |
-| jobs.py | Job service: one ledger + dispatcher for scheduled and queued work (kinds tower_timer and autotune_batch), exclusive keys, boot recovery, failure alerts, /api/jobs routes |
+| jobs.py | Job service: one ledger + dispatcher for scheduled and queued work (kinds tower_timer and autotune_batch), exclusive keys, boot recovery, failure alerts, failed-job acknowledgement, /api/jobs routes |
 | `app_context.py` | Shared context dataclass that wires all modules together — carries references to the agent registry, alarm engine session, and other cross-module dependencies |
 | `providers/` | Multi-agent provider registry — defines which agent types (llama.cpp, LM Studio, vLLM) are supported, how their metrics are aggregated across multiple agents, and how agents are routed |
 

@@ -286,10 +286,22 @@ def test_unknown_host_is_rejected_at_schedule_time_now_not_left_to_the_tick():
     tid = st.create_thread("alice", "t", {})
     gone = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "nope", "metric": "ram_pct", "every_s": 30, "times": 2})
     assert gone == {"ok": False, "message": "unknown host: nope; hosts are box"}
-    watts = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "box", "metric": "watts", "every_s": 30, "times": 2})["timer_id"]
-    clock.t = 1030.0
-    svc.tick()
-    assert svc.get(watts)["state"]["samples"] == [{"t": 1030.0, "error": "watts not reported"}]
+    # #1041: a metric the host does not report live is refused now, not left to fail on every tick.
+    watts = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "box", "metric": "watts", "every_s": 30, "times": 2})
+    assert watts == {"ok": False, "message": "box does not report watts live; only history (host_history) is available"}
+    assert svc.list("live", kind=tm.KIND) == []
+
+
+def test_a_host_with_no_live_sample_is_refused_at_schedule_time():
+    class _Offline:
+        def __call__(self, name, section="all"):
+            return {"hostname": "box", "online": False, "age_s": None} if name == "box" else None
+    timers, st, svc = _timers(deps=_deps(_Offline()), runs=_Runs())
+    tid = st.create_thread("alice", "t", {})
+    out = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "box", "metric": "ram_pct", "every_s": 30, "times": 2})
+    assert out == {"ok": False, "message": "no live sample for box; only history (host_history) is available"}
+    reg = tt.build_registry(_deps())
+    assert tm.timer_spec({"tool": "host_detail", "args": {"host": "box", "section": "ram"}, "pick": "live.ram.used_pct"}, reg, _cfg(), "operator")[1] is None
 
 
 def test_timer_fails_early_when_every_tick_errors():
@@ -311,6 +323,43 @@ def test_timer_fails_early_when_every_tick_errors():
     samples = job["state"]["samples"]
     assert len(samples) == 3 and all("error" in s for s in samples)
     assert any(m.get("tool_name") == tm.TICK_TOOL for m in st.messages(tid))
+    # #1042: the failure reaches the Insights tab with the last error and a next step.
+    (ins,) = st.list_insights()
+    assert ins["alert_id"] == f"timer:{out['timer_id']}" and ins["rule"] == "Timer failed" and ins["host"] == "box"
+    assert ins["summary"] == "Timer failed: ram_pct on box" and ins["thread_id"] == tid and ins["status"] == "new"
+    assert ins["detail"] == "every tick failed: unknown host · last errors: unknown host"
+    assert ins["suggested_action"].startswith("Check the host name") and ins["snapshot"] is None
+
+
+def test_a_cancelled_timer_raises_no_insight_and_a_failed_one_keeps_its_graph():
+    clock = _Clock(1000.0)
+    cfg = _cfg()
+    timers, st, svc = _timers(cfg=cfg, clock=clock, deps=_deps(_DeadHosts()), runs=_Runs())
+    tid = st.create_thread("alice", "t", {})
+    gone = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "box", "metric": "ram_pct", "every_s": 30, "times": 4})
+    assert timers.cancel(gone["timer_id"], "alice")[1] is None and st.list_insights() == []
+    kept = timers.schedule(thread_id=tid, user="alice", role="operator", args={"host": "box", "metric": "ram_pct", "every_s": 30, "times": 6})
+    for _ in range(2):
+        clock.t += 30.0
+        svc.tick()
+    cfg.enabled = False
+    clock.t += 30.0
+    svc.tick()
+    job = svc.get(kept["timer_id"])
+    assert job["status"] == "failed" and job["message"] == "Tower was turned off"
+    (ins,) = st.list_insights()
+    assert ins["snapshot"] == {"points": [[1030, 41], [1060, 41]], "unit": "%", "metric": "ram_pct", "minutes": 1}
+    assert ins["detail"] == "Tower was turned off" and ins["suggested_action"].startswith("Turn Tower back on")
+
+
+def test_failure_action_table():
+    assert tm.failure_action("every tick failed: unknown host: x").startswith("Check the host name")
+    assert "agent role" in tm.failure_action("every tick failed: gpu_pct not reported")
+    assert "pushes no live sample" in tm.failure_action("every tick failed: no live sample for x; only history")
+    assert tm.failure_action("Tower was turned off").startswith("Turn Tower back on")
+    assert "rate limit" in tm.failure_action("every tick failed: rate limited")
+    assert tm.failure_action("could not report: model busy").startswith("The report turn could not start")
+    assert tm.failure_action("something odd").startswith("Read the tool's error")
 
 
 def test_timers_survive_a_restart_via_requeue():

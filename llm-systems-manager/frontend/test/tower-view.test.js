@@ -399,6 +399,31 @@ describe('timers (#1029)', () => {
     expect(TW.finishedTimers(rows, next).map(t => t.id)).toEqual(['tm1']);
     expect(TW.finishedTimers([], next)).toEqual([]);
   });
+  test('historyCharts finds the UI-only chart on single- and multi-host host_history results (#1043)', () => {
+    const chart = { points: [[1000, 10], [1060, 30], [1120, 20]], unit: '%', metric: 'ram_pct', host: 'box', minutes: 2 };
+    expect(TW.historyCharts({ min: 10, _chart: chart })).toEqual([chart]);
+    expect(TW.historyCharts({ hosts: [{ _chart: chart }, { error: 'unknown host' }, { _chart: { points: [[1, 1]] } }] })).toEqual([chart]);
+    expect(TW.historyCharts({ series: [] })).toEqual([]);
+    expect(TW.historyCharts(null)).toEqual([]);
+    const c = TW.historyChart(chart, 240, 60);
+    expect(c.hi).toBe('30%'); expect(c.lo).toBe('10%');
+    expect(c.peakPct).toEqual({ x: 50, y: 0 });
+    expect(c.peak).toMatch(/^peak 30% at /);
+    expect(c.caption).toBe('ram_pct · box · 10% → 20% · 10%–30%');
+    expect(c.d.startsWith('M')).toBe(true);
+    expect(TW.historyChart({ points: [[0, 1]] }, 240, 60)).toBeNull();
+    const flat = TW.historyChart({ points: [[0, 5], [10, 5]], unit: 'W' }, 240, 60);
+    expect(flat.peakPct.y).toBe(50);
+    expect(flat.label).toBe('metric');
+  });
+
+  test('a failed-timer insight carries no alert to open (#1042)', () => {
+    const v = TW.insightView({ id: 'i1', alert_id: 'timer:abc', rule: 'Timer failed', status: 'new', summary: 'Timer failed: x', created: 1500 }, { capabilities: 'read' }, 1600);
+    expect(v.alertId).toBe('');
+    expect(v.rule).toBe('Timer failed');
+    expect(TW.insightView({ id: 'i2', alert_id: 'a9', status: 'new', created: 1500 }, { capabilities: 'read' }, 1600).alertId).toBe('a9');
+  });
+
   test('timerSnapshot turns a timer result series into a sparkline snapshot', () => {
     const snap = TW.timerSnapshot({ label: 'RAM on box', metric: 'ram_pct', unit: '%', series: [[1000, 41], [1060, 42], [1120, 44]] });
     expect(snap).toEqual({ points: [[1000, 41], [1060, 42], [1120, 44]], unit: '%', metric: 'ram_pct', minutes: 2 });

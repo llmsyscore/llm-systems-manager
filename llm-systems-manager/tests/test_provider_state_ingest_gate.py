@@ -38,6 +38,18 @@ def test_unadvertised_provider_is_refused(ingest, prov):
     assert puts == []
 
 
+def test_system_envelope_needs_only_sysperf(ingest, monkeypatch):
+    """#1041: a system-only agent's live sample lands in a `system` bucket; no sysperf, no bucket."""
+    c, puts = ingest
+    r = c.post("/api/remote/provider-state", json={"provider": "system", "sample": {"cpu_total": 3.0}})
+    assert r.status_code == 200 and puts == [("system", "a" * 32)]
+    puts.clear()
+    agent = {"agent_id": "d" * 32, "hostname": "h", "status": "approved", "capabilities": {"llama": True}}
+    monkeypatch.setattr(agent_registry, "agent_by_token", lambda tok: agent)
+    r = c.post("/api/remote/provider-state", json={"provider": "system", "sample": {"cpu_total": 3.0}})
+    assert r.status_code == 403 and "sysperf" in r.get_json()["error"] and puts == []
+
+
 def test_unknown_provider_still_404(ingest):
     c, puts = ingest
     r = c.post("/api/remote/provider-state", json={"provider": "nope", "sample": {}})

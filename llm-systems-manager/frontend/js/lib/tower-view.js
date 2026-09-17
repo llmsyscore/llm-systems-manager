@@ -301,7 +301,7 @@
     const res = r.result || null;
     const at = Number((applied && r.resolved) || r.created || 0);
     return {
-      id: r.id, alertId: r.alert_id || '', status: r.status, open, applied, running,
+      id: r.id, alertId: /^timer:/.test(String(r.alert_id || '')) ? '' : (r.alert_id || ''), status: r.status, open, applied, running,
       cls: applied ? 'done' : (String(r.severity || '').toLowerCase() === 'critical' ? 'crit' : ''),
       rule: r.rule || 'Alert', host: r.host || '',
       age: at ? ageText((nowS != null ? nowS : Date.now() / 1000) - at) : '',
@@ -405,6 +405,36 @@
     const was = new Set(liveTimers(prev).map(t => t.id));
     return (next || []).filter(t => t && t.status === 'done' && t.run_id && was.has(t.id));
   }
+  // host_history charts (#1043): one per host carrying `_chart`; [] when the result has none.
+  function historyCharts(result) {
+    const r = result && typeof result === 'object' ? result : null;
+    if (!r) return [];
+    const rows = Array.isArray(r.hosts) ? r.hosts : [r];
+    return rows.map(x => x && x._chart).filter(c => c && Array.isArray(c.points) && c.points.length >= 2);
+  }
+  // Geometry for a full-width history chart: the path, the peak (as % of the box) and axis labels.
+  function historyChart(chart, w, h) {
+    const sp = sparkline(chart, w || 240, h || 60);
+    if (!sp) return null;
+    const pts = chart.points.filter(p => Array.isArray(p) && Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1])));
+    const ys = pts.map(p => Number(p[1])), xs = pts.map(p => Number(p[0]));
+    const hi = Math.max(...ys), lo = Math.min(...ys), x0 = Math.min(...xs), span = (Math.max(...xs) - x0) || 1;
+    const peakI = ys.indexOf(hi);
+    const unit = String(chart.unit || '');
+    const fmt = v => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + (unit === '%' || !unit ? unit : ' ' + unit);
+    const long = span >= 36 * 3600;
+    const when = t => {
+      const d = new Date(t * 1000);
+      return long ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+                  : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    };
+    const peakPct = { x: (xs[peakI] - x0) / span * 100, y: hi === lo ? 50 : 0 };
+    const label = (chart.metric || 'metric') + (chart.host ? ' · ' + chart.host : '');
+    return { d: sp.d, w: sp.w, h: sp.h, hi: fmt(hi), lo: fmt(lo), first: when(xs[0]), last: when(xs[xs.length - 1]),
+             peakPct, peak: `peak ${fmt(hi)} at ${when(xs[peakI])}`, label,
+             caption: `${label} · ${fmt(ys[0])} → ${fmt(ys[ys.length - 1])} · ${fmt(lo)}–${fmt(hi)}` };
+  }
+
   // A timer tool row's numeric series as a sparkline snapshot; null when there is nothing to draw.
   function timerSnapshot(result) {
     const r = result && typeof result === 'object' ? result : null;
@@ -440,5 +470,5 @@
 
   return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
-           timerLine, liveTimers, finishedTimers, timerSnapshot };
+           timerLine, liveTimers, finishedTimers, timerSnapshot, historyCharts, historyChart };
 });

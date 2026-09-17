@@ -77,3 +77,56 @@ def test_cancel_by_owner_or_admin(env):
     _as(env, "admin", "root")
     assert env.post(f"/api/jobs/{theirs['id']}/cancel").get_json()["job"]["status"] == "cancelled"
     assert env.post("/api/jobs/nope/cancel").status_code == 404
+
+
+def _failed(env, user="bob", label="F"):
+    row = env.svc.submit("closed", {}, user=user, label=label)
+    env.svc._store.update(row["id"], status="failed", resolved=990.0, message="boom")
+    return row
+
+
+def test_ack_marks_a_failed_job_seen_for_its_owner_or_an_admin(env):
+    """#1044: ack needs a session, the owner or an admin, a failed row, and works once."""
+    row = _failed(env)
+    assert env.post(f"/api/jobs/{row['id']}/ack").status_code == 401
+    _as(env, "viewer", "bob")
+    assert env.post(f"/api/jobs/{row['id']}/ack").status_code == 403
+    _as(env, "operator", "alice")
+    assert env.post(f"/api/jobs/{row['id']}/ack").status_code == 403
+    assert env.post("/api/jobs/nope/ack").status_code == 404
+    live = env.svc.submit("closed", {}, user="alice", label="L")
+    r = env.post(f"/api/jobs/{live['id']}/ack")
+    assert r.status_code == 409 and r.get_json()["error"] == "job is queued"
+    _as(env, "operator", "bob")
+    before = env.get("/api/jobs?status=failed").get_json()
+    assert before["summary"]["failed_24h"] == 1 and before["jobs"][0]["can_ack"] is True and before["jobs"][0]["acked"] is False
+    r = env.post(f"/api/jobs/{row['id']}/ack")
+    assert r.status_code == 200 and r.get_json()["job"]["acked"] is True and r.get_json()["job"]["can_ack"] is False
+    r = env.post(f"/api/jobs/{row['id']}/ack")
+    assert r.status_code == 409 and r.get_json()["error"] == "already acknowledged"
+    after = env.get("/api/jobs?status=failed").get_json()
+    assert after["summary"]["failed_24h"] == 0 and after["jobs"][0]["acked"] is True
+    assert env.svc.failed_recent() == []
+    _as(env, "admin", "root")
+    other = _failed(env, user="carol", label="G")
+    assert env.post(f"/api/jobs/{other['id']}/ack").status_code == 200
+
+
+def test_ack_writes_an_audit_row_and_survives_an_older_table():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.executescript("""CREATE TABLE jobs (id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, user TEXT, role TEXT, source TEXT,
+        spec TEXT, state TEXT, status TEXT NOT NULL, not_before REAL, period_s REAL, runs_left INTEGER, next_run REAL, last_run REAL,
+        started REAL, run_count INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, lease REAL, exclusive TEXT,
+        result TEXT, message TEXT, thread_id TEXT, created REAL NOT NULL, resolved REAL);""")
+    jobs.init_table(conn)
+    assert "acked_at" in {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    audit = []
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                       audit=audit.append, now=lambda: 1000.0, inline=True)
+    svc.register(jobs.Kind("closed", "Closed kind", run=lambda j: jobs.ok()))
+    row = svc.submit("closed", {}, user="bob", label="F")
+    assert svc.ack(row["id"], actor="bob") is None
+    svc._store.update(row["id"], status="failed", resolved=990.0, message="boom")
+    out = svc.ack(row["id"], actor="bob")
+    assert out["acked_at"] == 1000.0 and svc.ack(row["id"], actor="bob") is None
+    assert [a["action"] for a in audit] == ["jobs.submit", "jobs.ack"] and audit[-1]["actor"] == "bob"

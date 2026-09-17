@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.16-1"
+VERSION = "v2026.09.16-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2275,21 +2275,30 @@ def _push_dashboard_payload(sample: dict[str, Any]) -> None:
 _push_endpoint_state = "auto"
 
 
+def _host_push_provider() -> "str | None":
+    """'llama' for llama-capable agents, 'system' when no provider push carries the system block, else None."""
+    if CONFIG.LLAMA_ENABLED:
+        return "llama"
+    if CONFIG.LMS_ENABLED or CONFIG.VLLM_ENABLED:
+        return None
+    return "system"
+
+
 def _push_host_payload(sample: dict[str, Any]) -> None:
-    """POST host metric snapshot to manager for any llama-capable agent.
-    Prefers the /api/remote/provider-state envelope; on 404 falls back to
-    legacy /api/remote/host-metrics and remembers the result. PR2: the
-    primary-llama gate is dropped — STORE partitions samples per-agent."""
+    """POST the host metric snapshot to the manager as a llama or system envelope (#1041).
+    Prefers /api/remote/provider-state; on 404 a llama agent falls back to /api/remote/host-metrics."""
     if not getattr(CONFIG, "PUSH_HOST_METRICS_ENABLED", True):
         return
-    if not CONFIG.LLAMA_ENABLED:
+    provider = _host_push_provider()
+    if provider is None:
         return
     sys_metric = sample.get("system") or {}
     if not sys_metric:
         return
-    if sample.get("llama"):
+    if sample.get("llama") or sample.get("mac_power"):
         sys_metric = dict(sys_metric)
-        sys_metric["llama"] = sample.get("llama")
+        if provider == "llama" and sample.get("llama"):
+            sys_metric["llama"] = sample.get("llama")
         # Apple SoC watts for the manager's energy accounting (#470).
         if sample.get("mac_power"):
             sys_metric["mac_power"] = sample.get("mac_power")
@@ -2301,18 +2310,20 @@ def _push_host_payload(sample: dict[str, Any]) -> None:
         if _push_endpoint_state in ("auto", "envelope"):
             r = _post_session.post(
                 f"{base}/api/remote/provider-state",
-                json={"provider": "llama", "sample": sys_metric},
+                json={"provider": provider, "sample": sys_metric},
                 headers=headers, timeout=3,
             )
             if r.status_code == 404:
                 _push_endpoint_state = "legacy"
-                logger.info("manager has no /api/remote/provider-state; "
-                            "falling back to /api/remote/host-metrics")
+                logger.info("manager does not accept the %s provider-state envelope; "
+                            "falling back to /api/remote/host-metrics", provider)
             else:
                 _push_endpoint_state = "envelope"
                 if not r.ok:
                     logger.debug("provider-state push HTTP %s", r.status_code)
                 return
+        if provider != "llama":
+            return
         r = _post_session.post(
             f"{base}/api/remote/host-metrics",
             json=sys_metric, headers=headers, timeout=3,

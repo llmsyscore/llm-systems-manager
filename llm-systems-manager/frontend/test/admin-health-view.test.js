@@ -387,6 +387,36 @@ describe('jobs strip (#915)', () => {
     expect(none.getElementById('adminHealthJobsSum').textContent).toBe('none');
   });
 
+  test('failed jobs render as dismissable warnings and dimmed strip rows once acknowledged (#1044)', () => {
+    const jobs = { queued: 0, running: 0, failed_24h: 1, next_due: null,
+      failed: [{ id: 'j7', label: 'RAM on box', message: 'every tick failed: ram_pct not reported', resolved: NOW - 60 }],
+      rows: [
+        { id: 'j7', label: 'RAM on box', kind_title: 'Tower timer', status: 'failed', resolved: NOW - 60, message: 'every tick failed: ram_pct not reported', can_cancel: false, can_ack: true, acked: false },
+        { id: 'j8', label: 'old one', kind_title: 'Tower timer', status: 'failed', resolved: NOW - 3600, message: 'boom', can_cancel: false, can_ack: false, acked: true },
+      ] };
+    const d = { ...HEALTHY, warnings: ['job failed: RAM on box — every tick failed: ram_pct not reported', 'job failed: old one — boom'], jobs };
+    const rows = view().warnRows(d, null);
+    expect(rows.filter(r => /job failed/.test(r.t)).map(r => r.ack)).toEqual(['j7']);
+    expect(rows[0].t).toBe('job failed: RAM on box — every tick failed: ram_pct not reported');
+    const mapped = view().jobsRows({ jobs }, NOW);
+    expect(mapped[0]).toMatchObject({ id: 'j7', ack: true, acked: false });
+    expect(mapped[1]).toMatchObject({ id: 'j8', ack: false, acked: true });
+    const doc = card(d, null,
+      'window.__posts = []; window.fetch = (u, o) => { window.__posts.push([u, (o||{}).method]); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };');
+    const warn = doc.querySelectorAll('#adminHealthWarnings .w');
+    expect(warn.length).toBe(1);
+    expect(warn[0].classList.contains('ack')).toBe(true);
+    const hj = doc.querySelectorAll('#adminHealthJobsList .hj');
+    expect(hj[0].querySelector('[data-ack-job="j7"]')).not.toBeNull();
+    expect(hj[0].querySelector('.dot').className).toBe('dot crit');
+    expect(hj[1].classList.contains('acked')).toBe(true);
+    expect(hj[1].querySelector('[data-ack-job]')).toBeNull();
+    expect(hj[1].querySelector('.dot').className).toBe('dot ');
+    warn[0].querySelector('[data-ack-job]').click();
+    hj[0].querySelector('[data-ack-job]').click();
+    expect(doc.defaultView.__posts).toEqual([['/api/jobs/j7/ack', 'POST'], ['/api/jobs/j7/ack', 'POST']]);
+  });
+
   test('cancel click posts to /api/jobs/<id>/cancel', () => {
     const doc = card({ ...HEALTHY, jobs: JOBS }, null,
       'window.__posts = []; window.fetch = (u, o) => { window.__posts.push([u, (o||{}).method]); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };');
