@@ -470,3 +470,34 @@ describe('checkChips (#1039)', () => {
     expect(TW.stateView({ ok: true, enabled: true, model: 'm' }).fallback).toBeNull();
   });
 });
+
+describe('conversation eval (#1047)', () => {
+  const R = { id: 'e1', model: 'qwen3-14b', quant: 'Q4_K_M', server: 'llama.cpp b6400', at: 1000, ms: 48400,
+              passed: 7, total: 8, calls_per_case: 1.4, corrections: 1, retries: 2, score_pct: 87.5 };
+  test('evalSummary grades by score and lists the counters', () => {
+    const v = TW.evalSummary(R, 1000 + 3600 * 3);
+    expect(v.text).toBe('7/8');
+    expect(v.cls).toBe('warn');
+    expect(v.line).toBe('1.4 calls per question · 1 corrected · 2 retries · 48 s');
+    expect(v.meta).toBe('Q4_K_M · llama.cpp b6400');
+    expect(v.when).toBe('3 h');
+    expect(v.short).toBe('qwen3-14b');
+    expect(v.title).toBe('7/8 passed · qwen3-14b · Q4_K_M · llama.cpp b6400 · 3 h ago');
+    expect(TW.evalSummary({ ...R, model: 'bartowski/Qwen3.8-27B-GGUF:Q4_K_M' }).short).toBe('Qwen3.8-27B-GGUF:Q4_K_M');
+    expect(TW.evalSummary({ ...R, passed: 8, score_pct: 100, corrections: 0, retries: 1 }, 1010).cls).toBe('ok');
+    expect(TW.evalSummary({ ...R, passed: 8, score_pct: 100, corrections: 0, retries: 1 }, 1010).line).toBe('1.4 calls per question · 1 retry · 48 s');
+    expect(TW.evalSummary({ ...R, passed: 2, score_pct: 25 }).cls).toBe('crit');
+    expect(TW.evalSummary({ ...R, quant: null, server: null }).meta).toBe('');
+    expect(TW.evalSummary(null)).toBeNull();
+  });
+  test('evalProgress words each phase', () => {
+    expect(TW.evalProgress({ status: 'queued', state: {} })).toBe('Queued…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'download', pct: 40 } })).toBe('Downloading · 40 %…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'load', waited_s: 25 } })).toBe('Loading · 25 s…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'check' } })).toBe('Checking tool calls…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'eval', case: 3, total: 8, title: 'Timer', passed: 2 } })).toBe('Question 3/8 · Timer · 2 passed so far');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'config' } })).toBe('Adding it to the host…');
+    expect(TW.evalProgress({ status: 'running', state: { phase: 'restart', waited_s: 12 } })).toBe('Restarting llama.cpp · 12 s…');
+    expect(TW.evalProgress(null)).toBe('');
+  });
+});

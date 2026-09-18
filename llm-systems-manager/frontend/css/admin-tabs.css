@@ -266,6 +266,22 @@
 #admin-settings .st-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border-strong)); }
 #admin-settings .st-chip.dim { color: var(--fg-faint); }
 #admin-settings .st-chip[data-tip]::after { white-space: normal; width: max-content; max-width: 360px; text-align: left; }
+#admin-settings .st-checkrow .st-ct .row.ev { flex-wrap: wrap; row-gap: 4px; }
+#admin-settings .st-checkrow .st-ct .row.ev .d.line { width: auto; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+#admin-settings .st-checkrow .st-ct .row.ev .d.line b { color: var(--fg); font-weight: 500; }
+#admin-settings .st-checkrow .st-lb .acts { display: inline-flex; gap: 6px; align-items: center; }
+#admin-settings .st-checkrow .st-lb .acts a.mcbtn { text-decoration: none; }
+#admin-settings .st-evalcases { margin: 6px 0 0; font-size: 11.5px; }
+#admin-settings .st-evalcases summary { cursor: pointer; color: var(--fg-muted); }
+#admin-settings .st-evalcases table { border-collapse: collapse; margin-top: 4px; width: 100%; }
+#admin-settings .st-evalcases th, #admin-settings .st-evalcases td { padding: 2px 6px; text-align: left; border-bottom: 1px solid var(--border-soft); vertical-align: top; font-weight: normal; }
+#admin-settings .st-evalcases th { color: var(--fg-faint); }
+#admin-settings .st-evalcases td.ok { color: var(--ok); }
+#admin-settings .st-evalcases td.bad { color: var(--crit); }
+#admin-settings .st-evalcases td.det { color: var(--fg-muted); }
+#admin-settings .st-getrow select { max-width: 100%; font-size: 12px; }
+#admin-settings .st-getrow .note { color: var(--fg-faint); font-size: 11px; margin-top: 4px; }
+#admin-settings .st-getrow .row.ev .d.line { width: auto; }
 #admin-settings .card[data-group="__most_used__"] { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); margin-bottom: 22px; }
 #admin-settings .card[data-group="__most_used__"] > .card-h { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 #admin-settings .card[data-group="__most_used__"] > .card-h h3 { color: var(--accent); }

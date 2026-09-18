@@ -13,14 +13,14 @@ def test_defaults_are_off_read_only_in_scope():
     assert (t.enabled, t.model, t.tool_mode, t.capabilities, t.off_topic) == (False, "auto", "auto", "read", "refuse")
     assert t.disabled_tools == [] and t.max_tool_calls == 16 and t.max_tokens == 1024
     assert t.history_days == 30 and t.min_severity == "warning"
-    assert t.request_timeout_s == 45 and t.fallback is False
+    assert t.request_timeout_s == 45 and t.fallback is False and t.thinking == "medium"
     assert t.report_violations is True and t.discord is False
     assert ManagerConfig().tower.enabled is False
 
 
 @pytest.mark.parametrize("path,value", [
     ("manager.tower.capabilities", "root"), ("manager.tower.off_topic", "maybe"),
-    ("manager.tower.tool_mode", "yes"), ("manager.tower.max_tool_calls", 0),
+    ("manager.tower.tool_mode", "yes"), ("manager.tower.max_tool_calls", 0), ("manager.tower.thinking", "max"),
     ("manager.tower.max_tokens", 64), ("manager.tower.history_days", 0), ("manager.tower.request_timeout_s", 2),
 ])
 def test_catalog_rejects_out_of_range(path, value):
@@ -32,7 +32,7 @@ def test_catalog_group_and_hot_flags():
     keys = {e["path"] for e in sc.CATALOG if e["group"] == "tower"}
     assert keys == {f"manager.tower.{k}" for k in (
         "enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations", "disabled_tools",
-        "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls", "max_tokens", "temperature",
+        "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls", "max_tokens", "temperature", "thinking",
         "request_timeout_s", "fallback", "history_days", "discord", "debug")}
     assert all(e["hot"] for e in sc.CATALOG if e["group"] == "tower")
     assert dict(sc.GROUPS)["tower"] == "Tower assistant"

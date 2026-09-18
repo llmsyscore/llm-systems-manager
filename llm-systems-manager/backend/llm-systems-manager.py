@@ -176,7 +176,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-2"
+__version__ = "v2026.09.17-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -210,6 +210,7 @@ import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no c
 import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_tools  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_check  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1039
+import tower_eval  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1047
 import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_timers  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1029
 import jobs  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #915
@@ -2221,7 +2222,7 @@ def benchmark_delete(model_id):
 # --- Cross-tool run ledger (#770) — Tools tab records every completed run ---
 
 _TOOL_RUNS_CAP = 200
-_TOOL_RUN_TOOLS = ("benchmark", "autotune", "quality")
+_TOOL_RUN_TOOLS = ("benchmark", "autotune", "quality", "tower_eval")
 
 
 @app.route("/api/tools/runs", methods=["POST"])
@@ -6106,6 +6107,72 @@ def _tower_server_args(model: dict) -> "list[str | None]":
     return out
 
 
+def _tower_server_of(model: dict) -> str:
+    """Provider label plus the serving host's build string when its sample carries one (#1047)."""
+    prov = str(model.get("provider") or "llama")
+    label = tower_tools.PROVIDER_LABEL.get(prov, prov)
+    for aid in model.get("agent_ids") or []:
+        try:
+            sample = (provider_state.STORE.get(prov, aid) or {}).get("sample") or {}
+            build = (sample.get(prov) or {}).get("build") or (sample.get(prov) or {}).get("version")
+        except Exception:
+            build = None
+        if build:
+            return f"{label} {str(build)[:64]}"
+    return label
+
+
+def _tower_eval_ledger_row(result: dict) -> None:
+    """One tool_runs row per finished eval so the Tools tab ledger lists it (#1047)."""
+    agents = agent_registry.load_agents().get("agents") or {}
+    hosts = [str(h).lower() for h in (result.get("hosts") or [])]
+    agent_id = next((aid for aid, ag in agents.items() if str(ag.get("hostname") or "").lower() in hosts), "")
+    summary = {k: result.get(k) for k in ("passed", "total", "score_pct", "calls_per_case", "corrections", "retries", "ms",
+                                          "quant", "server", "grade", "id") if result.get(k) is not None}
+    conn = get_db()
+    conn.execute("INSERT OR IGNORE INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts, run_id) "
+                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 ("tower_eval", result["model"], agent_id, result.get("provider") or "llama",
+                  1 if float(result.get("score_pct") or 0) >= 50 else 0, json.dumps(summary),
+                  datetime.now(timezone.utc).isoformat(), f"tower-eval-{result['id']}"))
+    conn.execute("DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
+                 "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)", ("tower_eval", "tower_eval", _TOOL_RUNS_CAP))
+    conn.commit()
+
+
+def _tower_download_hosts() -> list:
+    """Every approved llama.cpp / LM Studio host a Tower model can be downloaded to, primaries marked (#1047)."""
+    agents = agent_registry.load_agents().get("agents") or {}
+    out = []
+    for prov in ("llama", "lms"):
+        spec = providers.get(prov)
+        cap = spec.capability_key if spec else prov
+        primary = agent_registry.default_agent_id_for(prov)
+        for aid, a in agents.items():
+            if a.get("status") == "approved" and (a.get("capabilities") or {}).get(cap) and a.get("token"):
+                out.append({"provider": prov, "host": a.get("hostname") or aid[:8], "agent_id": aid, "primary": aid == primary, "agent": a})
+    return out
+
+
+def _tower_profile_put(agent_id: str, model_id: str, name: str, values: dict) -> None:
+    """Stores a downloaded Tower model's config profile and makes it the active one (#1047)."""
+    if model_profiles.STORE is not None and agent_id and model_id:
+        model_profiles.STORE.put_profile(agent_id, model_id, name, values, make_active=True)
+
+
+def _tower_alias_set(model_id: str, alias: str) -> None:
+    """Names a downloaded Tower model unless the operator already gave it an alias (#1047)."""
+    data = load_aliases()
+    if model_id and not data.get(model_id):
+        data[model_id] = alias
+        save_aliases(data)
+
+
+def _tower_refresh_index(wait_s: float) -> None:
+    gateway._refresh_model_index_async()
+    gateway._await_model_index(float(wait_s))
+
+
 def _tower_discord_ask(question: str, uid: str) -> dict:
     """One read-only Tower turn for a Discord user; the answer text comes back whole (#963)."""
     cfg = settings.manager.tower
@@ -6313,6 +6380,14 @@ _tower_runs = tower.Runs(_tower_store, registry_factory=lambda: tower_tools.buil
 _tower_timers.runs = _tower_runs
 tower.register_routes(app, ctx, runs=_tower_runs, gateway_entries=_tower_gateway_entries,
                       write_setting=_tower_write_setting, checks=_tower_checks)
+_tower_evals = tower_eval.Evaluator(service=_jobs_service, store=tower_eval.EvalStore(str(DB_PATH)),
+                                    cfg=lambda: settings.manager.tower,
+                                    registry_factory=lambda: tower_tools.build_registry(_tower_deps),
+                                    complete_stream=gateway.complete_stream, entries=_tower_gateway_entries,
+                                    server_args_of=_tower_server_args, server_of=_tower_server_of, checks=_tower_checks,
+                                    record_run=_tower_eval_ledger_row, download_hosts=_tower_download_hosts,
+                                    refresh_index=_tower_refresh_index, profile_put=_tower_profile_put, alias_set=_tower_alias_set)
+tower_eval.register_routes(app, ctx, evaluator=_tower_evals)
 discord_bot.HOOKS["tower_ask"] = _tower_discord_ask
 _tower_registry = lambda: tower_tools.build_registry(_tower_deps)  # noqa: E731
 _tower_watcher = tower_watch.Watcher(_tower_store, deps=_tower_deps, registry_factory=_tower_registry,
@@ -6874,7 +6949,7 @@ _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
 
 _TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations",
                "disabled_tools", "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
-               "max_tokens", "temperature", "request_timeout_s", "fallback", "history_days", "discord", "debug")
+               "max_tokens", "temperature", "thinking", "request_timeout_s", "fallback", "history_days", "discord", "debug")
 
 
 def _tower_reload_config() -> None:

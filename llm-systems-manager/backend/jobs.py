@@ -257,6 +257,10 @@ class Service:
     def get(self, job_id: str) -> Optional[dict]:
         return self._store.get(job_id)
 
+    def annotate(self, job_id: str, message: str) -> bool:
+        """Replaces the message of a job that already ended (cancelled, failed or done)."""
+        return self._store.update(job_id, only=("cancelled", "failed", "done"), message=message)
+
     def set_state(self, job_id: str, state: dict) -> bool:
         """Replaces a row's state blob while the job is still queued or running."""
         return self._store.update(job_id, only=LIVE, state=state)

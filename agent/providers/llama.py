@@ -1415,13 +1415,38 @@ def llama_log_stream(
     return _log_state.sse_response(_llama_log_streamer)
 
 
+def _drop_ghost_presets(listing: dict) -> dict:
+    """Drops presets llama-server keeps listing after their config.ini section and cache file were deleted
+    (the router only re-reads presets on restart); a loaded one stays."""
+    data = listing.get("data") if isinstance(listing, dict) else None
+    if not isinstance(data, list):
+        return listing
+    try:
+        cp = _llama_read_ini()
+    except Exception:
+        return listing
+    keep = []
+    for m in data:
+        mid = str(m.get("id") or "") if isinstance(m, dict) else ""
+        status = ((m.get("status") or {}).get("value") if isinstance(m, dict) else None)
+        if mid and m.get("source") == "preset" and not cp.has_section(mid) and status not in _LLAMA_BUSY_STATUSES:
+            files, _err = _locate_quant_files(mid)
+            if not files:
+                log.info("llama models: %s is gone from config.ini and the cache; hidden until llama-server restarts", mid)
+                continue
+        keep.append(m)
+    listing["data"] = keep
+    return listing
+
+
 def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     try:
         resp = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models", timeout=5)
-        return resp.json()
+        listing = resp.json()
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
+    return _drop_ghost_presets(listing)
 
 
 def llama_model_sizes_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:

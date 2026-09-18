@@ -177,6 +177,7 @@ min_severity = "warning"
 max_tool_calls = 16
 max_tokens = 1024
 temperature = 0.2
+thinking = "medium"           # off | low | medium | high: how much a thinking model may reason per call
 request_timeout_s = 45        # seconds to wait for the model to start answering
 fallback = false              # on timeout, ask the next loaded chat model this one question and say so
 history_days = 30

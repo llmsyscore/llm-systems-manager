@@ -458,6 +458,36 @@
     return out;
   }
 
+  // Conversation eval (#1047): one stored result as a chip + summary line; one live job as a progress line.
+  function evalSummary(r, nowS) {
+    if (!r || r.total == null) return null;
+    const pct = Number(r.score_pct || 0);
+    const cls = r.total === 0 ? 'dim' : pct >= 90 ? 'ok' : pct >= 60 ? 'warn' : 'crit';
+    const bits = [];
+    if (r.calls_per_case != null) bits.push(`${Number(r.calls_per_case).toFixed(1)} calls per question`);
+    if (r.corrections) bits.push(`${r.corrections} corrected`);
+    if (r.retries) bits.push(`${r.retries} ${r.retries === 1 ? 'retry' : 'retries'}`);
+    bits.push(`${Math.max(1, Math.round(Number(r.ms || 0) / 1000))} s`);
+    const meta = [r.quant, r.server].filter(Boolean).join(' · ');
+    const when = r.at && nowS ? ageText(nowS - Number(r.at)) : '';
+    const short = String(r.model || '').split('/').pop();
+    return { text: `${r.passed}/${r.total}`, cls, line: bits.join(' · '), meta, when, short,
+             title: [`${r.passed}/${r.total} passed`, r.model, meta, when ? (when === 'now' ? 'just now' : when + ' ago') : ''].filter(Boolean).join(' · ') };
+  }
+  function evalProgress(job) {
+    if (!job) return '';
+    const st = job.state || {};
+    const p = st.phase;
+    if (job.status === 'queued' && !p) return 'Queued…';
+    if (p === 'download') return `Downloading${st.pct != null ? ' · ' + st.pct + ' %' : ''}…`;
+    if (p === 'config') return 'Adding it to the host…';
+    if (p === 'restart') return `Restarting llama.cpp${st.waited_s ? ' · ' + st.waited_s + ' s' : ''}…`;
+    if (p === 'load') return `Loading${st.waited_s ? ' · ' + st.waited_s + ' s' : ''}…`;
+    if (p === 'check') return 'Checking tool calls…';
+    if (p === 'eval') return `Question ${st.case}/${st.total} · ${st.title || ''}` + (st.passed ? ` · ${st.passed} passed so far` : '');
+    return 'Starting…';
+  }
+
   function stateView(api) {
     const a = api || {};
     const off = !a.enabled;
@@ -468,7 +498,7 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, esc, PROVIDER, waitText, HELP_SUGS,
+  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, evalSummary, evalProgress, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
            timerLine, liveTimers, finishedTimers, timerSnapshot, historyCharts, historyChart };
 });

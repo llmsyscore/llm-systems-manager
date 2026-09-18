@@ -6,6 +6,15 @@
   let _data = null;
   let _entryByPath = new Map();
   let _gatewayModels = [];
+  let _gatewayInfo = {};        // id -> {provider, hosts, loaded} from the Tower model index
+  const _SERVER = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
+  function modelOptionText(id) {
+    if (id === 'auto') return 'auto';
+    const i = _gatewayInfo[id];
+    if (!i) return _gatewayModels.includes(id) ? id : `${id} · not available`;
+    const where = [_SERVER[i.provider] || i.provider, (i.hosts || []).join(', ')].filter(Boolean).join(' · ');
+    return `${id}${where ? ' · ' + where : ''}${i.loaded ? ' · loaded' : ''}`;
+  }
   const _dirty = new Map();     // path -> raw value to submit (null = clear/default)
   const _invalid = new Map();   // path -> message
   const _toolsOpen = new Set();  // chips paths whose editor is expanded
@@ -13,6 +22,8 @@
   let _group = MOST_USED;       // active rail group key
   let _filter = '';
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
+  // Conversation eval + curated models (#1047): one read each, polled while a job runs.
+  let _towerEval = null, _towerModels = null, _towerExtrasAt = 0, _towerExtrasPoll = 0, _towerActBusy = '';
 
   const esc = s => _esc(String(s ?? ''));
   const $ = id => document.getElementById(id);
@@ -21,6 +32,7 @@
     if (_dirty.size && !window.confirm('Discard unsaved settings changes?')) return;
     _dirty.clear();
     _invalid.clear();
+    _towerAt = 0; _towerExtrasAt = 0;   // the Tower rows re-read on every entry too
     const root = $('adminSettingsRoot');
     if (!root) return;
     try {
@@ -252,7 +264,7 @@
       const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
       if (!opts.includes(cur)) opts.push(cur);
       return `<div class="row"><select class="sel st-input${dirty}" data-path="${p}">`
-        + opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(c)}</option>`).join('')
+        + opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(modelOptionText(c))}</option>`).join('')
         + '</select></div>' + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
     }
     const numeric = e.type === 'int' || e.type === 'float';
@@ -346,12 +358,14 @@
         return isList(e) ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
-    const rows = entries.map(e => fieldHtml(e, opt));
-    if (extra && extra.html) {
-      const at = entries.findIndex(e => e.path === extra.after);
-      rows.splice(at >= 0 ? at + 1 : rows.length, 0, extra.html);
-    }
-    return `<div class="st-rows">${rows.join('')}</div>`;
+    const rows = entries.map(e => ({ path: e.path, html: fieldHtml(e, opt) }));
+    // extra: {after, html} or a list of them — each lands right after its anchor field (or last).
+    (Array.isArray(extra) ? extra : extra ? [extra] : []).forEach(x => {
+      if (!x || !x.html) return;
+      const at = rows.findIndex(r => r.path === x.after);
+      rows.splice(at >= 0 ? at + 1 : rows.length, 0, { path: null, html: x.html });
+    });
+    return `<div class="st-rows">${rows.map(r => r.html).join('')}</div>`;
   }
 
   // ── validation ────────────────────────────────────────────────────
@@ -464,6 +478,7 @@
     try { const r = await fetch('/api/tower/state'); if (r.ok) { _towerState = await r.json(); _towerAt = Date.now(); } } catch (_) { /* offline */ }
     const el = $('stTowerCheck');
     if (el) el.outerHTML = towerCheckHtml();
+    renderTowerExtras();
     clearTimeout(_towerPoll);
     if (towerPending(_towerState)) _towerPoll = setTimeout(() => loadTowerState(true), 8000);
   }
@@ -479,13 +494,229 @@
     const el2 = $('stTowerCheck'); if (el2) el2.outerHTML = towerCheckHtml();
   }
 
+  // ── Conversation eval + Get a Tower model (#1047) ──
+  function towerNowS() { return Date.now() / 1000; }
+  function evalCasesHtml(r) {
+    const cases = (r && r.cases) || [];
+    if (!cases.length) return '';
+    const rows = cases.map(c => `<tr><td class="${c.passed ? 'ok' : 'bad'}">${c.passed ? '✓' : '✗'}</td><td>${esc(c.title)}</td>`
+      + `<td>${esc(String(c.calls ?? 0))}</td><td>${esc(String(Math.max(1, Math.round((c.ms || 0) / 1000))))} s</td><td class="det">${esc(c.detail || '')}</td></tr>`).join('');
+    return `<details class="st-evalcases"><summary>Questions</summary><table><tr><th></th><th>Question</th><th>Calls</th><th>Time</th><th>Result</th></tr>${rows}</table></details>`;
+  }
+  // label: the fixed-width lead ("Primary"); model: shown in the summary line instead (other models).
+  function evalResultHtml(r, label, model) {
+    const v = (window.TW && TW.evalSummary) ? TW.evalSummary(r, towerNowS()) : null;
+    const lead = `<span class="d w">${esc(label || '')}</span>`;
+    if (!v) return `<div class="row ev">${lead}<span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></div>`;
+    const line = (model ? `<b>${esc(v.short || model)}</b> · ` : '') + esc(v.line);
+    return `<div class="row ev">${lead}<span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span><span class="d line">${line}</span></div>`;
+  }
+  function towerLiveHtml(job) {
+    const txt = (window.TW && TW.evalProgress) ? TW.evalProgress(job) : 'Running…';
+    const cancel = job.can_cancel ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tower-cancel="${esc(job.id)}">Stop</button>` : '';
+    return `<div class="row ev"><span class="d w">Running</span><span class="d line">${esc(job.label || '')} · ${esc(txt)}</span>${cancel}</div>`;
+  }
+  function towerEvalHtml() {
+    const s = _towerState, e = _towerEval;
+    let control, btn = '';
+    if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
+    else if (!s.model) control = '<div class="row"><span class="d">No model loaded</span></div>';
+    else {
+      const live = (e && e.live) || (_towerModels && _towerModels.live) || null;
+      const mine = e ? (e.results || []).find(r => r.model === s.model) : null;
+      const others = e ? (e.results || []).filter(r => r.model !== s.model) : [];
+      if (s.admin) {
+        btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerEvalBtn"${live || _towerActBusy ? ' disabled' : ''}>`
+          + `${_towerActBusy === 'eval' ? 'Starting…' : 'Run'}</button>`
+          + (mine ? `<a class="mcbtn mcbtn-ghost mcbtn-sm" href="/api/tower/eval/${esc(mine.id)}?export=1" download>Export</a>` : '') + '</span>';
+      }
+      control = (live && live.kind === 'tower_eval' ? towerLiveHtml(live) : '')
+        + evalResultHtml(mine, 'Primary') + (mine ? evalCasesHtml(mine) : '')
+        + others.slice(0, 3).map(r => evalResultHtml(r, 'Other', r.model)).join('');
+    }
+    return '<div class="settings-row st-fld st-checkrow" id="stTowerEval">'
+      + `<div class="st-lb"><label>Model evaluation</label>${btn}</div>`
+      + '<div class="help">Asks the primary model a set of canned questions through Tower and scores each. Fewer calls, corrections and retries mean a stronger model.</div>'
+      + `<div class="st-ct">${control}</div></div>`;
+  }
+  function towerModelOptions(m) {
+    const tiers = {};
+    (m.models || []).forEach(x => { (tiers[x.tier_gb] = tiers[x.tier_gb] || []).push(x); });
+    return Object.keys(tiers).map(Number).sort((a, b) => a - b).map(t => `<optgroup label="${t} GB VRAM">` + tiers[t].map(x => {
+      const ev = x.eval ? ` · scored ${x.eval.passed}/${x.eval.total}` : ` · expected ${x.expected}`;
+      const have = (x.small ? ' · small' : '') + (x.loaded ? ' · loaded' : x.present ? ' · on host' : '');
+      return `<option value="${esc(x.key)}">${esc(`${x.name} · ${x.quant} · ${x.size_gb} GB${ev}${have}`)}</option>`;
+    }).join('') + '</optgroup>').join('');
+  }
+  function towerModelsHtml() {
+    const s = _towerState, m = _towerModels;
+    let control, btn = '';
+    if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
+    else if (!m) control = '<div class="row"><span class="d">Loading…</span></div>';
+    else if (!(m.hosts || []).length) control = '<div class="row"><span class="d">No primary llama.cpp or LM Studio host: pick one in Admin › Agents</span></div>';
+    else {
+      const live = m.live, last = m.last;
+      const busy = !!(live || (_towerEval && _towerEval.live) || _towerActBusy);
+      if (s.admin) {
+        btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerGetBtn"${busy ? ' disabled' : ''}>`
+          + `${_towerActBusy === 'get' ? 'Starting…' : 'Download'}</button></span>`;
+      }
+      let done = '';
+      if (!live && last && last.status !== 'queued' && last.status !== 'running') {
+        const res = last.result || {};
+        if (last.status === 'done' && res.model) {
+          const listed = _gatewayModels.includes(res.model);
+          const pinned = !!(_data && _data.values && _data.values['manager.tower.model'] === res.model);
+          const pin = s.admin && listed && !pinned ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerPinBtn" data-model="${esc(res.model)}">Pin as primary</button>` : '';
+          const tail = listed ? (pinned ? ' · primary' : '') : ' · no longer on the host';
+          done = `<div class="row ev"><span class="d w">${listed ? 'Ready' : 'Gone'}</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}${tail}</span>${pin}</div>`;
+        } else if (last.status === 'failed' || last.status === 'cancelled') {
+          const lms = last.status === 'cancelled' && last.spec && last.spec.provider === 'lms' && !/LM Studio/.test(last.message || '');
+          done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}`
+            + `${lms ? ' · LM Studio keeps downloading, cancel it there' : ''}</span></div>`;
+        }
+      }
+      const hosts = m.hosts || [];
+      const hostText = h => h.host + ' · ' + h.label + (h.primary ? ' · primary' : '');
+      const hostCtl = hosts.length > 1
+        ? `<select id="stTowerGetHost" class="sel st-input"${busy ? ' disabled' : ''}>${hosts.map(h => `<option value="${esc(h.agent_id)}" data-provider="${esc(h.provider)}">${esc(hostText(h))}</option>`).join('')}</select>`
+        : `<span class="d line" id="stTowerGetHostOne" data-agent="${esc(hosts[0].agent_id)}" data-provider="${esc(hosts[0].provider)}">${esc(hostText(hosts[0]))}</span>`;
+      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m)}</select></div>`
+        + `<div class="row ev"><span class="d w">Host</span>${hostCtl}</div>`
+        + (live ? towerLiveHtml(live) : '') + done
+        + '<div class="note">A Tower model takes VRAM from the models the host serves. On a llama.cpp host the server restarts after the download, which unloads what it was serving.</div>';
+    }
+    return '<div class="settings-row st-fld st-checkrow st-getrow" id="stTowerGet">'
+      + `<div class="st-lb"><label>Download a Tower model</label>${btn}</div>`
+      + '<div class="help">Recommended models by the VRAM they need. Download fetches one to the primary llama.cpp or LM Studio host, loads it and scores it; Pin as primary then makes it the Primary model.</div>'
+      + `<div class="st-ct">${control}</div></div>`;
+  }
+  function towerExtrasLive() {
+    return !!((_towerEval && _towerEval.live) || (_towerModels && _towerModels.live));
+  }
+  function renderTowerExtras() {
+    const e = $('stTowerEval'); if (e) e.outerHTML = towerEvalHtml();
+    const g = $('stTowerGet'); if (g) g.outerHTML = towerModelsHtml();
+  }
+  // The Primary model choices follow the live gateway index: a model deleted on a host drops out
+  // on the next read, the value in the field is kept even when it is gone.
+  function refreshModelChoices(ids, index) {
+    const next = ids.filter(Boolean);
+    const info = {};
+    (index || []).forEach(m => { if (m && m.id) info[m.id] = { provider: m.provider, hosts: m.hosts || [], loaded: !!m.loaded }; });
+    const same = next.join('\n') === _gatewayModels.join('\n') && JSON.stringify(info) === JSON.stringify(_gatewayInfo);
+    _gatewayModels = next;
+    _gatewayInfo = info;
+    if (same) return;
+    document.querySelectorAll('select.st-input[data-path="manager.tower.model"]').forEach(sel => {
+      const cur = sel.value || 'auto';
+      const opts = ['auto'].concat(_gatewayModels.filter(m => m !== 'auto'));
+      if (!opts.includes(cur)) opts.push(cur);
+      sel.innerHTML = opts.map(c => `<option value="${esc(c)}"${c === cur ? ' selected' : ''}>${esc(modelOptionText(c))}</option>`).join('');
+    });
+  }
+  async function loadTowerExtras(force) {
+    if (!force && _towerEval && _towerModels && Date.now() - _towerExtrasAt < 15000) { renderTowerExtras(); return; }
+    _towerExtrasAt = Date.now();
+    try {
+      const [er, mr, gr] = await Promise.all([fetch('/api/tower/eval'), fetch('/api/tower/models'), fetch('/api/gateway/v1/models')]);
+      if (er.ok) _towerEval = await er.json();
+      if (mr.ok) _towerModels = await mr.json();
+      if (gr.ok) refreshModelChoices(((await gr.json()).data || []).map(m => m.id), (_towerModels && _towerModels.index) || []);
+    } catch (_) { /* offline */ }
+    try { renderTowerExtras(); } catch (e) { console.error('tower rows', e); }
+    clearTimeout(_towerExtrasPoll);
+    if (towerExtrasLive()) _towerExtrasPoll = setTimeout(() => loadTowerExtras(true), 5000);
+  }
+  // A pin writes manager.tower.model server-side: show it in the field and drop any unsaved edit of it.
+  function setModelField(model) {
+    if (!model || !_data) return;
+    const path = 'manager.tower.model';
+    _data.values[path] = model;
+    _dirty.delete(path);
+    document.querySelectorAll('select.st-input[data-path="' + path + '"]').forEach(sel => {
+      if (![...sel.options].some(o => o.value === model)) sel.add(new Option(model, model));
+      sel.value = model;
+      sel.classList.remove('dirty');
+    });
+  }
+  async function towerAct(kind, url, opts, model) {
+    _towerActBusy = kind;
+    renderTowerExtras();
+    let msg = '', d = null;
+    try {
+      const r = await fetch(url, opts);
+      d = await r.json().catch(() => null);
+      if (!r.ok) msg = (d && d.error) || `HTTP ${r.status}`;
+    } catch (_) { msg = 'offline'; }
+    _towerActBusy = '';
+    if (msg && typeof showToast === 'function') showToast('Tower', msg, 'warning');
+    if (kind === 'pin' && !msg) setModelField((d && d.model) || model || '');
+    await loadTowerExtras(true);
+    if (kind === 'pin') loadTowerState(true);
+  }
+  // Download: confirm first (a llama.cpp host restarts its server after the download), then queue the job.
+  async function towerDownloadClick() {
+    const sel = $('stTowerGetSel'), hostSel = $('stTowerGetHost'), one = $('stTowerGetHostOne');
+    const key = sel ? sel.value : '';
+    if (!key) return;
+    const opt = hostSel ? hostSel.options[hostSel.selectedIndex] : null;
+    const agentId = opt ? opt.value : (one ? one.dataset.agent : '');
+    // Names come from the fetched model list, not from the rendered option text.
+    const m = _towerModels || {};
+    const hostRec = (m.hosts || []).find(h => h.agent_id === agentId) || (m.hosts || [])[0] || {};
+    const provider = hostRec.provider || '';
+    const host = hostRec.host || '';
+    const modelRec = (m.models || []).find(x => x.key === key);
+    if (!modelRec) return;
+    const name = modelRec.name;
+    if (typeof _themedConfirm === 'function') {
+      const restart = provider === 'llama'
+        ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again. Stop removes a half-finished download from the host.</p>`
+        : '<p>Stop ends the job here only: LM Studio keeps downloading until you cancel it there.</p>';
+      const ok = await _themedConfirm({
+        title: `Download ${esc(name)} to ${esc(host)}?`,
+        bodyHtml: `<p>The download runs on the host, then the model is loaded, checked and scored. It takes VRAM from what the host serves.</p>${restart}`,
+        confirmLabel: 'Download', cancelLabel: 'Cancel', danger: provider === 'llama',
+      });
+      if (!ok) return;
+    }
+    const body = { key };
+    if (agentId) body.agent_id = agentId;
+    towerAct('get', '/api/tower/models/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  }
+  function onTowerExtrasClick(ev) {
+    const cancel = ev.target.closest('[data-tower-cancel]');
+    if (cancel) { ev.preventDefault(); towerAct('cancel', `/api/jobs/${encodeURIComponent(cancel.dataset.towerCancel)}/cancel`, { method: 'POST' }); return true; }
+    if (ev.target.closest('#stTowerEvalBtn')) {
+      ev.preventDefault();
+      towerAct('eval', '/api/tower/eval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      return true;
+    }
+    if (ev.target.closest('#stTowerGetBtn')) {
+      ev.preventDefault();
+      towerDownloadClick();
+      return true;
+    }
+    const pin = ev.target.closest('#stTowerPinBtn');
+    if (pin) {
+      ev.preventDefault();
+      towerAct('pin', '/api/tower/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: pin.dataset.model }) }, pin.dataset.model);
+      return true;
+    }
+    return false;
+  }
+
   function groupCardHtml(g, entries, all) {
     const hot = all.filter(e => e.hot).length;
     const restart = all.length - hot;
     const note = restart ? `<b>${restart}</b> need a restart` : 'all apply without a restart';
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
-      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? { after: 'manager.tower.tool_mode', html: towerCheckHtml() } : null)}</div></div>`;
+      + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? [{ after: 'manager.tower.tool_mode', html: towerCheckHtml() },
+                                                                                          { after: 'manager.tower.model', html: towerEvalHtml() + towerModelsHtml() }] : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {
@@ -513,7 +744,7 @@
     applyDirtyValues(root, _dirty, _entryByPath);
     renderSummary();
     bindOnce(root);
-    if (root.querySelector('#stTowerCheck')) loadTowerState();
+    if (root.querySelector('#stTowerCheck')) { loadTowerState(); loadTowerExtras(); }
   }
 
   function renderSummary() {
@@ -732,6 +963,7 @@
 
   function onClick(ev) {
     if (ev.target.closest('#stTowerCheckBtn')) { ev.preventDefault(); runTowerCheck(); return; }
+    if (onTowerExtrasClick(ev)) return;
     const tedit = ev.target.closest('.st-tools [data-tools-edit]');
     if (tedit) {
       ev.preventDefault();
@@ -992,6 +1224,7 @@
 
   window.adminSettingsLoad = load;
   window.adminSettingsOpenGroup = openGroup;
+  window.adminSettingsRefreshTower = () => loadTowerExtras(true);
   window.SettingsFields = {
     render: (entries, values, defs, over) => renderFields(entries, values, defs, over),
     fieldHtml, validate, splitUnit, groupMeta, readInput, firstSentence, applyDirtyValues,

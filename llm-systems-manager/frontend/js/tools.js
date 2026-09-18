@@ -17,7 +17,7 @@
   const _LEDGER_CAP = 100, _LEDGER_PAGE = 15;
   // Shared run gate (#888): who is busy where, and one pending run per tool.
   const _TOOL_LABEL = { reportcard: 'Report Card', benchmark: 'Benchmark',
-                        autotune: 'Autotune', quality: 'Quality guard' };
+                        autotune: 'Autotune', quality: 'Quality guard', tower_eval: 'Tower eval' };
   let _toolsActivityAgents = {};   // agent_id -> tools running on it
   let _toolsDefaultAgent = {};     // provider -> primary agent id
   let _toolsPending = {};          // tool id -> what its queued run waits for
@@ -396,6 +396,15 @@
         bits.push(!r.ok ? '<span style="color:var(--crit)">failed</span>' : s.kl_pass ? 'pass' : '<span style="color:var(--warn)">fail</span>');
         rows.push({ icon: '⚖', tool: 'Quality', toolId: clickable ? 'quality' : null, title: clickable ? 'Open Quality guard' : null,
           model: r.model_id || '', host: _tHost(r.agent_id), result: bits.join(' · '), tps: null, ts: r.ts });
+      } else if (r.tool === 'tower_eval') {
+        // Tower conversation eval (#1047): scored in Settings › Tower assistant; the row is read-only here.
+        const bits = [];
+        if (s.passed != null && s.total != null) bits.push('<b>' + TC.esc(s.passed + '/' + s.total) + ' passed</b>');
+        if (s.calls_per_case != null) bits.push(TC.esc(Number(s.calls_per_case).toFixed(1)) + ' calls/question');
+        if (s.corrections) bits.push(TC.esc(String(s.corrections)) + ' corrected');
+        if (s.ms != null) bits.push(TC.esc(String(Math.max(1, Math.round(Number(s.ms) / 1000)))) + ' s');
+        rows.push({ icon: '◎', tool: 'Tower eval', toolId: null, model: r.model_id || '', host: _tHost(r.agent_id),
+          result: bits.join(' · ') || '—', tps: s.score_pct ?? null, ts: r.ts });
       }
     });
     // Newest 100 overall, then the active tool filter and column sort.

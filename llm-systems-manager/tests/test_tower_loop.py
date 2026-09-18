@@ -1071,7 +1071,7 @@ def test_length_retry_respects_the_max_tokens_ceiling():
     out, events, seen, st, tid = _run([
         {"content": "", "finish": "length"},
         {"content": "ok."},
-    ], cfg=_cfg(max_tokens=8192))
+    ], cfg=_cfg(max_tokens=8192, thinking="off"))
     assert seen["payloads"][1]["max_tokens"] == 16384
     out, events, seen, st, tid = _run([
         {"content": "", "finish": "length"},
@@ -2301,3 +2301,16 @@ def test_prompt_tells_the_model_the_screen_draws_metric_trends():
     assert "never draw a text chart or sparkline for it" in p and "For alert counts over time, use alarm_history" in p
     assert tower._for_model({"min": 1, "_chart": {"points": []}, "series": []}) == {"min": 1, "series": []}
     assert tower._for_model(["x"]) == ["x"]
+
+
+def test_thinking_setting_shapes_every_model_call():
+    off = tower.thinking_params(_cfg(thinking="off"), "llama", 256)
+    assert off == {"reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
+    med = tower.thinking_params(_cfg(), "llama", 256)   # default level is medium
+    assert med["reasoning_effort"] == "medium" and med["chat_template_kwargs"] == {"enable_thinking": True}
+    assert med["max_tokens"] == 256 + 2048 and med["reasoning_budget_tokens"] == 2048 and med["reasoning_budget_message"]
+    high = tower.thinking_params(_cfg(thinking="high"), "lms", 256)
+    assert high == {"reasoning_effort": "high", "max_tokens": 256 + 6144}   # LM Studio: no template kwargs, no budget
+    assert tower.thinking_params(_cfg(thinking="off"), "lms", 256) == {"reasoning_effort": "none"}
+    assert tower.thinking_params(_cfg(thinking="bogus"), "llama", 256)["reasoning_effort"] == "medium"
+    assert tower.thinking_params(_cfg(thinking="low"), "llama", tower.MAX_TOKENS_CAP)["max_tokens"] == tower.MAX_TOKENS_CAP

@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.17-4"
+VERSION = "v2026.09.17-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2785,7 +2785,7 @@ def _public_endpoint_map() -> dict[str, list[str]]:
             "/lms/server/status", "/lms/server/start", "/lms/server/stop",
             "/lms/server/restart", "/lms/server/log",
             "/lms/models", "/lms/ps",
-            "/lms/load", "/lms/unload", "/lms/download", "/lms/delete",
+            "/lms/load", "/lms/unload", "/lms/download", "/lms/download/status/{job_id}", "/lms/delete",
             "/lms/openai/chat/completions", "/lms/openai/completions",
         ],
         "llama": [
