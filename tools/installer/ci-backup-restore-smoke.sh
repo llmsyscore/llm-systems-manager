@@ -325,17 +325,20 @@ echo "── 6. A pre-split single-file archive (data/metrics.db) still restores
 LEGACY_ACTOR="ci-legacy-actor-$RANDOM"
 LEGACY_ARCHIVE="$WORK/legacy-manager.lsmenc"
 python3 - "$LEGACY_ARCHIVE" "$LEGACY_ACTOR" <<'PY'
-import io, json, sqlite3, sys, tarfile, time
+import datetime, io, json, sqlite3, sys, tarfile, time
 out, actor = sys.argv[1], sys.argv[2]
+# Fresh timestamps: the boot-time retention purges must not age the rows out.
+now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+hour_ts = int(time.time()) // 3600 * 3600
 db = sqlite3.connect(":memory:")
 db.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, role TEXT, ip TEXT,"
            " method TEXT, path TEXT, action TEXT, target TEXT, status INTEGER, outcome TEXT, auth TEXT, detail TEXT, event TEXT)")
-db.execute("INSERT INTO audit_log (ts, actor, role, action, outcome) VALUES ('2026-01-01T00:00:00+00:00', ?, 'admin', 'legacy.row', 'ok')", (actor,))
+db.execute("INSERT INTO audit_log (ts, actor, role, action, outcome) VALUES (?, ?, 'admin', 'legacy.row', 'ok')", (now_iso, actor))
 db.execute("CREATE TABLE energy_hourly (hour_ts INTEGER NOT NULL, agent_id TEXT NOT NULL, hostname TEXT,"
            " observed_s REAL NOT NULL DEFAULT 0, active_s REAL NOT NULL DEFAULT 0, power_s REAL NOT NULL DEFAULT 0,"
            " energy_wh REAL NOT NULL DEFAULT 0, active_energy_wh REAL NOT NULL DEFAULT 0, tokens_gen INTEGER NOT NULL DEFAULT 0,"
            " tokens_prompt INTEGER NOT NULL DEFAULT 0, power_source TEXT, samples INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (hour_ts, agent_id))")
-db.execute("INSERT INTO energy_hourly (hour_ts, agent_id, hostname, energy_wh) VALUES (1700000000, 'legacy-agent', 'legacy-host', 12.5)")
+db.execute("INSERT INTO energy_hourly (hour_ts, agent_id, hostname, energy_wh) VALUES (?, 'legacy-agent', 'legacy-host', 12.5)", (hour_ts,))
 db.commit()
 files = {"data/metrics.db": bytes(db.serialize())}
 files["manifest.json"] = json.dumps({"component": "manager", "manager_version": "v2026.09.01-1",
