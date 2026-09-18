@@ -416,7 +416,7 @@ def test_confirm_ends_the_stream_and_approve_reattaches(act_client):
     msgs = c.get(f"/api/tower/threads/{tid}").get_json()["messages"]
     act = next(m for m in msgs if m["role"] == "action")
     assert json.loads(act["content"])["status"] == "done" and act["tool_ok"] == 1
-    row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.approve' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.approve' ORDER BY id DESC LIMIT 1").fetchone()
     assert row and row["actor"] == "tower via alice" and row["target"] == confirm["action_id"]
     assert json.loads(row["detail"])["tool"] == "wake_server" and json.loads(row["detail"])["thread_id"] == tid
 
@@ -449,7 +449,7 @@ def test_question_ends_the_stream_and_answer_reattaches(client, monkeypatch):
     assert act["status"] == "done" and act["answer"] == "the mac"
     assert act["card"] == {"questions": [{"question": "Which host?", "choices": ["box", "mac"], "label": ""}], "question": "Which host?", "choices": ["box", "mac"]}
     assert msgs[2]["content"] == "the mac" and msgs[3]["content"] == "ok, the mac"
-    row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.answer' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.action.answer' ORDER BY id DESC LIMIT 1").fetchone()
     assert row and row["actor"] == "tower via alice" and row["target"] == aid
     assert json.loads(row["detail"])["answers"] == ["the mac"] and json.loads(row["detail"])["questions"] == ["Which host?"]
     assert c.post(f"/api/tower/actions/{aid}/answer", json={"answer": "again"}).status_code == 409
@@ -498,7 +498,7 @@ def test_deny_and_ownership_and_pending_checks(act_client):
     assert c.post(f"/api/tower/actions/{aid}/approve").status_code == 409
     action, _ = _first_event(c, rid, "action")
     assert action["status"] == "denied" and action["actor"] == "alice"
-    row = M.get_db().execute("SELECT actor FROM audit_log WHERE action='tower.action.deny' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT actor FROM audit_log WHERE action='tower.action.deny' ORDER BY id DESC LIMIT 1").fetchone()
     assert row and row["actor"] == "tower via alice"
 
 
@@ -740,12 +740,12 @@ def test_insight_apply_rechecks_tier_role_and_alert_runs_once_and_audits(client,
     assert calls == ["box"]
     row = M._tower_runs.store.get_insight(iid)
     assert row["status"] == "applied" and row["applied_by"] == "tower via alice"
-    audit = M.get_db().execute("SELECT actor, action, event, target, detail FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
+    audit = M.get_audit_db().execute("SELECT actor, action, event, target, detail FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
     assert audit and audit[0] == "tower via alice" and audit[2] == "tower.action" and audit[3] == iid
     assert json.loads(audit[4])["playbook"] == "wake_llama" and json.loads(audit[4])["alert_id"] == "a1"
     r = client.post(f"/api/tower/insights/{iid}/apply")                                  # already applied
     assert r.status_code == 409
-    audit = M.get_db().execute("SELECT actor FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
+    audit = M.get_audit_db().execute("SELECT actor FROM audit_log WHERE action='tower.playbook.apply' ORDER BY id DESC LIMIT 1").fetchone()
     assert audit[0] == "tower via alice"                                                  # refusals carry the Tower actor too
     gone = _insight(alert_id="a9")                                                        # alert closed or unknown
     assert client.post(f"/api/tower/insights/{gone}/apply").get_json()["error"] == "stale" and calls == ["box"]
@@ -800,16 +800,16 @@ def test_tower_audit_auto_writes_an_ok_row_and_honours_the_disabled_event(monkey
     info = {"actor": "tower via alarm a1", "action": "tower.playbook.auto", "target": "a1", "ok": True,
             "detail": {"playbook": "wake_llama", "alert_id": "a1", "insight_id": "i1", "steps": []}}
     M._tower_audit_auto(info)
-    row = M.get_db().execute("SELECT actor, role, action, event, target, status, outcome, detail FROM audit_log WHERE action='tower.playbook.auto' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT actor, role, action, event, target, status, outcome, detail FROM audit_log WHERE action='tower.playbook.auto' ORDER BY id DESC LIMIT 1").fetchone()
     assert tuple(row[:7]) == ("tower via alarm a1", "operator", "tower.playbook.auto", "tower.action", "a1", 200, "ok")
     assert json.loads(row[7])["playbook"] == "wake_llama"
     M._tower_audit_auto({**info, "ok": False, "target": "a2"})
-    row = M.get_db().execute("SELECT status, outcome FROM audit_log WHERE action='tower.playbook.auto' AND target='a2' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT status, outcome FROM audit_log WHERE action='tower.playbook.auto' AND target='a2' ORDER BY id DESC LIMIT 1").fetchone()
     assert tuple(row) == (502, "error")
-    before = M.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0]
+    before = M.get_audit_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0]
     monkeypatch.setitem(M._AUDIT_CFG, "disabled", set(M._AUDIT_CFG["disabled"]) | {"tower.action"})
     M._tower_audit_auto({**info, "target": "a3"})
-    assert M.get_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0] == before
+    assert M.get_audit_db().execute("SELECT COUNT(*) FROM audit_log WHERE action='tower.playbook.auto'").fetchone()[0] == before
 
 
 def test_watcher_is_wired_to_the_manager():
@@ -1156,7 +1156,7 @@ def test_timer_cancel_route_audits_and_refuses_repeats_and_other_users(client, m
     assert c.post("/api/tower/timers/nope/cancel").status_code == 404
     r = c.post(f"/api/tower/timers/{timer_id}/cancel")
     assert r.status_code == 200 and r.get_json()["timer"]["status"] == "cancelled"
-    row = M.get_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.timer.cancel' ORDER BY id DESC LIMIT 1").fetchone()
+    row = M.get_audit_db().execute("SELECT actor, action, target, detail FROM audit_log WHERE action='tower.timer.cancel' ORDER BY id DESC LIMIT 1").fetchone()
     assert row[0] == "tower via alice" and row[1] == "tower.timer.cancel" and row[2] == timer_id
     detail = json.loads(row[3])
     assert detail["label"] == "RAM on box" and detail["thread_id"] == tid and detail["samples"] == 0

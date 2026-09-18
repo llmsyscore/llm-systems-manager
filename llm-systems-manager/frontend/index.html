@@ -1483,7 +1483,18 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <div class="lq-item"><div class="val" id="influxDisk">—</div><div class="lbl">On disk</div></div>
           <div class="lq-item"><div class="val" id="influxCardMetrics">—</div><div class="lbl">Metrics series</div></div>
         </div>
-        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">SQLite</div>
+        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">Manager SQLite</div>
+        <div class="lq-grid">
+          <div class="lq-item"><div class="val" id="mgrDbManagerSize">—</div><div class="lbl">manager.db</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbAuditSize">—</div><div class="lbl">audit.db</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbEnergySize">—</div><div class="lbl">energy.db</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbWalSize">—</div><div class="lbl">WAL total</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbAuditRows">—</div><div class="lbl">Audit rows</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbEnergyRows">—</div><div class="lbl">Energy rows</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbRunRows">—</div><div class="lbl">Bench + tool runs</div></div>
+          <div class="lq-item"><div class="val" id="mgrDbQueryMs">—</div><div class="lbl">SELECT 1 ms</div></div>
+        </div>
+        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">Alarm engine SQLite</div>
         <div class="lq-grid">
           <div class="lq-item"><div class="val" id="sqliteAlertsRows">—</div><div class="lbl">Alerts rows</div></div>
           <div class="lq-item"><div class="val" id="sqliteSettingsRows">—</div><div class="lbl">Settings rows</div></div>
@@ -2622,6 +2633,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/foundation.js?v=2026.09.15-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
+<script src="/static/js/lib/dbstats.js?v=2026.09.18-1"></script>
 <script src="/static/js/lib/benchaxis.js?v=2026.09.08-1"></script>
 <script src="/static/js/lib/perfmode.js?v=2026.09.09-1"></script>
 <script src="/static/js/lib/thresholds.js?v=2026.08.05-1"></script>
@@ -2657,7 +2669,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/tools.js?v=2026.09.17-3"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
 <script src="/static/js/overall.js?v=2026.08.29-2"></script>
-<script src="/static/js/dashboard-manager.js?v=2026.08.17-1"></script>
+<script src="/static/js/dashboard-manager.js?v=2026.09.18-1"></script>
 <script src="/static/js/tower.js?v=2026.09.16-4"></script>
 
 <!-- Settings drawer — kept at body root so it's never inside a hidden tab container.

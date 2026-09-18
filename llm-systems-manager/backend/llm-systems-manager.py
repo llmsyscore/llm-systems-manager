@@ -8,8 +8,9 @@ the main Linux host. Collects local GPU, CPU, RAM, disk,
 network, UPS, and llama.cpp metrics on a dynamic 2-30 second interval driven
 by GPU performance level and LMS activity. Receives remote LM Studio metrics
 from the llm-systems-manager-agent via HTTP POST. All metric history is
-persisted in InfluxDB via the alarm engine; SQLite (data/metrics.db) holds
-only the model_benchmarks table. Serves the frontend index.html.
+persisted in InfluxDB via the alarm engine; SQLite holds the small manager
+tables (data/manager.db), the admin audit log (data/audit.db) and hourly
+energy accounting (data/energy.db). Serves the frontend index.html.
 
 Dependencies / Requirements:
     Python 3.10+
@@ -176,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-11"
+__version__ = "v2026.09.18-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -200,6 +201,7 @@ _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
+import manager_db  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1036
 import model_meta  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #878
 import draft_candidates  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #889
 import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
@@ -255,10 +257,15 @@ _patch_cheroot_flush_noise()
 _PKG_DIR   = Path(__file__).resolve().parent.parent
 STATIC_DIR = _PKG_DIR / "frontend"
 DATA_DIR   = _REPO_ROOT_PATH / "data"
-# LLMSYS_METRICS_DB redirects the SQLite file (the test suite uses a temp copy).
-DB_PATH    = Path(os.environ.get("LLMSYS_METRICS_DB") or (DATA_DIR / "metrics.db"))
+# LLMSYS_MANAGER_DB (alias LLMSYS_METRICS_DB) redirects the SQLite files (the test suite uses a temp dir).
+_DB_PATHS = manager_db.resolve_paths(DATA_DIR)
+DB_PATH        = _DB_PATHS["manager"]
+AUDIT_DB_PATH  = _DB_PATHS["audit"]
+ENERGY_DB_PATH = _DB_PATHS["energy"]
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+for _p in _DB_PATHS.values():
+    _p.parent.mkdir(parents=True, exist_ok=True)
+manager_db.rename_legacy_file(DB_PATH)
 
 # ---------------------------------------------------------------------------
 # SQLite setup
@@ -267,19 +274,29 @@ import threading as _threading
 
 _db_tls = _threading.local()
 
-def get_db():
-    """Return a per-thread SQLite connection. metrics.db now holds only the
-    tiny model_benchmarks table; WAL keeps reads/writes concurrent across
-    Flask threads, busy_timeout absorbs lock contention. Other perf-tuning
-    PRAGMAs were dropped — they were pointless against a 16 KB DB."""
-    conn = getattr(_db_tls, "conn", None)
+def _db_conn(path: Path):
+    """Per-thread SQLite connection for `path`; WAL + busy_timeout."""
+    conns = getattr(_db_tls, "conns", None)
+    if conns is None:
+        conns = _db_tls.conns = {}
+    conn = conns.get(str(path))
     if conn is None:
-        conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
+        conn = sqlite3.connect(str(path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
-        _db_tls.conn = conn
+        conns[str(path)] = conn
     return conn
+
+
+def get_db():
+    """Per-thread connection to manager.db (benchmarks, tower, jobs, report cards)."""
+    return _db_conn(DB_PATH)
+
+
+def get_audit_db():
+    """Per-thread connection to audit.db (audit_log only)."""
+    return _db_conn(AUDIT_DB_PATH)
 
 def init_db():
     """Create non-metric SQLite tables. Metric data lives in InfluxDB via the alarm engine."""
@@ -400,9 +417,11 @@ def init_db():
         """)
     # GPU report card runs (#468); backs the card view and local trending.
     report_card.init_table(conn)
-    # Hourly per-agent energy/token accounting (#470).
-    energy.init_table(conn)
-    # Append-only admin action audit log (#217); bounded by _AUDIT_MAX_ROWS.
+    conn.commit()
+    # Hourly per-agent energy/token accounting (#470) lives in energy.db.
+    energy.init_table(_db_conn(ENERGY_DB_PATH))
+    # Append-only admin action audit log (#217) lives in audit.db; bounded by _AUDIT_MAX_ROWS.
+    conn = get_audit_db()
     conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_log (
                 id      INTEGER PRIMARY KEY,
@@ -429,6 +448,8 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor)")
     conn.commit()
+    # One-time move of audit_log / energy_hourly out of manager.db (#1037).
+    manager_db.split_write_heavy_tables(_DB_PATHS)
 
 init_db()
 
@@ -866,11 +887,12 @@ def _close_db(exc):
     """Close the per-thread SQLite connection after every request.
     Flask creates a new thread per request in threaded mode; without this each
     thread's connection (and its 3 WAL FDs) would leak until GC runs."""
-    conn = getattr(_db_tls, "conn", None)
-    if conn is not None:
-        with best_effort("teardown: close per-thread sqlite conn", log=log):
-            conn.close()
-        _db_tls.conn = None
+    conns = getattr(_db_tls, "conns", None)
+    if conns:
+        for conn in conns.values():
+            with best_effort("teardown: close per-thread sqlite conn", log=log):
+                conn.close()
+        conns.clear()
 
 _INITIAL_HIDE_IDS = (
     # (id, capability-key — element is hidden when the cap is missing)
@@ -3897,7 +3919,7 @@ def _audit_record(entry: tuple) -> None:
     """entry = (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail_json[, event])."""
     if len(entry) == 12:
         entry = entry + (_audit_event_for(entry[7]),)
-    conn = get_db()
+    conn = get_audit_db()
     cur = conn.execute(
         "INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", entry)
@@ -3914,7 +3936,7 @@ def _audit_purge(now=None) -> int:
     if days <= 0:
         return 0
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat(timespec="seconds")
-    conn = get_db()
+    conn = get_audit_db()
     cur = conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,))
     conn.commit()
     removed = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
@@ -4101,7 +4123,7 @@ def admin_audit_log():
     except (ValueError, TypeError):
         offset = 0
     where, params = _audit_query_parts(args)
-    conn = get_db()
+    conn = get_audit_db()
     total = conn.execute("SELECT COUNT(*) FROM audit_log" + where, params).fetchone()[0]
     rows = conn.execute(
         "SELECT id, ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event"
@@ -4119,7 +4141,7 @@ def admin_audit_log_csv():
     import csv
     import io
     where, params = _audit_query_parts(flask_request.args)
-    rows = get_db().execute(
+    rows = get_audit_db().execute(
         "SELECT ts, actor, role, ip, auth, action, target, status, outcome, detail FROM audit_log"
         + where + _audit_order(flask_request.args) + " LIMIT ?", params + [_AUDIT_CSV_MAX]).fetchall()
     buf = io.StringIO()
@@ -4138,7 +4160,7 @@ def admin_audit_log_stats():
     deny = _require_admin()
     if deny is not None:
         return deny
-    conn = get_db()
+    conn = get_audit_db()
     total = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
     oldest = conn.execute("SELECT MIN(ts) FROM audit_log").fetchone()[0]
     actors = [r[0] for r in conn.execute(
@@ -5650,7 +5672,7 @@ tool_activity.configure(
         m, a, p, headers={"Authorization": f"Bearer {a.get('token') or ''}"}, **kw)[0],
     reportcard_active=report_card.active_agents,
 )
-energy.register_routes(app, ctx, db_path=str(DB_PATH), primary_agent=lambda: _request_agent("llama"))
+energy.register_routes(app, ctx, db_path=str(ENERGY_DB_PATH), primary_agent=lambda: _request_agent("llama"))
 model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 
@@ -6041,7 +6063,7 @@ def _tower_audit_rows(window, actor, action, count, a=None):
     if clause:
         where.append(clause); params += extra
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
-    conn = get_db()
+    conn = get_audit_db()
     total = int(conn.execute("SELECT COUNT(*) FROM audit_log" + sql_where, params).fetchone()[0])
     count = max(1, min(int(count or 20), tower_tools.AUDIT_COUNT_MAX))
     offset = max(0, int(a.get("offset") or 0))
@@ -6567,7 +6589,9 @@ _MANAGER_EXPORT_FILES = [
     "data/model_aliases.json",
     "data/model_profiles.json",
 ]
-_MANAGER_EXPORT_SQLITE = ["data/metrics.db"]
+_MANAGER_EXPORT_SQLITE = list(manager_db.EXPORT_ENTRIES)
+# Pre-rename archives carry data/metrics.db; the import writes it as manager.db.
+_LEGACY_IMPORT_SQLITE = {manager_db.LEGACY_EXPORT_ENTRY: manager_db.EXPORT_ENTRIES[0]}
 # Newest pre-import backups kept per destination file.
 _PREIMPORT_KEEP = 5
 
@@ -6595,7 +6619,8 @@ _MANAGER_EXPORT_CATEGORIES = {
         "data/layout.json",
         "data/model_aliases.json",
         "data/model_profiles.json",
-        "data/metrics.db",
+        *manager_db.EXPORT_ENTRIES,
+        manager_db.LEGACY_EXPORT_ENTRY,
     }),
     "identity": frozenset({
         "data/internal-ca.crt",
@@ -6756,14 +6781,14 @@ def _import_apply_manager(files: dict[str, bytes]) -> dict[str, Any]:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     written: list[str] = []
     backups: list[str] = []
-    allow = set(_MANAGER_EXPORT_FILES) | set(_MANAGER_EXPORT_SQLITE)
+    allow = set(_MANAGER_EXPORT_FILES) | set(_MANAGER_EXPORT_SQLITE) | set(_LEGACY_IMPORT_SQLITE)
     for arc_name, data in files.items():
         if arc_name == "manifest.json":
             continue
         if arc_name not in allow and not _is_layout_entry(arc_name):
             log.warning("ignoring unexpected entry in import archive: %s", arc_name)
             continue
-        dest = _REPO_ROOT_PATH / arc_name
+        dest = _REPO_ROOT_PATH / _LEGACY_IMPORT_SQLITE.get(arc_name, arc_name)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
             bak = f"{dest}.preimport.{ts}.bak"
@@ -7269,6 +7294,30 @@ def _maybe_start_backup_scheduler() -> None:
     _backup_log_state(ev)
     _threading.Thread(target=_backup_scheduler_loop,
                       name="backup-scheduler", daemon=True).start()
+
+
+# Per-file row-count tables for the Database Performance card.
+_DBSTATS_COUNTS = {
+    "manager": {"benchmarks": "model_benchmarks", "report_cards": "report_cards", "tool_runs": "tool_runs",
+                "jobs": "jobs", "tower_messages": "tower_messages"},
+    "audit": {"audit_rows": "audit_log"},
+    "energy": {"energy_rows": "energy_hourly"},
+}
+
+
+@app.route("/api/admin/dbstats/sqlite")
+def admin_dbstats_sqlite():
+    """Size, WAL and row counts of manager.db / audit.db / energy.db."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    out = {"ok": True}
+    for key, path in _DB_PATHS.items():
+        try:
+            out[f"{key}_db"] = manager_db.sqlite_stats(path, _db_conn(path), _DBSTATS_COUNTS[key])
+        except sqlite3.Error as e:
+            out[f"{key}_db"] = {"file": path.name, "error": str(e)}
+    return jsonify(out)
 
 
 @app.route("/api/admin/backup-status")
@@ -8857,7 +8906,7 @@ if __name__ == "__main__":
     log.info(f"  Config:       {CONFIG_PATH or '(none — using built-in defaults)'}")
     log.info(f"  InfluxDB:     http://{settings.influxdb.host}:{settings.influxdb.port} "
              f"(org={settings.influxdb.org})")
-    log.info(f"  SQLite:       {DB_PATH} (model_benchmarks only)")
+    log.info(f"  SQLite:       {DB_PATH} + {AUDIT_DB_PATH.name} + {ENERGY_DB_PATH.name}")
     log.info("  llama.cpp:    via primary llama agent")
     log.info("  LM Studio:    via primary lms agent")
     log.info(f"  Alarm Engine: {_alarm_engine_url}")

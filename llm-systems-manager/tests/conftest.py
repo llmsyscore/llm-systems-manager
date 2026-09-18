@@ -33,10 +33,11 @@ for p in (_REPO_ROOT, _BACKEND_DIR):
         sys.path.insert(0, s)
 
 
-# Per-session metrics.db for the suite (LLMSYS_METRICS_DB is read at import).
-_LIVE_DB = _REPO_ROOT / "data" / "metrics.db"
+# Per-session SQLite files for the suite (LLMSYS_MANAGER_DB is read at import;
+# audit.db / energy.db land beside it).
+_LIVE_DB = _REPO_ROOT / "data" / "audit.db"
 _TMP_DATA = Path(tempfile.mkdtemp(prefix="llmsys-test-db-"))
-os.environ["LLMSYS_METRICS_DB"] = str(_TMP_DATA / "metrics.db")
+os.environ["LLMSYS_MANAGER_DB"] = str(_TMP_DATA / "manager.db")
 atexit.register(shutil.rmtree, _TMP_DATA, True)
 
 

@@ -12,11 +12,11 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
 import autopilot_planner as pl  # type: ignore[import-not-found]  # sibling
+import manager_db  # type: ignore[import-not-found]  # sibling
 import providers        # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.autopilot")
@@ -1010,8 +1010,7 @@ def make_executor(deps: dict, entries_by_key):
 
 # ── Production deps: wire make_executor's callables to real agent I/O ──────
 
-_METRICS_DB_PATH = Path(os.environ.get("LLMSYS_METRICS_DB")
-                        or Path(__file__).resolve().parents[2] / "data" / "metrics.db")
+_AUDIT_DB_PATH = manager_db.resolve_paths(Path(__file__).resolve().parents[2] / "data")["audit"]
 
 
 def _agent_ok(r, body) -> bool:
@@ -1153,7 +1152,7 @@ def _prod_audit(action_str: str, target: str, outcome: str, detail=None) -> None
     if not audit_enabled():
         return
     try:
-        conn = sqlite3.connect(str(_METRICS_DB_PATH), timeout=5.0)
+        conn = sqlite3.connect(str(_AUDIT_DB_PATH), timeout=5.0)
         try:
             conn.execute("PRAGMA busy_timeout=5000")
             cur = conn.execute(

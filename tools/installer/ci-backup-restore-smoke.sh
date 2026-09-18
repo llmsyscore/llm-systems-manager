@@ -251,9 +251,11 @@ echo "── 4. Restore both components from the archives ───────�
 body="$(mgr -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" "$MGR_URL/api/admin/import/manager/preview")"
 [ "$(last_code)" = "200" ] || fail "manager preview = $(last_code) — ${body:0:600}"
 jq_ok "$body" ".ok == true and .encrypted == $ENC and .manifest.component == \"manager\"" "manager preview manifest"
-for want in config/llm-systems.toml data/manager_users.json data/internal-ca.crt data/internal-ca.key data/manager_secret; do
+for want in config/llm-systems.toml data/manager_users.json data/internal-ca.crt data/internal-ca.key data/manager_secret \
+            data/manager.db data/audit.db data/energy.db; do
   jq_ok "$body" '[.entries[] | select(.name == $n and .size > 0)] | length == 1' "manager archive lacks $want" --arg n "$want"
 done
+jq_ok "$body" '[.entries[] | select(.name == "data/metrics.db")] | length == 0' "manager archive still carries the legacy data/metrics.db"
 body="$(mgr -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" \
   -F 'categories=["config","identity"]' "$MGR_URL/api/admin/import/manager/apply")"
 [ "$(last_code)" = "200" ] || fail "manager apply = $(last_code) — ${body:0:600}"
@@ -315,6 +317,55 @@ jq_ok "$body" '.ok == true and .last.partial == false and .last.components.alarm
 RUN2="$(jq_get "$body" '.last.ts')"
 [ "$RUN2" != "$RUN1" ] || fail "post-restore run reused the first run's timestamp"
 pass "a fresh scheduled run after restore captures both components"
+
+echo "── 6. A pre-split single-file archive (data/metrics.db) still restores ──"
+# Shape of a manager archive from before #1036/#1037: one data/metrics.db holding
+# audit_log + energy_hourly. Import must land it as manager.db and the next boot
+# must move both tables into audit.db / energy.db.
+LEGACY_ACTOR="ci-legacy-actor-$RANDOM"
+LEGACY_ARCHIVE="$WORK/legacy-manager.lsmenc"
+python3 - "$LEGACY_ARCHIVE" "$LEGACY_ACTOR" <<'PY'
+import io, json, sqlite3, sys, tarfile, time
+out, actor = sys.argv[1], sys.argv[2]
+db = sqlite3.connect(":memory:")
+db.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, actor TEXT, role TEXT, ip TEXT,"
+           " method TEXT, path TEXT, action TEXT, target TEXT, status INTEGER, outcome TEXT, auth TEXT, detail TEXT, event TEXT)")
+db.execute("INSERT INTO audit_log (ts, actor, role, action, outcome) VALUES ('2026-01-01T00:00:00+00:00', ?, 'admin', 'legacy.row', 'ok')", (actor,))
+db.execute("CREATE TABLE energy_hourly (hour_ts INTEGER NOT NULL, agent_id TEXT NOT NULL, hostname TEXT,"
+           " observed_s REAL NOT NULL DEFAULT 0, active_s REAL NOT NULL DEFAULT 0, power_s REAL NOT NULL DEFAULT 0,"
+           " energy_wh REAL NOT NULL DEFAULT 0, active_energy_wh REAL NOT NULL DEFAULT 0, tokens_gen INTEGER NOT NULL DEFAULT 0,"
+           " tokens_prompt INTEGER NOT NULL DEFAULT 0, power_source TEXT, samples INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (hour_ts, agent_id))")
+db.execute("INSERT INTO energy_hourly (hour_ts, agent_id, hostname, energy_wh) VALUES (1700000000, 'legacy-agent', 'legacy-host', 12.5)")
+db.commit()
+files = {"data/metrics.db": bytes(db.serialize())}
+files["manifest.json"] = json.dumps({"component": "manager", "manager_version": "v2026.09.01-1",
+                                     "file_count": 1, "files": [{"name": "data/metrics.db", "size": len(files["data/metrics.db"])}]}).encode()
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+    for name, data in sorted(files.items()):
+        info = tarfile.TarInfo(name=name); info.size = len(data); info.mtime = int(time.time()); info.mode = 0o600
+        tf.addfile(info, io.BytesIO(data))
+with open(out, "wb") as fh:
+    fh.write(b"LSMENC" + bytes([1, 0]) + buf.getvalue())
+PY
+body="$(mgr -X POST -F "file=@$LEGACY_ARCHIVE" "$MGR_URL/api/admin/import/manager/preview")"
+[ "$(last_code)" = "200" ] || fail "legacy preview = $(last_code) — ${body:0:600}"
+jq_ok "$body" '[.entries[] | select(.name == "data/metrics.db" and .category == "config")] | length == 1' "legacy data/metrics.db must preview as config"
+body="$(mgr -X POST -F "file=@$LEGACY_ARCHIVE" -F 'categories=["config"]' "$MGR_URL/api/admin/import/manager/apply")"
+[ "$(last_code)" = "200" ] || fail "legacy apply = $(last_code) — ${body:0:600}"
+jq_ok "$body" '.ok == true and ([.written[] | select(endswith("data/manager.db"))] | length) == 1 and ([.written[] | select(endswith("data/metrics.db"))] | length) == 0' \
+  "legacy apply must write data/manager.db, never data/metrics.db"
+restart_unit "$MGR_UNIT" "$MGR_URL/health"
+admin_login
+body="$(mgr "$MGR_URL/api/admin/audit-log?q=$LEGACY_ACTOR&since_hours=0&actor=$LEGACY_ACTOR")"
+[ "$(last_code)" = "200" ] || fail "audit-log after legacy restore = $(last_code)"
+jq_ok "$body" '[.entries[] | select(.actor == $a and .action == "legacy.row")] | length >= 1' "legacy audit row not served after the split" --arg a "$LEGACY_ACTOR"
+[ "$(sqlite3 "$MGR_DATA/manager.db" "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('audit_log','energy_hourly')")" = "0" ] \
+  || fail "manager.db still holds audit_log/energy_hourly after the boot split"
+[ "$(sqlite3 "$MGR_DATA/energy.db" "SELECT energy_wh FROM energy_hourly WHERE agent_id='legacy-agent'")" = "12.5" ] \
+  || fail "legacy energy row missing from energy.db"
+[ -e "$MGR_DATA/metrics.db" ] && fail "data/metrics.db reappeared after the legacy import"
+pass "pre-split archive imported as manager.db; audit + energy rows split out on boot"
 
 echo
 echo "ALL BACKUP + RESTORE ASSERTIONS PASSED (encrypted=$ENC, mgr=$MGR_DIR, ae=$AE_DIR)"

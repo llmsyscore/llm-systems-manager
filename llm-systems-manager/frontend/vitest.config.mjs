@@ -4,6 +4,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'jsdom',
+    // Cap parallel test workers at three.
+    maxWorkers: 3,
     include: ['test/**/*.test.js', 'test/**/*.test.mjs'],
   },
 });

@@ -67,7 +67,7 @@ def test_audit_match_skips_unaudited(method, path):
 
 def test_audit_hook_records_denied_mutation(monkeypatch):
     conn = _mem_db()
-    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     client = manager_mod.app.test_client()
     resp = client.post("/api/agents/deadbeef/approve")
     assert resp.status_code in (401, 403)
@@ -82,7 +82,7 @@ def test_audit_hook_records_denied_mutation(monkeypatch):
 
 def test_audit_hook_ignores_get(monkeypatch):
     conn = _mem_db()
-    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     client = manager_mod.app.test_client()
     client.get("/api/admin/users")
     assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
@@ -90,7 +90,7 @@ def test_audit_hook_ignores_get(monkeypatch):
 
 def test_audit_record_prunes_past_cap(monkeypatch):
     conn = _mem_db()
-    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(manager_mod, "_AUDIT_MAX_ROWS", 50)
     monkeypatch.setattr(manager_mod, "_AUDIT_PRUNE_EVERY", 10)
     for i in range(120):
@@ -105,7 +105,7 @@ def test_audit_record_prunes_past_cap(monkeypatch):
 
 def test_audit_hook_records_manual_unload_with_the_model_as_target(monkeypatch):
     conn = _mem_db()
-    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     client = manager_mod.app.test_client()
     resp = client.post("/api/lmstudio/unload", json={"model": "qwen3-30b"})
     assert resp.status_code in (401, 403)
@@ -130,14 +130,14 @@ def _cfg(monkeypatch, **over):
 
 
 def test_audit_hook_skips_disabled_event(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, disabled={"agent.lifecycle"})
     manager_mod.app.test_client().post("/api/agents/deadbeef/approve")
     assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
 
 
 def test_audit_hook_drops_test_tagged_requests_unless_saved(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, save_automated=False, disabled=set())
     c = manager_mod.app.test_client()
     c.post("/api/agents/deadbeef/approve", headers={"X-LLMSys-Source": "test"})
@@ -151,7 +151,7 @@ def test_audit_hook_drops_test_tagged_requests_unless_saved(monkeypatch):
 def test_audit_hook_gates_automated_actors_like_tagged_traffic(monkeypatch):
     """#814: a session user listed in automated_actors follows the Unit tests toggle."""
     import auth
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     monkeypatch.setattr(auth, "_live_role_for_session", lambda: ("admin", True))
     _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
@@ -169,7 +169,7 @@ def test_audit_hook_gates_automated_actors_like_tagged_traffic(monkeypatch):
 def test_audit_hook_keeps_failed_logins_for_automated_actors(monkeypatch):
     import auth
     import manager_users
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, save_automated=False, disabled=set(), automated_actors=["smoketestuser"])
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     monkeypatch.setattr(manager_users, "authenticate", lambda u, p, ip: {"ok": False})
@@ -180,7 +180,7 @@ def test_audit_hook_keeps_failed_logins_for_automated_actors(monkeypatch):
 
 
 def test_audit_hook_records_bypass_auth_kind_and_agent_detail(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     monkeypatch.setattr(manager_mod.agent_registry, "load_agents",
                         lambda: {"agents": {"deadbeef": {"hostname": "box-1", "status": "approved"}}})
@@ -192,7 +192,7 @@ def test_audit_hook_records_bypass_auth_kind_and_agent_detail(monkeypatch):
 
 
 def test_audit_hook_records_error_detail(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     c = manager_mod.app.test_client()
     r = c.post("/api/admin/service/nope/restart")
@@ -242,7 +242,7 @@ def test_every_route_event_exists_in_catalog():
 
 
 def test_settings_detail_records_old_and_new_and_masks_secrets(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     monkeypatch.setattr(manager_mod.settings_catalog, "file_catalog_values",
                         lambda: {"manager.audit.retention_days": 30, "manager.backup.passphrase": "old"})
@@ -258,7 +258,7 @@ def test_settings_detail_records_old_and_new_and_masks_secrets(monkeypatch):
 
 
 def test_load_detail_carries_model_and_agent(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(manager_mod.agent_registry, "load_agents",
                         lambda: {"agents": {"a1": {"hostname": "lms-box", "status": "approved"}}})
     c = manager_mod.app.test_client()
@@ -270,7 +270,7 @@ def test_load_detail_carries_model_and_agent(monkeypatch):
 
 
 def test_audit_purge_removes_rows_older_than_retention(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, retention_days=60)
     old = "2026-06-01T00:00:00+00:00"; new = "2026-08-30T00:00:00+00:00"
     for ts in (old, old, new):
@@ -282,7 +282,7 @@ def test_audit_purge_removes_rows_older_than_retention(monkeypatch):
 
 
 def test_audit_purge_keeps_everything_when_retention_zero(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, retention_days=0)
     conn.execute("INSERT INTO audit_log (ts, action) VALUES ('2020-01-01T00:00:00+00:00', 'x')")
     assert manager_mod._audit_purge() == 0
@@ -316,7 +316,7 @@ def _admin_client(monkeypatch):
 
 def _client(monkeypatch):
     conn = _mem_db(); _seed(conn)
-    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, automated_actors=["smoketestuser"])
     return _admin_client(monkeypatch)
 
@@ -418,7 +418,7 @@ def test_audit_reload_config_uses_catalog_defaults_when_unset(monkeypatch):
 
 
 def test_source_header_only_counts_from_loopback(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, save_automated=False, disabled=set())
     c = manager_mod.app.test_client()
     c.post("/api/agents/deadbeef/approve", headers={"X-LLMSys-Source": "test"},
@@ -429,7 +429,7 @@ def test_source_header_only_counts_from_loopback(monkeypatch):
 
 def test_group_filter_uses_the_stored_event_and_falls_back_for_legacy_rows(monkeypatch):
     c = _client(monkeypatch)
-    conn = manager_mod.get_db()
+    conn = manager_mod.get_audit_db()
     conn.execute("INSERT INTO audit_log (ts, actor, action, event) VALUES ('2026-09-01T22:00:00+00:00', 'x', 'admin.some-new-thing', 'config.settings')")
     d = c.get("/api/admin/audit-log?group=config").get_json()
     assert d["total"] == 3
@@ -437,7 +437,7 @@ def test_group_filter_uses_the_stored_event_and_falls_back_for_legacy_rows(monke
 
 
 def test_csv_neutralises_formula_cells(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     conn.execute("INSERT INTO audit_log (ts, actor, action, target) VALUES ('2026-09-01T22:00:00+00:00', '=cmd|calc', 'auth.login', '@evil')")
     c = _admin_client(monkeypatch)
     body = c.get("/api/admin/audit-log.csv").get_data(as_text=True)
@@ -445,7 +445,7 @@ def test_csv_neutralises_formula_cells(monkeypatch):
 
 
 def test_hide_automated_hides_blank_bypass_from_loopback_only(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     conn.executemany("INSERT INTO audit_log (ts, actor, ip, auth, action) VALUES (?,?,?,?,?)", [
         ("2026-09-01T22:00:00+00:00", "", "127.0.0.1", "bypass", "agent.approve"),
         ("2026-09-01T22:00:00+00:00", "", "192.0.2.5", "bypass", "agent.approve"),
@@ -466,7 +466,7 @@ def test_detail_shrink_keeps_a_truncated_changes_diff():
 def test_login_failure_is_audited_with_the_attempted_username(monkeypatch):
     import auth
     import manager_users
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     monkeypatch.setattr(manager_users, "authenticate", lambda u, p, ip: {"ok": False})
     c = manager_mod.app.test_client()
@@ -479,7 +479,7 @@ def test_login_failure_is_audited_with_the_attempted_username(monkeypatch):
 def test_login_success_is_audited_as_the_signed_in_user(monkeypatch):
     import auth
     import manager_users
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     monkeypatch.setattr(manager_users, "authenticate",
                         lambda u, p, ip: {"ok": True, "username": "llmadmin", "role": "admin"})
@@ -493,7 +493,7 @@ def test_login_success_is_audited_as_the_signed_in_user(monkeypatch):
 def test_lockout_is_audited_as_denied_with_reason(monkeypatch):
     import auth
     import manager_users
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     monkeypatch.setattr(manager_users, "authenticate", lambda u, p, ip: {"ok": False, "locked": True})
     c = manager_mod.app.test_client()
@@ -503,14 +503,14 @@ def test_lockout_is_audited_as_denied_with_reason(monkeypatch):
 
 
 def test_user_create_targets_the_new_username(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     manager_mod.app.test_client().post("/api/admin/users", json={"username": "newbie", "password": "x" * 12, "role": "operator"})
     row = conn.execute("SELECT target, detail FROM audit_log").fetchone()
     assert row["target"] == "newbie" and json.loads(row["detail"])["role"] == "operator"
 
 
 def test_hide_automated_hides_untagged_loopback_rows_even_with_an_actor(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     conn.executemany("INSERT INTO audit_log (ts, actor, ip, auth, action, target) VALUES (?,?,?,?,?,?)", [
         ("2026-09-01T19:32:00+00:00", "llmadmin", "127.0.0.1", None, "user.delete", "smoke-test-user"),
         ("2026-09-01T19:32:00+00:00", "llmadmin", "127.0.0.1", "session", "user.delete", "op1"),
@@ -530,7 +530,7 @@ def _strict_json(data):
 
 def test_audit_list_never_emits_nan_or_infinity(monkeypatch):
     """#815: NaN/Infinity inside a stored detail must not reach the JSON response."""
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     conn.execute("INSERT INTO audit_log (ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail)"
                  " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                  ("2026-09-03T11:10:08+00:00", "llmadmin", "admin", "192.0.2.10", "session", "PUT",
@@ -543,7 +543,7 @@ def test_audit_list_never_emits_nan_or_infinity(monkeypatch):
 
 
 def test_audit_hook_stores_non_finite_detail_values_as_null(monkeypatch):
-    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
     _cfg(monkeypatch, disabled=set())
     monkeypatch.setattr(manager_mod, "_audit_detail",
                         lambda action, target, resp: {"score": float("nan"), "ceil": float("inf"), "ok": 1.5})
@@ -556,7 +556,7 @@ def test_audit_hook_failure_is_logged_at_warning(monkeypatch, caplog):
     """#853: a dropped audit row must surface at the running log level."""
     def boom():
         raise sqlite3.OperationalError("database is locked")
-    monkeypatch.setattr(manager_mod, "get_db", boom)
+    monkeypatch.setattr(manager_mod, "get_audit_db", boom)
     client = manager_mod.app.test_client()
     with caplog.at_level(logging.WARNING, logger="llm-systems-manager"):
         resp = client.post("/api/admin/export/manager")

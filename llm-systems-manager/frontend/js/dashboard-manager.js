@@ -55,8 +55,9 @@ async function fetchServicesAndInflux() {
       ? fetch(`/api/alarm/metrics?source=system&agent=${encodeURIComponent(MGR_AGENT)}&limit=500`)
           .then(r => r.json()).catch(() => [])
       : Promise.resolve([]);
-    const [sqliteStatsRaw, mgrSysRaw, ...results] = await Promise.all([
+    const [sqliteStatsRaw, mgrDbRaw, mgrSysRaw, ...results] = await Promise.all([
       fetch('/api/alarm/dbstats/sqlite').then(r => r.json()).catch(() => ({})),
+      fetch('/api/admin/dbstats/sqlite').then(r => r.json()).catch(() => ({})),
       mgrSysFetch,
       ...sources.map(s =>
         fetch(`/api/alarm/metrics?source=${encodeURIComponent(s)}&limit=500`)
@@ -64,6 +65,7 @@ async function fetchServicesAndInflux() {
       ),
     ]);
     const sqliteStats = sqliteStatsRaw || {};
+    const mgrDb = mgrDbRaw || {};
     const rows = [].concat(...results.map(r => Array.isArray(r) ? r : []));
     if (!rows.length && !(Array.isArray(mgrSysRaw) && mgrSysRaw.length)) return;
     // Key services by (host, svc) so multi-host watchlists don't clobber each
@@ -218,6 +220,17 @@ async function fetchServicesAndInflux() {
     setText('sqlitePages',        fmtCount(pagesTotal));
     setText('sqliteQueryMs',      slowestQuery != null ? slowestQuery.toFixed(2) : '—');
     setText('sqliteDeliveries',   fmtCount(s.deliveries));
+
+    // ---- Manager SQLite (manager.db / audit.db / energy.db) ----
+    const md = window.DashboardManagerDb.summarize(mgrDb);
+    setText('mgrDbManagerSize', md.manager_size != null ? _fmtBytesShort(md.manager_size) : '—');
+    setText('mgrDbAuditSize',   md.audit_size != null ? _fmtBytesShort(md.audit_size) : '—');
+    setText('mgrDbEnergySize',  md.energy_size != null ? _fmtBytesShort(md.energy_size) : '—');
+    setText('mgrDbWalSize',     md.wal_total != null ? _fmtBytesShort(md.wal_total) : '—');
+    setText('mgrDbAuditRows',   fmtCount(md.audit_rows));
+    setText('mgrDbEnergyRows',  fmtCount(md.energy_rows));
+    setText('mgrDbRunRows',     fmtCount(md.run_rows));
+    setText('mgrDbQueryMs',     md.query_ms != null ? md.query_ms.toFixed(2) : '—');
     const inflBadge = document.getElementById('influxdb-badge');
     const upStale = (up?.age == null) || (up.age > 90);
     if (inflBadge) {
