@@ -682,16 +682,50 @@ def test_usage_probe_config_off_skips_injection(monkeypatch):
                         lambda: _types.SimpleNamespace(usage_probe=False))
     seen = {}
 
-    def fake_stream(a, path, body, errors, provider="llama", strip_usage=False,
+    def fake_stream(a, path, body, errors, provider="llama", injected=False,
                     **kw):
-        seen["body"], seen["strip_usage"] = body, strip_usage
+        seen["body"], seen["injected"] = body, injected
         return gateway.Response("ok")
 
     monkeypatch.setattr(gateway, "_stream_from", fake_stream)
     r = _client().post("/api/gateway/lms/v1/chat/completions",
                        json={"model": "m", "stream": True})
     assert r.status_code == 200
-    assert "stream_options" not in seen["body"] and seen["strip_usage"] is False
+    assert "stream_options" not in seen["body"] and seen["injected"] is False
+
+
+def test_injected_usage_event_is_relayed_to_client(monkeypatch):
+    # #1069: a client that sent no stream_options still receives the
+    # usage event the probe asked the backend for.
+    agent = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [agent])
+    import types as _types
+    monkeypatch.setattr(gateway, "_gw_cfg",
+                        lambda: _types.SimpleNamespace(usage_probe=True))
+    sent = {}
+
+    def dial(a, p, b):
+        sent.update(b)
+        return FakeUpstream([
+            b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+            b'data: {"choices":[],"usage":{"prompt_tokens":53,"completion_tokens":4}}\n\n',
+            b"data: [DONE]\n\n"])
+
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    per_agent, per_client = [], []
+    monkeypatch.setattr(gateway.gateway_usage, "record",
+                        lambda a, p, g: per_agent.append((p, g)))
+    monkeypatch.setattr(gateway.gateway_usage, "client_record",
+                        lambda k, p, g: per_client.append((p, g)))
+    # llama is not usage-counted per agent, but the probe + relay still apply.
+    r = _client().post("/api/gateway/v1/chat/completions",
+                       json={"model": "m", "stream": True})
+    assert r.status_code == 200
+    assert sent["stream_options"] == {"include_usage": True}
+    body = r.get_data()
+    assert b'"usage":{"prompt_tokens":53,"completion_tokens":4}' in body
+    assert b"[DONE]" in body
+    assert per_client == [(53, 4)] and per_agent == []
 
 
 def test_stream_400_after_injection_logs_hint(monkeypatch, caplog):

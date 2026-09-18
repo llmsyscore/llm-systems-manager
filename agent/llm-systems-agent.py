@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.17-5"
+VERSION = "v2026.09.17-6"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3673,10 +3673,20 @@ def _oc_ts_to_day(ts_str) -> Optional[str]:
 
 
 def _oc_parse_session_file(path: Path) -> dict[str, Any]:
-    """One-pass aggregation over a session .jsonl into the per-session
-    dict consumed by the manager's OpenClaw analytics merge."""
+    """Aggregate one session .jsonl file via _oc_parse_session_events."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            return _oc_parse_session_events(path.stem, f)
+    except Exception as e:
+        logger.warning("openclaw: failed to parse %s: %s", path, e)
+        return _oc_parse_session_events(path.stem, [])
+
+
+def _oc_parse_session_events(session_id: str, lines) -> dict[str, Any]:
+    """One-pass aggregation over transcript event JSON lines into the
+    per-session dict consumed by the manager's OpenClaw analytics merge."""
     agg: dict[str, Any] = {
-        "session_id": path.stem,
+        "session_id": session_id,
         "messages": 0, "user_msgs": 0, "assistant_msgs": 0,
         "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
         "cost": 0.0, "tool_uses": 0,
@@ -3688,77 +3698,76 @@ def _oc_parse_session_file(path: Path) -> dict[str, Any]:
         "daily_tools": {}, "hourly": {},
     }
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                try:
-                    d = json.loads(line)
-                except Exception:
-                    continue
-                t = d.get("type")
-                if t == "session":
-                    agg["cwd"] = d.get("cwd")
-                    continue
-                if t != "message":
-                    continue
-                agg["messages"] += 1
-                ts = d.get("timestamp")
-                if ts:
-                    if not agg["first_ts"]:
-                        agg["first_ts"] = ts
-                    agg["last_ts"] = ts
-                day = _oc_ts_to_day(ts)
-                msg = d.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                role = msg.get("role")
-                if role == "user":
-                    agg["user_msgs"] += 1
-                elif role == "assistant":
-                    agg["assistant_msgs"] += 1
-                model_name = msg.get("model")
-                if model_name and model_name != "gateway-injected":
-                    agg["models"].add(model_name)
-                u = msg.get("usage")
-                msg_cost = 0.0
-                msg_in = msg_out = 0
-                if isinstance(u, dict):
-                    msg_in  = u.get("input", 0) or 0
-                    msg_out = u.get("output", 0) or 0
-                    agg["input"]      += msg_in
-                    agg["output"]     += msg_out
-                    agg["cacheRead"]  += u.get("cacheRead", 0) or 0
-                    agg["cacheWrite"] += u.get("cacheWrite", 0) or 0
-                    cost = u.get("cost")
-                    if isinstance(cost, dict):
-                        msg_cost = float(cost.get("total", 0) or 0)
-                        agg["cost"] += msg_cost
+        for line in lines:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            t = d.get("type")
+            if t == "session":
+                agg["cwd"] = d.get("cwd")
+                continue
+            if t != "message":
+                continue
+            agg["messages"] += 1
+            ts = d.get("timestamp")
+            if ts:
+                if not agg["first_ts"]:
+                    agg["first_ts"] = ts
+                agg["last_ts"] = ts
+            day = _oc_ts_to_day(ts)
+            msg = d.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "user":
+                agg["user_msgs"] += 1
+            elif role == "assistant":
+                agg["assistant_msgs"] += 1
+            model_name = msg.get("model")
+            if model_name and model_name != "gateway-injected":
+                agg["models"].add(model_name)
+            u = msg.get("usage")
+            msg_cost = 0.0
+            msg_in = msg_out = 0
+            if isinstance(u, dict):
+                msg_in  = u.get("input", 0) or 0
+                msg_out = u.get("output", 0) or 0
+                agg["input"]      += msg_in
+                agg["output"]     += msg_out
+                agg["cacheRead"]  += u.get("cacheRead", 0) or 0
+                agg["cacheWrite"] += u.get("cacheWrite", 0) or 0
+                cost = u.get("cost")
+                if isinstance(cost, dict):
+                    msg_cost = float(cost.get("total", 0) or 0)
+                    agg["cost"] += msg_cost
+            if day:
+                db = agg["daily"].setdefault(day, {"input": 0, "output": 0, "cost": 0.0, "tokens": 0})
+                db["input"]  += msg_in
+                db["output"] += msg_out
+                db["cost"]   += msg_cost
+                db["tokens"] += (msg_in + msg_out)
+            # Per-hour token buckets keyed by UTC hour (YYYY-MM-DDTHH).
+            if isinstance(ts, str) and len(ts) >= 13 and (msg_in or msg_out):
+                hb = agg["hourly"].setdefault(ts[:13], {"input": 0, "output": 0})
+                hb["input"]  += msg_in
+                hb["output"] += msg_out
+            if model_name and model_name != "gateway-injected" and msg_cost:
+                agg["models_cost"][model_name] = agg["models_cost"].get(model_name, 0.0) + msg_cost
+            for p in _oc_extract_tool_plugins(d):
+                agg["tools"][p] = agg["tools"].get(p, 0) + 1
+                agg["tool_uses"] += 1
                 if day:
-                    db = agg["daily"].setdefault(day, {"input": 0, "output": 0, "cost": 0.0, "tokens": 0})
-                    db["input"]  += msg_in
-                    db["output"] += msg_out
-                    db["cost"]   += msg_cost
-                    db["tokens"] += (msg_in + msg_out)
-                # Per-hour token buckets keyed by UTC hour (YYYY-MM-DDTHH).
-                if isinstance(ts, str) and len(ts) >= 13 and (msg_in or msg_out):
-                    hb = agg["hourly"].setdefault(ts[:13], {"input": 0, "output": 0})
-                    hb["input"]  += msg_in
-                    hb["output"] += msg_out
-                if model_name and model_name != "gateway-injected" and msg_cost:
-                    agg["models_cost"][model_name] = agg["models_cost"].get(model_name, 0.0) + msg_cost
-                for p in _oc_extract_tool_plugins(d):
-                    agg["tools"][p] = agg["tools"].get(p, 0) + 1
-                    agg["tool_uses"] += 1
-                    if day:
-                        dtb = agg["daily_tools"].setdefault(day, {})
-                        dtb[p] = dtb.get(p, 0) + 1
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "thinking":
-                            agg["thinking_events"] += 1
-                            agg["thinking_chars"] += len(str(item.get("thinking", "")))
+                    dtb = agg["daily_tools"].setdefault(day, {})
+                    dtb[p] = dtb.get(p, 0) + 1
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "thinking":
+                        agg["thinking_events"] += 1
+                        agg["thinking_chars"] += len(str(item.get("thinking", "")))
     except Exception as e:
-        logger.warning("openclaw: failed to parse %s: %s", path, e)
+        logger.warning("openclaw: failed to parse session %s: %s", session_id, e)
     agg["models"] = sorted(agg["models"])
     # Wire-compat duplicate for managers that still read tool_breakdown.
     agg["tool_breakdown"] = dict(agg["tools"])
@@ -3782,11 +3791,16 @@ def _oc_collect_sessions(agents_dir: Path) -> list[dict[str, Any]]:
     for ad in sorted(agents_dir.iterdir()):
         if not ad.is_dir():
             continue
+        db_rows = _oc_collect_sqlite_sessions(ad, seen)
+        out.extend(db_rows)
+        db_ids = {r["session_id"] for r in db_rows}
         sessions = ad / "sessions"
         if not sessions.exists():
             continue
         for fn in sessions.iterdir():
             if not fn.is_file() or not _oc_is_session_file(fn.name):
+                continue
+            if fn.stem in db_ids:
                 continue
             try:
                 st = fn.stat()
@@ -3807,6 +3821,43 @@ def _oc_collect_sessions(agents_dir: Path) -> list[dict[str, Any]]:
     for key in list(_oc_file_cache):
         if key not in seen:
             del _oc_file_cache[key]
+    return out
+
+
+def _oc_collect_sqlite_sessions(ad: Path, seen: set[str]) -> list[dict[str, Any]]:
+    """Per-session aggregates from <agent>/agent/openclaw-agent.sqlite
+    (transcript_events), parse-cached on row count + newest created_at."""
+    out: list[dict[str, Any]] = []
+    db = ad / "agent" / "openclaw-agent.sqlite"
+    if not db.exists():
+        return out
+    try:
+        conn = _oc_sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
+        try:
+            has = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                               " AND name='transcript_events'").fetchone()
+            if not has:
+                return out
+            sigs = conn.execute("SELECT session_id, COUNT(*), MAX(created_at)"
+                                " FROM transcript_events GROUP BY session_id").fetchall()
+            for sid, n_rows, last_at in sigs:
+                key = f"{db}#{sid}"
+                seen.add(key)
+                cached = _oc_file_cache.get(key)
+                if cached and cached[0] == last_at and cached[1] == n_rows:
+                    parsed = cached[2]
+                else:
+                    rows = conn.execute("SELECT event_json FROM transcript_events"
+                                        " WHERE session_id=? ORDER BY seq", (sid,))
+                    parsed = _oc_parse_session_events(sid, (r[0] for r in rows))
+                    _oc_file_cache[key] = (last_at, n_rows, parsed)
+                row = dict(parsed)
+                row["agent_dir"] = ad.name
+                out.append(row)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("openclaw sessions db %s: %s", db, e)
     return out
 
 

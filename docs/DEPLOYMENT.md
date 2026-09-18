@@ -470,6 +470,27 @@ gateway.controlUi.allowedOrigins = ["https://<manager-host>:5443"]
 
 Without this, the embedded page fails with "Browser origin not allowed" even though the proxy itself is reachable.
 
+### OpenClaw Telemetry (OTLP)
+
+OpenClaw's `diagnostics-otel` plugin can push metrics, traces, and logs to the alarm engine's OTLP receiver (`/v1/metrics`, `/v1/traces`, `/v1/logs` on the ingest port, bearer = `[alarm_engine].ingest_token`). The receiver is served over TLS with a certificate signed by the manager's internal CA, and the OpenClaw gateway (a Node process) verifies it. Node does not read that CA from the OS trust store even with `NODE_USE_SYSTEM_CA=1`, so give it the CA file directly through `NODE_EXTRA_CA_CERTS`. The agent on the OpenClaw host already keeps a current copy at `<agent install dir>/data/tls-ca.pem`, and Node adds it on top of its built-in public roots.
+
+The gateway service reads its environment from a file OpenClaw generates at `~/.openclaw/service-env/ai.openclaw.gateway.env` (macOS) or `~/.openclaw/service-env/openclaw-gateway.env` (Linux). Either regenerate it with the variable set:
+
+```
+NODE_EXTRA_CA_CERTS=<agent install dir>/data/tls-ca.pem openclaw gateway install --force
+```
+
+or change the existing `NODE_EXTRA_CA_CERTS=` line in that file to the CA path and run `openclaw gateway restart`. Both only restart the gateway process; OpenClaw's config, sessions and plugins are untouched (a later `openclaw gateway install` regenerates the file, so set the variable again then).
+
+Then point the plugin at the engine in `openclaw.json`:
+
+```
+diagnostics.otel.endpoint = "https://<alarm-engine-host>:8081"
+diagnostics.otel.headers.Authorization = "Bearer <ingest_token>"
+```
+
+Without the CA the exporter fails silently: the OpenClaw log shows `unable to verify the first certificate` and the engine's `heartbeat otlp` journal line stays at `metrics+0 traces+0 logs+0`. The ingest token is not involved in that failure. Note this feed is separate from the **Dashboards → OpenClaw** tab, which the agent fills from OpenClaw's own session store.
+
 ### Operator-Provided TLS Certificate
 
 By default the HTTPS port (`[manager].tls_port`, 5443) serves a certificate from the manager's internal CA, which browsers on other devices do not trust. To serve a certificate they do trust — a Let's Encrypt cert for your domain, or one from a corporate CA:

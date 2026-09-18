@@ -15,7 +15,8 @@ AGENT_PY = AGENT_DIR / "llm-systems-agent.py"
 
 _FUNCS = ("_oc_is_session_file", "_oc_normalize_plugin_name",
           "_oc_extract_tool_plugins", "_oc_ts_to_day",
-          "_oc_parse_session_file", "_oc_collect_sessions",
+          "_oc_parse_session_file", "_oc_parse_session_events",
+          "_oc_collect_sessions", "_oc_collect_sqlite_sessions",
           "_oc_collect_flows", "_oc_collect_tasks", "_oc_collect_delivery")
 
 
@@ -99,6 +100,83 @@ def test_collect_sessions_evicts_deleted_files(tmp_path):
     out = ns["_oc_collect_sessions"](tmp_path / "agents")
     assert len(out) == 1
     assert list(ns["_oc_file_cache"]) == [str(a)]
+
+
+def _write_transcript_db(db: Path, sessions: dict[str, list[dict]]) -> None:
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS transcript_events (session_id TEXT NOT NULL,"
+                 " seq INTEGER NOT NULL, event_json TEXT NOT NULL,"
+                 " created_at INTEGER NOT NULL, PRIMARY KEY (session_id, seq))")
+    conn.execute("DELETE FROM transcript_events")
+    for sid, events in sessions.items():
+        for i, ev in enumerate(events):
+            conn.execute("INSERT INTO transcript_events VALUES (?,?,?,?)",
+                         (sid, i + 1, json.dumps(ev), 1754000000000 + i))
+    conn.commit(); conn.close()
+
+
+def test_collect_sessions_reads_sqlite_transcript_store(tmp_path):
+    ns = _oc_ns()
+    agent_root = tmp_path / "agents" / "main"
+    (agent_root / "agent").mkdir(parents=True)
+    sess_dir = agent_root / "sessions"
+    sess_dir.mkdir()
+    db = agent_root / "agent" / "openclaw-agent.sqlite"
+    _write_transcript_db(db, {
+        "s-db": [{"type": "session", "cwd": "/w"},
+                 _msg("2026-09-17T10:00:00.000Z", tokens=(100, 50), tool="bash"),
+                 _msg("2026-09-17T10:30:00.000Z", tokens=(10, 5), cost=0.25),
+                 {"type": "model_change", "timestamp": "2026-09-17T10:31:00.000Z"}],
+        "s-both": [_msg("2026-09-17T11:00:00.000Z", tokens=(7, 3))],
+    })
+    # Migrated copy is archived; a stale duplicate of s-both loses to the db.
+    _write_session(sess_dir / "s-db.jsonl.deleted.2026-08-31T21-02-45.284Z",
+                   [_msg("2026-08-01T00:00:00.000Z", tokens=(999, 999))])
+    _write_session(sess_dir / "s-both.jsonl", [_msg("2026-08-01T00:00:00.000Z",
+                                                    tokens=(999, 999))])
+    _write_session(sess_dir / "s-legacy.jsonl", [_msg("2026-08-02T00:00:00.000Z",
+                                                      tokens=(1, 1))])
+    out = ns["_oc_collect_sessions"](tmp_path / "agents")
+    by_id = {r["session_id"]: r for r in out}
+    assert sorted(by_id) == ["s-both", "s-db", "s-legacy"]
+    assert all(r["agent_dir"] == "main" for r in out)
+    s = by_id["s-db"]
+    assert (s["messages"], s["input"], s["output"], s["cost"]) == (2, 110, 55, 0.25)
+    assert s["cwd"] == "/w" and s["tools"] == {"bash": 1}
+    assert s["first_ts"] == "2026-09-17T10:00:00.000Z"
+    assert s["hourly"] == {"2026-09-17T10": {"input": 110, "output": 55}}
+    assert by_id["s-both"]["input"] == 7  # sqlite row wins over the stale jsonl
+    assert by_id["s-legacy"]["input"] == 1
+
+
+def test_sqlite_sessions_cache_keyed_on_rows_and_evicted(tmp_path):
+    ns = _oc_ns()
+    agent_root = tmp_path / "agents" / "main"
+    (agent_root / "agent").mkdir(parents=True)
+    db = agent_root / "agent" / "openclaw-agent.sqlite"
+    _write_transcript_db(db, {"a": [_msg("2026-09-17T10:00:00.000Z")],
+                              "b": [_msg("2026-09-17T10:00:00.000Z")]})
+    out = ns["_oc_collect_sessions"](tmp_path / "agents")
+    assert len(out) == 2 and sorted(ns["_oc_file_cache"]) == [f"{db}#a", f"{db}#b"]
+    first_a = ns["_oc_file_cache"][f"{db}#a"][2]
+    # Unchanged sessions are served from the cache; new rows force a reparse.
+    _write_transcript_db(db, {"a": [_msg("2026-09-17T10:00:00.000Z"),
+                                    _msg("2026-09-17T11:00:00.000Z")]})
+    out = ns["_oc_collect_sessions"](tmp_path / "agents")
+    assert [r["session_id"] for r in out] == ["a"]
+    assert out[0]["messages"] == 2 and first_a["messages"] == 1
+    assert list(ns["_oc_file_cache"]) == [f"{db}#a"]  # b evicted
+
+
+def test_sqlite_without_transcript_table_is_ignored(tmp_path, caplog):
+    ns = _oc_ns()
+    agent_root = tmp_path / "agents" / "main"
+    (agent_root / "agent").mkdir(parents=True)
+    conn = sqlite3.connect(agent_root / "agent" / "openclaw-agent.sqlite")
+    conn.execute("CREATE TABLE cache_entries (k TEXT)"); conn.commit(); conn.close()
+    with caplog.at_level(logging.WARNING, logger="test"):
+        out = ns["_oc_collect_sessions"](tmp_path / "agents")
+    assert out == [] and not caplog.records
 
 
 def _utc_offset_ok(iso: str) -> bool:

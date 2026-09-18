@@ -181,7 +181,7 @@ CATALOG: list[dict] = [
     _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line, optionally \"label=secret\" to name the client in the Routing card.", "gateway", MANAGER, secret=True),
     _e("manager.gateway.read_timeout_s", "float", "Read timeout (s)", "Upstream cap per completion request.", "gateway", MANAGER, min=10, max=7200),
     _e("manager.gateway.expose_proxied_to", "bool", "Expose X-Proxied-To", "Response header naming the serving agent; off hides backend hostnames.", "gateway", MANAGER),
-    _e("manager.gateway.usage_probe", "bool", "Usage probe on streams", "Inject stream_options.include_usage on usage-counted streams; off if a backend rejects stream_options.", "gateway", MANAGER),
+    _e("manager.gateway.usage_probe", "bool", "Usage probe on streams", "Ask backends for token usage on streams the client did not request it on, and pass the usage event through to the client; off if a backend rejects stream_options.", "gateway", MANAGER),
     _e("manager.gateway.debug", "bool", "Debug logging", "Log every completion the gateway serves at DEBUG: client, model, host tried and chosen, status, latency, usage. Hot.", "gateway", MANAGER, hot=True),
     # proxies
     _e("manager.proxies.llm_chat", "str", "Llama Chat UI", "auto | false | explicit http URL.", "proxies", MANAGER),

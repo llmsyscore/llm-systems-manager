@@ -1953,6 +1953,8 @@ Returns size/pragma/row-count stats for the Alarm Engine's SQLite databases, bac
 
 These endpoints accept telemetry from external pipelines that speak the OpenTelemetry protocol. They are served by the Alarm Engine directly (not under the `/api/alarm/` proxy prefix) and require the ingest bearer token when one is configured. Each payload is converted into metric points and stored alongside the agents' own metrics.
 
+The receiver is served over TLS with a certificate signed by the manager's internal CA. OTLP exporters verify that certificate, so the exporter must trust the internal CA (the agent installs it as `data/tls-ca.pem`; Node exporters need it via `NODE_EXTRA_CA_CERTS`); an untrusted certificate fails silently on the exporter side and the engine's `heartbeat otlp` log line stays at zero batches. See *Deployment → OpenClaw Telemetry (OTLP)* for the OpenClaw setup.
+
 ### `POST /v1/metrics`
 Ingests OpenTelemetry metrics (counters, gauges, histograms).
 

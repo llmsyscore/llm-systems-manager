@@ -2,7 +2,8 @@
 /v1/models merges every gateway provider's pool; /v1/chat|completions resolve
 the owning provider per model (pin > model index > llama), then route within
 it: pin > ?agent= picker > pool RR > default. Completion responses for
-_USAGE_COUNTED_PROVIDERS also feed gateway_usage token counters (#496)."""
+_USAGE_COUNTED_PROVIDERS also feed gateway_usage token counters (#496); the
+stream usage probe (#649, #1069) applies to every provider."""
 from __future__ import annotations
 
 import json
@@ -325,7 +326,7 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
     path = _AGENT_PATHS[provider]["chat/completions"]
     counted = provider in _USAGE_COUNTED_PROVIDERS
     stream_body = {**body, "stream": True}
-    if counted and bool(getattr(_gw_cfg(), "usage_probe", True)):
+    if bool(getattr(_gw_cfg(), "usage_probe", True)):
         stream_body, _ = _with_usage_probe(stream_body)
     client = gateway_usage.client_begin(label, "", model=model_id)
     t0 = time.perf_counter()
@@ -442,8 +443,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
     path = _AGENT_PATHS[provider][sub]
     errors = []
     stream_body, injected = body, False
-    if (wants_stream and provider in _USAGE_COUNTED_PROVIDERS
-            and bool(getattr(_gw_cfg(), "usage_probe", True))):
+    if wants_stream and bool(getattr(_gw_cfg(), "usage_probe", True)):
         stream_body, injected = _with_usage_probe(body)
     label = _client_identity()[0]
     # key labels are logged as a kind only
@@ -460,7 +460,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
         for agent in cands:
             if wants_stream:
                 resp = _stream_from(agent, path, stream_body, errors, provider,
-                                    strip_usage=injected, client=client, t0=t0, label=caller)
+                                    injected=injected, client=client, t0=t0, label=caller)
                 if resp is not None:
                     stream_owns_client = getattr(resp, "gw_client_owned", False)
                     return resp
@@ -520,7 +520,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
 
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list,
-                 provider: str = "llama", strip_usage: bool = False,
+                 provider: str = "llama", injected: bool = False,
                  client=None, t0=None, label: str = "-"):
     """One streaming attempt; None means try the next candidate."""
     _dbg = log.isEnabledFor(logging.DEBUG)
@@ -546,7 +546,7 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         # Upstream answered non-stream (e.g. 400 validation error): relay as-is.
         content, status = upstream.content, upstream.status_code
         upstream.close()
-        if status == 400 and strip_usage:
+        if status == 400 and injected:
             log.warning("gateway: %s answered 400 after stream_options."
                         "include_usage injection — backend may reject "
                         "stream_options (disable gateway.usage_probe)",
@@ -570,17 +570,18 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
     try:
         pumped = proxies.thread_pumped(
             upstream, path, max_lifetime_s=proxies._STREAM_OP_MAX_LIFETIME_S)
-        if provider in _USAGE_COUNTED_PROVIDERS:
-            aid = agent.get("agent_id")
+        aid = agent.get("agent_id")
+        counted = provider in _USAGE_COUNTED_PROVIDERS
 
-            def _on_usage(p, g, a=aid, k=client):
-                tally["p"], tally["g"] = p, g
+        def _on_usage(p, g, a=aid, k=client, c=counted):
+            tally["p"], tally["g"] = p, g
+            if c:
                 gateway_usage.record(a, p, g)
-                gateway_usage.client_record(k, p, g)
+            gateway_usage.client_record(k, p, g)
 
-            pumped = gateway_usage.tap_sse(
-                pumped, _on_usage, strip_usage=strip_usage,
-                on_chunk=lambda a=aid: gateway_usage.stream_tokens(a))
+        pumped = gateway_usage.tap_sse(
+            pumped, _on_usage,
+            on_chunk=(lambda a=aid: gateway_usage.stream_tokens(a)) if counted else None)
         resp = Response(
             pumped,
             status=upstream.status_code, mimetype="text/event-stream",
