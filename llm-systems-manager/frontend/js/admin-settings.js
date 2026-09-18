@@ -664,9 +664,13 @@
     if (!key) return;
     const opt = hostSel ? hostSel.options[hostSel.selectedIndex] : null;
     const agentId = opt ? opt.value : (one ? one.dataset.agent : '');
-    const provider = opt ? opt.dataset.provider : (one ? one.dataset.provider : '');
-    const host = (opt ? opt.textContent : (one ? one.textContent : '')).split(' · ')[0];
-    const name = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent.split(' · ')[0] : key;
+    // Names come from the fetched model list, not from the rendered option text.
+    const m = _towerModels || {};
+    const hostRec = (m.hosts || []).find(h => h.agent_id === agentId) || (m.hosts || [])[0] || {};
+    const provider = hostRec.provider || '';
+    const host = hostRec.host || '';
+    const modelRec = (m.models || []).find(x => x.key === key);
+    const name = modelRec ? modelRec.name : key;
     if (typeof _themedConfirm === 'function') {
       const restart = provider === 'llama'
         ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again. Stop removes a half-finished download from the host.</p>`
