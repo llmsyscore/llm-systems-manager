@@ -616,7 +616,7 @@ def register_routes(app, ctx=None, db_path: "str | None" = None, primary_agent=N
     import sqlite3
     from flask import jsonify, request as flask_request
 
-    path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "metrics.db")
+    path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "energy.db")
     tls = _threading.local()
 
     def conn_factory():

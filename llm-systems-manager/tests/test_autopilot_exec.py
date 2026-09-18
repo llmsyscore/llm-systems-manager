@@ -93,7 +93,7 @@ def test_exception_during_routing_audits_error():
 # --- Post-review fix: _prod_audit prunes past its own row cap ---
 
 def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
-    db_path = tmp_path / "metrics.db"
+    db_path = tmp_path / "audit.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("""
         CREATE TABLE audit_log (
@@ -103,7 +103,7 @@ def test_prod_audit_prunes_past_cap(monkeypatch, tmp_path):
     """)
     conn.commit()
     conn.close()
-    monkeypatch.setattr(ap, "_METRICS_DB_PATH", db_path)
+    monkeypatch.setattr(ap, "_AUDIT_DB_PATH", db_path)
     monkeypatch.setattr(ap, "_AUDIT_MAX_ROWS", 50)
     monkeypatch.setattr(ap, "_AUDIT_PRUNE_EVERY", 10)
     for _ in range(120):

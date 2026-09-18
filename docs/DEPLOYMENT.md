@@ -448,7 +448,7 @@ llama.cpp serves native tool calls only when its server args include `--jinja`; 
 
 ### Backups
 
-**Admin → Backups.** A scheduled run writes an encrypted manager archive (config, agent registry, CA, users, model profiles, benchmarks) and, when `[alarm_engine].management_token` is set, the alarm engine's own export in the same run — without a management token the run is recorded as `manager only`. Retention counts **runs**, not archives, so `keep_last = 7` can retain up to 14 files.
+**Admin → Backups.** A scheduled run writes an encrypted manager archive (config, agent registry, CA, users, model profiles, and the three SQLite files `manager.db`, `audit.db`, `energy.db`; archives made before the split, carrying a single `metrics.db`, still restore) and, when `[alarm_engine].management_token` is set, the alarm engine's own export in the same run — without a management token the run is recorded as `manager only`. Retention counts **runs**, not archives, so `keep_last = 7` can retain up to 14 files.
 
 ```toml
 [manager.backup]

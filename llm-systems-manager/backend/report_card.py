@@ -1050,7 +1050,7 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
     import sqlite3
     from flask import jsonify, request as flask_request, stream_with_context
 
-    path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "metrics.db")
+    path = db_path or str(Path(getattr(ctx, "data_dir", ".")) / "manager.db")
     tls = _threading.local()
 
     # Per-thread connection, mirroring the manager's get_db(); bench workers
