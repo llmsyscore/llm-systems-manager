@@ -662,6 +662,37 @@ def test_lm_studio_download_waits_for_the_requested_quant(monkeypatch):
     assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None)[1].startswith("could not read LM Studio's model list")
 
 
+def test_curated_view_reports_the_newest_eval_per_server():
+    """#1085: an older run on llama.cpp does not hide a newer run of the same entry on LM Studio."""
+    entries = [{"id": "unsloth/Qwen3.5-9B-GGUF:Q6_K", "provider": "llama", "status": {"value": "unloaded"}, "hosts": [], "catalog_hosts": ["box"]},
+               {"id": "qwen3.5-9b@q6_k", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]}]
+    ev, _svc = _evaluator([], entries=entries)
+    case = [{"id": "hosts", "title": "Plain read", "passed": True, "calls": 1, "corrections": 0, "retries": 0, "ms": 3, "detail": "ok"}]
+    for model, provider, at in (("unsloth/Qwen3.5-9B-GGUF:Q6_K", "llama", 100.0), ("qwen3.5-9b@q6_k", "lms", 200.0)):
+        ev.store.save(te.summarize({"model": model, "provider": provider, "hosts": []}, case, quant="Q6_K", server=None, tool_mode="auto",
+                                   grade="native", ms=3, actor="eval", at=at))
+    row = next(m for m in ev.curated_view()["models"] if m["key"] == "qwen35-9b-q6")
+    assert row["evals"]["llama"]["model"] == "unsloth/Qwen3.5-9B-GGUF:Q6_K" and row["evals"]["lms"]["model"] == "qwen3.5-9b@q6_k"
+    assert row["eval"]["model"] == "qwen3.5-9b@q6_k"
+    q4 = next(m for m in ev.curated_view()["models"] if m["key"] == "qwen35-9b-q4")
+    assert q4["eval"] is None and q4["evals"] == {"llama": None, "lms": None}
+
+
+def test_curated_view_shows_the_last_get_job_only_while_it_is_recent(monkeypatch):
+    """#1083: a finished download leaves the settings card after LAST_SHOWN_S; a live one always shows."""
+    ev, svc = _evaluator([])
+    rows = [{"id": "j1", "kind": te.KIND_GET, "status": "done", "resolved": 1000.0}]
+    monkeypatch.setattr(svc, "list", lambda *a, **k: rows)
+    monkeypatch.setattr(ev, "view", lambda row: row)
+    monkeypatch.setattr(ev, "live", lambda kind=None: None)
+    monkeypatch.setattr(te.time, "time", lambda: 1000.0 + te.LAST_SHOWN_S - 1)
+    assert ev.curated_view()["last"] == rows[0]
+    monkeypatch.setattr(te.time, "time", lambda: 1000.0 + te.LAST_SHOWN_S + 1)
+    assert ev.curated_view()["last"] is None
+    rows[0] = {"id": "j2", "kind": te.KIND_GET, "status": "running", "resolved": None}
+    assert ev.curated_view()["last"] == rows[0]
+
+
 def test_curated_view_keeps_two_quants_of_one_repo_apart():
     entries = [{"id": "qwen3.5-9b@q4_k_m", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]},
                {"id": "qwen3.5-9b@q6_k", "provider": "lms", "status": {"value": "unloaded"}, "hosts": [], "catalog_hosts": ["mac"]}]

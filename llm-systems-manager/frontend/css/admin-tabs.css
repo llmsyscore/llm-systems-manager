@@ -267,6 +267,21 @@
 #admin-settings .st-chip.dim { color: var(--fg-faint); }
 #admin-settings .st-chip[data-tip]::after { white-space: normal; width: max-content; max-width: 360px; text-align: left; }
 #admin-settings .st-checkrow .st-ct .row.ev { flex-wrap: wrap; row-gap: 4px; }
+#admin-settings .st-checkrow .st-ct .row.st-live { padding: 8px 10px; margin: 2px 0 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border-strong)); background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, transparent), color-mix(in srgb, var(--accent) 3%, transparent)); animation: stLivePulse 2.2s ease-in-out infinite; }
+#admin-settings .st-checkrow .st-ct .row.st-live .d { color: var(--fg); }
+#admin-settings .st-checkrow .st-ct .st-warnbox { padding: 8px 10px; margin: 2px 0 6px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border-strong)); background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 14%, transparent), color-mix(in srgb, var(--warn) 3%, transparent)); }
+#admin-settings .st-checkrow .st-ct .st-warnbox .d { color: var(--fg); }
+#admin-settings .st-checkrow .st-ct .st-warnbox .fh { margin-top: 6px; color: var(--warn); font-weight: 500; }
+#admin-settings .st-checkrow .st-ct .st-fails { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 3px; font-size: 12px; }
+#admin-settings .st-checkrow .st-ct .st-fails li { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+#admin-settings .st-checkrow .st-ct .st-fails li::before { content: '✗'; color: var(--warn); }
+#admin-settings .st-checkrow .st-ct .st-fails b { color: var(--fg); font-weight: 500; }
+#admin-settings .st-checkrow .st-ct .st-fails span { color: var(--fg-muted); flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+@keyframes stLivePulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border-strong)); }
+  50% { box-shadow: 0 0 14px 1px color-mix(in srgb, var(--accent) 38%, transparent); border-color: color-mix(in srgb, var(--accent) 75%, var(--border-strong)); }
+}
+@media (prefers-reduced-motion: reduce) { #admin-settings .st-checkrow .st-ct .row.st-live { animation: none; box-shadow: 0 0 10px 0 color-mix(in srgb, var(--accent) 25%, transparent); } }
 #admin-settings .st-checkrow .st-ct .row.ev .d.line { width: auto; flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 #admin-settings .st-checkrow .st-ct .row.ev .d.line b { color: var(--fg); font-weight: 500; }
 #admin-settings .st-checkrow .st-lb .acts { display: inline-flex; gap: 6px; align-items: center; }

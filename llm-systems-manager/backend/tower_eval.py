@@ -26,6 +26,7 @@ GET_MAX_RUN_S = 4 * 3600.0
 LOAD_WAIT_S = 600.0
 LMS_DOWNLOAD_WAIT_S = 3 * 3600.0
 LMS_POLL_S = 10.0
+LAST_SHOWN_S = 600.0   # how long a finished get-model job stays on the settings card
 LMS_SETTLE_POLLS = 3   # model-list reads after a completed download before a lone bare id counts as the requested quant
 LMS_LOAD = {"context_length": 32768, "eval_batch_size": 2048}   # load-time options for an LM Studio Tower model
 CLEANUP_TRIES = 6
@@ -556,10 +557,13 @@ class Evaluator:
             e = by_id.get(m["model_id"])
             lms_id = self._lms_match(m["repo"], m["quant"], lms_rows, lambda mid, k=m["key"]: resolved.get(mid) == k)
             le = by_id.get(lms_id) if lms_id else None
+            evals = {"llama": brief(self.store.latest_for(m["model_id"])), "lms": brief(self.store.latest_for(lms_id)) if lms_id else None}
+            newest = max((v for v in evals.values() if v), key=lambda v: float(v.get("at") or 0), default=None)
             out.append({**m, "present": e is not None or le is not None,
                         "loaded": bool((e and tower._resident(e)) or (le and tower._resident(le))),
-                        "eval": brief(self.store.latest_for(m["model_id"]) or (self.store.latest_for(lms_id) if lms_id else None))})
+                        "eval": newest, "evals": evals})
         last = self._svc.list("all", kind=KIND_GET, limit=1) if self._svc is not None else []
+        last = [r for r in last if r.get("status") in jobs.LIVE or float(r.get("resolved") or 0) >= time.time() - LAST_SHOWN_S]
         index = [{"id": str(e.get("id")), "provider": str(e.get("provider") or ""),
                   "hosts": list(e.get("catalog_hosts") or e.get("hosts") or []),
                   "loaded": bool(tower._resident(e))} for e in entries if e.get("id")]
