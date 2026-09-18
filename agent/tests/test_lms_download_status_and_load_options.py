@@ -4,7 +4,6 @@ forwards the load-time options (context, batch, flash attention) it is given."""
 from __future__ import annotations
 
 import sys
-import types
 from pathlib import Path
 
 import pytest
