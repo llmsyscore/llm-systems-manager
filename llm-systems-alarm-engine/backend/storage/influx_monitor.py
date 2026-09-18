@@ -28,7 +28,7 @@ import requests
 
 from ..models.metrics import MetricPoint
 from .repositories import MetricRepository
-from .influxdb_client import InfluxDBClient
+from .influxdb_client import InfluxDBClient, _flux_str
 
 logger = logging.getLogger(__name__)
 
@@ -105,73 +105,83 @@ def _query_latency_ms(db: InfluxDBClient) -> float:
         return -1.0
 
 
+# Series cardinality moves slowly; the query is cached for this long.
+_CARDINALITY_TTL_S = 900.0
+_CARD_CACHE: dict[str, dict] = {}
+# Buckets whose token was refused influxdb.cardinality(); they use the fallback query.
+_cardinality_fallback: set[str] = set()
 _cardinality_warned: set[str] = set()
 
 
-def _cardinality(db: InfluxDBClient, bucket: str, query_api) -> Optional[int]:
-    """Count distinct series in `bucket` over the last 24h.
+def _cardinality_flux(bucket: str) -> str:
+    """Series count from the storage index; no points are read."""
+    return (f'import "influxdata/influxdb"\n'
+            f'influxdb.cardinality(bucket: "{_flux_str(bucket)}", start: -24h)')
 
-    schema.cardinality() needs admin/task scope, which our bucket-scoped
-    tokens lack (InfluxDB returns 401). Instead, walk every series with
-    last() then collapse into one table and count rows — that works with
-    any token that has read access to the bucket and is still cheap
-    because last() returns one point per series, not all points.
 
-    Returns:
-      n        — actual count (including 0 for an empty bucket, since
-                 Flux's count() emits no rows on empty input rather than
-                 a row with value 0).
-      0        — degraded path: query failed with 401 because the
-                 bucket-scoped token doesn't have read permission on its
-                 own bucket. Better to surface 0 than leave the card
-                 showing a dash; we log a one-time warning so the
-                 operator can fix it via `influx auth update`.
-      None     — any other query failure (transport, syntax, …) so
-                 callers can distinguish a transient blip from a
-                 permanent config issue.
-    """
-    # `|> map(... _value: 1.0)` rewrites every record's _value to a uniform
-    # float before last()/count() runs. Without this, buckets that store
-    # both string fields (e.g. alerts.message) and numeric fields (e.g.
-    # alerts.current_value) trigger:
-    #   "schema collision detected: column _value is both float and string"
-    # at count() because Flux refuses to merge tables with mismatched
-    # column types. The rewrite is cheap (per-record), preserves series
-    # identity (tag set + _measurement + _field), and makes the query
-    # bucket-shape-agnostic.
-    flux = f'''
-        from(bucket: "{bucket}")
+def _cardinality_fallback_flux(bucket: str) -> str:
+    """Series count for tokens refused cardinality(): last() per series, then count."""
+    return f'''
+        from(bucket: "{_flux_str(bucket)}")
           |> range(start: -24h)
-          |> map(fn: (r) => ({{r with _value: 1.0}}))
+          |> filter(fn: (r) => r._measurement == "metrics" and r._field == "value")
           |> last()
           |> group()
           |> count()
     '''
+
+
+def _is_unauthorized(e: Exception) -> bool:
+    status = getattr(e, "status", None)
+    return status in (401, 403) or "401" in str(e) or "Unauthorized" in str(e)
+
+
+def _first_number(tables) -> int:
+    for t in tables:
+        for r in t.records:
+            v = r.get_value()
+            if isinstance(v, (int, float)):
+                return int(v)
+    return 0
+
+
+def _cardinality(db: InfluxDBClient, bucket: str, query_api,
+                 now: Optional[float] = None) -> Optional[int]:
+    """Distinct series in `bucket` over 24h, cached for _CARDINALITY_TTL_S.
+    Returns 0 when both queries are refused (401), None on any other failure."""
+    now = time.monotonic() if now is None else now
+    hit = _CARD_CACHE.get(bucket)
+    if hit is not None and (now - hit["at"]) < _CARDINALITY_TTL_S:
+        return hit["value"]
+    t0 = time.perf_counter()
+    value: Optional[int] = None
     try:
-        tables = list(query_api.query(flux, org=db.org))
-        for t in tables:
-            for r in t.records:
-                v = r.get_value()
-                if isinstance(v, (int, float)):
-                    return int(v)
-        return 0
+        if bucket not in _cardinality_fallback:
+            try:
+                value = _first_number(list(query_api.query(_cardinality_flux(bucket), org=db.org)))
+            except Exception as e:
+                if _is_unauthorized(e):
+                    _cardinality_fallback.add(bucket)
+                else:
+                    logger.debug("influxdb.cardinality(%s) failed, using fallback: %s", bucket, e)
+        if value is None:
+            value = _first_number(list(query_api.query(_cardinality_fallback_flux(bucket), org=db.org)))
     except Exception as e:
-        # influxdb_client raises ApiException with .status on HTTP errors;
-        # fall back to string-match for older client versions.
-        status = getattr(e, "status", None)
-        is_unauth = status == 401 or "401" in str(e) or "Unauthorized" in str(e)
-        if is_unauth:
-            if bucket not in _cardinality_warned:
-                _cardinality_warned.add(bucket)
-                logger.warning(
-                    "cardinality(%s) returned 401 — the token scoped to this "
-                    "bucket has no read permission. Card will report 0; grant "
-                    "read with: influx auth update --id <id> --read-bucket <id>",
-                    bucket,
-                )
-            return 0
-        logger.debug("cardinality(%s) failed: %s", bucket, e)
-        return None
+        if not _is_unauthorized(e):
+            logger.debug("cardinality(%s) failed: %s", bucket, e)
+            return None
+        if bucket not in _cardinality_warned:
+            _cardinality_warned.add(bucket)
+            logger.warning(
+                "cardinality(%s) returned 401 — the token scoped to this "
+                "bucket has no read permission. Card will report 0; grant "
+                "read with: influx auth update --id <id> --read-bucket <id>",
+                bucket,
+            )
+        value = 0
+    _CARD_CACHE[bucket] = {"value": value, "at": now,
+                           "query_ms": (time.perf_counter() - t0) * 1000}
+    return value
 
 
 _BYTES_CACHE: dict[str, float] = {"value": -1.0, "at": 0.0}
@@ -228,15 +238,8 @@ async def run(
     interval_s: int = 30,
     initial_delay_s: float = 30.0,
 ) -> None:
-    """Background loop: probe + emit metrics every interval_s seconds.
-
-    The first cycle runs 3 synchronous cardinality Flux queries plus a
-    write probe and a disk-size scan — together that's 10-20 s of work on
-    the asyncio event loop. Delaying the first cycle (`initial_delay_s`)
-    keeps the event loop free during the AE startup window so concurrent
-    HTTP requests (notably the manager's history-ring warm-up fan-out)
-    can be served immediately instead of stalling.
-    """
+    """Background loop: probe + emit metrics every interval_s seconds; the first
+    cycle waits initial_delay_s. Blocking probes run in the default executor."""
     url = db.url
     host = _hostname()
     loop = asyncio.get_running_loop()
@@ -283,11 +286,15 @@ async def run(
                 w_ms = (time.perf_counter() - t0) * 1000
                 _write_metric(repo, "write_ms", w_ms, "ms", host)
 
-            n = _cardinality(db, db.metrics_bucket, db._metrics_query)
+            n = await loop.run_in_executor(
+                None, _cardinality, db, db.metrics_bucket, db._metrics_query)
             if n is not None:
                 _write_metric(repo, "cardinality_metrics", float(n), None, host)
+                q = (_CARD_CACHE.get(db.metrics_bucket) or {}).get("query_ms")
+                if q is not None:
+                    _write_metric(repo, "cardinality_query_ms", q, "ms", host)
 
-            disk = _bytes_on_disk()
+            disk = await loop.run_in_executor(None, _bytes_on_disk)
             if disk is not None:
                 _write_metric(repo, "bytes_on_disk", float(disk), "bytes", host)
         except asyncio.CancelledError:
