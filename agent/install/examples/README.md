@@ -12,7 +12,13 @@ That delegation lets the *what* (hardware policy) live in host-tuned
 systemd units, while the *when* (state transitions) lives in the agent.
 
 If your host already has `performance.service` and `powersave.service`,
-**leave them alone** — the installer will refuse to overwrite tuned units.
+the installer **merges** the shipped example into them on `--update` (and on
+`--install-perf-units`): lines you uncommented, edited or added stay, the
+header and example comments refresh, lines upstream dropped go away, and a
+`<unit>.bak-<timestamp>` copy is written next to the unit first. A second run
+changes nothing. `--force-overwrite-perf-units` replaces a unit outright
+(backup first); `--verbose` prints the merge diff. Drop-ins under
+`<unit>.d/override.conf` are never touched.
 
 If your host doesn't have them, the installer can drop these examples for
 you:
