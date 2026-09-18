@@ -196,14 +196,14 @@
     }
     function questionAnswers(a) {
       const sel = c.qSel[a.id] || {}, other = c.qOther[a.id] || {};
-      return questionList(a).map((q, i) => sel[i] === OTHER ? String(other[i] || '').trim() : (sel[i] == null ? '' : String(sel[i])));
+      return questionList(a).map((q, i) => TW.qAnswer(q, sel[i], other[i]));
     }
     function forgetQuestion(aid) { delete c.qSel[aid]; delete c.qOther[aid]; delete c.qTab[aid]; }
     function advanceQuestion(aid) {
       const a = actionById(aid);
       if (!a) return;
       const answers = questionAnswers(a), cur = c.qTab[aid] || 0;
-      const next = answers.map((_, i) => (cur + 1 + i) % answers.length).find(i => !answers[i]);
+      const next = answers.map((_, i) => (cur + 1 + i) % answers.length).find(i => !TW.qAnswered(answers[i]));
       if (next != null) c.qTab[aid] = next;
     }
     function decisionFailed(d, kind) {
@@ -244,7 +244,7 @@
       const a = actionById(aid);
       if (!a) return;
       const answers = questionAnswers(a);
-      if (!answers.every(Boolean)) return;
+      if (!answers.every(TW.qAnswered)) return;
       decide(aid, 'answer', { answers });
     }
 
@@ -362,16 +362,19 @@
         const sel = c.qSel[a.id] || {}, other = c.qOther[a.id] || {}, answers = questionAnswers(a);
         const cur = Math.min(c.qTab[a.id] || 0, qs.length - 1), q = qs[cur];
         const tabs = qs.length > 1 ? '<div class="chips qtabs">' + qs.map((x, i) =>
-          `<button type="button" class="chip${i === cur ? ' on' : ''}${answers[i] ? ' done' : ''}" data-qtab="${id}" data-i="${i}">${esc(x.label || `Question ${i + 1}`)}</button>`).join('') + '</div>' : '';
+          `<button type="button" class="chip${i === cur ? ' on' : ''}${TW.qAnswered(answers[i]) ? ' done' : ''}" data-qtab="${id}" data-i="${i}">${esc(x.label || `Question ${i + 1}`)}</button>`).join('') + '</div>' : '';
+        const on = v => TW.qPicked(q, sel[cur], v);
+        const box = q.multi ? `<button type="button" class="qbox" data-pick="${id}" data-i="${cur}" data-val="${OTHER}" aria-label="Remove the typed answer"><i></i></button>` : '<i></i>';
         const rows = (q.choices || []).map(ch =>
-          `<button type="button" class="choice${sel[cur] === ch ? ' on' : ''}" data-pick="${id}" data-i="${cur}" data-val="${esc(ch)}" aria-pressed="${sel[cur] === ch}"><i></i>${esc(ch)}</button>`).join('')
-          + (sel[cur] === OTHER
-            ? `<div class="choice other on"><i></i><input type="text" data-other-input="${id}" data-i="${cur}" maxlength="500" placeholder="Type your answer" aria-label="Your answer" value="${esc(other[cur] || '')}"></div>`
+          `<button type="button" class="choice${on(ch) ? ' on' : ''}" data-pick="${id}" data-i="${cur}" data-val="${esc(ch)}" aria-pressed="${on(ch)}"><i></i>${esc(ch)}</button>`).join('')
+          + (on(OTHER)
+            ? `<div class="choice other on">${box}<input type="text" data-other-input="${id}" data-i="${cur}" maxlength="500" placeholder="Type your answer" aria-label="Your answer" value="${esc(other[cur] || '')}"></div>`
             : `<button type="button" class="choice other" data-pick="${id}" data-i="${cur}" data-val="${OTHER}"><i></i>Other…</button>`);
-        const ready = answers.every(Boolean);
+        const hint = q.multi ? '<div class="qhint">Pick one or more</div>' : '';
+        const ready = answers.every(TW.qAnswered);
         const btns = `<div class="btns"><button type="button" class="btn sm primary" data-submit="${id}"${ready ? '' : ' disabled'}>Submit</button>`
           + `<button type="button" class="btn sm" data-dismiss="${id}">Dismiss</button></div>`;
-        return `<div class="act q" data-act="${id}"><div class="eyebrow">Tower asks</div>${tabs}<h4>${esc(q.question)}</h4><div class="choices">${rows}</div>${btns}</div>`;
+        return `<div class="act q${q.multi ? ' multi' : ''}" data-act="${id}"><div class="eyebrow">Tower asks</div>${tabs}<h4>${esc(q.question)}</h4>${hint}<div class="choices">${rows}</div>${btns}</div>`;
       }
       const ok = a.status === 'done';
       const more = qs.length > 1 ? ` (+${qs.length - 1} more)` : '';
@@ -484,9 +487,9 @@
       if ((b = q('[data-dismiss]'))) { decide(b.dataset.dismiss, 'deny'); return; }
       if ((b = q('[data-qtab]'))) { c.qTab[b.dataset.qtab] = Number(b.dataset.i); paintConv(); return; }
       if ((b = q('[data-pick]'))) {
-        const aid = b.dataset.pick, i = Number(b.dataset.i);
-        c.qSel[aid] = { ...(c.qSel[aid] || {}), [i]: b.dataset.val };
-        if (b.dataset.val !== OTHER) advanceQuestion(aid);
+        const aid = b.dataset.pick, i = Number(b.dataset.i), qq = questionList(actionById(aid) || { card: {} })[i] || {};
+        c.qSel[aid] = { ...(c.qSel[aid] || {}), [i]: TW.qToggle(qq, (c.qSel[aid] || {})[i], b.dataset.val) };
+        if (b.dataset.val !== OTHER && !qq.multi) advanceQuestion(aid);
         paintConv();
         const inp = $('towerBody').querySelector(`[data-other-input="${aid}"]`);
         if (inp && b.dataset.val === OTHER) inp.focus();
@@ -500,7 +503,7 @@
       const aid = inp.dataset.otherInput, i = Number(inp.dataset.i);
       c.qOther[aid] = { ...(c.qOther[aid] || {}), [i]: inp.value };
       const a = actionById(aid), btn = $('towerBody').querySelector(`[data-submit="${aid}"]`);
-      if (a && btn) btn.disabled = !questionAnswers(a).every(Boolean);
+      if (a && btn) btn.disabled = !questionAnswers(a).every(TW.qAnswered);
     }
     function onInsClick(e) {
       const q = (sel) => e.target.closest(sel);

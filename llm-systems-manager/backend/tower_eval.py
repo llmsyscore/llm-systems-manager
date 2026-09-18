@@ -26,6 +26,7 @@ GET_MAX_RUN_S = 4 * 3600.0
 LOAD_WAIT_S = 600.0
 LMS_DOWNLOAD_WAIT_S = 3 * 3600.0
 LMS_POLL_S = 10.0
+LMS_SETTLE_POLLS = 3   # model-list reads after a completed download before a lone bare id counts as the requested quant
 LMS_LOAD = {"context_length": 32768, "eval_batch_size": 2048}   # load-time options for an LM Studio Tower model
 CLEANUP_TRIES = 6
 SERVER_WAIT_S = 180.0
@@ -504,20 +505,56 @@ class Evaluator:
         base = re.sub(r"-gguf$", "", str(repo or "").split("/")[-1], flags=re.I)
         return re.sub(r"[^a-z0-9]", "", base.lower())
 
-    def _lms_match(self, repo: str, model_ids: "list[str]") -> Optional[str]:
-        key = self._lms_key(repo)
-        return next((m for m in model_ids if key and key in re.sub(r"[^a-z0-9]", "", str(m).lower())), None)
+    @staticmethod
+    def _squeeze(s: Any) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+    def _lms_match(self, repo: str, quant: str, rows: list, bare_ok: Callable[[str], bool] = lambda _mid: False) -> Optional[str]:
+        """The listed LM Studio id of `repo` at `quant`: `<key>@<quant>`, or a lone bare `<key>` whose quant is known to match.
+        `rows` are ids or listing rows; `bare_ok(id)` vouches for a bare id that reports no quantization."""
+        key, want = self._lms_key(repo), self._squeeze(self._lms_quant(quant))
+        if not key:
+            return None
+        found = []
+        for row in rows:
+            row = row if isinstance(row, dict) else {"id": row}
+            base, _, q = str(row.get("id") or "").partition("@")
+            if base and key in self._squeeze(base):
+                found.append((self._squeeze(base.split("/")[-1]) == key, q, row))
+        if any(exact for exact, _q, _row in found):
+            found = [f for f in found if f[0]]
+        for _exact, q, row in found:
+            if q and self._squeeze(q) == want:
+                return str(row["id"])
+        bare = [row for _exact, q, row in found if not q]
+        if len(bare) != 1 or len(found) != 1:
+            return None
+        mid, listed = str(bare[0]["id"]), bare[0].get("quantization")
+        listed = listed.get("name") if isinstance(listed, dict) else listed
+        if listed:
+            return mid if self._squeeze(self._lms_quant(listed)) == want else None
+        return mid if bare_ok(mid) else None
+
+    def _lms_resolved(self) -> dict:
+        """LM Studio model id -> curated key, from the finished get-model jobs (newest wins)."""
+        out: dict = {}
+        for row in (self._svc.list("done", kind=KIND_GET, limit=50) if self._svc is not None else []):
+            mid, key = str((row.get("result") or {}).get("model") or ""), str((row.get("spec") or {}).get("key") or "")
+            if mid and key and (row.get("spec") or {}).get("provider") == "lms":
+                out.setdefault(mid, key)
+        return out
 
     def curated_view(self) -> dict:
         """The list with what the fleet already has: present in a catalog, resident, and the newest eval."""
         entries = self._entries() or []
         by_id = {e.get("id"): e for e in entries}
-        lms_ids = [str(e.get("id")) for e in entries if (e.get("provider") or "llama") == "lms" and e.get("id")]
+        lms_rows = [e for e in entries if (e.get("provider") or "llama") == "lms" and e.get("id")]
+        resolved = self._lms_resolved() if lms_rows else {}
         hosts = self.hosts()
         out = []
         for m in self.curated():
             e = by_id.get(m["model_id"])
-            lms_id = self._lms_match(m["repo"], lms_ids)
+            lms_id = self._lms_match(m["repo"], m["quant"], lms_rows, lambda mid, k=m["key"]: resolved.get(mid) == k)
             le = by_id.get(lms_id) if lms_id else None
             out.append({**m, "present": e is not None or le is not None,
                         "loaded": bool((e and tower._resident(e)) or (le and tower._resident(le))),
@@ -724,6 +761,11 @@ class Evaluator:
     def _download_lms(self, agent: dict, spec: dict, cancelled: Callable[[], bool], progress: Callable) -> "tuple[str, Optional[str]]":
         """Asks LM Studio to fetch the repo at the quant, then waits for its model key to appear: (model id, error).
         Stop cancels the job only; the download continues in LM Studio and the message says so."""
+        r, _tried, err = self._call(agent, "GET", "/lms/models", timeout=15)
+        listing = self._json(r)
+        if listing is None:
+            return "", f"could not read LM Studio's model list: {self._why(None, err, r)}"
+        before = {str(m.get("id")) for m in (listing.get("data") or []) if isinstance(m, dict) and m.get("id")}
         r, _tried, err = self._call(agent, "POST", "/lms/download",
                                     json={"model": f"https://huggingface.co/{spec['repo']}", "quantization": self._lms_quant(spec["quant"])},
                                     timeout=60)
@@ -734,7 +776,9 @@ class Evaluator:
         if resp.get("status") == "failed":
             return "", str(resp.get("error") or resp.get("message") or "LM Studio reported the download as failed")
         job_id = str(resp.get("job_id") or "")
+        already = resp.get("status") in ("already_downloaded", "completed")
         status_ok = bool(job_id)   # the status route needs an agent that has it; a 404 turns it off
+        settled = 0
         deadline = time.monotonic() + LMS_DOWNLOAD_WAIT_S
         t0 = time.monotonic()
         while time.monotonic() < deadline:
@@ -751,6 +795,7 @@ class Evaluator:
                         return "", "the download is gone from LM Studio (cancelled there?)"
                     if dl.get("status") == "failed":
                         return "", str(dl.get("error") or dl.get("message") or "LM Studio reported the download as failed")
+                    settled += dl.get("status") == "completed"
                     total, done = float(dl.get("total_size_bytes") or 0), float(dl.get("downloaded_bytes") or 0)
                     if total > 0 and dl.get("status") != "completed":
                         progress(phase="download", pct=int(min(100, done * 100 // total)), waited_s=int(time.monotonic() - t0),
@@ -759,8 +804,8 @@ class Evaluator:
                         continue
             r, _tried, err = self._call(agent, "GET", "/lms/models", timeout=15)
             listing = self._json(r) or {}
-            ids = [str(m.get("id")) for m in (listing.get("data") or []) if isinstance(m, dict) and m.get("id")]
-            found = self._lms_match(spec["repo"], ids)
+            rows = [m for m in (listing.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            found = self._lms_match(spec["repo"], spec["quant"], rows, lambda mid: already or mid not in before or settled > LMS_SETTLE_POLLS)
             if found:
                 return found, None
             progress(phase="download", waited_s=int(time.monotonic() - t0), line="waiting for LM Studio to finish the download")

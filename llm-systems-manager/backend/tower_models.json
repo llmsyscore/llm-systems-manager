@@ -1,7 +1,7 @@
 {
-  "version": 2,
-  "updated": "2026-09-17",
-  "note": "Recommended Tower models per VRAM tier, capped at 14B dense plus one MoE. model id on the host = repo:quant; sizes are the GGUF file size.",
+  "version": 3,
+  "updated": "2026-09-18",
+  "note": "Recommended Tower models per VRAM tier, capped at 14B dense plus one MoE. model id on the host = repo:quant; sizes are the GGUF file size. Listing rule: an entry has a thinking mode Tower's Thinking setting can switch, and `expected` is the grade a Tower check measured, not the model card's.",
   "models": [
     {
       "key": "qwen35-4b-q4",
@@ -38,19 +38,7 @@
       "size_gb": 5.0,
       "params_b": 4,
       "expected": "good",
-      "notes": "Gemma 4's small tier; fast first token, no thinking phase."
-    },
-    {
-      "key": "llama31-8b-q4",
-      "name": "Llama 3.1 8B Instruct",
-      "tier_gb": 8,
-      "repo": "unsloth/Llama-3.1-8B-Instruct-GGUF",
-      "file": "Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-      "quant": "Q4_K_M",
-      "size_gb": 4.9,
-      "params_b": 8,
-      "expected": "good",
-      "notes": "No thinking phase; plain answers. The newest Llama at this size."
+      "notes": "Gemma 4's small tier; fast first token. Thinking follows Tower's Thinking setting."
     },
     {
       "key": "gemma4-12b-qat",

@@ -173,6 +173,19 @@ describe('companion Tower screen', () => {
     expect(w.__sse.url).toBe('/api/tower/runs/r2/stream');
   });
 
+  test('multi-select question card: several ticks post a list (#1045)', async () => {
+    const w = await ready(ON);
+    await ask(w, 'chart box');
+    emit(w, { event: 'question', action_id: 'q1', tool: 'ask_operator', question: 'Which metric?', choices: ['RAM (%)', 'CPU (%)'], expires_s: 600,
+              questions: [{ question: 'Which metric?', choices: ['RAM (%)', 'CPU (%)'], label: '', multi: true }] });
+    expect($(w, 'towerBody').querySelector('.act.q.multi .qhint')).not.toBeNull();
+    click(w, '#towerBody [data-pick="q1"][data-val="CPU (%)"]');
+    click(w, '#towerBody [data-pick="q1"][data-val="RAM (%)"]');
+    expect($(w, 'towerBody').querySelectorAll('.choice.on').length).toBe(2);
+    click(w, '#towerBody [data-submit="q1"]'); await flush(); await flush();
+    expect(w.__decision).toEqual({ aid: 'q1', verb: 'answer', body: { answers: [['RAM (%)', 'CPU (%)']] } });
+  });
+
   test('a stored thread reloads its turns and re-attaches to a run still answering', async () => {
     const rows = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }, { role: 'user', content: 'more?' }];
     const w = await ready(ON, { stored: 't7', rows, activeRun: 'r9' });
