@@ -439,7 +439,8 @@ def test_lm_studio_download_follows_the_job_status(monkeypatch):
     st = [{"ok": True, "http": 200, "response": {"status": "downloading", "total_size_bytes": 1000, "downloaded_bytes": 500}},
           {"ok": True, "http": 200, "response": {"status": "completed"}}]
     ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, st, 1))
-    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: seen.append(k)) == ("qwen3.5-9b", None)
+    got = ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: seen.append(k))
+    assert got == ("qwen3.5-9b", None)
     assert log[0][2] == {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"}
     assert any(k.get("pct") == 50 and "0.0 of 0.0 GB" in k.get("line", "") for k in seen)
     assert [p for _m, p, _j in log].count("/lms/models") == 1
@@ -471,8 +472,9 @@ def _stopped_llama_agent(log, cached, rm_replies):
             return _Resp({"ok": True, "data": cached}), [], None
         if path == "/llama/cache/rm":
             code = rm_replies.pop(0)
-            r = _Resp({"ok": code == 200} if code == 200 else {"detail": "busy"})
-            r.ok, r.status_code = code == 200, code
+            ok = code == 200
+            r = _Resp({"ok": True} if ok else {"detail": "busy"})
+            r.ok, r.status_code = ok, code
             return r, [], None
         raise AssertionError(path)
     return req

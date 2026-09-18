@@ -52,7 +52,7 @@ def test_models_endpoint_applies_the_filter(llama, monkeypatch):
     monkeypatch.setattr(llama, "_require_ctx", lambda: types.SimpleNamespace(
         config=types.SimpleNamespace(LLAMA_API_URL="http://x:8080"), check_bearer=lambda *a: None))
     monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
-    monkeypatch.setattr(llama, "_llama_read_ini", lambda: _ini())
+    monkeypatch.setattr(llama, "_llama_read_ini", _ini)
     monkeypatch.setattr(llama, "_locate_quant_files", lambda mid: ([], "none"))
     monkeypatch.setattr(llama, "requests", types.SimpleNamespace(
         get=lambda url, timeout: types.SimpleNamespace(json=lambda: {"data": [_entry("org/ghost:Q4_K_M")]})))
