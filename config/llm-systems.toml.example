@@ -127,8 +127,8 @@ read_timeout_s = 600.0
 # Set false to hide backend topology from gateway clients.
 expose_proxied_to = true
 
-# Inject stream_options.include_usage on usage-counted streams (token
-# counters). Set false if a backend rejects unknown stream_options fields.
+# Inject stream_options.include_usage on streams without it and relay the
+# usage event to the client. Set false if a backend rejects the field.
 usage_probe = true
 
 debug = false               # per-module DEBUG trace in the manager log; payload text is never logged

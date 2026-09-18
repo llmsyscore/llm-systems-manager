@@ -96,7 +96,7 @@ def test_complete_stream_injects_the_usage_probe_for_counted_providers(monkeypat
     assert sent["stream_options"] == {"include_usage": True}
 
 
-def test_complete_stream_no_probe_and_no_per_agent_record_for_llama(monkeypatch):
+def test_complete_stream_probes_usage_but_no_per_agent_record_for_llama(monkeypatch):
     monkeypatch.setattr(gateway, "_gw_cfg", lambda: types.SimpleNamespace(usage_probe=True))
     sent = {}
     def dial(agent, path, body, read_timeout=None):
@@ -105,7 +105,7 @@ def test_complete_stream_no_probe_and_no_per_agent_record_for_llama(monkeypatch)
     recorded = []
     monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g: recorded.append((aid, p, g)))
     list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
-    assert "stream_options" not in sent
+    assert sent["stream_options"] == {"include_usage": True}
     assert recorded == []
 
 
