@@ -864,6 +864,61 @@ def test_ask_args_take_a_list_of_choices_and_question_card_trims_them():
     assert odd["questions"] == [{"question": "Q", "choices": [], "label": ""}, {"question": "R", "choices": [], "label": "7"}]
 
 
+_ASK_METRIC = ('```tool\n{"name":"ask_operator","args":{"question":"Which metric?",'
+               '"choices":["gpu_temp_c","cpu_pct (processor load)","ram_pct","Other"]}}\n```')
+
+
+def test_metric_choices_become_a_labelled_multi_select_in_importance_order():
+    """#1045: metric ids turn into friendly names in a fixed order; anything else stays as written."""
+    card = tt.question_card({"question": "Which metric?", "choices": ["gpu_temp_c", "cpu_pct (processor load)", "ram_pct", "other"]})
+    assert card["questions"] == [{"question": "Which metric?", "choices": ["RAM (%)", "CPU (%)", "GPU temperature (°C)"], "label": "", "multi": True,
+                                  "ids": {"RAM (%)": "ram_pct", "CPU (%)": "cpu_pct", "GPU temperature (°C)": "gpu_temp_c"}}]
+    assert card["choices"] == ["RAM (%)", "CPU (%)", "GPU temperature (°C)"]
+    # the timer and the history id of GPU utilisation share a name and keep the id the model offered
+    assert tt.metric_choices(["gpu_pct", "watts"]) == {"GPU utilisation (%)": "gpu_pct", "Power draw (W)": "watts"}
+    assert tt.metric_choices(["gpu_util_pct", "GPU power (W)"]) == {"GPU utilisation (%)": "gpu_util_pct", "GPU power (W)": "gpu_watts"}
+    assert tt.metric_choices(["cpu_pct", "box"]) is None and tt.metric_choices([]) is None
+    assert [label for label, _ids in tt.METRIC_LABELS] == [
+        "RAM (%)", "CPU (%)", "GPU utilisation (%)", "GPU temperature (°C)", "VRAM used (%)", "Power draw (W)",
+        "GPU power (W)", "PSU power (W)", "Decode speed (tok/s)", "vLLM KV cache (%)"]
+    assert set(tt.TIMER_METRICS) | set(tt.HISTORY_METRICS) == {mid for _label, ids in tt.METRIC_LABELS for mid in ids}
+
+
+def test_question_result_maps_metric_picks_back_to_ids():
+    card = tt.question_card({"questions": [{"question": "Host?", "choices": ["box", "mac"]},
+                                           {"question": "Metric?", "choices": ["cpu_pct", "ram_pct"]}]})
+    assert tt.shape_answers(card, [["box"], "CPU (%)"]) == ["box", ["CPU (%)"]]
+    result, text, shown = tt.question_result(card, ["box", ["RAM (%)", "CPU (%)", "system/disk_used"]])
+    assert result == {"ok": True, "answer": "box", "note": tt.MULTI_NOTE,
+                      "answers": [{"question": "Host?", "answer": "box"}, {"question": "Metric?", "answer": ["ram_pct", "cpu_pct", "system/disk_used"]}]}
+    assert text == "Host? box\nMetric? RAM (%), CPU (%), system/disk_used"
+    assert shown == [{"question": "Host?", "answer": "box"}, {"question": "Metric?", "answer": "RAM (%), CPU (%), system/disk_used"}]
+    one, text, _shown = tt.question_result(tt.question_card({"question": "Metric?", "choices": ["cpu_pct"]}), ["CPU (%)"])
+    assert one == {"ok": True, "answer": "cpu_pct", "answers": [{"question": "Metric?", "answer": ["cpu_pct"]}]} and text == "CPU (%)"
+
+
+def test_metric_question_round_trip_returns_ids_and_stores_the_labels(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, [["RAM (%)", "GPU temperature (°C)"]])
+    out, events, seen, st, tid = _run([{"content": _ASK_METRIC}, {"content": "Charting both."}], approvals=ap)
+    q = next(e for e in events if e["event"] == "question")
+    assert q["choices"] == ["RAM (%)", "CPU (%)", "GPU temperature (°C)"] and q["questions"][0]["multi"] is True
+    a = next(e for e in events if e["event"] == "answer")
+    assert a["status"] == "answered" and a["answer"] == "RAM (%), GPU temperature (°C)"
+    row = st.get_action(q["action_id"])
+    assert row["result"]["answers"] == [{"question": "Which metric?", "answer": ["ram_pct", "gpu_temp_c"]}]
+    assert row["result"]["answer"] == "ram_pct, gpu_temp_c" and row["result"]["note"] == tt.MULTI_NOTE
+    assert [r["content"] for r in st.messages(tid) if r["role"] == "user"][-1] == "RAM (%), GPU temperature (°C)"
+    fed = next(m for m in seen["payloads"][1]["messages"] if "Result of ask_operator" in (m.get("content") or ""))
+    assert '"ram_pct"' in fed["content"] and '"gpu_temp_c"' in fed["content"] and "one schedule, per metric" in fed["content"]
+
+
+def test_clean_answers_keeps_pick_lists_and_drops_blanks_and_repeats():
+    assert tower._clean_answers({"answers": [["  RAM   (%) ", "", "RAM (%)", "CPU (%)"], " box "]}) == [["RAM (%)", "CPU (%)"], "box"]
+    assert tower._clean_answers({"answers": [[]]}) == [[]] and tower._clean_answers({"answer": "x"}) == ["x"]
+
+
 _ASK_MULTI = ('```tool\n{"name":"ask_operator","args":{"questions":[{"question":"Which host?","choices":["box","mac"],"label":"Host"},'
               '{"question":"Which model?","choices":["qwen3","gemma"],"label":"Model"}]}}\n```')
 

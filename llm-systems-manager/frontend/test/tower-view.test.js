@@ -141,6 +141,16 @@ describe('actions', () => {
     expect(s.turns[1].actions[0]).toMatchObject({ id: 'q1', tool: 'ask_operator', status: 'pending', card: { question: 'Which host?', choices: ['box', 'mac'], questions: [] }, answer: null, expires: expect.any(Number) });
     const multi = TW.reduce(TW.initial(), { event: 'question', action_id: 'q2', questions: [{ question: 'Host?', choices: ['a'], label: 'Host' }, { question: 'Model?', choices: [] }] });
     expect(multi.turns[0].actions[0].card.questions).toEqual([{ question: 'Host?', choices: ['a'], label: 'Host' }, { question: 'Model?', choices: [], label: '' }]);
+    const picker = TW.reduce(TW.initial(), { event: 'question', action_id: 'q3', questions: [{ question: 'Metric?', choices: ['RAM (%)'], multi: true, ids: { 'RAM (%)': 'ram_pct' } }] });
+    expect(picker.turns[0].actions[0].card.questions).toEqual([{ question: 'Metric?', choices: ['RAM (%)'], label: '', multi: true }]);
+    const mq = { multi: true, choices: ['a', 'b', 'c'] };
+    expect(TW.qToggle(mq, TW.qToggle(mq, TW.qToggle(mq, undefined, 'c'), 'a'), 'c')).toEqual(['a']);
+    expect(TW.qToggle({}, 'a', 'b')).toBe('b');
+    expect(TW.qAnswer(mq, ['c', TW.Q_OTHER, 'a'], ' typed ')).toEqual(['a', 'c', 'typed']);
+    expect(TW.qAnswer(mq, [TW.Q_OTHER], '  ')).toEqual([]);
+    expect(TW.qAnswer({}, TW.Q_OTHER, ' x ')).toBe('x');
+    expect([TW.qAnswered([]), TW.qAnswered(['a']), TW.qAnswered(''), TW.qAnswered('a')]).toEqual([false, true, false, true]);
+    expect([TW.qPicked(mq, ['a'], 'a'), TW.qPicked(mq, 'a', 'a'), TW.qPicked({}, 'a', 'a')]).toEqual([true, false, true]);
     expect(TW.liveRun([...s.turns.slice(0, 1), { ...s.turns[1], actions: [{ ...s.turns[1].actions[0], runId: 'r1' }] }])).toEqual({ runId: 'r1', status: 'pending' });
     s = TW.reduce(s, { event: 'answer', action_id: 'q1', tool: 'ask_operator', status: 'answered', answer: 'mac', actor: 'adriel' });
     expect(s.status).toBe('thinking');

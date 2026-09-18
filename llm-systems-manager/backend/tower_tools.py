@@ -924,6 +924,17 @@ QUESTION_CHOICES_MAX = 6
 QUESTIONS_MAX = 4
 TIMER_TOOL_NAMES = ("schedule",)
 TIMER_METRICS = ("cpu_pct", "ram_pct", "gpu_pct", "gpu_temp_c", "watts")
+# Operator-facing metric names in importance order, each with the metric ids it stands for (#1045).
+METRIC_LABELS = (
+    ("RAM (%)", ("ram_pct",)), ("CPU (%)", ("cpu_pct",)), ("GPU utilisation (%)", ("gpu_util_pct", "gpu_pct")),
+    ("GPU temperature (°C)", ("gpu_temp_c",)), ("VRAM used (%)", ("vram_pct",)), ("Power draw (W)", ("watts",)),
+    ("GPU power (W)", ("gpu_watts",)), ("PSU power (W)", ("psu_watts",)), ("Decode speed (tok/s)", ("llama_tps",)),
+    ("vLLM KV cache (%)", ("vllm_kv_pct",)),
+)
+_METRIC_LABEL_OF = {mid: label for label, ids in METRIC_LABELS for mid in ids}
+_METRIC_ID_OF_LABEL = {label.lower(): ids[0] for label, ids in METRIC_LABELS}
+_METRIC_TOKEN = re.compile(r"[a-z][a-z0-9_]*")
+MULTI_NOTE = "Several metrics were picked: make one host_history call, or one schedule, per metric id in the answer."
 TIMER_MIN_EVERY_S = 30
 TIMER_MAX_SPAN_S = 3600
 TIMER_MAX_SAMPLES = 120
@@ -1194,7 +1205,9 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              "or whether your reading of an ambiguous request is right. One question goes in question + choices "
              f"(the most likely answers, up to {QUESTION_CHOICES_MAX}); several related questions (up to {QUESTIONS_MAX}, "
              "for example host and model) go together in questions, each {question, choices, label} where label is a "
-             "one-or-two-word tab name. The card always offers Other for a typed answer. Never ask what a tool can tell you.",
+             "one-or-two-word tab name. The card always offers Other for a typed answer. Never ask what a tool can tell you. "
+             "When asking which metric, give the metric ids as the choices: the card shows their names and the operator "
+             "may pick several, which come back as a list of ids.",
              _obj({"question": {"type": "string"},
                    "choices": {"type": "array", "items": {"type": "string"}, "maxItems": QUESTION_CHOICES_MAX, "default": []},
                    "questions": {"type": "array", "items": {"type": "object"}, "maxItems": QUESTIONS_MAX, "default": []}}),
@@ -1252,16 +1265,56 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
     return {t.name: t for t in tools}
 
 
+def metric_choices(choices: "list[str]") -> Optional[dict]:
+    """Friendly label -> metric id in importance order when every choice names a metric id (a hint after it is fine), else None."""
+    ids: dict = {}
+    for c in choices:
+        low = c.strip().lower()
+        m = _METRIC_TOKEN.match(low)
+        mid = _METRIC_ID_OF_LABEL.get(low) or (m.group(0) if m and m.group(0) in _METRIC_LABEL_OF else None)
+        if mid is None:
+            return None
+        ids.setdefault(_METRIC_LABEL_OF[mid], mid)
+    return {label: ids[label] for label, _ids in METRIC_LABELS if label in ids} or None
+
+
 def _one_question(q, choices, label=None) -> Optional[dict]:
     seen: list = []
-    for c in (choices if isinstance(choices, list) else [])[:QUESTION_CHOICES_MAX]:
+    raw = choices if isinstance(choices, list) else []
+    metrics = metric_choices([str(c) for c in raw if str(c).strip() and str(c).strip().lower() != "other"])
+    for c in (list(metrics) if metrics else raw[:QUESTION_CHOICES_MAX]):
         c = str(c).strip()[:80]
         if c and c.lower() != "other" and c not in seen:
             seen.append(c)
     text = str(q or "").strip()[:200]
     if not text:
         return None
-    return {"question": text, "choices": seen, "label": str(label or "").strip()[:24]}
+    out = {"question": text, "choices": seen, "label": str(label or "").strip()[:24]}
+    return {**out, "multi": True, "ids": metrics} if metrics else out
+
+
+def shape_answers(card: dict, answers: list) -> list:
+    """Answers shaped to their questions: a list of picks for a multi-select question, one string for any other."""
+    out = []
+    for q, a in zip((card or {}).get("questions") or [], answers):
+        picks = [x for x in (a if isinstance(a, list) else [a]) if x]
+        out.append(picks if q.get("multi") else ", ".join(picks))
+    return out
+
+
+def question_result(card: dict, answers: list) -> "tuple[dict, str, list]":
+    """(tool result with metric labels mapped back to ids, the operator-facing text, the operator-facing pairs)."""
+    pairs, shown = [], []
+    for q, a in zip(card["questions"], shape_answers(card, answers)):
+        ids = q.get("ids") or {}
+        pairs.append({"question": q["question"], "answer": [ids.get(x, x) for x in a] if q.get("multi") else a})
+        shown.append({"question": q["question"], "answer": ", ".join(a) if q.get("multi") else a})
+    text = shown[0]["answer"] if len(shown) == 1 else "\n".join(f"{p['question']} {p['answer']}" for p in shown)
+    first = pairs[0]["answer"]
+    result = {"ok": True, "answer": ", ".join(first) if isinstance(first, list) else first, "answers": pairs}
+    if any(isinstance(p["answer"], list) and len(p["answer"]) > 1 for p in pairs):
+        result["note"] = MULTI_NOTE
+    return result, text, shown
 
 
 def question_card(args: dict) -> dict:

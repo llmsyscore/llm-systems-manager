@@ -8,6 +8,23 @@
   const PROVIDER = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // Question-card picks: one value per question, a list for a multi-select question (#1045).
+  const Q_OTHER = '__other__';
+  function qToggle(q, cur, val) {
+    if (!(q && q.multi)) return val;
+    const list = Array.isArray(cur) ? cur : [];
+    return list.includes(val) ? list.filter(x => x !== val) : list.concat([val]);
+  }
+  function qPicked(q, cur, val) { return q && q.multi ? Array.isArray(cur) && cur.includes(val) : cur === val; }
+  function qAnswer(q, cur, other) {
+    const typed = String(other || '').trim();
+    if (!(q && q.multi)) return cur === Q_OTHER ? typed : (cur == null ? '' : String(cur));
+    const list = Array.isArray(cur) ? cur : [];
+    const picks = (q.choices || []).filter(c => list.includes(c));
+    return list.includes(Q_OTHER) && typed ? picks.concat([typed]) : picks;
+  }
+  function qAnswered(a) { return Array.isArray(a) ? a.length > 0 : Boolean(a); }
+
   function initial() { return { model: null, status: 'idle', turns: [], error: null, wait: null }; }
 
   function last(turns) { return turns[turns.length - 1]; }
@@ -81,7 +98,7 @@
       // A question card parks the turn like an approval; the answer becomes the next user turn (#1028).
       case 'question': {
         s.turns = ensureTower(s.turns);
-        const qs = (ev.questions || []).map(q => ({ question: String(q.question || ''), choices: (q.choices || []).map(String), label: String(q.label || '') }));
+        const qs = (ev.questions || []).map(q => ({ question: String(q.question || ''), choices: (q.choices || []).map(String), label: String(q.label || ''), ...(q.multi ? { multi: true } : {}) }));
         const a = { id: ev.action_id, tool: ev.tool || 'ask_operator', args: {}, card: { question: ev.question || '', choices: (ev.choices || []).map(String), questions: qs },
                     status: 'pending', tier: 'read', role: 'operator', actor: ev.actor || '', message: null, ms: null, answer: null,
                     expires: ev.expires_s != null ? Math.floor(Date.now() / 1000) + Number(ev.expires_s) : null };
@@ -498,7 +515,7 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, evalSummary, evalProgress, esc, PROVIDER, waitText, HELP_SUGS,
+  return { Q_OTHER, qToggle, qPicked, qAnswer, qAnswered, initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, evalSummary, evalProgress, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
            timerLine, liveTimers, finishedTimers, timerSnapshot, historyCharts, historyChart };
 });

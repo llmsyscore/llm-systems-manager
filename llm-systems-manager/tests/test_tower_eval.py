@@ -268,6 +268,13 @@ def test_curated_list_ships_valid_entries():
         assert bool(m.get("small")) == (m["params_b"] < 7 and "E4B" not in m["name"]), m["key"]
     assert len({m["key"] for m in models}) == len(models)
     assert [m["tier_gb"] for m in models] == sorted(m["tier_gb"] for m in models)
+    # the shipped keys are pinned: an entry leaves or joins the list here, never silently (#1079)
+    assert [m["key"] for m in models] == ["qwen35-4b-q4", "qwen35-9b-q4", "gemma4-e4b-q4", "gemma4-12b-qat", "qwen35-9b-q6",
+                                          "gemma4-12b-q6", "gemma4-26b-a4b-q4"]
+    assert "llama31-8b-q4" not in {m["key"] for m in models}
+    with open(te.CURATED_PATH, encoding="utf-8") as f:
+        doc = json.load(f)
+    assert doc["version"] >= 3 and "thinking mode" in doc["note"]
 
 
 class _Resp:
@@ -438,12 +445,13 @@ def test_lm_studio_download_follows_the_job_status(monkeypatch):
     log, seen = [], []
     st = [{"ok": True, "http": 200, "response": {"status": "downloading", "total_size_bytes": 1000, "downloaded_bytes": 500}},
           {"ok": True, "http": 200, "response": {"status": "completed"}}]
-    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, st, 1))
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, st, 2))
     got = ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: seen.append(k))
     assert got == ("qwen3.5-9b", None)
-    assert log[0][2] == {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"}
+    assert log[0][:2] == ("GET", "/lms/models")
+    assert log[1][2] == {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"}
     assert any(k.get("pct") == 50 and "0.0 of 0.0 GB" in k.get("line", "") for k in seen)
-    assert [p for _m, p, _j in log].count("/lms/models") == 1
+    assert [p for _m, p, _j in log].count("/lms/models") == 2
     # failed in LM Studio, or cancelled there (the job vanishes): the manager job ends at once
     ev, _svc = _evaluator([], agent_request=_lms_status_agent([], [{"ok": True, "http": 200, "response": {"status": "failed", "error": "disk full"}}], 9))
     assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("", "disk full")
@@ -451,9 +459,9 @@ def test_lm_studio_download_follows_the_job_status(monkeypatch):
     assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None)[1].startswith("the download is gone from LM Studio")
     # an agent without the status route: back to polling the model list
     log = []
-    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, ["route-missing"], 2))
+    ev, _svc = _evaluator([], agent_request=_lms_status_agent(log, ["route-missing"], 3))
     assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("qwen3.5-9b", None)
-    assert [p for _m, p, _j in log].count("/lms/download/status/job_1") == 1 and [p for _m, p, _j in log].count("/lms/models") == 2
+    assert [p for _m, p, _j in log].count("/lms/download/status/job_1") == 1 and [p for _m, p, _j in log].count("/lms/models") == 3
     # Stop: the job ends here, the message says LM Studio keeps going
     ev, _svc = _evaluator([], agent_request=_lms_status_agent([], [], 9))
     assert ev._download_lms({"token": "t"}, spec, lambda: True, lambda **k: None) == ("", "cancelled; LM Studio keeps downloading, cancel it there")
@@ -587,7 +595,7 @@ def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monk
     done = svc.get(row["id"])
     assert done["status"] == "done", done
     assert done["result"]["model"] == lms_id and done["result"]["host"] == "mac" and done["result"]["pin_offer"]
-    assert log[0] == ("POST", "/lms/download", {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
+    assert log[1] == ("POST", "/lms/download", {"model": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF", "quantization": "Q4_K_M"})
     assert named == [(lms_id, "Tower Model")] and profiles == []
     assert [p for _m, p, _j in log].count("/lms/models") == 3 and log[-1][1] == "/lms/load"
     assert log[-1][2] == {"model": lms_id, "context_length": 32768, "eval_batch_size": 2048}
@@ -595,7 +603,106 @@ def test_get_model_job_on_lm_studio_downloads_by_repo_and_waits_for_the_key(monk
     view = ev.curated_view()
     got = next(m for m in view["models"] if m["key"] == "qwen35-9b-q4")
     assert got["present"] and got["loaded"] and got["eval"]["model"] == lms_id
+    q6 = next(m for m in view["models"] if m["key"] == "qwen35-9b-q6")
+    assert not q6["present"] and not q6["loaded"] and q6["eval"] is None
     assert te.Evaluator._lms_key("unsloth/Qwen3.5-9B-GGUF") == "qwen359b"
+
+
+def test_lm_studio_match_is_per_quant():
+    ev, _svc = _evaluator([])
+    repo = "unsloth/Qwen3.5-9B-GGUF"
+    both = ["qwen3.5-9b@q4_k_m", "qwen3.5-9b@q6_k", "llama-3.1-8b-instruct"]
+    assert ev._lms_match(repo, "Q6_K", both) == "qwen3.5-9b@q6_k" and ev._lms_match(repo, "Q4_K_M", both) == "qwen3.5-9b@q4_k_m"
+    assert ev._lms_match(repo, "UD-Q4_K_M", both) == "qwen3.5-9b@q4_k_m"
+    # another quant of the repo never stands in for the requested one
+    assert ev._lms_match(repo, "Q6_K", ["qwen3.5-9b@q4_k_m"], lambda mid: True) is None
+    # a lone bare id: its listed quantization decides, else the caller has to vouch for it
+    assert ev._lms_match(repo, "Q6_K", ["qwen3.5-9b"]) is None
+    assert ev._lms_match(repo, "Q6_K", ["qwen3.5-9b"], lambda mid: True) == "qwen3.5-9b"
+    assert ev._lms_match(repo, "Q6_K", [{"id": "qwen3.5-9b", "quantization": {"name": "Q4_K_M"}}], lambda mid: True) is None
+    assert ev._lms_match(repo, "Q4_K_M", [{"id": "qwen3.5-9b", "quantization": "Q4_K_M"}]) == "qwen3.5-9b"
+    # a fine-tune that carries the repo name loses to the exact key, and two loose matches resolve to nothing
+    assert ev._lms_match(repo, "Q4_K_M", ["org/qwen3.5-9b-sft", "unsloth/qwen3.5-9b"], lambda mid: True) == "unsloth/qwen3.5-9b"
+    assert ev._lms_match(repo, "Q4_K_M", ["org/qwen3.5-9b-sft", "org/qwen3.5-9b-dpo"], lambda mid: True) is None
+
+
+def test_lm_studio_download_waits_for_the_requested_quant(monkeypatch):
+    monkeypatch.setattr(te.time, "sleep", lambda s: None)
+    spec = {"repo": "unsloth/Qwen3.5-9B-GGUF", "quant": "Q6_K"}
+    calls = {"models": 0}
+
+    def req(method, agent_, path, **kw):
+        if path == "/lms/download":
+            return _Resp({"ok": True, "response": {"status": "downloading"}}), [], None
+        calls["models"] += 1
+        return _Resp({"data": [{"id": "qwen3.5-9b"}] if calls["models"] < 4 else [{"id": "qwen3.5-9b@q4_k_m"}, {"id": "qwen3.5-9b@q6_k"}]}), [], None
+    ev, _svc = _evaluator([], agent_request=req)
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("qwen3.5-9b@q6_k", None)
+    assert calls["models"] == 4
+    # already on the host as the only variant: LM Studio says so, the bare id is the requested quant
+    ev, _svc = _evaluator([], agent_request=lambda m, a, path, **kw: (
+        _Resp({"ok": True, "response": {"status": "already_downloaded"}} if path == "/lms/download" else {"data": [{"id": "qwen3.5-9b"}]}), [], None))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("qwen3.5-9b", None)
+    # LM Studio reports the job completed and the lone bare id stays: after the settle reads it is the requested quant
+    calls["models"] = 0
+
+    def same(method, agent_, path, **kw):
+        if path == "/lms/download":
+            return _Resp({"ok": True, "response": {"job_id": "j", "status": "downloading"}}), [], None
+        if path.startswith("/lms/download/status/"):
+            return _Resp({"ok": True, "http": 200, "response": {"status": "completed"}}), [], None
+        calls["models"] += 1
+        return _Resp({"data": [{"id": "qwen3.5-9b"}]}), [], None
+    ev, _svc = _evaluator([], agent_request=same)
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None) == ("qwen3.5-9b", None)
+    assert calls["models"] == 1 + te.LMS_SETTLE_POLLS + 1
+    # an unreadable model list ends the job before anything is requested
+    bad = _Resp({}); bad.ok, bad.status_code = False, 502
+    ev, _svc = _evaluator([], agent_request=lambda *a, **k: (bad, [], None))
+    assert ev._download_lms({"token": "t"}, spec, lambda: False, lambda **k: None)[1].startswith("could not read LM Studio's model list")
+
+
+def test_curated_view_reports_the_newest_eval_per_server():
+    """#1085: an older run on llama.cpp does not hide a newer run of the same entry on LM Studio."""
+    entries = [{"id": "unsloth/Qwen3.5-9B-GGUF:Q6_K", "provider": "llama", "status": {"value": "unloaded"}, "hosts": [], "catalog_hosts": ["box"]},
+               {"id": "qwen3.5-9b@q6_k", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]}]
+    ev, _svc = _evaluator([], entries=entries)
+    case = [{"id": "hosts", "title": "Plain read", "passed": True, "calls": 1, "corrections": 0, "retries": 0, "ms": 3, "detail": "ok"}]
+    for model, provider, at in (("unsloth/Qwen3.5-9B-GGUF:Q6_K", "llama", 100.0), ("qwen3.5-9b@q6_k", "lms", 200.0)):
+        ev.store.save(te.summarize({"model": model, "provider": provider, "hosts": []}, case, quant="Q6_K", server=None, tool_mode="auto",
+                                   grade="native", ms=3, actor="eval", at=at))
+    row = next(m for m in ev.curated_view()["models"] if m["key"] == "qwen35-9b-q6")
+    assert row["evals"]["llama"]["model"] == "unsloth/Qwen3.5-9B-GGUF:Q6_K" and row["evals"]["lms"]["model"] == "qwen3.5-9b@q6_k"
+    assert row["eval"]["model"] == "qwen3.5-9b@q6_k"
+    q4 = next(m for m in ev.curated_view()["models"] if m["key"] == "qwen35-9b-q4")
+    assert q4["eval"] is None and q4["evals"] == {"llama": None, "lms": None}
+
+
+def test_curated_view_shows_the_last_get_job_only_while_it_is_recent(monkeypatch):
+    """#1083: a finished download leaves the settings card after LAST_SHOWN_S; a live one always shows."""
+    ev, svc = _evaluator([])
+    rows = [{"id": "j1", "kind": te.KIND_GET, "status": "done", "resolved": 1000.0}]
+    monkeypatch.setattr(svc, "list", lambda *a, **k: rows)
+    monkeypatch.setattr(ev, "view", lambda row: row)
+    monkeypatch.setattr(ev, "live", lambda kind=None: None)
+    monkeypatch.setattr(te.time, "time", lambda: 1000.0 + te.LAST_SHOWN_S - 1)
+    assert ev.curated_view()["last"] == rows[0]
+    monkeypatch.setattr(te.time, "time", lambda: 1000.0 + te.LAST_SHOWN_S + 1)
+    assert ev.curated_view()["last"] is None
+    rows[0] = {"id": "j2", "kind": te.KIND_GET, "status": "running", "resolved": None}
+    assert ev.curated_view()["last"] == rows[0]
+
+
+def test_curated_view_keeps_two_quants_of_one_repo_apart():
+    entries = [{"id": "qwen3.5-9b@q4_k_m", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]},
+               {"id": "qwen3.5-9b@q6_k", "provider": "lms", "status": {"value": "unloaded"}, "hosts": [], "catalog_hosts": ["mac"]}]
+    ev, _svc = _evaluator([], entries=entries)
+    rows = {m["key"]: m for m in ev.curated_view()["models"]}
+    assert rows["qwen35-9b-q4"]["present"] and rows["qwen35-9b-q4"]["loaded"]
+    assert rows["qwen35-9b-q6"]["present"] and not rows["qwen35-9b-q6"]["loaded"]
+    ev, _svc = _evaluator([], entries=entries[:1])
+    rows = {m["key"]: m for m in ev.curated_view()["models"]}
+    assert rows["qwen35-9b-q4"]["present"] and not rows["qwen35-9b-q6"]["present"] and not rows["qwen35-9b-q6"]["loaded"]
 
 
 # ── routes ──

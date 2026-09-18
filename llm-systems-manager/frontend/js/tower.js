@@ -344,7 +344,7 @@
   }
   function questionAnswers(a) {
     const sel = _qSel[a.id] || {}, other = _qOther[a.id] || {};
-    return questionList(a).map((q, i) => sel[i] === OTHER ? String(other[i] || '').trim() : (sel[i] == null ? '' : String(sel[i])));
+    return questionList(a).map((q, i) => TW.qAnswer(q, sel[i], other[i]));
   }
   function questionHtml(a) {
     const qs = questionList(a), id = TW.esc(a.id), first = (qs[0] && qs[0].question) || '';
@@ -354,16 +354,19 @@
       const sel = _qSel[a.id] || {}, other = _qOther[a.id] || {}, answers = questionAnswers(a);
       const cur = Math.min(_qTab[a.id] || 0, qs.length - 1), q = qs[cur];
       const tabs = qs.length > 1 ? '<div class="qtabs">' + qs.map((x, i) =>
-        `<button type="button" class="qtab${i === cur ? ' on' : ''}${answers[i] ? ' done' : ''}" data-qtab="${id}" data-i="${i}">${TW.esc(x.label || `Question ${i + 1}`)}</button>`).join('') + '</div>' : '';
+        `<button type="button" class="qtab${i === cur ? ' on' : ''}${TW.qAnswered(answers[i]) ? ' done' : ''}" data-qtab="${id}" data-i="${i}">${TW.esc(x.label || `Question ${i + 1}`)}</button>`).join('') + '</div>' : '';
+      const on = v => TW.qPicked(q, sel[cur], v);
+      const box = q.multi ? `<button type="button" class="qbox" data-pick="${id}" data-i="${cur}" data-val="${OTHER}" aria-label="Remove the typed answer"><i></i></button>` : '<i></i>';
       const rows = (q.choices || []).map(c =>
-        `<button type="button" class="choice${sel[cur] === c ? ' on' : ''}" data-pick="${id}" data-i="${cur}" data-val="${TW.esc(c)}" aria-pressed="${sel[cur] === c}"><i></i>${TW.esc(c)}</button>`).join('')
-        + (sel[cur] === OTHER
-          ? `<div class="choice other on"><i></i><input type="text" data-other-input="${id}" data-i="${cur}" maxlength="500" placeholder="Type your answer" aria-label="Your answer" value="${TW.esc(other[cur] || '')}"></div>`
+        `<button type="button" class="choice${on(c) ? ' on' : ''}" data-pick="${id}" data-i="${cur}" data-val="${TW.esc(c)}" aria-pressed="${on(c)}"><i></i>${TW.esc(c)}</button>`).join('')
+        + (on(OTHER)
+          ? `<div class="choice other on">${box}<input type="text" data-other-input="${id}" data-i="${cur}" maxlength="500" placeholder="Type your answer" aria-label="Your answer" value="${TW.esc(other[cur] || '')}"></div>`
           : `<button type="button" class="choice other" data-pick="${id}" data-i="${cur}" data-val="${OTHER}"><i></i>Other…</button>`);
-      const ready = answers.every(Boolean);
+      const hint = q.multi ? '<div class="qhint">Pick one or more</div>' : '';
+      const ready = answers.every(TW.qAnswered);
       const btns = `<div class="btns"><button type="button" class="mcbtn mcbtn-pri mcbtn-sm" data-submit="${id}"${ready ? '' : ' disabled'}>Submit</button>`
         + `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-dismiss="${id}">Dismiss</button></div>`;
-      return `<div class="act q" data-act="${id}"><div class="eyebrow">Tower asks</div>${tabs}<h4>${TW.esc(q.question)}</h4><div class="choices">${rows}</div>${btns}</div>`;
+      return `<div class="act q${q.multi ? ' multi' : ''}" data-act="${id}"><div class="eyebrow">Tower asks</div>${tabs}<h4>${TW.esc(q.question)}</h4>${hint}<div class="choices">${rows}</div>${btns}</div>`;
     }
     const ok = a.status === 'done';
     const more = qs.length > 1 ? ` (+${qs.length - 1} more)` : '';
@@ -377,7 +380,7 @@
     if (!a) return false;
     const answers = questionAnswers(a), cur = _qTab[aid] || 0;
     const order = answers.map((_, i) => (cur + 1 + i) % answers.length);
-    const next = order.find(i => !answers[i]);
+    const next = order.find(i => !TW.qAnswered(answers[i]));
     if (next == null) return false;
     _qTab[aid] = next;
     return true;
@@ -645,7 +648,7 @@
     const a = actionById(aid);
     if (!a) return;
     const answers = questionAnswers(a);
-    if (!answers.every(Boolean)) return;
+    if (!answers.every(TW.qAnswered)) return;
     questionDecision(aid, 'answer', { answers });
   }
   // The Apply click is the approval: the server re-checks role, tier and the alert, runs the steps, audits.
@@ -770,7 +773,7 @@
       const id = inp.dataset.otherInput, i = inp.dataset.i;
       _qOther[id] = { ...(_qOther[id] || {}), [i]: inp.value };
       const btn = body.querySelector(`[data-submit="${id}"]`);
-      if (btn) btn.disabled = !questionAnswers(actionById(id) || { id, card: {} }).every(Boolean);
+      if (btn) btn.disabled = !questionAnswers(actionById(id) || { id, card: {} }).every(TW.qAnswered);
     });
     body?.addEventListener('keydown', ev => {
       const inp = ev.target.closest('[data-other-input]');
@@ -790,9 +793,9 @@
       const dn = ev.target.closest('[data-deny]'); if (dn) { decide(dn.dataset.deny, 'deny'); return; }
       const pk = ev.target.closest('[data-pick]');
       if (pk) {
-        const id = pk.dataset.pick, i = pk.dataset.i;
-        _qSel[id] = { ...(_qSel[id] || {}), [i]: pk.dataset.val };
-        if (pk.dataset.val !== OTHER) advanceQuestion(id);
+        const id = pk.dataset.pick, i = pk.dataset.i, q = questionList(actionById(id) || { card: {} })[i] || {};
+        _qSel[id] = { ...(_qSel[id] || {}), [i]: TW.qToggle(q, (_qSel[id] || {})[i], pk.dataset.val) };
+        if (pk.dataset.val !== OTHER && !q.multi) advanceQuestion(id);
         paintBody(); if (pk.dataset.val === OTHER) otherInput(id, i)?.focus(); return;
       }
       const qt = ev.target.closest('[data-qtab]'); if (qt) { _qTab[qt.dataset.qtab] = Number(qt.dataset.i); paintBody(); return; }

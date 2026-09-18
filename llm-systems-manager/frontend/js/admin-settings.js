@@ -23,6 +23,7 @@
   let _filter = '';
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
   // Conversation eval + curated models (#1047): one read each, polled while a job runs.
+  let _towerGetHidden = '', _towerGetKey = '', _towerGetAgent = '';
   let _towerEval = null, _towerModels = null, _towerExtrasAt = 0, _towerExtrasPoll = 0, _towerActBusy = '';
 
   const esc = s => _esc(String(s ?? ''));
@@ -514,7 +515,7 @@
   function towerLiveHtml(job) {
     const txt = (window.TW && TW.evalProgress) ? TW.evalProgress(job) : 'Running…';
     const cancel = job.can_cancel ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tower-cancel="${esc(job.id)}">Stop</button>` : '';
-    return `<div class="row ev"><span class="d w">Running</span><span class="d line">${esc(job.label || '')} · ${esc(txt)}</span>${cancel}</div>`;
+    return `<div class="row ev st-live" role="status"><span class="d w">Running</span><span class="d line">${esc(job.label || '')} · ${esc(txt)}</span>${cancel}</div>`;
   }
   function towerEvalHtml() {
     const s = _towerState, e = _towerEval;
@@ -540,13 +541,19 @@
       + '<div class="help">Asks the primary model a set of canned questions through Tower and scores each. Fewer calls, corrections and retries mean a stronger model.</div>'
       + `<div class="st-ct">${control}</div></div>`;
   }
-  function towerModelOptions(m) {
+  // The finished download job the operator dismissed from the card, kept per browser.
+  const TOWER_GET_SEEN = 'stTowerGetDismissed';
+  function towerGetDismissed() { try { return localStorage.getItem(TOWER_GET_SEEN) || ''; } catch (_) { return ''; } }
+  function towerGetDismiss(id) { try { localStorage.setItem(TOWER_GET_SEEN, id); } catch (_) { /* private mode */ } _towerGetHidden = id; }
+  // provider: the selected host's server; an entry's score on that server wins over its newest one.
+  function towerModelOptions(m, provider) {
     const tiers = {};
     (m.models || []).forEach(x => { (tiers[x.tier_gb] = tiers[x.tier_gb] || []).push(x); });
     return Object.keys(tiers).map(Number).sort((a, b) => a - b).map(t => `<optgroup label="${t} GB VRAM">` + tiers[t].map(x => {
-      const ev = x.eval ? ` · scored ${x.eval.passed}/${x.eval.total}` : ` · expected ${x.expected}`;
+      const sc = (x.evals && x.evals[provider]) || x.eval;
+      const ev = sc ? ` · scored ${sc.passed}/${sc.total}` : ` · expected ${x.expected}`;
       const have = (x.small ? ' · small' : '') + (x.loaded ? ' · loaded' : x.present ? ' · on host' : '');
-      return `<option value="${esc(x.key)}">${esc(`${x.name} · ${x.quant} · ${x.size_gb} GB${ev}${have}`)}</option>`;
+      return `<option value="${esc(x.key)}"${x.key === _towerGetKey ? ' selected' : ''}>${esc(`${x.name} · ${x.quant} · ${x.size_gb} GB${ev}${have}`)}</option>`;
     }).join('') + '</optgroup>').join('');
   }
   function towerModelsHtml() {
@@ -564,26 +571,33 @@
           + `${_towerActBusy === 'get' ? 'Starting…' : 'Download'}</button></span>`;
       }
       let done = '';
-      if (!live && last && last.status !== 'queued' && last.status !== 'running') {
+      if (!live && last && last.status !== 'queued' && last.status !== 'running' && last.id !== (_towerGetHidden || towerGetDismissed())) {
         const res = last.result || {};
+        const x = ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tower-dismiss="${esc(last.id)}">Dismiss</button>`;
         if (last.status === 'done' && res.model) {
           const listed = _gatewayModels.includes(res.model);
           const pinned = !!(_data && _data.values && _data.values['manager.tower.model'] === res.model);
           const pin = s.admin && listed && !pinned ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerPinBtn" data-model="${esc(res.model)}">Pin as primary</button>` : '';
           const tail = listed ? (pinned ? ' · primary' : '') : ' · no longer on the host';
-          done = `<div class="row ev"><span class="d w">${listed ? 'Ready' : 'Gone'}</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}${tail}</span>${pin}</div>`;
+          done = `<div class="row ev"><span class="d w">${listed ? 'Ready' : 'Gone'}</span><span class="d line">${esc(res.model)} on ${esc(res.host || m.host)} · ${esc(last.message || '')}${tail}</span>${pin}${x}</div>`;
+          const failed = ((res.eval && res.eval.cases) || []).filter(c => !c.passed);
+          if (failed.length) {
+            done = `<div class="st-warnbox" role="status">${done}<div class="d fh">Failed questions</div><ul class="st-fails">`
+              + failed.map(c => `<li><b>${esc(c.title || c.id || '')}</b><span>${esc(c.detail || 'failed')}</span></li>`).join('') + '</ul></div>';
+          }
         } else if (last.status === 'failed' || last.status === 'cancelled') {
           const lms = last.status === 'cancelled' && last.spec && last.spec.provider === 'lms' && !/LM Studio/.test(last.message || '');
           done = `<div class="row ev"><span class="d w">Last try</span><span class="d line">${esc(last.label || '')} · ${esc(last.message || 'failed')}`
-            + `${lms ? ' · LM Studio keeps downloading, cancel it there' : ''}</span></div>`;
+            + `${lms ? ' · LM Studio keeps downloading, cancel it there' : ''}</span>${x}</div>`;
         }
       }
       const hosts = m.hosts || [];
+      const curHost = hosts.find(h => h.agent_id === _towerGetAgent) || hosts[0];
       const hostText = h => h.host + ' · ' + h.label + (h.primary ? ' · primary' : '');
       const hostCtl = hosts.length > 1
-        ? `<select id="stTowerGetHost" class="sel st-input"${busy ? ' disabled' : ''}>${hosts.map(h => `<option value="${esc(h.agent_id)}" data-provider="${esc(h.provider)}">${esc(hostText(h))}</option>`).join('')}</select>`
+        ? `<select id="stTowerGetHost" class="sel st-input"${busy ? ' disabled' : ''}>${hosts.map(h => `<option value="${esc(h.agent_id)}" data-provider="${esc(h.provider)}"${h === curHost ? ' selected' : ''}>${esc(hostText(h))}</option>`).join('')}</select>`
         : `<span class="d line" id="stTowerGetHostOne" data-agent="${esc(hosts[0].agent_id)}" data-provider="${esc(hosts[0].provider)}">${esc(hostText(hosts[0]))}</span>`;
-      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m)}</select></div>`
+      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m, curHost.provider)}</select></div>`
         + `<div class="row ev"><span class="d w">Host</span>${hostCtl}</div>`
         + (live ? towerLiveHtml(live) : '') + done
         + '<div class="note">A Tower model takes VRAM from the models the host serves. On a llama.cpp host the server restarts after the download, which unloads what it was serving.</div>';
@@ -690,6 +704,8 @@
   function onTowerExtrasClick(ev) {
     const cancel = ev.target.closest('[data-tower-cancel]');
     if (cancel) { ev.preventDefault(); towerAct('cancel', `/api/jobs/${encodeURIComponent(cancel.dataset.towerCancel)}/cancel`, { method: 'POST' }); return true; }
+    const dismiss = ev.target.closest('[data-tower-dismiss]');
+    if (dismiss) { ev.preventDefault(); towerGetDismiss(dismiss.dataset.towerDismiss); renderTowerExtras(); return true; }
     if (ev.target.closest('#stTowerEvalBtn')) {
       ev.preventDefault();
       towerAct('eval', '/api/tower/eval', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -942,7 +958,18 @@
     if (e.type === 'chips') paintTools(e);
   }
 
+  // The download card's own selects: remembered across repaints; a host change repaints the scores.
+  function onTowerGetChange(ev) {
+    if (ev.target.id === 'stTowerGetSel') { _towerGetKey = ev.target.value; return true; }
+    if (ev.target.id !== 'stTowerGetHost') return false;
+    _towerGetAgent = ev.target.value;
+    const sel = $('stTowerGetSel');
+    if (sel) _towerGetKey = sel.value;
+    renderTowerExtras();
+    return true;
+  }
   function onInput(ev) {
+    if (ev.type === 'change' && onTowerGetChange(ev)) return;
     const el = ev.target.closest('.st-input');
     if (!el || !_data || el.dataset.type === 'bool') return;
     const entry = _entryByPath.get(el.dataset.path);

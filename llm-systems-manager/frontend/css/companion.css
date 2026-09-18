@@ -413,6 +413,9 @@ body.companion {
 .tw-body .choice.on { border-color: var(--accent); }
 .tw-body .choice i { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); }
 .tw-body .choice.on i { border-color: var(--accent); background: var(--accent); }
+.tw-body .act.multi .choice i { border-radius: 4px; }
+.tw-body .choice .qbox { display: flex; padding: 0; border: 0; background: none; }
+.tw-body .qhint { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
 .tw-body .choice input { flex: 1; min-width: 0; background: none; border: none; color: var(--fg); font-size: 14px; outline: none; }
 .tw-ask { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 6px 0 10px; border-top: 1px solid var(--border-soft); background: var(--bg); }
 .tw-ask textarea { flex: 1; min-width: 0; resize: none; max-height: 120px; background: var(--bg-card); color: var(--fg); border: 1px solid var(--border);

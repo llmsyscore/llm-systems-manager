@@ -586,6 +586,40 @@ describe('question cards (#1028)', () => {
     expect(w.document.querySelector('#twBody .caret')).toBeNull();
   });
 
+  test('a multi-select question ticks several rows plus Other and Submit posts the list (#1045)', async () => {
+    const w = await bootAndAsk(ENABLED, 'chart box');
+    w.__sse.onEvent({ ...QUESTION, question: 'Which metric?', choices: ['RAM (%)', 'CPU (%)', 'GPU temperature (°C)'],
+                      questions: [{ question: 'Which metric?', choices: ['RAM (%)', 'CPU (%)', 'GPU temperature (°C)'], label: '', multi: true }] });
+    const card = w.document.querySelector('#twBody .act.q.multi[data-act="q1"]');
+    expect(card.querySelector('.qhint').textContent).toBe('Pick one or more');
+    expect(submit(w).disabled).toBe(true);
+    pick(w, 'GPU temperature (°C)').click(); await flush();
+    pick(w, 'RAM (%)').click(); await flush();
+    pick(w, 'CPU (%)').click(); await flush();
+    pick(w, 'CPU (%)').click(); await flush();
+    expect(pick(w, 'RAM (%)').getAttribute('aria-pressed')).toBe('true');
+    expect(pick(w, 'CPU (%)').classList.contains('on')).toBe(false);
+    expect(w.__calls).not.toContain('POST /api/tower/actions/q1/answer');
+    pick(w, '__other__').click(); await flush();
+    const inp = w.document.querySelector('#twBody [data-other-input="q1"]');
+    inp.value = ' system/disk_used '; inp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    expect(pick(w, 'RAM (%)').classList.contains('on')).toBe(true);
+    submit(w).click(); await flush();
+    expect(w.__decideBody).toEqual({ answers: [['RAM (%)', 'GPU temperature (°C)', 'system/disk_used']] });
+  });
+
+  test('unticking Other on a multi-select question drops the typed answer', async () => {
+    const w = await bootAndAsk(ENABLED, 'chart box');
+    w.__sse.onEvent({ ...QUESTION, questions: [{ question: 'Which metric?', choices: ['RAM (%)'], label: '', multi: true }] });
+    pick(w, '__other__').click(); await flush();
+    const inp = w.document.querySelector('#twBody [data-other-input="q1"]');
+    inp.value = 'x'; inp.dispatchEvent(new w.Event('input', { bubbles: true }));
+    expect(submit(w).disabled).toBe(false);
+    w.document.querySelector('#twBody .qbox[data-pick="q1"]').click(); await flush();
+    expect(w.document.querySelector('#twBody [data-other-input="q1"]')).toBeNull();
+    expect(submit(w).disabled).toBe(true);
+  });
+
   test('Other opens a text field in the row; typing enables Submit and Enter submits the typed answer', async () => {
     const w = await bootAndAsk(ENABLED, 'restart it');
     w.__sse.onEvent(QUESTION);

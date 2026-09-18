@@ -100,6 +100,7 @@ _CONFIG_FENCES = frozenset({"", "text", "txt", "toml", "ini", "json", "yaml", "y
 _HISTORY_CHARS = 8000
 _APPROVAL_TTL_S = 600.0
 QUESTION_ANSWER_MAX = 500
+QUESTION_PICKS_MAX = 12
 _MODEL_NAME_SAFE = re.compile(r"[^A-Za-z0-9._:/ -]")
 
 
@@ -459,7 +460,11 @@ def _clean_answers(options) -> "list[str]":
     """The answer list from an /answer body: `answers` (one per question) or a single `answer`, whitespace collapsed."""
     o = options if isinstance(options, dict) else {}
     raw = o.get("answers") if isinstance(o.get("answers"), list) else [o.get("answer")]
-    return [" ".join(str(x or "").split())[:QUESTION_ANSWER_MAX] for x in raw[:tower_tools.QUESTIONS_MAX]]
+
+    def one(x) -> str:
+        return " ".join(str(x or "").split())[:QUESTION_ANSWER_MAX]
+    return [list(dict.fromkeys(p for p in map(one, x[:QUESTION_PICKS_MAX]) if p)) if isinstance(x, list) else one(x)
+            for x in raw[:tower_tools.QUESTIONS_MAX]]
 
 
 class Approvals:
@@ -819,12 +824,10 @@ def _run_question(store, approvals: "Approvals", thread_id: str, run_id: str, ac
             store.resolve_action(aid, "denied", actor=decision["actor"], result={"ok": False, "message": msg})
             emit({**ev, "status": "denied", "message": msg, "actor": decision["actor"]})
             return {"ok": False, "message": msg}, False
-        pairs = [{"question": q["question"], "answer": a} for q, a in zip(card["questions"], answers)]
-        text = answers[0] if len(pairs) == 1 else "\n".join(f"{p['question']} {p['answer']}" for p in pairs)
-        result = {"ok": True, "answer": answers[0], "answers": pairs}
+        result, text, shown = tower_tools.question_result(card, answers)
         store.resolve_action(aid, "done", actor=decision["actor"], result={**result, "text": text}, ms=0)
         store.add_message(thread_id, "user", text)
-        emit({**ev, "status": "answered", "answer": text, "answers": pairs, "actor": decision["actor"]})
+        emit({**ev, "status": "answered", "answer": text, "answers": shown, "actor": decision["actor"]})
         return result, True
     finally:
         approvals.forget(aid)
@@ -1847,7 +1850,7 @@ class Runs:
             answers = _clean_answers(options)
             if len(answers) != len((a.get("card") or {}).get("questions") or []) or not all(answers):
                 return None, (400, "every question needs an answer")
-            options = {"answers": answers}
+            options = {"answers": tower_tools.shape_answers(a.get("card") or {}, answers)}
         if decision == "approved":
             allowed = {t.name for t in tower_tools.catalog(self._registry_factory(), self._cfg(), role)}
             if a["tool"] not in allowed:

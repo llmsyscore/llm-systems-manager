@@ -245,6 +245,10 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .act .choice.on { border-color: var(--accent); cursor: default; }
 #towerAside .act .choice.on i { border-color: var(--accent); background: var(--accent); }
 #towerAside .act .choice.other { color: var(--fg-muted); }
+#towerAside .act.multi .choice i { border-radius: 3px; }
+#towerAside .act.multi .choice.on { cursor: pointer; }
+#towerAside .act .choice .qbox { display: flex; padding: 0; border: 0; background: none; cursor: pointer; }
+#towerAside .act .qhint { font-size: 11.5px; color: var(--fg-muted); margin: -2px 0 4px; }
 #towerAside .act .choice input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg); font: 12.5px var(--font-sans); outline: none; padding: 0; }
 #towerAside .act .choice input::placeholder { color: var(--fg-dim); }
 #towerAside .act .qtabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border-strong); margin: 0 0 2px; overflow-x: auto; }

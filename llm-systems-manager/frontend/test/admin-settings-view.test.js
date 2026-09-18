@@ -820,6 +820,58 @@ describe('Tower model check row (#1039)', () => {
     expect([...sel().options].map(o => o.value)).toEqual(['auto', 'qwen3-14b']);
   });
 
+  test('a running evaluation or download is drawn as the live box in its own card and loses it when the job ends (#1084)', async () => {
+    const evalJob = { id: 'j1', kind: 'tower_eval', status: 'running', label: 'Evaluate qwen3-14b', state: { phase: 'eval', case: 2, total: 8, title: 'Timer' }, can_cancel: true };
+    const getJob = { id: 'j2', kind: 'tower_get_model', status: 'running', label: 'Download Tower model · Qwen3 8B', state: { phase: 'download', pct: 40 }, can_cancel: true };
+    const opts = { tower: STATE, towerEval: { ok: true, results: [EVAL], live: evalJob, model: 'qwen3-14b', admin: true }, towerModels: MODELS };
+    const win = await towerCard(opts);
+    expect(win.document.querySelectorAll('#stTowerEval .row.st-live[role="status"]').length).toBe(1);
+    expect(win.document.querySelector('#stTowerGet .row.st-live')).toBeNull();
+    opts.towerEval = { ...opts.towerEval, live: null };
+    opts.towerModels = { ...MODELS, live: getJob };
+    await win.adminSettingsRefreshTower(); await flush();
+    expect(win.document.querySelector('#stTowerEval .row.st-live')).toBeNull();
+    expect(win.document.querySelector('#stTowerGet .row.st-live [data-tower-cancel="j2"]')).not.toBeNull();
+    opts.towerModels = MODELS;
+    await win.adminSettingsRefreshTower(); await flush();
+    expect(win.document.querySelector('#admin-settings .st-live, .st-live')).toBeNull();
+  });
+
+  test('a finished job with failed questions sits in the amber box with their details until dismissed (#1086)', async () => {
+    const cases = [{ id: 'hosts', title: 'Plain read', passed: true, detail: 'ok' }, { id: 'timer', title: 'Timer', passed: false, detail: 'no tool call' },
+                   { id: 'ask', title: 'Ambiguous host', passed: false, detail: 'picked a host <b>without</b> asking' }];
+    const job = { id: 'j9', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 1/3 passed',
+                  result: { model: 'qwen3-14b', host: 'box', pin_offer: true, eval: { passed: 1, total: 3, cases } } };
+    const win = await towerCard({ tower: STATE, towerModels: { ...MODELS, last: job }, gatewayModels: [{ id: 'qwen3-14b' }] });
+    const box = win.document.querySelector('#stTowerGet .st-warnbox');
+    expect(box.querySelector('.row.ev').textContent).toContain('1/3 passed');
+    expect([...box.querySelectorAll('.st-fails li b')].map(e => e.textContent)).toEqual(['Timer', 'Ambiguous host']);
+    expect(box.querySelector('.st-fails li:last-child span').textContent).toBe('picked a host <b>without</b> asking');
+    box.querySelector('[data-tower-dismiss="j9"]').click();
+    expect(win.document.querySelector('#stTowerGet .st-warnbox')).toBeNull();
+    const clean = { ...job, id: 'j10', result: { ...job.result, eval: { passed: 1, total: 1, cases: cases.slice(0, 1) } } };
+    const ok = await towerCard({ tower: STATE, towerModels: { ...MODELS, last: clean }, gatewayModels: [{ id: 'qwen3-14b' }] });
+    expect(ok.document.querySelector('#stTowerGet .st-warnbox')).toBeNull();
+    expect(ok.document.querySelector('#stTowerGet [data-tower-dismiss="j10"]')).not.toBeNull();
+  });
+
+  test('the dropdown scores follow the selected host and both selections survive a refresh (#1085)', async () => {
+    const hosts = [{ provider: 'llama', label: 'llama.cpp', host: 'box', agent_id: 'a1', primary: true }, { provider: 'lms', label: 'LM Studio', host: 'mac', agent_id: 'a2', primary: true }];
+    const models = MODELS.models.map(x => x.key === 'qwen3-14b-q4' ? { ...x, eval: { passed: 7, total: 8 }, evals: { llama: { passed: 8, total: 8 }, lms: { passed: 7, total: 8 } } } : x);
+    const win = await towerCard({ tower: STATE, towerModels: { ...MODELS, hosts, models } });
+    const opt = () => win.document.querySelector('#stTowerGetSel option[value="qwen3-14b-q4"]').textContent;
+    expect(opt()).toContain('scored 8/8');
+    const model = win.document.getElementById('stTowerGetSel');
+    model.value = 'qwen3-14b-q4'; model.dispatchEvent(new win.Event('change', { bubbles: true }));
+    const host = win.document.getElementById('stTowerGetHost');
+    host.value = 'a2'; host.dispatchEvent(new win.Event('change', { bubbles: true }));
+    expect(opt()).toContain('scored 7/8');
+    await win.adminSettingsRefreshTower(); await flush();
+    expect(win.document.getElementById('stTowerGetHost').value).toBe('a2');
+    expect(win.document.getElementById('stTowerGetSel').value).toBe('qwen3-14b-q4');
+    expect(opt()).toContain('scored 7/8');
+  });
+
   test('Pin as primary only for a model the gateway still lists and that is not the primary yet; Stop on LM Studio says so (#1047)', async () => {
     const last = { id: 'j8', kind: 'tower_get_model', status: 'done', message: 'Qwen3 8B ready · 8/8 passed',
                    result: { model: 'Qwen/Qwen3-8B-GGUF:Q4_K_M', host: 'box', pin_offer: true } };
@@ -835,6 +887,15 @@ describe('Tower model check row (#1039)', () => {
     await flush();
     expect(pinned.document.getElementById('stTowerPinBtn')).toBeNull();
     expect(pinned.document.getElementById('stTowerGet').textContent).toContain('· primary');
+    // Dismiss hides that job's row, and it stays hidden on the next load in the same browser (#1083)
+    const shown = await towerCard({ tower: STATE, towerModels: { ...MODELS, last }, gatewayModels: [{ id: 'Qwen/Qwen3-8B-GGUF:Q4_K_M' }] });
+    expect(shown.document.getElementById('stTowerPinBtn')).not.toBeNull();
+    shown.document.querySelector('#stTowerGet [data-tower-dismiss="j8"]').click();
+    expect(shown.document.getElementById('stTowerPinBtn')).toBeNull();
+    expect(shown.document.getElementById('stTowerGet').textContent).not.toContain('Qwen3 8B ready');
+    expect(shown.localStorage.getItem('stTowerGetDismissed')).toBe('j8');
+    await shown.adminSettingsRefreshTower(); await flush();
+    expect(shown.document.querySelector('#stTowerGet [data-tower-dismiss]')).toBeNull();
     const stopped = { id: 'j7', kind: 'tower_get_model', status: 'cancelled', label: 'Download Tower model · Gemma 4 12B',
                       message: 'cancelled by the operator', spec: { provider: 'lms' } };
     const lms = await towerCard({ tower: STATE, towerModels: { ...MODELS, last: stopped } });
