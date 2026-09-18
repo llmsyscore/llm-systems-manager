@@ -1,6 +1,5 @@
 """#1075: the self-monitor's cardinality probe must not scan a day of points every cycle."""
 import asyncio
-import contextlib
 
 import pytest
 
@@ -136,8 +135,7 @@ def test_loop_runs_the_probe_off_the_event_loop(monkeypatch):
             if "bytes_on_disk" in seen.get("metrics", []):
                 break
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(go())
     assert seen["thread"] is False
