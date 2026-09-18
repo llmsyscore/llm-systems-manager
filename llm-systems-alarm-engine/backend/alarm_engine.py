@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.17-3"
+__version__ = "v2026.09.18-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -593,14 +593,8 @@ async def _on_startup() -> None:
         ))
 
 
-    # 6b. InfluxDB self-monitor — writes ping/query/cardinality/bytes
-    # metrics back into InfluxDB so the alarm engine can alert on its
-    # own backing store. Skipped when db_client failed to initialise
-    # (cache-only mode) since there is nowhere to write. The first cycle
-    # runs 3 cardinality Flux queries + a write probe + bytes-on-disk
-    # walk — ~10-20 s of synchronous work — so it's delayed 30 s past
-    # startup to keep the event loop free for the manager's warm-up
-    # fan-out (which only has ~45 s of retry runway).
+    # 6b. InfluxDB self-monitor: ping/query/write/cardinality/bytes metrics written
+    # back as source=influxdb; skipped in cache-only mode, first cycle delayed 30 s.
     if db_client is not None and metric_repo is not None:
         _spawn_background(_influx_monitor.run(
             db_client, metric_repo,
