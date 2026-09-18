@@ -670,13 +670,14 @@
     const provider = hostRec.provider || '';
     const host = hostRec.host || '';
     const modelRec = (m.models || []).find(x => x.key === key);
-    const name = modelRec ? modelRec.name : key;
+    if (!modelRec) return;
+    const name = modelRec.name;
     if (typeof _themedConfirm === 'function') {
       const restart = provider === 'llama'
         ? `<p><b>llama.cpp on ${esc(host)} restarts after the download.</b> Models it is serving are unloaded until they are loaded again. Stop removes a half-finished download from the host.</p>`
         : '<p>Stop ends the job here only: LM Studio keeps downloading until you cancel it there.</p>';
       const ok = await _themedConfirm({
-        title: `Download ${name} to ${host}?`,
+        title: `Download ${esc(name)} to ${esc(host)}?`,
         bodyHtml: `<p>The download runs on the host, then the model is loaded, checked and scored. It takes VRAM from what the host serves.</p>${restart}`,
         confirmLabel: 'Download', cancelLabel: 'Cancel', danger: provider === 'llama',
       });
