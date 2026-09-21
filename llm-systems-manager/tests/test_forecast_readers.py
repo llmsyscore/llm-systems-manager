@@ -107,8 +107,8 @@ def test_names_retries_a_smaller_limit_on_a_refusal(dbs):
 
 def test_names_does_not_retry_a_server_error(dbs):
     seen = []
-    assert _build(dbs, ae_get=lambda p: seen.append(p) or _Resp(ok=False))["names"]("forecast", "box-a") == []
-    assert len(seen) == 1
+    names = _build(dbs, ae_get=lambda p: seen.append(p) or _Resp(ok=False))["names"]("forecast", "box-a")
+    assert names == [] and len(seen) == 1
 
 
 def test_series_returns_empty_when_the_alarm_engine_is_unreachable(dbs):

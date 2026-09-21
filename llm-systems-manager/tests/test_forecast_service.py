@@ -120,8 +120,9 @@ def test_merge_new_then_silent_then_bucket_cross_then_severity_rise(fx):
     assert rep is True
     _, rep = fx.f.merge({**row, "predicted_at": fx.now() + 6 * DAY, "severity": "warning"}, "code")
     assert rep is True
-    assert len(fx.store.open()) == 1 and fx.store.open()[0]["rate"] == 19.0
-    assert fx.store.open()[0]["severity"] == "warning" and fx.store.open()[0]["verified"] == "code"
+    rows = fx.store.open()
+    assert len(rows) == 1 and rows[0]["rate"] == 19.0
+    assert rows[0]["severity"] == "warning" and rows[0]["verified"] == "code"
 
 
 def test_clear_after_two_clean_runs_closes_alert():
@@ -767,8 +768,9 @@ def test_init_tables_migrates_an_older_database_and_repeats_cleanly():
     forecast.init_tables(conn)
     forecast.init_tables(conn)                                       # a second boot must be a no-op
     store = forecast.Store(lambda: conn)
-    assert store.open()[0]["gate_streak"] == 0 and store.open()[0]["clean_runs"] == 0
-    assert store.open()[0]["alert_severity"] is None
+    first = store.open()[0]
+    assert first["gate_streak"] == 0 and first["clean_runs"] == 0
+    assert first["alert_severity"] is None
     assert "alert_severity" in {r[1] for r in conn.execute("PRAGMA table_info(forecast_findings)")}
     assert store.recent_runs(5)[0]["tower_calls"] is None
     assert {r[1] for r in conn.execute("PRAGMA table_info(forecast_runs)")} >= set(forecast.Store.RUN_KEYS)

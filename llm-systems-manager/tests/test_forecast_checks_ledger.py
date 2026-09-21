@@ -510,6 +510,7 @@ def test_ledger_checks_survive_malformed_readers():
                 latest_agent_version=lambda: None, price_kwh=lambda: None)
     for check_id in LEDGER_IDS:
         try:
-            assert isinstance(run(check_id, junk), list)
+            out = run(check_id, junk)
         except fc.Collecting:
-            pass
+            continue
+        assert isinstance(out, list)
