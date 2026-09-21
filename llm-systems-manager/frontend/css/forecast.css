@@ -44,6 +44,19 @@
 .fc-cstate.fc-off { color: var(--fg-dim); }
 
 .fc-runbar { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; padding: 12px 16px; }
+.fc-runbar.fc-running { gap: 12px; background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.fc-pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: fc-pulse 1.4s ease-in-out infinite; }
+.fc-live-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.fc-live-text b { font-weight: 600; font-size: 13px; color: var(--fg); }
+.fc-live-text span { font-size: 12px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-live-time { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.fc-bar { flex-basis: 100%; height: 4px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.fc-bar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width .6s ease; }
+.fc-bar-wait i { width: 30%; animation: fc-slide 1.3s ease-in-out infinite; }
+.fc-done { font-size: 12.5px; color: var(--ok); white-space: nowrap; }
+@keyframes fc-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
+@keyframes fc-slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .fc-pulse, .fc-bar-wait i { animation: none; } .fc-bar i { transition: none; } }
 .fc-kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .fc-kv .k { font-size: 11px; color: var(--fg-dim); }
 .fc-kv .v { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg); }
@@ -168,6 +181,7 @@
 .fc-facts dt { font-size: 12px; color: var(--fg-dim); }
 .fc-facts dd { margin: 0; font-family: var(--font-mono); font-size: 12.5px; }
 .fc-cause b { font-weight: 600; }
+.fc-gone { font-size: 12px; }
 .fc-action { border-left: 2px solid var(--accent); padding: 1px 0 1px 11px; overflow-wrap: anywhere; }
 .fc-action .k { font-size: 11px; color: var(--fg-dim); }
 .fc-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

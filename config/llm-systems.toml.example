@@ -198,8 +198,7 @@ alerts = false               # also raise alarm-engine alerts
 alert_min_severity = "warning"
 tower_effort = "auto"        # auto | off | light | standard | full: how much of a forecast Tower does
                              # auto picks the level from the Tower model's evaluation, size, tool check and speed
-tower_history = false        # Full effort only: keep each run's Tower investigation threads
-                             # (they are not yet viewable in the Tower drawer)
+tower_history = true         # Full effort only: keep each check's Tower conversation so an admin can open it from the finding
 digest_day = "mon"
 digest_at = "08:00"          # local time of the weekly roll-up (HH:MM)
 

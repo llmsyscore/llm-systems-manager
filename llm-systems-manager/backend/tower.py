@@ -99,6 +99,7 @@ _CONFIG_FENCES = frozenset({"", "text", "txt", "toml", "ini", "json", "yaml", "y
                             "properties", "log", "diff", "csv", "tsv", "markdown", "md"})
 _HISTORY_CHARS = 8000
 _APPROVAL_TTL_S = 600.0
+FORECAST_ACTOR = "tower:forecast"   # owner of the conversations a Forecast run holds
 QUESTION_ANSWER_MAX = 500
 QUESTION_PICKS_MAX = 12
 _MODEL_NAME_SAFE = re.compile(r"[^A-Za-z0-9._:/ -]")
@@ -2002,6 +2003,13 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
             return owner
         return u
 
+    def _reader(tid: str) -> "tuple[str, bool]":
+        """The user a thread is read as, and whether it is read-only: an admin may read Forecast's conversations."""
+        owner = runs.store.thread_user(tid)
+        if owner == FORECAST_ACTOR and auth.effective_role() == "admin":
+            return owner, True
+        return _owner(tid), False
+
     def _fallback_view(cfg, m: dict, how: str) -> Optional[dict]:
         """The fallback model with its check (ensured or run now) when the toggle is on and an alternate is resident."""
         if not m or not bool(getattr(cfg, "fallback", False)):
@@ -2061,11 +2069,12 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
     def tower_thread_get(tid):
         deny = _gate()
         if deny: return deny
-        t = runs.store.get_thread(_owner(tid), tid)
+        owner, read_only = _reader(tid)
+        t = runs.store.get_thread(owner, tid)
         if not t:
             return jsonify({"ok": False, "error": "unknown thread"}), 404
-        return jsonify({"ok": True, "thread": t, "messages": runs.store.messages(tid),
-                        "active_run": runs.active_run_id(_user(), tid)})
+        return jsonify({"ok": True, "thread": t, "messages": runs.store.messages(tid), "read_only": read_only,
+                        "active_run": None if read_only else runs.active_run_id(_user(), tid)})
 
     @app.route("/api/tower/threads/<tid>", methods=["PATCH"])
     def tower_thread_rename(tid):

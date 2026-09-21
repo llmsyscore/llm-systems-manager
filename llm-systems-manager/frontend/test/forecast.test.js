@@ -96,14 +96,56 @@ describe('countLabel', () => {
   it('says all clear on an empty enabled view', () => {
     expect(FC.countLabel({ enabled: true, findings: [] })).toBe('all clear');
   });
-  it('says off when disabled or absent', () => {
+  it('says off when disabled, and nothing at all before the first payload', () => {
     expect(FC.countLabel({ enabled: false, findings: [{}] })).toBe('off');
-    expect(FC.countLabel(null)).toBe('off');
+    expect(FC.countLabel(null)).toBe('');
+    expect(FC.countLabel(undefined)).toBe('');
   });
   it('ignores a findings value that is not a list of rows', () => {
     expect(FC.countLabel({ enabled: true, findings: 'oops' })).toBe('all clear');
     expect(FC.countLabel({ enabled: true, findings: [null, 'x', {}] })).toBe('1 ahead');
-    expect(FC.countLabel('oops')).toBe('off');
+    expect(FC.countLabel('oops')).toBe('');
+  });
+});
+
+describe('discardedNote', () => {
+  it('explains a refused digest on the run', () => {
+    expect(FC.discardedNote({ tier: 'standard', digest_discarded: true })).toMatch(/summary of this run.*discarded/);
+    expect(FC.discardedNote({ tier: 'standard', digest_discarded: false })).toBe('');
+    expect(FC.discardedNote(null)).toBe('');
+  });
+  it('explains a refused cause on a finding, unless a cause is shown after all', () => {
+    expect(FC.discardedNote({ tower_note: 'discarded', detail: 'Measured.' })).toMatch(/suggested a cause.*discarded/);
+    expect(FC.discardedNote({ tower_note: 'discarded', detail: 'Measured. Likely cause: nightly pulls land there' })).toBe('');
+    expect(FC.discardedNote({ tower_note: null, detail: 'Measured.' })).toBe('');
+  });
+});
+
+describe('canOpenThread', () => {
+  it('needs an admin and a kept conversation id', () => {
+    expect(FC.canOpenThread({ thread_id: 't1' }, true)).toBe(true);
+    expect(FC.canOpenThread({ thread_id: 't1' }, false)).toBe(false);
+    expect(FC.canOpenThread({ thread_id: null }, true)).toBe(false);
+    expect(FC.canOpenThread({ thread_id: '' }, true)).toBe(false);
+    expect(FC.canOpenThread(null, true)).toBe(false);
+  });
+});
+
+describe('seriesFresh', () => {
+  it('is true only inside the time to live', () => {
+    expect(FC.seriesFresh(1000, 1000 + 299999, 300000)).toBe(true);
+    expect(FC.seriesFresh(1000, 1000 + 300000, 300000)).toBe(false);
+    expect(FC.seriesFresh(undefined, 5000, 300000)).toBe(false);
+    expect(FC.seriesFresh(9000, 5000, 300000)).toBe(false);
+  });
+});
+
+describe('facts for the weekly digest', () => {
+  it('labels the date as the day it was counted', () => {
+    const at = Date.UTC(2026, 8, 21, 12) / 1000;
+    const keys = f => FC.facts(f, at * 1000).map(p => p[0]);
+    expect(keys({ check: 'weekly_digest', since: at, summary: 's' })).toContain('Counted');
+    expect(keys({ check: 'disk_fill', since: at, summary: 's' })).toContain('Since');
   });
 });
 
@@ -519,3 +561,39 @@ describe('live API sample', () => {
     expect(FC.fitPoints(ROW.graph, ROW.graph.end * 1000)).toEqual([]);
   });
 });
+
+describe('elapsedLabel', () => {
+  it('formats minutes and seconds', () => {
+    expect(FC.elapsedLabel(0)).toBe('0:00');
+    expect(FC.elapsedLabel(23.9)).toBe('0:23');
+    expect(FC.elapsedLabel(725)).toBe('12:05');
+    expect(FC.elapsedLabel(-1)).toBe('');
+    expect(FC.elapsedLabel('x')).toBe('');
+  });
+});
+
+describe('runStatus', () => {
+  it('is null when nothing is running', () => {
+    expect(FC.runStatus(null)).toBeNull();
+    expect(FC.runStatus(undefined)).toBeNull();
+  });
+  it('shows a queued run with a bar of unknown length', () => {
+    expect(FC.runStatus({ state: 'queued' })).toEqual({ title: 'Starting…', sub: 'Waiting for the run to begin', pct: null });
+  });
+  it('names the check in hand and fills the bar by checks done', () => {
+    const st = FC.runStatus({ state: 'running', stage: 'checks', check: 'Thermal trend', done: 6, total: 16 });
+    expect(st).toEqual({ title: 'Running checks', sub: 'Check 7 of 16 · Thermal trend', pct: 34 });
+    expect(FC.runStatus({ state: 'running', stage: 'checks', check: null, done: 0, total: 0 }))
+      .toEqual({ title: 'Running checks', sub: '', pct: null });
+  });
+  it('says when Tower is at work and when the run is wrapping up', () => {
+    expect(FC.runStatus({ state: 'running', stage: 'investigating', check: 'Disk fill', done: 0, total: 4 }))
+      .toEqual({ title: 'Tower is looking into Disk fill', sub: 'Check 1 of 4', pct: 0 });
+    expect(FC.runStatus({ state: 'running', stage: 'closing', done: 4, total: 4 }).pct).toBe(92);
+    expect(FC.runStatus({ state: 'running', stage: 'analysis', done: 4, total: 4 }).title).toBe('Tower is writing its analysis');
+  });
+  it('never counts past the last check', () => {
+    expect(FC.runStatus({ state: 'running', stage: 'checks', check: 'X', done: 9, total: 4 }).sub).toBe('Check 4 of 4 · X');
+  });
+});
+

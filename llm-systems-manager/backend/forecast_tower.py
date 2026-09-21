@@ -19,7 +19,7 @@ from tower_watch import _ReadOnly, _asleep
 
 log = logging.getLogger("llm-systems-manager.forecast")
 
-ACTOR = "tower:forecast"
+ACTOR = tower.FORECAST_ACTOR
 BUDGET_S = 90.0
 MAX_CALLS = 8
 TOL_DATE = 0.25
@@ -31,6 +31,7 @@ SUBJECT_MAX = 60
 PARSE_MAX_CHARS = 200_000
 PARSE_MAX_DEPTH = 32
 DIFFERED = "Tower's estimate differed and was not used."
+DISCARDED = "discarded"
 _ROW_KEYS = ("check", "host", "subject", "severity", "summary", "detail", "since", "predicted_at", "rate", "unit",
              "confidence", "suggested_action", "graph")
 _TEXT_KEYS = ("summary", "detail", "suggested_action")
@@ -52,6 +53,7 @@ SPEED_MIN, SPEED_MAX = 0.1, 500.0
 DIRECT_READ_MAX = 30
 REASONING_HEADROOM = 1024
 _KWARGS_PROVIDERS = ("llama", "vllm")
+_MODEL_EVENTS = ("delta", "tool")
 _SHAPE = ('{"host": "...", "subject": "...", "cause": "...", "since": "YYYY-MM-DD", '
           '"predicted_at": "YYYY-MM-DD" or null, "rate": number or null, "unit": "..."}')
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n\s*```", re.S)
@@ -243,9 +245,12 @@ def wording(code: dict, m: dict) -> dict:
 
 
 def _merged(code: dict, m: dict) -> "tuple[dict, bool]":
-    """The measured row with Tower's wording where it passed the guard, and whether any was taken."""
+    """The measured row with Tower's wording where it passed the guard, and whether any was taken;
+    a cause that was written but refused leaves its mark in tower_note."""
     add = wording(code, m)
-    return ({**code, **add}, True) if add else (dict(code), False)
+    if add:
+        return {**code, **add}, True
+    return ({**code, "tower_note": DISCARDED} if str(m.get("cause") or "").strip() else dict(code)), False
 
 
 def _differed(code: dict) -> dict:
@@ -497,6 +502,19 @@ def cause_texts(obj: dict, by_id: "dict[str, dict]") -> "dict[str, dict]":
     return rows
 
 
+def refused_ids(obj: dict, by_id: "dict[str, dict]", accepted: "dict[str, dict]") -> "list[str]":
+    """Finding ids whose answer carried a cause that the guard refused."""
+    out: "list[str]" = []
+    for item in list((obj or {}).get("findings") or [])[:MODEL_MAX]:
+        if not isinstance(item, dict) or not str(item.get("cause") or "").strip():
+            continue
+        code = by_id.get(str(item.get("id") or ""))
+        fid = None if code is None or code.get("id") is None else str(code["id"])
+        if fid is not None and fid not in accepted and fid not in out:
+            out.append(fid)
+    return out
+
+
 def prompt(check, window_days: int, code_findings: "Optional[list[dict]]" = None, *,
            measured: "Optional[list[dict]]" = None, tz_offset_s: float = 0.0) -> str:
     """The Forecast question for one check; the retry appends the measured figures."""
@@ -536,6 +554,7 @@ class TowerPass:
         self._profile = fe.PROFILES["off"]
         self._speeds: "list[float]" = []
         self._timed_out, self._calls = False, 0
+        self._digest_discarded = False
 
     def _tcfg(self):
         return _live(self._tower_cfg)
@@ -567,8 +586,12 @@ class TowerPass:
         return self._model() is not None
 
     def model_calls(self) -> int:
-        """How many model calls this run made: the digest, each cause batch and each conversation turn."""
+        """How many of this run's calls reached the model: the digest, each cause batch and each conversation turn."""
         return self._calls
+
+    def digest_discarded(self) -> bool:
+        """True when Tower wrote a digest this run and the guard refused it."""
+        return self._digest_discarded
 
     def measured_tok_s(self) -> Optional[float]:
         """The run's own generation speed, averaged over its direct calls; None when nothing was measured."""
@@ -582,6 +605,7 @@ class TowerPass:
         the run's profile is pinned for every call in it."""
         self._run_keys = set()
         self._speeds, self._timed_out, self._calls = [], False, 0
+        self._digest_discarded = False
         self._profile = profile if isinstance(profile, fe.Profile) else fe.PROFILES["off"]
 
     def start_thread(self, label: str) -> Optional[str]:
@@ -592,14 +616,17 @@ class TowerPass:
             log.debug("forecast thread create failed: %s", type(e).__name__)
             return None
 
-    def end_thread(self, tid) -> None:
-        """Drops the pass's thread unless Forecast keeps its Tower history."""
-        if not tid or bool(getattr(self._fcfg(), "tower_history", False)):
-            return
+    def end_thread(self, tid) -> bool:
+        """Drops the pass's thread unless Forecast keeps its Tower history; True when the thread is kept."""
+        if not tid:
+            return False
+        if bool(getattr(self._fcfg(), "tower_history", False)):
+            return True
         try:
             self._store.delete_thread(ACTOR, str(tid))
         except Exception as e:  # noqa: BLE001 — an undeleted thread is swept with the rest
             log.debug("forecast thread delete failed: %s", type(e).__name__)
+        return False
 
     def _echo_key(self, row: dict) -> tuple:
         host = str(self._alias(str(row.get("host") or "")) or "").strip().lower()
@@ -649,16 +676,18 @@ class TowerPass:
         if text is None:
             return None
         try:
-            out = digest_text(parse_object(text), batch)
+            answer = parse_object(text)
+            out = digest_text(answer, batch)
         except Exception as e:  # noqa: BLE001 — untrusted model text never fails the run
             log.debug("forecast tower digest parse failed: %s", type(e).__name__)
             return None
+        self._digest_discarded = out is None and bool(str((answer or {}).get("digest") or "").strip())
         log.debug("forecast tower digest sent=%d kept=%s", len(payload), bool(out))
         return out
 
     def causes(self, rows: "list[dict]") -> "dict[str, dict]":
-        """A likely cause per finding through direct calls, in batches; {} when the tier has none or nothing was
-        accepted. A failed batch stops the rest."""
+        """A likely cause per finding through direct calls, in batches: {"detail": …} for an accepted cause and
+        {"tower_note": DISCARDED} for a refused one; {} when the tier has none. A failed batch stops the rest."""
         if not self._profile.per_finding_cause or not self.eligible():
             return {}
         ordered = ordered_rows(rows)
@@ -678,8 +707,10 @@ class TowerPass:
             if not isinstance(answer.get("findings"), list):
                 log.debug("forecast tower cause batch %d answered nothing usable; later batches skipped", n + 1)
                 break
-            out.update(cause_texts(answer, by_id))
-        log.debug("forecast tower causes sent=%d kept=%d", len(ordered), len(out))
+            kept = cause_texts(answer, by_id)
+            out.update(kept)
+            out.update({fid: {"tower_note": DISCARDED} for fid in refused_ids(answer, by_id, kept) if fid not in out})
+        log.debug("forecast tower causes sent=%d kept=%d", len(ordered), sum(1 for v in out.values() if "detail" in v))
         return out
 
     def _direct(self, user_text: str) -> Optional[str]:
@@ -705,12 +736,14 @@ class TowerPass:
         t0 = time.monotonic()
         deadline = t0 + float(timeout_s)
         parts: "list[str]" = []
-        tokens, first, thought = None, None, 0
-        self._calls += 1
+        tokens, first, thought, reached = None, None, 0, False
         try:
             gen = self._cs(body, label="forecast", read_timeout=min(DIRECT_READ_MAX, int(timeout_s)))
             with contextlib.closing(gen):
                 for chunk in gen:
+                    if not reached:
+                        reached = True
+                        self._calls += 1
                     delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}) if isinstance(chunk, dict) else {}
                     if first is None and (delta.get("content") or delta.get("reasoning_content")):
                         first = time.monotonic()
@@ -782,7 +815,6 @@ class TowerPass:
         budget = float(profile.timeout_s or BUDGET_S)
         t0 = time.monotonic()
         deadline = t0 + budget
-        self._calls += 1
         try:
             out = tower.run_turn(thread_id=thread_id, user_text=user_text, page={"tab": "forecast", "check": label},
                                  cfg=cfg if cfg is not None else _Capped(self._tcfg(), max_calls=profile.max_tool_calls,
@@ -796,6 +828,8 @@ class TowerPass:
             self._timed_out = self._timed_out or str(getattr(e, "err_type", "")) == "timeout"
             log.warning("forecast tower turn failed check=%s: %s", label, type(e).__name__)
             return None
+        if any(e.get("event") in _MODEL_EVENTS for e in events):
+            self._calls += 1
         err = next((e.get("message") for e in events if e.get("event") == "error"), None)
         if time.monotonic() > deadline or (err and tower._TIMEOUT_MARK in str(err)):
             self._timed_out = True

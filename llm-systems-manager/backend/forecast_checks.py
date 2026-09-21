@@ -121,6 +121,11 @@ def fmt_date(ts: float, tz_offset_s: float = 0) -> str:
     return f"{d.strftime('%b')} {d.day}"
 
 
+def fmt_weekday(ts: float, tz_offset_s: float = 0) -> str:
+    """Local weekday name, e.g. Monday."""
+    return datetime.fromtimestamp(float(ts) + tz_offset_s, tz=timezone.utc).strftime("%A")
+
+
 def _daily_confidence(fit: Optional[fm.Fit]) -> str:
     """Confidence for a fit made over daily buckets, where a window holds far fewer points."""
     return fm.confidence(fit, *DAILY_BANDS)
@@ -477,6 +482,9 @@ def _month_bounds(now: float, tz_offset_s: float) -> "tuple[float, int, int]":
     return start, local.day, calendar.monthrange(local.year, local.month)[1]
 
 
+MONTH_RATE_DAYS = 7.0
+
+
 def _power_cost(d: CheckData) -> "list[Finding]":
     """Energy per 1k tokens drifting up per host, and this month's cost against last month's."""
     month_start, day_of_month, days_in_month = _month_bounds(d.now, d.tz_offset_s)
@@ -505,19 +513,30 @@ def _power_cost(d: CheckData) -> "list[Finding]":
                            since=pts[0][0], rate=last - first, unit="Wh per 1k tokens",
                            confidence=_daily_confidence(fit),
                            suggested_action=f"Check what else runs on {host}, or re-run the benchmark to pick faster settings."))
-    this_month = [r for r in rows if _f(r.get("ts")) >= month_start]
+    before = [r for r in rows if month_start - 30 * DAY <= _f(r.get("ts")) < month_start]
+    known = {r.get("host") for r in before}
+    month_rows = [r for r in rows if _f(r.get("ts")) >= month_start]
+    this_month = [r for r in month_rows if r.get("host") in known]
+    joined = sorted({str(r.get("host")) for r in month_rows if r.get("host") and r.get("host") not in known})
     mtd = sum(_f(r.get("wh")) for r in this_month) / 1000.0
-    prev = sum(_f(r.get("wh")) for r in rows if month_start - 30 * DAY <= _f(r.get("ts")) < month_start) / 1000.0
+    prev = sum(_f(r.get("wh")) for r in before) / 1000.0
     # Projects the month only from at least seven days in and five days of rows.
     if mtd > 0 and prev > 0 and day_of_month >= 7 and _row_span(this_month) >= 5.0:
-        projected = mtd * days_in_month / day_of_month
+        elapsed = max(1.0, (d.now - month_start) / DAY)
+        recent_s = min(MONTH_RATE_DAYS, elapsed) * DAY
+        recent = sum(_f(r.get("wh")) for r in this_month if _f(r.get("ts")) >= d.now - recent_s) / 1000.0
+        projected = mtd + recent / (recent_s / DAY) * max(0.0, days_in_month - elapsed)
         ratio = projected / prev
         if ratio >= 1.25:
             cost, pct = projected * _f(d.price_kwh()), (ratio - 1.0) * 100.0
+            detail = (f"{mtd:.1f} kWh in the first {day_of_month} days, and the last week's daily use for the rest, "
+                      f"puts the month at about {projected:.1f} kWh against {prev:.1f} kWh before it.")
+            if joined:
+                detail += f" Hosts that joined this month are left out: {', '.join(joined[:3])}{' and more' if len(joined) > 3 else ''}."
             out.append(Finding("power_cost", None, "cost", "warning" if ratio >= 1.5 else "info",
                                f"This month's energy cost is heading for ${cost:.2f}, {pct:.0f} % over last month",
-                               detail=f"{mtd:.1f} kWh in the first {day_of_month} days puts the month at about {projected:.1f} kWh against {prev:.1f} kWh before it.",
-                               rate=projected, unit="kWh", suggested_action="Look at which host gained the most, and at idle hours you could sleep through."))
+                               detail=detail, rate=projected, unit="kWh",
+                               suggested_action="Look at which host gained the most, and at idle hours you could sleep through."))
     span = _row_span(rows)
     if not out and span < 7.0:
         raise Collecting(span, 7.0)
@@ -615,6 +634,7 @@ def _model_churn(d: CheckData) -> "list[Finding]":
 ALERT_ROWS_MAX = 10000
 PATTERNS_MAX = 5
 FLAPPING_LINES = 5
+COFIRE_S = 300.0
 _LEVEL_WORDS = ("warning", "critical", "info", "high", "low")
 _TEST_RULE = re.compile(r"\btest", re.I)
 
@@ -622,6 +642,32 @@ _TEST_RULE = re.compile(r"\btest", re.I)
 def _rule_key(rule: str) -> str:
     """Rule name without its severity words, so two thresholds on one metric read alike."""
     return " ".join(w for w in str(rule or "").lower().split() if w not in _LEVEL_WORDS)
+
+
+def _per_host(ranked, host_of, cap: int = PATTERNS_MAX) -> list:
+    """The first `cap` ranked items of every host, in rank order."""
+    taken: "dict[str, int]" = {}
+    out = []
+    for item in ranked:
+        host = str(host_of(item) or "")
+        if taken.get(host, 0) < cap:
+            taken[host] = taken.get(host, 0) + 1
+            out.append(item)
+    return out
+
+
+def _cofire_candidates(rules: "dict[str, list[float]]", within_s: float = COFIRE_S) -> "list[tuple[str, str]]":
+    """Sorted rule pairs with at least one alert within `within_s` of each other, found through time buckets."""
+    index: "dict[int, set]" = {}
+    for rule, times in rules.items():
+        for t in times:
+            index.setdefault(int(t // within_s), set()).add(rule)
+    pairs: set = set()
+    for k, here in index.items():
+        near = here | index.get(k + 1, set())
+        for a in here:
+            pairs.update((a, b) if a < b else (b, a) for b in near if b != a)
+    return sorted(pairs)
 
 
 def _alarm_patterns(d: CheckData) -> "list[Finding]":
@@ -650,18 +696,18 @@ def _alarm_patterns(d: CheckData) -> "list[Finding]":
         lives = [s for s in lives if s >= 0]
         if len(lives) >= 5 and _median(lives) < 300.0:
             flapping.setdefault(host, []).append((-len(lives), rule, len(lives), created[0]))
-    for _, _, rule, host, hour, count, first in sorted(periodic)[:PATTERNS_MAX]:
+    for _, _, rule, host, hour, count, first in _per_host(sorted(periodic), lambda t: t[3]):
         out.append(Finding("alarm_patterns", host or None, f"periodic:{rule}", "info",
                            f"“{rule}” fires around {hour:02d}:00 most days",
                            detail=f"{count} alerts, nearly all in the same hour of the day.",
                            since=first, suggested_action=f"Look for a job or backup that runs around {hour:02d}:00."))
     for host, items in sorted(flapping.items()):
         items.sort()
-        where = host or "this host"
+        where = f" on {host}" if host else ""
         top_rule, top_count = items[0][1], items[0][2]
         n = len(items)
-        summary = (f"“{top_rule}” on {where} clears itself within minutes — {top_count} times" if n == 1
-                   else f"{n} alert rules on {where} clear themselves within minutes — most often “{top_rule}” ({top_count} times)")
+        summary = (f"“{top_rule}”{where} clears itself within minutes — {top_count} times" if n == 1
+                   else f"{n} alert rules{where} clear themselves within minutes — most often “{top_rule}” ({top_count} times)")
         lines = [f"“{rule}” × {count}" for _, rule, count, _ in items[:FLAPPING_LINES]]
         if n > FLAPPING_LINES:
             lines.append(f"and {n - FLAPPING_LINES} more")
@@ -676,16 +722,12 @@ def _alarm_patterns(d: CheckData) -> "list[Finding]":
     for host, rules in sorted(by_host.items()):
         if not host:
             continue
-        names = sorted(rules)
-        for i, a in enumerate(names):
-            for b in names[i + 1:]:
-                if len(rules[a]) < 5 or len(rules[b]) < 5:
-                    continue
-                if _rule_key(a) == _rule_key(b) or (metrics.get((a, host), set()) & metrics.get((b, host), set())):
-                    continue
-                share = min(fm.cofire(rules[a], rules[b]), fm.cofire(rules[b], rules[a]))
-                if share >= 0.8:
-                    pairs.append((-share, host, a, b))
+        for a, b in _cofire_candidates({r: t for r, t in rules.items() if len(t) >= 5}):
+            if _rule_key(a) == _rule_key(b) or (metrics.get((a, host), set()) & metrics.get((b, host), set())):
+                continue
+            share = min(fm.cofire(rules[a], rules[b]), fm.cofire(rules[b], rules[a]))
+            if share >= 0.8:
+                pairs.append((-share, host, a, b))
         stamps = [t for times in rules.values() for t in times]
         this_week = sum(1 for t in stamps if t >= d.now - 7 * DAY)
         last_week = sum(1 for t in stamps if d.now - 14 * DAY <= t < d.now - 7 * DAY)
@@ -695,7 +737,7 @@ def _alarm_patterns(d: CheckData) -> "list[Finding]":
                                detail=f"{this_week} alerts in the last seven days against {last_week} the week before.",
                                since=d.now - 14 * DAY, rate=float(this_week), unit="alerts per week",
                                suggested_action=f"Look at what changed on {host} this week."))
-    for _, host, a, b in sorted(pairs)[:PATTERNS_MAX]:
+    for _, host, a, b in _per_host(sorted(pairs), lambda t: t[1]):
         times = by_host[host]
         out.append(Finding("alarm_patterns", host or None, f"cofire:{a}+{b}", "info",
                            f"“{a}” and “{b}” always fire together",
@@ -875,8 +917,8 @@ def _bench_outcomes(d: CheckData) -> "list[Finding]":
         if r.get("ok") and r.get("accept_rate") is not None and r.get("host") and r.get("model"):
             runs.setdefault((r["host"], r["model"]), []).append((_f(r.get("ts")), _f(r.get("accept_rate"))))
     for r in _rows(d.report_cards()):
-        if r.get("score") is not None and r.get("host") and r.get("model"):
-            cards.setdefault((r["host"], r["model"]), []).append((_f(r.get("ts")), _f(r.get("score"))))
+        if r.get("tok_s") is not None and r.get("host") and r.get("model"):
+            cards.setdefault((r["host"], r["model"]), []).append((_f(r.get("ts")), _f(r.get("tok_s"))))
     for (host, model), items in sorted(runs.items()):
         if len(items) < 3:
             continue
@@ -994,8 +1036,9 @@ def _weekly_digest(d: CheckData) -> "list[Finding]":
                else f"{count} thing{' needs' if count == 1 else 's need'} attention this week")
     if notes:
         summary += f" — plus {notes} note{'' if notes == 1 else 's'}"
+    summary += f" (counted {fmt_weekday(d.now, d.tz_offset_s)})"
     return [Finding("weekly_digest", None, f"{local[0]}-W{local[1]:02d}", "info", summary,
-                    detail="\n".join(lines), confidence="high",
+                    detail="\n".join(lines), since=d.now, confidence="high",
                     suggested_action="Open the Forecast tab for the full list." if rows else "")]
 
 

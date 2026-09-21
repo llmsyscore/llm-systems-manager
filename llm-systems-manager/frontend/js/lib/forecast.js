@@ -74,9 +74,10 @@ function shortDigest(text, max) {
   return (cut.includes(' ') ? cut.slice(0, cut.lastIndexOf(' ')) : cut) + '…';
 }
 
-// Header count for the Overall card and the sub-tab.
+// Header count of the Overall strip; blank until the first payload arrives.
 function countLabel(view) {
-  const v = isObj(view) ? view : {};
+  if (!isObj(view)) return '';
+  const v = view;
   if (!v.enabled) return 'off';
   const n = list(v.findings).filter(isObj).length;
   return n ? n + ' ahead' : 'all clear';
@@ -296,6 +297,31 @@ function splitCause(detail) {
   return { detail: text.slice(0, at).trim(), cause: cause || null };
 }
 
+// Minutes and seconds of a run in flight, e.g. 0:23 or 12:05.
+function elapsedLabel(seconds) {
+  const n = Number(seconds);
+  if (!Number.isFinite(n) || n < 0) return '';
+  const s = Math.floor(n);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+// What the run strip says while a run is queued or in flight: title, sub-line and bar fill (null = unknown length).
+function runStatus(run) {
+  const r = isObj(run) ? run : null;
+  if (!r) return null;
+  if (r.state === 'queued') return { title: 'Starting…', sub: 'Waiting for the run to begin', pct: null };
+  const total = Math.max(0, Number(r.total) || 0);
+  const done = Math.min(total, Math.max(0, Number(r.done) || 0));
+  const step = total ? 'Check ' + Math.min(total, done + 1) + ' of ' + total : '';
+  const checks = total ? Math.round(done / total * 90) : null;
+  if (r.stage === 'analysis') return { title: 'Tower is writing its analysis', sub: 'All checks are done', pct: 95 };
+  if (r.stage === 'closing') return { title: 'Wrapping up', sub: 'Clearing what no longer applies', pct: 92 };
+  if (r.stage === 'investigating') {
+    return { title: 'Tower is looking into ' + (r.check || 'a check'), sub: step, pct: checks };
+  }
+  return { title: 'Running checks', sub: [step, r.check].filter(Boolean).join(' · '), pct: checks };
+}
+
 function towerLine(tower) {
   if (!tower) return 'Off';
   return tower.reason || 'On';
@@ -306,11 +332,31 @@ function digestNote(tower) {
   return model ? 'written by ' + model + ' · figures always come from code' : '';
 }
 
+const DISCARDED_DIGEST = "Tower wrote a summary of this run, but it did not pass the accuracy check and was discarded.";
+const DISCARDED_CAUSE = "Tower suggested a cause, but it did not pass the accuracy check and was discarded.";
+
+// Why Tower's words are missing: for a run (its digest) or for one finding (its cause).
+function discardedNote(item) {
+  const r = isObj(item) ? item : {};
+  if (r.digest_discarded) return DISCARDED_DIGEST;
+  return r.tower_note === 'discarded' && !splitCause(r.detail).cause ? DISCARDED_CAUSE : '';
+}
+
+// True when an admin can open the Tower conversation kept behind a finding.
+function canOpenThread(f, admin) {
+  return !!admin && isObj(f) && typeof f.thread_id === 'string' && f.thread_id !== '';
+}
+
+// True while a cached series is younger than ttlMs.
+function seriesFresh(atMs, nowMs, ttlMs) {
+  return Number.isFinite(atMs) && nowMs - atMs >= 0 && nowMs - atMs < ttlMs;
+}
+
 // Fact pairs for an expanded finding; a null or unformattable value drops its row.
 function facts(f, nowMs) {
   const r = isObj(f) ? f : {};
   const pairs = [
-    ['Since', dateLabel(r.since)],
+    [r.check === 'weekly_digest' ? 'Counted' : 'Since', dateLabel(r.since)],
     ['Rate', rateLabel(r.rate, r.unit)],
     ['Predicted', whenLabel(r.predicted_at, nowMs) || (r.summary ? 'No date, ongoing' : '')],
     ['Confidence', r.confidence
@@ -368,6 +414,6 @@ function chartScale(points, fit, threshold) {
 
 return { sevLabel, verifiedLabel, sortFindings, topThree, urgent, shortDigest, countLabel, summary, checkState,
          facets, filterFindings, sortBy, paginate, whenText, horizon, groupRows, resolvedTabs, goTarget, askText, askRunText,
-         whenLabel, dateLabel, rateLabel, splitCause, towerLine, digestNote,
+         whenLabel, dateLabel, rateLabel, splitCause, towerLine, digestNote, discardedNote, canOpenThread, seriesFresh, elapsedLabel, runStatus,
          facts, clearedLabel, fitPoints, chartScale, SEV, VERIFIED, MONTHS };
 });

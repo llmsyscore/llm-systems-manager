@@ -3,9 +3,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { srcFile, loadSwitchSubTab } from './helpers/harness.js';
 
-const LIB_V = '2026.09.21-4';
-const CSS_V = '2026.09.21-5';
-const V = '2026.09.21-5';
+const LIB_V = '2026.09.21-6';
+const CSS_V = '2026.09.21-7';
+const V = '2026.09.21-7';
 const indexSrc = srcFile('index.html');
 const bootSrc = srcFile('js/boot.js');
 const swSrc = srcFile('sw.js');
@@ -87,7 +87,7 @@ describe('Forecast assets (#1031)', () => {
   it('bumps the cache-buster of every edited script', () => {
     expect(indexSrc).toContain('/static/js/boot.js?v=2026.09.19-1');
     expect(indexSrc).toContain('/static/js/overall.js?v=2026.09.19-1');
-    expect(indexSrc).toContain('/static/js/foundation.js?v=2026.09.19-1');
+    expect(indexSrc).toContain('/static/js/foundation.js?v=2026.09.21-1');
   });
 
   it('wraps long unbroken tokens instead of overflowing the page', () => {
@@ -125,8 +125,9 @@ describe('js/forecast.js scope and escaping rules (#1031)', () => {
     }
   });
 
-  it('offers no Open conversation button: a forecast thread cannot be opened', () => {
-    expect(pageSrc).not.toContain('Open conversation');
-    expect(pageSrc).not.toContain('towerOpen');
+  it('offers Open conversation only through the read-only drawer entry point, to admins with a kept thread', () => {
+    expect(pageSrc).toContain("FC.canOpenThread(f, isAdmin())");
+    expect(pageSrc).toContain('window.towerOpenThread(tid)');
+    expect(pageSrc).not.toContain('/api/tower/threads');
   });
 });

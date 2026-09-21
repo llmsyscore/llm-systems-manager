@@ -16,7 +16,7 @@ def test_forecast_defaults():
     f = ManagerForecast()
     assert (f.enabled, f.every, f.every_hours, f.run_day, f.at, f.checks_disabled, f.window_days) == \
         (False, "daily", 8, "mon", "03:00", [], 14)
-    assert (f.alerts, f.alert_min_severity, f.tower_effort, f.tower_history) == (False, "warning", "auto", False)
+    assert (f.alerts, f.alert_min_severity, f.tower_effort, f.tower_history) == (False, "warning", "auto", True)
     assert (f.digest_day, f.digest_at) == ("mon", "08:00")
     assert ManagerConfig().forecast.enabled is False
 
@@ -46,8 +46,8 @@ def test_catalog_has_forecast_group_and_keys():
             "tower_effort", "tower_history", "digest_day", "digest_at"}
     assert {f"manager.forecast.{k}" for k in want} <= paths
     history = next(e for e in sc.CATALOG if e["path"] == "manager.forecast.tower_history")
-    assert history["help"] == ("Full effort only: keep each run's Tower investigation threads. "
-                               "They are not yet viewable in the drawer.")
+    assert history["help"] == ("Full effort only: keep the conversation Tower held for each check, so an admin can "
+                               "open it from the finding. Kept as long as Tower's own history.")
     entry = next(e for e in sc.CATALOG if e["path"] == "manager.forecast.tower_effort")
     assert entry["type"] == "choice" and entry["label"] == "Tower effort" and entry["hot"] is True
     assert entry["common"] is True

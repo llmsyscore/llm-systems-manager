@@ -289,7 +289,7 @@ def build_readers(*, ae_get: Callable[[str], Any], db_paths: dict, now: float,
 
     @_guard("report_cards", list)
     def _report_cards():
-        """Stored report cards; `score` is the card's generation speed in tok/s."""
+        """Stored report cards with their generation speed in tok/s."""
         sql = f"SELECT ts, agent_id, result FROM report_cards ORDER BY id DESC LIMIT {ROW_LIMIT}"
         out = []
         for r in _rows(connect, manager_db, sql):
@@ -297,11 +297,11 @@ def build_readers(*, ae_get: Callable[[str], Any], db_paths: dict, now: float,
                 result = json.loads(r[2]) if r[2] else {}
             except ValueError:
                 continue
-            score = _num((result or {}).get("gen_tps"))
-            if score is None or score <= 0 or not (result or {}).get("model"):
+            tok_s = _num((result or {}).get("gen_tps"))
+            if tok_s is None or tok_s <= 0 or not (result or {}).get("model"):
                 continue
             out.append({"ts": _epoch(r[0]) or 0.0, "host": host_of_agent(r[1]),
-                        "model": result["model"], "score": score})
+                        "model": result["model"], "tok_s": tok_s})
         return out
 
     @_guard("audit", list)

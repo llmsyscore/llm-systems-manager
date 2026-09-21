@@ -51,17 +51,18 @@ def init_tables(conn) -> None:
             confidence TEXT, suggested_action TEXT, graph TEXT, verified TEXT, status TEXT NOT NULL,
             first_seen REAL, last_seen REAL, last_reported REAL, clean_runs INTEGER NOT NULL DEFAULT 0,
             thread_id TEXT, alert_id TEXT, dismissed_by TEXT, resolved REAL,
-            gate_streak INTEGER NOT NULL DEFAULT 0, alert_severity TEXT);
+            gate_streak INTEGER NOT NULL DEFAULT 0, alert_severity TEXT, tower_note TEXT);
         CREATE INDEX IF NOT EXISTS idx_forecast_findings_status ON forecast_findings(status, check_id);
         CREATE TABLE IF NOT EXISTS forecast_runs (
             id TEXT PRIMARY KEY, started REAL, finished REAL, mode TEXT, checks TEXT, found INTEGER,
             reported INTEGER, message TEXT, digest_at REAL, digest TEXT, tier TEXT, tier_reason TEXT,
-            model TEXT, tok_s REAL, timed_out INTEGER, tower_calls INTEGER);
+            model TEXT, tok_s REAL, timed_out INTEGER, tower_calls INTEGER, digest_discarded INTEGER);
         CREATE INDEX IF NOT EXISTS idx_forecast_runs_started ON forecast_runs(started);
     """)
     have = {r[1] for r in conn.execute("PRAGMA table_info(forecast_runs)").fetchall()}
     for name, kind in (("digest", "TEXT"), ("tier", "TEXT"), ("tier_reason", "TEXT"), ("model", "TEXT"),
-                       ("tok_s", "REAL"), ("timed_out", "INTEGER"), ("tower_calls", "INTEGER")):
+                       ("tok_s", "REAL"), ("timed_out", "INTEGER"), ("tower_calls", "INTEGER"),
+                       ("digest_discarded", "INTEGER")):
         if name not in have:
             conn.execute(f"ALTER TABLE forecast_runs ADD COLUMN {name} {kind}")
     found = {r[1] for r in conn.execute("PRAGMA table_info(forecast_findings)").fetchall()}
@@ -70,6 +71,8 @@ def init_tables(conn) -> None:
     if "alert_severity" not in found:
         conn.execute("ALTER TABLE forecast_findings ADD COLUMN alert_severity TEXT")
         conn.execute("UPDATE forecast_findings SET alert_severity = severity WHERE alert_id IS NOT NULL")
+    if "tower_note" not in found:
+        conn.execute("ALTER TABLE forecast_findings ADD COLUMN tower_note TEXT")
     conn.commit()
 
 
@@ -203,9 +206,9 @@ class Store:
     KEYS = ("id", "fingerprint", "check_id", "host", "subject", "severity", "summary", "detail", "since",
             "predicted_at", "rate", "unit", "confidence", "suggested_action", "graph", "verified", "status",
             "first_seen", "last_seen", "last_reported", "clean_runs", "thread_id", "alert_id", "dismissed_by",
-            "resolved", "gate_streak", "alert_severity")
+            "resolved", "gate_streak", "alert_severity", "tower_note")
     RUN_KEYS = ("id", "started", "finished", "mode", "checks", "found", "reported", "message", "digest_at", "digest",
-                "tier", "tier_reason", "model", "tok_s", "timed_out", "tower_calls")
+                "tier", "tier_reason", "model", "tok_s", "timed_out", "tower_calls", "digest_discarded")
 
     def __init__(self, conn_factory: Callable[[], sqlite3.Connection]):
         self._conn = conn_factory
@@ -332,6 +335,7 @@ class Forecast:
         self._signals = model_signals
         self._checks = list(checks) if checks is not None else list(forecast_checks.CHECKS)
         self._submit_lock = threading.Lock()
+        self._progress: Optional[dict] = None
         if service.kind(KIND) is None:
             service.register(jobs.Kind(KIND, TITLE, run=self._run, exclusive=lambda spec: ["forecast"],
                                        resume="requeue", max_run_s=MAX_RUN_S))
@@ -373,8 +377,15 @@ class Forecast:
             return self._svc.submit(KIND, {"periodic": False}, user=user, role=role, source="ui")
 
     def _run(self, job) -> jobs.Outcome:
-        out = self.run_once(job.cancelled)
+        try:
+            out = self.run_once(job.cancelled)
+        finally:
+            self._progress = None
         return jobs.ok(result=out, message=f"{out['found']} found, {out['reported']} new")
+
+    def _step(self, **cols) -> None:
+        """Replaces the live run's progress with a copy carrying these columns."""
+        self._progress = {**(self._progress or {}), **cols}
 
     # ── the run ──
     def run_once(self, cancelled: Callable[[], bool] = lambda: False) -> dict:
@@ -397,6 +408,8 @@ class Forecast:
         if not profile.model_only:
             self._clear_model_findings()
         self._clear_digests(week=_iso_week(started, tz))
+        todo = [c.id for c in self._checks if c.id not in disabled and (c.id != DIGEST_ID or digest_due)]
+        self._progress = {"started": started, "total": len(todo), "done": 0, "stage": "checks", "check": None}
         mode, found, reported = "code", 0, 0
         seen: "dict[str, set]" = {}
         touched: "list[dict]" = []
@@ -407,6 +420,7 @@ class Forecast:
             if c.id in disabled or (c.id == DIGEST_ID and not digest_due):
                 states[c.id]["state"] = "off"
                 continue
+            self._step(stage="checks", check=c.title, done=sum(1 for i in todo if states[i]["state"] != "pending"))
             try:
                 rows = [f.to_row() for f in (c.detect(data) or [])]
             except forecast_checks.Collecting as e:
@@ -416,12 +430,14 @@ class Forecast:
                 log.warning("forecast check %s failed: %s: %s", c.id, type(e).__name__, e)
                 states[c.id]["state"] = "failed"
                 continue
-            merged, thread_id = None, None
+            merged, thread_id, talked = None, None, False
             if (profile.investigate and rows and bool(getattr(c, "tower", False))
                     and self._now() - started < TURN_DEADLINE * MAX_RUN_S):
+                self._step(stage="investigating")
                 thread_id = self._start_thread(f"Forecast {day} · {c.title}")
                 merged = self._tower_pass(c, data, rows, thread_id)
-                self._end_thread(thread_id)
+                talked = thread_id is not None
+                thread_id = thread_id if self._end_thread(thread_id) else None
             if merged is None:
                 merged = [(r, "code") for r in rows]
             elif any(str(v) != "code" for _r, v in merged):
@@ -429,7 +445,8 @@ class Forecast:
             states[c.id].update(state="ok", found=len(merged))
             fingerprints = set()
             for row, verified in merged:
-                stored, was_reported = self.merge(row, verified, thread_id=thread_id)
+                stored, was_reported = self.merge(row, verified, thread_id=thread_id,
+                                                  forget_thread=talked and thread_id is None)
                 fingerprints.add(stored["fingerprint"])
                 found += 1
                 reported += 1 if was_reported else 0
@@ -438,11 +455,13 @@ class Forecast:
                     if str(stored.get("check_id")) == DIGEST_ID:
                         self._clear_digests(keep=stored["fingerprint"])
             seen[c.id] = fingerprints
+        self._step(stage="closing", check=None, done=len(todo))
         cleared = self._clear(states, seen)
         self._retry_closes()
         digest = None
         stopped = cancelled() or not bool(getattr(self._cfg(), "enabled", True))
         if profile.tier != "off" and touched and not stopped:
+            self._step(stage="analysis")
             digest = self._digest(touched)
             caused = self._causes(touched) if profile.per_finding_cause else 0
             if digest or caused:
@@ -456,16 +475,20 @@ class Forecast:
                              "digest_at": slot if (ran_digest or was is None) else was, "digest": digest,
                              "tier": profile.tier, "tier_reason": tier_reason, "model": model,
                              "tok_s": self._tower_tok_s(), "timed_out": 1 if self._tower_timed_out() else 0,
-                             "tower_calls": self._tower_calls()})
+                             "tower_calls": self._tower_calls(),
+                             "digest_discarded": 1 if (digest is None and self._digest_discarded()) else 0})
         self._store.sweep(SWEEP_DAYS, now=finished)
         self._log({"actor": ACTOR, "action": "forecast.run", "target": mode, "ok": True,
                    "detail": {**counts, "found": found, "reported": reported, "cleared": cleared,
                               "ms": int(max(0.0, finished - started) * 1000)}})
         log.debug("forecast run %s: %d checks, %d found, %d new, %d cleared", mode, len(states), found, reported, cleared)
+        self._progress = None
         return summary
 
-    def merge(self, finding_row: dict, verified: str, thread_id: Optional[str] = None) -> "tuple[dict, bool]":
-        """Upserts one finding by fingerprint; reports it when it is new, worse, nearer or re-opened."""
+    def merge(self, finding_row: dict, verified: str, thread_id: Optional[str] = None,
+              forget_thread: bool = False) -> "tuple[dict, bool]":
+        """Upserts one finding by fingerprint; reports it when it is new, worse, nearer or re-opened. Tower's note
+        is rewritten every run, like the detail; `forget_thread` drops a conversation id whose thread was not kept."""
         now = self._now()
         fingerprint = finding_row.get("fingerprint") or "{}|{}|{}".format(
             finding_row.get("check"), finding_row.get("host") or "-", finding_row.get("subject") or "-")
@@ -477,8 +500,8 @@ class Forecast:
                "predicted_at": finding_row.get("predicted_at"), "rate": finding_row.get("rate"),
                "unit": finding_row.get("unit"), "confidence": finding_row.get("confidence"),
                "suggested_action": finding_row.get("suggested_action"), "graph": finding_row.get("graph"),
-               "verified": verified, "last_seen": now, "clean_runs": 0}
-        if thread_id is not None:
+               "verified": verified, "last_seen": now, "clean_runs": 0, "tower_note": finding_row.get("tower_note")}
+        if thread_id is not None or forget_thread:
             row["thread_id"] = thread_id
         if cur is None:
             row.update(status="open", first_seen=now)
@@ -526,16 +549,31 @@ class Forecast:
         live = self._svc.list(status="live", kind=KIND)
         periodic = next((r for r in live if (r.get("spec") or {}).get("periodic")), None)
         tier = (last or {}).get("tier")
+        run = self._run_view(live)
         return {"enabled": bool(getattr(cfg, "enabled", False)), "mode": (last or {}).get("mode"),
+                "run": run, "last_result": (last or {}).get("message"),
                 "digest": (last or {}).get("digest"),
                 "tower": None if tier in (None, "off") else {"tier": tier, "reason": (last or {}).get("tier_reason"),
-                                                             "model": (last or {}).get("model")},
+                                                             "model": (last or {}).get("model"),
+                                                             "digest_discarded": bool((last or {}).get("digest_discarded"))},
                 "last_run": (last or {}).get("finished"), "next_run": (periodic or {}).get("next_run"),
-                "running": any(r["status"] == "running" for r in live),
+                "running": run is not None,
                 "window_days": int(getattr(cfg, "window_days", 14) or 14),
                 "checks": [self._check_view(c, states.get(c.id)) for c in self._checks],
                 "findings": [self._finding_view(r) for r in order(self._store.open())],
                 "cleared": [self._finding_view(r) for r in self._store.cleared(RESOLVED_MAX)]}
+
+    def _run_view(self, live: "list[dict]") -> Optional[dict]:
+        """The run in flight: queued (a Run now waiting to start) or running with its progress; None when idle."""
+        if any(r["status"] == "running" for r in live):
+            p = dict(self._progress or {})
+            started = p.get("started")
+            return {"state": "running", "stage": p.get("stage") or "checks", "check": p.get("check"),
+                    "done": int(p.get("done") or 0), "total": int(p.get("total") or 0),
+                    "elapsed_s": None if started is None else max(0.0, self._now() - float(started))}
+        if any(not (r.get("spec") or {}).get("periodic") for r in live):
+            return {"state": "queued"}
+        return None
 
     def tower_view(self) -> dict:
         """Trimmed open findings and check states for the Tower `forecast` read tool."""
@@ -561,7 +599,7 @@ class Forecast:
         """One finding as the API exposes it; fingerprint, clean_runs, last_reported and alert_id stay internal."""
         out = {k: row[k] for k in ("id", "host", "subject", "severity", "summary", "detail", "since", "predicted_at",
                                    "rate", "unit", "confidence", "suggested_action", "graph", "verified", "status",
-                                   "first_seen", "last_seen", "resolved", "thread_id", "dismissed_by")}
+                                   "first_seen", "last_seen", "resolved", "thread_id", "dismissed_by", "tower_note")}
         return {**out, "check": row["check_id"], "title": self._title(row["check_id"])}
 
     def _title(self, check_id: Any) -> str:
@@ -763,6 +801,13 @@ class Forecast:
             log.debug("forecast tower call count read failed: %s", type(e).__name__)
             return 0
 
+    def _digest_discarded(self) -> bool:
+        try:
+            return bool(self._tower.digest_discarded()) if hasattr(self._tower, "digest_discarded") else False
+        except Exception as e:  # noqa: BLE001 — an unreadable flag only hides the hint
+            log.debug("forecast tower digest flag read failed: %s", type(e).__name__)
+            return False
+
     def _tower_timed_out(self) -> bool:
         try:
             return bool(self._tower.timed_out()) if hasattr(self._tower, "timed_out") else False
@@ -813,8 +858,10 @@ class Forecast:
         written = 0
         for fid, text in out.items():
             cols = {k: v for k, v in (text or {}).items() if k == "detail"}
-            if cols and self._store.set(str(fid), only=("open",), verified="tower+code", **cols):
+            if cols and self._store.set(str(fid), only=("open",), verified="tower+code", tower_note=None, **cols):
                 written += 1
+            elif not cols and (text or {}).get("tower_note"):
+                self._store.set(str(fid), only=("open",), tower_note=str(text["tower_note"])[:40])
         log.debug("forecast causes written %d of %d findings", written, len(rows))
         return written
 
@@ -853,14 +900,16 @@ class Forecast:
             log.warning("forecast thread start failed: %s: %s", type(e).__name__, e)
             return None
 
-    def _end_thread(self, thread_id: Optional[str]) -> None:
+    def _end_thread(self, thread_id: Optional[str]) -> bool:
+        """Ends a check's thread; True while the conversation is kept and can be opened later."""
         fn = getattr(self._tower, "end_thread", None) if self._tower is not None else None
         if fn is None or thread_id is None:
-            return
+            return False
         try:
-            fn(thread_id)
+            return bool(fn(thread_id))
         except Exception as e:  # noqa: BLE001 — the run is already recorded
             log.warning("forecast thread end failed: %s: %s", type(e).__name__, e)
+            return False
 
     def _log(self, event: dict) -> None:
         if self._audit is None:

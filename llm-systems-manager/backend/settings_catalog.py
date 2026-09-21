@@ -205,7 +205,7 @@ CATALOG: list[dict] = [
     _e("manager.forecast.tower_effort", "choice", "Tower effort", "How much of a forecast Tower does. Auto picks a level from the Tower model's evaluation score, size, tool check and speed — the better the model, the more it does. Light = one short digest tying the findings together. Standard = the digest plus a likely cause per finding. Full = Tower also investigates each flagged check with its read tools. The code's figures and advice are never replaced. Used only while Tower is on and a model is awake.", "forecast", MANAGER, hot=True, common=True,
        choices=["auto", "off", "light", "standard", "full"],
        labels={"auto": "Auto", "off": "Off", "light": "Light", "standard": "Standard", "full": "Full"}),
-    _e("manager.forecast.tower_history", "bool", "Save Tower conversation", "Full effort only: keep each run's Tower investigation threads. They are not yet viewable in the drawer.", "forecast", MANAGER, hot=True),
+    _e("manager.forecast.tower_history", "bool", "Save Tower conversation", "Full effort only: keep the conversation Tower held for each check, so an admin can open it from the finding. Kept as long as Tower's own history.", "forecast", MANAGER, hot=True),
     _e("manager.forecast.digest_day", "choice", "Weekly digest", "Day and local time the weekly roll-up is written.", "forecast", MANAGER, hot=True,
        choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
        labels={"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}),

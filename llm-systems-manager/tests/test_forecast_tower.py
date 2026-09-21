@@ -594,7 +594,9 @@ def test_cause_calls_run_in_batches_and_stop_after_a_failed_one():
     # a batch that parses but whose causes are all refused does not stop the next one
     refused = json.dumps({"findings": [{"id": "a", "cause": "It fills in ten days"}]})
     tp3, bodies3 = _direct([refused, good], tier="standard")
-    assert len(tp3.causes([srow(f"a{i}") for i in range(12)])) == 6 and len(bodies3) == 2
+    out3 = tp3.causes([srow(f"a{i}") for i in range(12)])
+    assert sum(1 for v in out3.values() if "detail" in v) == 6 and len(bodies3) == 2
+    assert out3["a0"] == {"tower_note": ft.DISCARDED}       # the refused cause leaves its mark
 
 
 def test_cause_calls_only_run_at_the_tiers_that_ask_for_them():
@@ -625,7 +627,7 @@ def test_a_cause_that_only_restates_the_finding_is_refused():
     row = srow("a1", summary="RAM dropped from about 81 % to 39 %", detail="Measured on rig.")
     restating = json.dumps({"findings": [{"id": "a", "cause": "The RAM dropped, measured on rig"}]})
     tp, _b = _direct(restating, tier="standard")
-    assert tp.causes([row]) == {}
+    assert tp.causes([row]) == {"a1": {"tower_note": ft.DISCARDED}}
     fresh = json.dumps({"findings": [{"id": "a", "cause": "A large model was unloaded overnight."}]})
     tp2, _b2 = _direct(fresh, tier="standard")
     assert tp2.causes([row])["a1"]["detail"].endswith("Likely cause: A large model was unloaded overnight.")
@@ -650,7 +652,7 @@ def test_a_cause_that_carries_a_figure_is_refused():
                                       {"id": "b", "cause": "A second answer for the same finding."}]})
     tp, _b = _direct(answer, tier="standard")
     out = tp.causes([srow("a1"), srow("a2")])
-    assert list(out) == ["a2"]
+    assert out["a1"] == {"tower_note": ft.DISCARDED} and set(out) == {"a1", "a2"}
     assert out["a2"]["detail"].endswith("Likely cause: The nightly autotune downloads land there.")
 
 
@@ -724,6 +726,28 @@ def test_every_model_call_in_a_run_is_counted(monkeypatch):
     assert len(calls) == 2 and tp2.model_calls() == 2
 
 
+def test_a_call_that_never_reaches_the_model_is_not_counted(monkeypatch):
+    tp, bodies = _direct("unused", tier="standard")
+    tp._cs = _stream(["unused"], bodies, raises=RuntimeError("gateway down"))
+    assert tp.digest([srow("a1")]) is None and len(bodies) == 1 and tp.model_calls() == 0
+    calls = []
+    _stub(monkeypatch, [RuntimeError("gateway down"), {"events": [{"event": "error", "message": "no model"}]}], calls)
+    tp2, _st = _pass()
+    code = [row("disk_fill", "rig", "models", NOW + 10 * DAY, 18.6)]
+    tp2(CHECK, None, code, "t1")
+    tp2(CHECK, None, code, "t1")
+    assert len(calls) == 2 and tp2.model_calls() == 0
+
+
+def test_a_refused_digest_is_remembered_for_the_run():
+    tp, _b = _direct('{"digest": "Disk fills in 10 days on rig."}', tier="standard")
+    assert tp.digest([srow("a1")]) is None and tp.digest_discarded() is True
+    tp.begin_run(fe.PROFILES["standard"])
+    assert tp.digest_discarded() is False
+    tp2, _b2 = _direct('{"digest": ""}', tier="standard")
+    assert tp2.digest([srow("a1")]) is None and tp2.digest_discarded() is False
+
+
 def test_begin_run_pins_the_profile_for_the_whole_run(monkeypatch):
     calls = []
     _stub(monkeypatch, [{"text": _fence([])}], calls)
@@ -788,7 +812,7 @@ def test_full_takes_the_cause_only_when_it_carries_no_figure_and_never_the_next_
     tp, _st = _pass()
     code = [row("disk_fill", "rig", "models", NOW + 10 * DAY, 18.6)]
     (r, v), = tp(CHECK, None, code, "t1")
-    assert len(calls) == 1 and v == "code" and r == code[0]
+    assert len(calls) == 1 and v == "code" and r == {**code[0], "tower_note": ft.DISCARDED}
     good = [{**answer[0], "cause": "the nightly autotune downloads", "suggested_action": "Prune the old snapshots."}]
     calls = []
     _stub(monkeypatch, [{"text": _fence(good)}], calls)

@@ -463,7 +463,7 @@ Tower is never allowed to invent or restate a number, date or rate — those fig
 
 The Forecast page lists open findings with search, severity/host/check filters, sortable columns and pages; a 30-day line shows every dated prediction. Cleared and dismissed findings have their own tabs. Each finding offers **Ask Tower** (opens Tower with the finding as the question) and, where there is somewhere useful to go, a button that opens that part of the dashboard. The Overall page shows only critical and warning findings.
 
-Two things worth knowing before you rely on it. **Dismissing a finding is not permanent:** dismissed and cleared findings are swept after 90 days, so a trend that is still running when its row is swept comes back as a new finding. **Tower conversation history is off by default** (`tower_history`) — at the Full effort level each check's investigation runs in its own private thread, and those threads are not yet readable from the Tower drawer, so keeping them only costs space.
+Two things worth knowing before you rely on it. **Dismissing a finding is not permanent:** dismissed and cleared findings are swept after 90 days, so a trend that is still running when its row is swept comes back as a new finding. **Tower conversations are kept by default** (`tower_history`) — at the Full effort level each check's investigation runs in its own private conversation, and an admin can open it read-only from the finding ("Open conversation"). Nobody can continue or rename it, it never appears in anyone's History, and it is swept with the rest of Tower's history. Turn the setting off to delete each conversation as soon as its check finishes.
 
 ### Backups
 

@@ -223,6 +223,7 @@ async function loadLayout() {
     if (!layout.managerOrder)    layout.managerOrder    = [];
     if (!layout.overallBorrowed) layout.overallBorrowed = [];
     if (!layout.overallOrder)    layout.overallOrder    = [];
+    if (!Array.isArray(layout.overallBandHidden)) layout.overallBandHidden = [];
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
     if (!layout.rolePreset || typeof layout.rolePreset !== 'object') layout.rolePreset = {};
     _migrateLegacyCardIds(layout);
@@ -765,8 +766,9 @@ function applyLayout() {
     c.style.display = hiddenMgr.includes(c.dataset.card) ? 'none' : '';
   });
 
-  // Fleet-band strip order (#565)
+  // Fleet-band strip order (#565) and visibility
   _applyBandOrder();
+  _applyBandHidden();
 
   // Recreate pinned-card shells in overallGrid
   const overallGrid = document.getElementById('overallGrid');
@@ -890,6 +892,24 @@ function _returnOneAdopted(id) {
 
 function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
+}
+
+// Overall page sections the layout drawer can hide, by data-strip id.
+const BAND_LABELS = { hero: 'Fleet throughput', alerts: 'Active alerts', forecast: 'Forecast', tiles: 'Providers', agents: 'Agents' };
+
+// Hides the fleet-band strips listed in layout.overallBandHidden.
+function _applyBandHidden() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const hidden = (lay && lay.overallBandHidden) || [];
+  document.querySelectorAll('.ov-band > [data-strip]').forEach(s => { s.hidden = hidden.includes(s.dataset.strip); });
+}
+
+function toggleBandStrip(id, on) {
+  const hidden = new Set(layout.overallBandHidden || []);
+  if (on) hidden.delete(id); else hidden.add(id);
+  layout.overallBandHidden = [...hidden].filter(x => x in BAND_LABELS);
+  _applyBandHidden();
+  saveLayout();
 }
 
 // Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown ids are
@@ -1178,7 +1198,11 @@ function _sdRenderCards(scope) {
       return `<div class="microlbl">${_esc(g)} <span class="cnt">${on}/${ids.length}</span></div>
         <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), borrowed.includes(id), 'pin')).join('')}</div>`;
     }).join('');
+    const off = layout.overallBandHidden || [];
+    const strips = Object.keys(BAND_LABELS).filter(id => document.querySelector(`.ov-band > [data-strip="${id}"]`));
     el.innerHTML = `
+      <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${strips.filter(id => !off.includes(id)).length} of ${strips.length} shown</span></div>
+      <div class="sd-chips">${strips.map(id => _sdChip(id, BAND_LABELS[id], !off.includes(id), 'strip')).join('')}</div>
       <div class="sd-sh"><h3>Pinned from other pages</h3><span class="meta">${borrowed.length} pinned</span></div>
       <div class="help" style="margin-top:0;">Pin any Dashboard card here. Pinned cards leave their home page while Overall is open.</div>
       ${inner}
@@ -1386,6 +1410,8 @@ function _sdBind() {
     if (kind === 'card') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       toggleCard(t.dataset.id, on); _sdRerenderCards();
+    } else if (kind === 'strip') {
+      toggleBandStrip(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
     } else if (kind === 'pin') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       if (on) addBorrowedCard(t.dataset.id); else removeBorrowedCard(t.dataset.id);
@@ -1533,6 +1559,7 @@ async function resetCurrentTabLayout() {
   delete layout[scope.cols];
   if (layout.rolePreset) delete layout.rolePreset[_sdScope().key];
   if (scope.borrowed) layout[scope.borrowed] = [];
+  if (_activeTab === 'overall') layout.overallBandHidden = [];
   // Drop cardSizes entries for ids in this tab's label map; the Overall
   // tab's sizes live under ov-borrow-* shell keys instead.
   if (layout.cardSizes) {
