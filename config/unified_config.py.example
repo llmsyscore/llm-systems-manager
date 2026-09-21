@@ -166,7 +166,7 @@ class ManagerForecast(BaseModel):
     alerts: bool = False
     alert_min_severity: Literal["info", "warning", "critical"] = "warning"
     tower_effort: Literal["auto", "off", "light", "standard", "full"] = "auto"
-    tower_history: bool = False
+    tower_history: bool = True
     digest_day: Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"
     digest_at: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 

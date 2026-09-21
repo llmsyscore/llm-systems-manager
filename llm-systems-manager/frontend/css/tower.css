@@ -196,6 +196,9 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .notice { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border-strong)); background: color-mix(in srgb, var(--warn) 7%, var(--bg-card)); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; }
 #towerAside .notice h4 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 #towerAside .notice h4 i { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
+#towerAside .notice.ro { border-color: var(--border-strong); background: var(--bg-card); margin-bottom: 10px; }
+#towerAside .notice.ro h4 i { background: var(--accent); }
+#towerAside .notice.ro .lnk { justify-self: start; background: none; border: 0; padding: 0; color: var(--accent); font: 500 12px var(--font-sans); cursor: pointer; }
 #towerAside .notice p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.45; }
 #towerAside .on-card { border: 1px solid var(--border-strong); border-radius: 10px; padding: 14px; display: grid; gap: 12px; }
 #towerAside .on-card h3 { margin: 0; padding: 0; border: 0; font-size: 14px; font-weight: 600; color: var(--fg); }

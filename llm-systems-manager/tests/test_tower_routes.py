@@ -921,6 +921,28 @@ def test_admins_see_and_open_discord_threads(client):
     assert st.thread_user("nope") is None
 
 
+# ── #1090 Forecast conversations: admins read, nobody writes ──
+
+def test_admins_read_forecast_conversations_but_cannot_write_to_them(client):
+    st = M._tower_runs.store
+    f1 = st.create_thread(tower.FORECAST_ACTOR, "Forecast 2026-09-21 · Disk fill", {"tab": "forecast"})
+    st.add_message(f1, "user", "look at the disk"); st.add_message(f1, "assistant", "it is filling")
+    assert client.get(f"/api/tower/threads/{f1}").status_code == 404                 # operator session
+    with client.session_transaction() as s:
+        s["role"] = "admin"
+    got = client.get(f"/api/tower/threads/{f1}").get_json()
+    assert got["ok"] and got["read_only"] is True and got["active_run"] is None
+    assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
+    assert f1 not in [t["id"] for t in client.get("/api/tower/threads").get_json()["threads"]]
+    posted = client.post(f"/api/tower/threads/{f1}/messages", json={"text": "carry on"})
+    renamed = client.patch(f"/api/tower/threads/{f1}", json={"title": "Mine now"})
+    deleted = client.delete(f"/api/tower/threads/{f1}")
+    assert (posted.status_code, renamed.status_code, deleted.status_code) == (404, 404, 404)
+    assert st.thread_user(f1) == tower.FORECAST_ACTOR and len(st.messages(f1)) == 2
+    mine = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
+    assert client.get(f"/api/tower/threads/{mine}").get_json()["read_only"] is False
+
+
 # ── #1002 approve carries option picks; manager bench deps ──
 
 def test_approve_route_passes_option_picks_to_the_pending_action(act_client):

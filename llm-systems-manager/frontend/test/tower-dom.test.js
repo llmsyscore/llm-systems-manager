@@ -73,7 +73,10 @@ function boot(state, opts = {}) {
       if (w.__renameFail) return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown thread' }) });
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: url.split('/').pop(), title: w.__renamed } }) });
     }
-    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: 't9', title: 'Older' }, messages: w.__rows || [], active_run: w.__activeRun || null }) });
+    if (/^\/api\/tower\/threads\/[^/]+$/.test(url)) {
+      if (w.__threadGone) return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({ ok: false, error: 'unknown thread' }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, thread: { id: w.__readOnly ? 'f1' : 't9', title: 'Older' }, messages: w.__rows || [], active_run: w.__activeRun || null, read_only: !!w.__readOnly }) });
+    }
     if (/\/messages$/.test(url)) {
       w.__posted = JSON.parse(o.body);
       if (w.__postError) { const e = w.__postError; return Promise.resolve({ ok: false, status: e[1], json: () => Promise.resolve({ ok: false, error: e[0] }) }); }
@@ -1218,6 +1221,51 @@ describe('Tower drawer: sub-views, waiting and re-attach (#1014, #1016)', () => 
     w.__sse.onEvent({ event: 'delta', text: 'box is awake.' });
     w.__sse.onEvent({ event: 'done', ok: true });
     expect(body.textContent).toContain('box is awake.');
+  });
+});
+
+describe('Tower drawer: Forecast conversations open read-only (#1090)', () => {
+  const ROWS = [{ role: 'user', content: 'look at the disk', ts: 1 }, { role: 'assistant', content: 'it is filling', ts: 2 }];
+
+  test('towerOpenThread shows the conversation with the composer off and never remembers it', async () => {
+    const w = await ready(ENABLED);
+    w.__readOnly = true; w.__rows = ROWS;
+    expect(await w.towerOpenThread('f1')).toBe(true);
+    const body = w.document.getElementById('twBody'), input = w.document.getElementById('twInput');
+    expect(body.textContent).toContain('it is filling');
+    expect(body.querySelector('.notice.ro').textContent).toContain('read only');
+    expect(input.disabled).toBe(true);
+    expect(w.document.getElementById('twSugs').innerHTML).toBe('');
+    expect(w.document.getElementById('twTitle').hidden).toBe(true);
+    expect(JSON.parse(w.localStorage.getItem('lsm.tower')).thread).not.toBe('f1');
+  });
+
+  test('asking from a read-only conversation starts in the user\'s own thread, never the Forecast one', async () => {
+    const w = await ready(ENABLED);
+    w.__readOnly = true; w.__rows = ROWS;
+    await w.towerOpenThread('f1');
+    w.__readOnly = false; w.__rows = [];
+    await w.towerAsk('why is the disk filling?'); await flush();
+    // the stub answers every remembered thread as t9: the user's own, not Forecast's f1
+    expect(w.__calls.filter(c => /\/messages$/.test(c))).toEqual(['POST /api/tower/threads/t9/messages']);
+    expect(w.document.getElementById('twInput').disabled).toBe(false);
+  });
+
+  test('the banner leads back to the user\'s own conversation', async () => {
+    const w = await ready(ENABLED);
+    w.__readOnly = true; w.__rows = ROWS;
+    await w.towerOpenThread('f1');
+    w.__readOnly = false; w.__rows = [];
+    w.document.querySelector('[data-tw-leave]').click(); await flush(); await flush();
+    expect(w.document.querySelector('.notice.ro')).toBeNull();
+    expect(w.document.getElementById('twInput').disabled).toBe(false);
+  });
+
+  test('a conversation that is gone reports false and leaves the drawer alone', async () => {
+    const w = await ready(ENABLED);
+    w.__threadGone = true;
+    expect(await w.towerOpenThread('f1')).toBe(false);
+    expect(w.document.getElementById('twInput').disabled).toBe(false);
   });
 });
 

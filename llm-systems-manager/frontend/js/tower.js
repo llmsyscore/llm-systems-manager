@@ -9,6 +9,7 @@
   let _prefs = { open: false, pinned: false, width: 400, thread: null, noCtx: false };
   let _insights = [], _insightsNew = 0, _insightsRev = null, _openIns = new Set(), _toasted = null, _insNotice = null, _tab = 'conv', _flash = null, _flashT = null;
   let _histOpen = false;
+  let _readOnly = false;   // the open conversation belongs to Forecast: shown, never continued
   let _timers = [], _timersAt = 0, _timerPoll = null, _timerTick = null, _timersBusy = false, _reports = [];
   let _checkPoll = 0;
   const _bootS = Date.now() / 1000;
@@ -219,9 +220,22 @@
     if (_thread) return _thread;
     if (_prefs.thread) {
       const r = await fetch(`/api/tower/threads/${encodeURIComponent(_prefs.thread)}`);
-      if (r.ok) { const d = await r.json(); if (d.ok) { _thread = d.thread; _state = { ...TW.initial(), turns: TW.threadView(d.messages) }; resumeRun(d.active_run); return _thread; } }
+      if (r.ok) { const d = await r.json(); if (d.ok) { _thread = d.thread; _readOnly = !!d.read_only; _state = { ...TW.initial(), turns: TW.threadView(d.messages) }; resumeRun(d.active_run); return _thread; } }
     }
     return newThread();
+  }
+  // Shows a kept Forecast conversation read-only; false when it no longer exists. The user's own thread is remembered.
+  async function openThread(tid) {
+    const r = await fetch(`/api/tower/threads/${encodeURIComponent(tid)}`).catch(() => null);
+    const d = r && r.ok ? await r.json().catch(() => null) : null;
+    if (!d || !d.ok) return false;
+    await parkRun();
+    _notice = null; _openTicks = new Set(); _pending = [];
+    _thread = d.thread; _readOnly = !!d.read_only;
+    _state = { ...TW.initial(), turns: TW.threadView(d.messages) };
+    if (!_readOnly) { _prefs.thread = _thread.id; savePrefs(); }
+    towerOpen(); setTab('conv'); paintBody({ toBottom: true });
+    return true;
   }
   // A reloaded thread takes its run back: a parked action card keeps Stop and the decision buttons (#956),
   // and a run still answering is re-attached so the reply lands instead of being cancelled.
@@ -249,6 +263,7 @@
     const r = await fetch('/api/tower/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const d = r.ok ? await r.json() : { ok: false };
     _thread = d.ok ? d.thread : null;
+    _readOnly = false;
     _state = TW.initial();
     _prefs.thread = _thread ? _thread.id : null; savePrefs();
     return _thread;
@@ -423,6 +438,11 @@
   function noticeHtml() {
     return _notice ? `<div class="notice"><h4><i></i>${TW.esc(_notice)}</h4></div>` : '';
   }
+  // Banner over a Forecast conversation, with the way back to the user's own thread.
+  function readOnlyHtml() {
+    return '<div class="notice ro"><h4><i></i>Forecast held this conversation. It is read only.</h4>'
+      + '<button type="button" class="lnk" data-tw-leave>Back to my conversation</button></div>';
+  }
   // Questions typed while Tower is busy wait here and go out one at a time.
   function pendingHtml() {
     return _pending.map((t, i) => `<div class="u queued"><span class="ql">queued</span>${TW.esc(t)}`
@@ -538,19 +558,19 @@
       paintTitle();
       return;
     }
-    box?.classList.remove('dis'); if (input) input.disabled = false;
+    box?.classList.toggle('dis', _readOnly); if (input) input.disabled = _readOnly;
     const turns = (_state && _state.turns) || [];
     if (!turns.length) {
       const p = page;
       body.innerHTML = `<div class="empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
         + `<div class="fu">${TW.suggestions(p, _view && _view.capabilities).map(sugHtml).join('')}</div></div>` + noticeHtml();
     } else {
-      body.innerHTML = turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();
+      body.innerHTML = (_readOnly ? readOnlyHtml() : '') + turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();
     }
     body.scrollTop = atBottom ? body.scrollHeight : prevTop;
-    if (sugs) sugs.innerHTML = turns.length ? TW.suggestions(page, _view && _view.capabilities).map(sugHtml).join('') : '';
+    if (sugs) sugs.innerHTML = turns.length && !_readOnly ? TW.suggestions(page, _view && _view.capabilities).map(sugHtml).join('') : '';
     const busy = !!(_state && _state.status !== 'idle');
-    if (input) input.placeholder = busy ? 'Ask another — it goes next' : 'Ask Tower…';
+    if (input) input.placeholder = _readOnly ? 'Read only' : busy ? 'Ask another — it goes next' : 'Ask Tower…';
     const sendBtn = $('twSend');
     if (sendBtn) {
       sendBtn.classList.toggle('stop', busy);
@@ -715,6 +735,7 @@
       paintBody({ toBottom: true });
       return;
     }
+    if (_readOnly) { _thread = null; _readOnly = false; _state = TW.initial(); }
     if (!_thread) await ensureThread();
     if (!_thread) { _notice = 'Tower could not start a thread; try again.'; if ($('twInput')) $('twInput').value = t; paintBody(); return; }
     _notice = null;
@@ -786,6 +807,7 @@
     body?.addEventListener('click', ev => {
       onSug(ev);
       if (ev.target.closest('#twEnable')) { ev.preventDefault(); enable(); }
+      if (ev.target.closest('[data-tw-leave]')) { _thread = null; _readOnly = false; ensureThread().then(() => paintBody({ toBottom: true })); return; }
       if (ev.target.closest('#twSettingsLink')) { ev.preventDefault(); towerClose({ returnFocus: false }); switchTab('admin'); switchSubTab('admin', 'settings'); if (typeof adminSettingsOpenGroup === 'function') adminSettingsOpenGroup('tower'); }
       const oc = ev.target.closest('[data-opt]');
       if (oc) { const id = oc.dataset.opt; _optSel[id] = { ...(_optSel[id] || {}), [oc.dataset.name]: oc.dataset.val }; paintBody(); return; }
@@ -910,7 +932,7 @@
   // The active conversation's title pill in the tab row; hidden until the thread has a turn and while History is open (#987).
   function paintTitle() {
     const el = $('twTitle'); if (!el || el.parentElement !== $('twTabs')) return;
-    const show = !!(_thread && _view && !_view.off && !_view.noModel && _tab === 'conv' && !_histOpen && _state && _state.turns.length);
+    const show = !!(_thread && !_readOnly && _view && !_view.off && !_view.noModel && _tab === 'conv' && !_histOpen && _state && _state.turns.length);
     el.hidden = !show;
     if (!show) return;
     const title = _thread.title || 'New thread';
@@ -986,6 +1008,7 @@
   window.towerToggle = towerToggle;
   window.towerOpen = towerOpen;
   window.towerAsk = (text, ctx) => { towerOpen(); return send(text, ctx); };
+  window.towerOpenThread = openThread;
   window.towerClose = towerClose;
   window.towerRefreshState = towerRefreshState;
   window.towerLoadTimers = loadTimers;

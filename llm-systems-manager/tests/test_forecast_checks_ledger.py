@@ -29,25 +29,45 @@ def _energy_rows():
 
 
 def test_power_cost_efficiency_and_month_projection():
-    # Month to date: 11 x 480 + 2 x 672 + 15 h x 28 = 7044 Wh -> 7.044 kWh over 21 of 30 days.
-    # Projected 10.0629 kWh at $0.15 = $1.51, against 7.5 kWh in the 30 days before the month (+34 %).
+    # 7.044 kWh to date, 20.6 days into a 30-day month; the last week's 0.55 kWh a day adds 5.2 kWh for the rest:
+    # 12.2 kWh at $0.15 = $1.84, against 7.5 kWh in the 30 days before the month (+63 %).
     rows = _energy_rows()
     by = {f.subject: f for f in run("power_cost", data(energy=lambda s, e: rows))}
     eff = by["efficiency"]
     assert (eff.check, eff.host, eff.severity) == ("power_cost", "rig", "info")
     assert eff.summary == "Energy per 1k tokens up 40 %"
     cost = by["cost"]
-    assert cost.host is None and cost.severity == "info"
-    assert cost.summary == "This month's energy cost is heading for $1.51, 34 % over last month"
+    assert cost.host is None and cost.severity == "warning"
+    assert cost.summary == "This month's energy cost is heading for $1.84, 63 % over last month"
+    assert "Hosts that joined" not in cost.detail
+
+
+def test_power_cost_month_projection_follows_recent_use_not_the_month_average():
+    rows = [r for r in _energy_rows() if r["ts"] < MONTH_START]
+    # A heavy first fortnight and a quiet last week: 14 x 1 kWh, then 7 x 0.1 kWh.
+    rows += [{"ts": MONTH_START + i * DAY, "host": "rig", "wh": 1000.0 if i < 14 else 100.0, "tokens": 0.0,
+              "active_s": 0.0, "observed_s": 3600.0} for i in range(21)]
+    (f,) = run("power_cost", data(energy=lambda s, e: rows))
+    # 14.7 kWh to date plus 9.4 quiet days at 0.1 kWh, not 14.7 x 30 / 21 = 21 kWh.
+    assert f.rate == pytest.approx(14.7 + 0.1 * (30 - (NOW - MONTH_START) / DAY), rel=0.02)
+
+
+def test_power_cost_month_projection_leaves_out_hosts_that_joined_this_month():
+    rows = _energy_rows()
+    rows += [{"ts": MONTH_START + 10 * DAY + i * DAY, "host": "newbox", "wh": 5000.0, "tokens": 0.0,
+              "active_s": 0.0, "observed_s": 3600.0} for i in range(10)]
+    cost = {f.subject: f for f in run("power_cost", data(energy=lambda s, e: rows))}["cost"]
+    assert "$1.84" in cost.summary
+    assert cost.detail.endswith("Hosts that joined this month are left out: newbox.")
 
 
 def test_power_cost_warns_when_the_month_is_half_again_over():
     rows = [r for r in _energy_rows() if r["ts"] < MONTH_START]
     rows += [{"ts": MONTH_START + i * DAY, "host": "rig", "wh": 1000.0, "tokens": 0.0,
               "active_s": 0.0, "observed_s": 3600.0} for i in range(21)]
-    # 21 kWh to date -> 30 kWh projected against 7.5 kWh = 4.0x.
+    # 21 kWh to date plus 9.4 days at 1 kWh -> 30.4 kWh projected against 7.5 kWh = 4.1x.
     (f,) = run("power_cost", data(energy=lambda s, e: rows))
-    assert f.subject == "cost" and f.severity == "warning" and "$4.50" in f.summary
+    assert f.subject == "cost" and f.severity == "warning" and "$4.56" in f.summary
 
 
 OCT_1 = 1790812800.0              # 2026-10-01 00:00 UTC, the month after the fake's NOW
@@ -57,6 +77,26 @@ def _at(now, rows):
     """The fake's readers on a different clock, so month-boundary rules can be exercised."""
     base = data(energy=lambda s, e: rows)
     return fc.CheckData(now=now, window_s=14 * DAY, **base._readers)
+
+
+def test_month_bounds_follow_the_local_calendar():
+    # 2026-10-01 02:00 UTC is still Sep 30 at UTC-5 and already Oct 1 at UTC+2.
+    start, day, days = fc._month_bounds(OCT_1 + 7200.0, -5 * 3600.0)
+    assert (day, days) == (30, 30) and start == MONTH_START + 5 * 3600.0
+    start, day, days = fc._month_bounds(OCT_1 - 3600.0, 2 * 3600.0)
+    assert (day, days) == (1, 31) and start == OCT_1 - 2 * 3600.0
+
+
+def test_power_cost_month_gate_uses_the_local_day_of_month():
+    rows = [{"ts": OCT_1 - (i + 1) * DAY, "host": "rig", "wh": 250.0, "tokens": 0.0,
+             "active_s": 0.0, "observed_s": 3600.0} for i in range(30)]
+    rows += [{"ts": OCT_1 + i * 3600.0, "host": "rig", "wh": 100.0, "tokens": 0.0,
+              "active_s": 0.0, "observed_s": 3600.0} for i in range(7 * 24)]
+    base = data(energy=lambda s, e: rows)
+    now = OCT_1 + 6 * DAY + 3600.0            # Oct 7 01:00 UTC: day 7 in UTC, still day 6 at UTC-5
+    at = lambda tz: fc.CheckData(now=now, window_s=14 * DAY, tz_offset_s=tz, **base._readers)
+    assert [f.subject for f in fc.BY_ID["power_cost"].detect(at(0.0))] == ["cost"]
+    assert fc.BY_ID["power_cost"].detect(at(-5 * 3600.0)) == []
 
 
 def test_power_cost_skips_the_month_projection_early_in_the_month():
@@ -190,6 +230,13 @@ def test_alarm_patterns_flapping_is_one_finding_per_host():
     assert f.suggested_action == "Give these rules a longer window so short blips stop paging."
 
 
+def test_alarm_patterns_flapping_without_a_host_names_no_host():
+    rows = [{"id": f"g{k}", "rule": "Gateway errors", "host": "", "severity": "warning",
+             "created": NOW - k * 7000.0, "closed": NOW - k * 7000.0 + 60.0} for k in range(1, 8)]
+    (f,) = [f for f in run("alarm_patterns", data(alerts=lambda s, e: rows)) if f.subject == "flapping"]
+    assert f.host is None and f.summary == "“Gateway errors” clears itself within minutes — 7 times"
+
+
 def test_alarm_patterns_flapping_reads_singular_for_one_rule():
     (f,) = [x for x in run("alarm_patterns", data(alerts=lambda s, e: _flappers("Net blip", 6)))
             if x.subject == "flapping"]
@@ -210,6 +257,25 @@ def test_alarm_patterns_periodic_skips_test_rules_and_keeps_the_five_strongest()
     periodic = sorted(s for s in subjects if s.startswith("periodic:"))
     assert periodic == ["periodic:Rule B", "periodic:Rule C", "periodic:Rule D",
                         "periodic:Rule E", "periodic:Rule F"]
+
+
+def test_alarm_patterns_caps_apply_to_each_host_on_its_own():
+    base = NOW - (NOW % DAY)
+    rows = []
+    for i in range(6):
+        rows += [{"id": f"n{i}-{day}", "rule": f"Noisy {i}", "host": "loud", "severity": "info",
+                  "created": base - day * DAY + 14 * 3600 + i * 400.0, "closed": None} for day in range(1, 13)]
+    rows += [{"id": f"q{day}", "rule": "Quiet rule", "host": "calm", "severity": "info",
+              "created": base - day * DAY + 9 * 3600, "closed": None} for day in range(1, 7)]
+    found = [f for f in run("alarm_patterns", data(alerts=lambda s, e: rows)) if f.subject.startswith("periodic:")]
+    assert sum(1 for f in found if f.host == "loud") == fc.PATTERNS_MAX
+    assert [f.subject for f in found if f.host == "calm"] == ["periodic:Quiet rule"]
+
+
+def test_cofire_candidates_pair_only_rules_that_fired_close_together():
+    rules = {"a": [100.0, 5000.0], "b": [390.0], "c": [9000.0], "d": [299.0, 301.0]}
+    assert fc._cofire_candidates(rules) == [("a", "b"), ("a", "d"), ("b", "d")]
+    assert fc._cofire_candidates({"a": [1.0], "b": [10_000.0]}) == []
 
 
 def test_alarm_patterns_periodic_keeps_rules_that_only_contain_the_word_test():
@@ -357,8 +423,8 @@ def test_service_health_is_quiet_when_everything_is_steady():
 def test_bench_outcomes_accept_and_score():
     runs = [{"ts": NOW - k * DAY, "model": "qwen3-32b", "host": "rig", "gen_tps": 30.0, "ppt_tps": 800.0,
              "accept_rate": r, "baseline": 0, "ok": 1} for k, r in ((5, 0.80), (4, 0.82), (3, 0.78), (1, 0.55))]
-    cards = [{"ts": NOW - 9 * DAY, "host": "rig", "model": "qwen3-32b", "score": 88.0},
-             {"ts": NOW - 2 * DAY, "host": "rig", "model": "qwen3-32b", "score": 71.0}]
+    cards = [{"ts": NOW - 9 * DAY, "host": "rig", "model": "qwen3-32b", "tok_s": 88.0},
+             {"ts": NOW - 2 * DAY, "host": "rig", "model": "qwen3-32b", "tok_s": 71.0}]
     by = {f.subject: f for f in run("bench_outcomes", data(bench_runs=lambda: runs, report_cards=lambda: cards))}
     assert by["accept:qwen3-32b"].severity == "info"
     assert by["accept:qwen3-32b"].summary == "Draft accept rate for qwen3-32b fell to 55 %"
@@ -368,8 +434,8 @@ def test_bench_outcomes_accept_and_score():
 def test_bench_outcomes_ignores_steady_runs_and_empty_readers():
     runs = [{"ts": NOW - k * DAY, "model": "m", "host": "rig", "gen_tps": 30.0, "ppt_tps": 800.0,
              "accept_rate": 0.80, "baseline": 0, "ok": 1} for k in (5, 4, 3, 1)]
-    cards = [{"ts": NOW - 9 * DAY, "host": "rig", "model": "m", "score": 88.0},
-             {"ts": NOW - 2 * DAY, "host": "rig", "model": "m", "score": 86.0}]
+    cards = [{"ts": NOW - 9 * DAY, "host": "rig", "model": "m", "tok_s": 88.0},
+             {"ts": NOW - 2 * DAY, "host": "rig", "model": "m", "tok_s": 86.0}]
     assert run("bench_outcomes", data(bench_runs=lambda: runs, report_cards=lambda: cards)) == []
     assert run("bench_outcomes", data()) == []
     lone = data(bench_runs=lambda: runs[:1], report_cards=lambda: cards[:1])
@@ -461,15 +527,15 @@ def test_weekly_digest_orders_and_handles_empty():
             {"host": "d", "summary": "warn soon", "severity": "warning", "predicted_at": NOW + 4 * DAY}]
     (f,) = run("weekly_digest", data(findings=lambda: rows))
     assert f.detail.splitlines() == ["b: crit thing", "d: warn soon", "c: warn late"]
-    assert f.summary == "3 things need attention this week — plus 1 note"
+    assert f.summary == "3 things need attention this week — plus 1 note (counted Monday)"
     (g,) = run("weekly_digest", data())
-    assert g.summary == "Nothing needs attention this week"
+    assert g.summary == "Nothing needs attention this week (counted Monday)"
 
 
 def test_weekly_digest_names_the_week_and_counts_one():
     (f,) = run("weekly_digest", data(findings=lambda: [{"host": "a", "summary": "one", "severity": "warning"}]))
     assert (f.check, f.host, f.severity, f.subject) == ("weekly_digest", None, "info", "2026-W39")
-    assert f.summary == "1 thing needs attention this week" and f.detail == "a: one"
+    assert f.summary == "1 thing needs attention this week (counted Monday)" and f.detail == "a: one"
 
 
 def test_weekly_digest_counts_only_warnings_and_criticals():
@@ -477,7 +543,7 @@ def test_weekly_digest_counts_only_warnings_and_criticals():
             for i in range(4)]
     rows += [{"host": "h", "summary": f"note {i}", "severity": "info", "predicted_at": None} for i in range(47)]
     (f,) = run("weekly_digest", data(findings=lambda: rows))
-    assert f.summary == "4 things need attention this week — plus 47 notes"
+    assert f.summary == "4 things need attention this week — plus 47 notes (counted Monday)"
     assert f.detail.splitlines() == ["h: warn 0", "h: warn 1", "h: warn 2"]
 
 
@@ -486,7 +552,7 @@ def test_weekly_digest_leaves_out_model_only_rows():
             {"host": "b", "summary": "guess", "severity": "critical", "predicted_at": NOW, "verified": "model"},
             {"host": "c", "summary": "note", "severity": "info", "predicted_at": None, "verified": "model"}]
     (f,) = run("weekly_digest", data(findings=lambda: rows))
-    assert f.summary == "1 thing needs attention this week" and f.detail == "a: real"
+    assert f.summary == "1 thing needs attention this week (counted Monday)" and f.detail == "a: real"
 
 
 @pytest.mark.parametrize("check_id", ["power_cost", "model_errors", "model_churn", "alarm_patterns",
@@ -502,7 +568,7 @@ def test_ledger_checks_survive_malformed_readers():
                 energy=lambda s, e: [None, {"ts": None}, {"ts": NOW, "host": None, "wh": "x", "tokens": None}],
                 bench_runs=lambda: [None, {"ok": 1, "accept_rate": None},
                                     {"ok": 1, "host": "rig", "model": "m", "accept_rate": "x", "ts": None}],
-                report_cards=lambda: [None, {"host": "rig", "model": "m", "score": None, "ts": NOW}],
+                report_cards=lambda: [None, {"host": "rig", "model": "m", "tok_s": None, "ts": NOW}],
                 catalog=lambda: [None, {"host": "rig", "pinned": 1, "size_gb": None}],
                 host_mem=lambda: {"rig": None},
                 agents=lambda: [None, {"host": "rig", "version": None}],
@@ -514,3 +580,16 @@ def test_ledger_checks_survive_malformed_readers():
         except fc.Collecting:
             continue
         assert isinstance(out, list)
+
+
+def test_bucket_max_keeps_the_highest_value_per_bucket_at_its_centre():
+    pts = [(0.0, 1.0), (100.0, 5.0), (3599.0, 2.0), (3600.0, 7.0), (9000.0, 3.0)]
+    assert fc._bucket_max(pts, 3600.0) == [(1800.0, 5.0), (5400.0, 7.0), (9000.0, 3.0)]
+    assert fc._bucket_max([], 3600.0) == []
+
+
+def test_bucket_counts_turn_a_per_minute_mean_into_counts_per_bucket():
+    # 30-minute buckets of a per-minute rate: 2 a minute is 60 in the bucket.
+    assert fc.bucket_counts([(0.0, 2.0), (1800.0, 0.5), (3600.0, 0.0)]) == [(0.0, 60.0), (1800.0, 15.0), (3600.0, 0.0)]
+    assert fc.bucket_counts([(0.0, 2.0)]) == [] and fc.bucket_counts(None) == []
+    assert fc.bucket_counts([(5.0, 1.0), (5.0, 1.0)]) == []

@@ -235,7 +235,7 @@ def test_report_cards_score_is_generation_tps_and_skips_rows_without_a_positive_
     c.commit()
     c.close()
     rows = _build(dbs)["report_cards"]()
-    assert rows == [{"ts": 1_700_000_000.0, "host": "box-a", "model": "m1", "score": 42.0}]
+    assert rows == [{"ts": 1_700_000_000.0, "host": "box-a", "model": "m1", "tok_s": 42.0}]
 
 
 def test_audit_expands_logical_actions_and_resolves_the_host_from_the_detail(dbs):

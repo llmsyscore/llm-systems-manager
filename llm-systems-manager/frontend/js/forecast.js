@@ -4,7 +4,8 @@
   'use strict';
 
   const POLL_MS = 60000;          // idle cadence while the panel is on screen
-  const RUN_POLL_MS = 5000;       // cadence while a run is in flight
+  const RUN_POLL_MS = 3000;       // cadence while a run is in flight
+  const DONE_FLASH_MS = 12000;    // how long the strip keeps the finished note
   const OV_STALE_MS = 60000;      // Overall strip refetch age
   const OV_MAX = 6;               // findings listed on the Overall strip
   const AE_SINCE_MAX_MIN = 43200; // alarm engine history ceiling (30 days)
@@ -12,6 +13,7 @@
   const PER_PAGE = 8;             // rows per page in every list
   const HORIZON_DAYS = 30;
   const GO_SCROLL_MS = 300;       // lets the target tab paint before scrolling to its card
+  const SERIES_TTL_MS = 300000;   // a finding's cached history is refetched after this long
 
   const OFF_TEXT = 'Forecast looks at the last two weeks for trends — a disk filling, '
     + 'a load change, a model that keeps failing — and tells you before the alarm does.';
@@ -24,10 +26,15 @@
   let _fetchedAt = 0;
   let _inflight = null;
   let _timer = null;
+  let _runT0 = 0;        // ms the run in flight started, on this browser's clock
+  let _clock = null;     // one-second ticker of the elapsed label
+  let _doneUntil = 0;    // ms until which the finished note stays on the strip
+  let _doneTimer = null;
   const _ui = { tab: 'open', sev: new Set(), host: '', check: '', q: '', sort: 'urgency', dir: 'asc', page: 1, sel: null,
                 view: 'outlook', group: 'host', drawer: true, open: new Set() };
   const _series = {};        // finding id → [[ms, value], …]
   const _state = {};         // finding id → 'loading' | 'done' | 'error'
+  const _seriesAt = {};      // finding id → ms the series was fetched
   const _charts = {};        // finding id → Chart
   const _canvas = {};        // finding id → canvas element
   const _holder = {};        // finding id → canvas wrapper
@@ -80,7 +87,7 @@
       try {
         const r = await fetch('/api/forecast');
         const d = await r.json().catch(() => ({}));
-        if (r.ok && d && d.ok) { _view = d; _error = ''; }
+        if (r.ok && d && d.ok) { noteRun(_view, d); _view = d; _error = ''; }
         else _error = (d && (d.error || d.message)) ? String(d.error || d.message) : ERR_TEXT;
       } catch (_) {
         _error = ERR_TEXT;
@@ -99,9 +106,51 @@
     return n;
   }
 
+  // Tracks a run starting and finishing between two payloads.
+  function noteRun(prev, next) {
+    const run = next.run;
+    if (run && run.state === 'running' && run.elapsed_s != null) _runT0 = Date.now() - run.elapsed_s * 1000;
+    if (prev && prev.run && !run) {
+      _doneUntil = Date.now() + DONE_FLASH_MS;
+      clearTimeout(_doneTimer);
+      _doneTimer = setTimeout(runBar, DONE_FLASH_MS + 50);
+    }
+  }
+
+  function stopClock() {
+    if (_clock) { clearInterval(_clock); _clock = null; }
+  }
+
+  // The strip while a run is queued or in flight: what it is doing, how far along, and for how long.
+  function liveStrip(bar, run) {
+    const st = FC.runStatus(run);
+    const text = mk('div', 'fc-live-text');
+    text.setAttribute('role', 'status');
+    text.append(mk('b', null, st.title), mk('span', null, st.sub));
+    const time = mk('span', 'fc-live-time', run.state === 'running' ? FC.elapsedLabel((Date.now() - _runT0) / 1000) : '');
+    const btn = mk('button', 'mcbtn mcbtn-pri mcbtn-sm', run.state === 'queued' ? 'Starting…' : 'Running…');
+    btn.type = 'button';
+    btn.disabled = true;
+    const track = mk('div', 'fc-bar' + (st.pct == null ? ' fc-bar-wait' : ''));
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', 'Forecast run progress');
+    const fill = mk('i');
+    if (st.pct != null) { fill.style.width = st.pct + '%'; track.setAttribute('aria-valuenow', String(st.pct)); }
+    track.append(fill);
+    bar.append(mk('span', 'fc-pulse'), text, mk('span', 'fc-sp'), time, btn, track);
+    stopClock();
+    if (run.state === 'running') {
+      _clock = setInterval(() => {
+        if (!time.isConnected) { stopClock(); return; }
+        time.textContent = FC.elapsedLabel((Date.now() - _runT0) / 1000);
+      }, 1000);
+    }
+  }
+
   function runBar() {
     const bar = wipe(byId('fcRunbar'));
     if (!bar) return;
+    bar.classList.toggle('fc-running', !!(_view && _view.enabled && _view.run));
     // A failed refresh leaves the last findings on screen with this note.
     if (_error && _view) bar.append(mk('div', 'fc-note', _error));
     if (!_view) return;
@@ -112,15 +161,19 @@
       if (isAdmin()) bar.append(settingsButton());
       return;
     }
+    if (v.run) { liveStrip(bar, v.run); return; }
+    stopClock();
     bar.append(kv('Last run', FC.whenLabel(v.last_run, now) || 'Never'));
     bar.append(kv('Next run', v.enabled ? (FC.whenLabel(v.next_run, now) || 'Not scheduled') : 'Off'));
     bar.append(kv('Tower effort', FC.towerLine(v.tower)));
     bar.append(kv('Looking back', v.window_days ? v.window_days + ' days' : '—'));
     bar.append(mk('span', 'fc-sp'));
+    if (Date.now() < _doneUntil) {
+      bar.append(mk('span', 'fc-done', '✓ Finished' + (v.last_result ? ' — ' + v.last_result : '')));
+    }
     if (canOperate()) {
-      const btn = mk('button', 'mcbtn mcbtn-pri mcbtn-sm', v.running ? 'Running…' : 'Run now');
+      const btn = mk('button', 'mcbtn mcbtn-pri mcbtn-sm', 'Run now');
       btn.type = 'button';
-      btn.disabled = !!v.running;
       btn.addEventListener('click', () => runNow(btn));
       bar.append(btn);
     }
@@ -141,11 +194,12 @@
 
   async function runNow(btn) {
     btn.disabled = true;
+    _doneUntil = 0;
+    if (_view) { _view.run = { state: 'queued' }; _view.running = true; _sig = null; runBar(); }
     try {
       const r = await fetch('/api/forecast/run', { method: 'POST' });
       const d = await r.json().catch(() => ({}));
       if (r.ok) {
-        if (_view) { _view.running = true; _sig = null; }
         toast('Forecast started — findings appear as the checks finish.');
       } else {
         toast((d && (d.error || d.message)) || 'Could not start a forecast run.', 'warning');
@@ -198,6 +252,12 @@
     window.towerAsk(text, { tab: 'dashboard', sub: 'forecast' });
   }
 
+  // Opens the conversation Tower held for a finding's check, read-only.
+  async function openThread(tid) {
+    const ok = await window.towerOpenThread(tid);
+    if (!ok) toast('That conversation is no longer kept.', 'warning');
+  }
+
   function goTo(t) {
     if (typeof switchTab === 'function') switchTab(t.tab);
     if (t.sub && typeof switchSubTab === 'function') switchSubTab(t.tab, t.sub);
@@ -225,13 +285,14 @@
     const box = byId('fcBrief');
     if (!box) return;
     const v = _view || {};
-    const text = v.enabled ? (v.digest || '') : '';
+    const gone = v.enabled && !v.digest ? FC.discardedNote(v.tower) : '';
+    const text = v.enabled ? (v.digest || gone) : '';
     box.hidden = !text;
     if (!text) return;
     const sum = wipe(byId('fcBriefSum'));
     sum.append(mk('span', 'fc-brief-k', "Tower's analysis"), mk('span', 'fc-brief-short', FC.shortDigest(text, 220)));
     const body = wipe(byId('fcBriefBody'));
-    body.append(mk('p', null, text));
+    body.append(mk('p', gone ? 'fc-dim' : null, text));
     const foot = mk('div', 'fc-brief-foot');
     const note = FC.digestNote(v.tower);
     if (note) foot.append(mk('span', 'fc-dim', note));
@@ -516,6 +577,8 @@
       p.append(mk('b', null, 'Likely cause: '), document.createTextNode(split.cause));
       out.push(p);
     }
+    const gone = FC.discardedNote(f);
+    if (gone) out.push(mk('p', 'fc-dim fc-gone', gone));
     if (f.suggested_action) {
       const box = mk('div', 'fc-action');
       box.append(mk('div', 'k', 'Suggested next step'), mk('div', null, f.suggested_action));
@@ -525,6 +588,9 @@
     if (towerReady()) btns.append(button('mcbtn mcbtn-pri mcbtn-sm', 'Ask Tower', () => askTower(FC.askText(f))));
     const go = FC.goTarget(f, isAdmin());
     if (go) btns.append(button('mcbtn mcbtn-ghost mcbtn-sm', go.label, () => goTo(go)));
+    if (FC.canOpenThread(f, isAdmin()) && typeof window.towerOpenThread === 'function' && towerReady()) {
+      btns.append(button('mcbtn mcbtn-ghost mcbtn-sm', 'Open conversation', () => openThread(f.thread_id)));
+    }
     btns.append(mk('span', 'fc-sp'));
     if (canOperate()) btns.append(button('mcbtn mcbtn-ghost mcbtn-sm fc-quiet', 'Dismiss', () => dismiss(f.id)));
     out.push(btns);
@@ -699,8 +765,9 @@
   function loadSeries(f) {
     const g = f.graph;
     if (!g || !g.name || !_canvas[f.id]) return;
-    if (_state[f.id] === 'done') { drawChart(f); return; }
+    if (_state[f.id] === 'done' && FC.seriesFresh(_seriesAt[f.id], Date.now(), SERIES_TTL_MS)) { drawChart(f); return; }
     if (_state[f.id] === 'loading') return;
+    if (_state[f.id] === 'done') drawChart(f);
     _state[f.id] = 'loading';
     fetch(seriesUrl(g))
       .then(r => (r.ok ? r.json() : []))
@@ -712,6 +779,7 @@
           .filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[0] >= lo && p[0] <= hi)
           .sort((a, b) => a[0] - b[0]);
         _state[f.id] = 'done';
+        _seriesAt[f.id] = Date.now();
         drawChart(f);
       })
       .catch(() => {
@@ -802,7 +870,8 @@
       _ui.view = pref('fcView', 'outlook') === 'briefing' ? 'briefing' : 'outlook';
       _ui.drawer = pref('fcDrawer', '1') === '1';
     }
-    const sig = _error + '|' + JSON.stringify(_view);
+    // The run in flight repaints only the strip, never the lists and charts under it.
+    const sig = _error + '|' + JSON.stringify(_view, (k, val) => (k === 'run' || k === 'running' ? undefined : val));
     if (sig === _sig) { runBar(); return; }
     _sig = sig;
     runBar();
@@ -893,6 +962,8 @@
 
   // Overall band repaint: render from cache, refetching at most once a minute.
   function forecastOverallCard() {
+    const strip = document.querySelector('.fc-ov');
+    if (strip && strip.hidden) return;
     paintOverall();
     if (_inflight) return;
     if (Date.now() - _fetchedAt < OV_STALE_MS) return;

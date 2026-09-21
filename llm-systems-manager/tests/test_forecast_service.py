@@ -202,6 +202,31 @@ def test_dismiss_during_a_clearing_run_is_not_overwritten():
     assert row["resolved"] == fx.now() and fx.closed == ["alert-1"]
 
 
+class ClearingStore(forecast.Store):
+    """A store whose get() runs a one-shot hook after the snapshot, to interleave a clear with a dismiss."""
+    def __init__(self, conn_factory):
+        super().__init__(conn_factory)
+        self.hook = None
+
+    def get(self, fid):
+        row = super().get(fid)
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook(row)
+        return row
+
+
+def test_a_clear_during_a_dismiss_is_not_overwritten():
+    fx = Fx(checks=[ck(detect=lambda d: [])], alerts=True, store_cls=ClearingStore)
+    stored, _ = fx.f.merge(finding(predicted_at=NOW + 10 * DAY), "code")
+    fid = stored["id"]
+    fx.store.hook = lambda row: forecast.Store.set(fx.store, fid, only=("open",), status="cleared", resolved=NOW)
+    assert fx.f.dismiss(fid, "alice") is False
+    row = fx.store.get(fid)
+    assert row["status"] == "cleared" and not row["dismissed_by"] and fx.closed == []
+    assert not [e for e in fx.audits if e.get("action") == "forecast.dismiss"]
+
+
 def test_concurrent_run_now_submits_one_job():
     fx = Fx()
     fx.f.ensure_schedule()
@@ -225,12 +250,33 @@ def test_concurrent_run_now_submits_one_job():
             if not r["spec"]["periodic"]] == [queued[0]["id"]]
 
 
+def test_view_reports_a_queued_run_now_and_the_progress_of_a_running_one():
+    seen = []
+    checks = [ck("disk_fill", lambda d: seen.append(dict(fx.f._progress)) or [obj(predicted_at=NOW + 10 * DAY)]),
+              ck("throughput", lambda d: seen.append(dict(fx.f._progress)) or [], title="Throughput"),
+              ck("thermal_trend", lambda d: [], title="Thermal trend")]
+    fx = Fx(checks=checks, checks_disabled=["thermal_trend"])
+    assert fx.f.view()["run"] is None and fx.f.view()["running"] is False
+    fx.f.run_now("alice", "operator")
+    view = fx.f.view()
+    assert view["run"] == {"state": "queued"} and view["running"] is True
+    fx.f.run_once()
+    assert [(p["stage"], p["check"], p["done"], p["total"]) for p in seen] == [("checks", "Disk fill", 0, 2),
+                                                                            ("checks", "Throughput", 1, 2)]
+    assert fx.f._progress is None and fx.f.view()["last_result"] == "1 found, 1 new"
+    fx.f._progress = {"started": NOW - 12.0, "stage": "analysis", "check": None, "done": 2, "total": 2}
+    running = fx.f._run_view([{"status": "running", "spec": {"periodic": True}}])
+    assert running == {"state": "running", "stage": "analysis", "check": None, "done": 2, "total": 2, "elapsed_s": 12.0}
+    assert fx.f._run_view([{"status": "queued", "spec": {"periodic": True}}]) is None
+
+
 def test_finding_view_hides_internal_columns(fx):
     fx.f.merge(finding(predicted_at=NOW + 10 * DAY), "code")
     row = fx.f.view()["findings"][0]
     assert set(row) == {"id", "check", "title", "host", "subject", "severity", "summary", "detail", "since",
                         "predicted_at", "rate", "unit", "confidence", "suggested_action", "graph", "verified",
-                        "status", "first_seen", "last_seen", "resolved", "thread_id", "dismissed_by"}
+                        "status", "first_seen", "last_seen", "resolved", "thread_id", "dismissed_by",
+                        "tower_note"}
     assert row["check"] == "disk_fill" and row["title"] == "Disk fill" and row["graph"] == {"source": "system"}
 
 
@@ -722,7 +768,7 @@ def test_tower_pass_sets_mode_and_verified():
         return [({**code_findings[0], "summary": "Tower text"}, "tower+code")]
 
     tower.start_thread = lambda label: "thread-1"
-    tower.end_thread = lambda tid: calls.append(("end", tid, None))
+    tower.end_thread = lambda tid: calls.append(("end", tid, None)) or True
     fx = Fx(checks=[ck(detect=lambda d: [obj(predicted_at=NOW + 10 * DAY)])], tower_effort="full")
     fx.f = forecast.Forecast(fx.svc, fx.store, cfg=lambda: fx.cfg,
                              data_factory=lambda now, window_s: forecast_checks.CheckData(now=now, window_s=window_s),
@@ -797,6 +843,10 @@ class FakeTower:
         self.digest_out, self.causes_out, self._eligible = digest_out, causes_out, eligible
         self._model, self._tok, self._timed_out = model, tok_s, timed_out
         self.labels, self.ended, self.checks, self.digests, self.caused, self.profiles = [], [], [], [], [], []
+        self.keeps, self.refused_digest = True, False
+
+    def digest_discarded(self):
+        return self.refused_digest
 
     def eligible(self):
         return self._eligible
@@ -823,6 +873,7 @@ class FakeTower:
 
     def end_thread(self, tid):
         self.ended.append(tid)
+        return self.keeps
 
     def __call__(self, check, data, code_findings, thread_id):
         self.checks.append((check.id, len(code_findings), thread_id))
@@ -882,7 +933,8 @@ def test_light_runs_the_digest_only():
     assert run["digest"] == "Disk is the one to watch." and run["tier"] == "light"
     view = fx.f.view()
     assert view["digest"] == "Disk is the one to watch."
-    assert view["tower"] == {"tier": "light", "reason": "Set to Light in Settings", "model": "qwen3-9b"}
+    assert view["tower"] == {"tier": "light", "reason": "Set to Light in Settings", "model": "qwen3-9b",
+                             "digest_discarded": False}
 
 
 def test_standard_runs_the_digest_and_a_cause_per_finding():
@@ -925,6 +977,60 @@ def test_full_investigates_each_flagged_check_and_still_writes_the_digest():
     assert len(tw.digests) == 1 and fx.store.last_run()["digest"] == "Two hosts to watch."
     # every row the conversation already explained is left out, so no cause call is made at all
     assert tw.caused == []
+
+
+def test_a_conversation_that_is_not_kept_leaves_no_link_on_the_finding():
+    checks = [ck("disk_fill", lambda d: [obj(predicted_at=NOW + 10 * DAY)])]
+    fx = Fx(checks=checks, tower_effort="full")
+    tw = FakeTower()
+    _with_tower(fx, tw, checks)
+    fx.f.run_once()
+    assert fx.store.find("disk_fill|rig|models")["thread_id"] == "t1"
+    tw.keeps = False
+    fx.f.run_once()
+    assert tw.ended == ["t1", "t2"] and fx.store.find("disk_fill|rig|models")["thread_id"] is None
+    tw.keeps = True
+    fx.f.run_once()
+    assert fx.store.find("disk_fill|rig|models")["thread_id"] == "t3"
+    # a merge with no conversation behind it leaves the kept link alone
+    fx.f.merge(finding(predicted_at=NOW + 10 * DAY), "code")
+    assert fx.store.find("disk_fill|rig|models")["thread_id"] == "t3"
+
+
+def test_discarded_tower_notes_are_kept_on_the_finding_and_the_run():
+    checks = [ck("disk_fill", lambda d: [obj(predicted_at=NOW + 10 * DAY)])]
+    fx = Fx(checks=checks, tower_effort="standard")
+    fx.f.run_once()
+    fid = fx.store.find("disk_fill|rig|models")["id"]
+    tw = FakeTower(digest_out=None, causes_out={fid: {"tower_note": "discarded"}})
+    tw.refused_digest = True
+    _with_tower(fx, tw, checks)
+    fx.f.run_once()
+    view = fx.f.view()
+    assert view["findings"][0]["tower_note"] == "discarded" and view["findings"][0]["verified"] == "code"
+    assert view["tower"]["digest_discarded"] is True and view["digest"] is None
+    # an accepted cause on the next run wipes the mark
+    tw2 = FakeTower(digest_out="Disk is the one to watch.",
+                    causes_out={fid: {"detail": "d Likely cause: heavy nightly model pulls"}})
+    _with_tower(fx, tw2, checks)
+    fx.f.run_once()
+    view = fx.f.view()
+    assert view["findings"][0]["tower_note"] is None and view["tower"]["digest_discarded"] is False
+
+
+def test_a_run_that_asks_tower_for_no_cause_drops_the_discarded_mark_with_the_cause():
+    checks = [ck("disk_fill", lambda d: [obj(predicted_at=NOW + 10 * DAY)])]
+    fx = Fx(checks=checks, tower_effort="standard")
+    fx.f.run_once()
+    fid = fx.store.find("disk_fill|rig|models")["id"]
+    _with_tower(fx, FakeTower(causes_out={fid: {"tower_note": "discarded"}}), checks)
+    fx.f.run_once()
+    assert fx.store.get(fid)["tower_note"] == "discarded"
+    # the next run makes no cause call, so the finding is plain measured text again: no cause, no mark
+    _with_tower(fx, FakeTower(causes_out={}), checks)
+    fx.f.run_once()
+    row = fx.store.get(fid)
+    assert row["tower_note"] is None and row["verified"] == "code" and row["detail"] == "d"
 
 
 def test_full_never_investigates_the_weekly_digest():

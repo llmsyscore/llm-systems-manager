@@ -23,10 +23,10 @@ function loadAdoption() {
     'window._ovAdopted = new Set(); window._ovHomeMarks = {};',
     fnSrc('_homeCardEl'), fnSrc('_returnOneAdopted'),
     fnSrc('adoptPinnedCards'), fnSrc('returnPinnedCards'),
-    fnSrc('_ovPinned'), fnSrc('_applyBandOrder'),
+    fnSrc('_ovPinned'), fnSrc('_applyBandOrder'), fnSrc('_applyBandHidden'),
     'window._homeCardEl = _homeCardEl; window._returnOneAdopted = _returnOneAdopted;',
     'window.adoptPinnedCards = adoptPinnedCards; window.returnPinnedCards = returnPinnedCards;',
-    'window._ovPinned = _ovPinned; window._applyBandOrder = _applyBandOrder;',
+    'window._ovPinned = _ovPinned; window._applyBandOrder = _applyBandOrder; window._applyBandHidden = _applyBandHidden;',
   ].join('\n');
   (0, eval)(src);
 }
@@ -213,5 +213,24 @@ describe('_applyBandOrder', () => {
     document.querySelector('.ov-band').remove();
     window.layout.overallBandOrder = ['hero'];
     expect(() => _applyBandOrder()).not.toThrow();
+  });
+});
+
+describe('_applyBandHidden', () => {
+  const shown = () => [...document.querySelector('.ov-band').children].filter(s => !s.hidden).map(s => s.dataset.strip);
+
+  it('hides the listed strips and shows them again once they leave the list', () => {
+    window.layout.overallBandHidden = ['tiles', 'bogus'];
+    _applyBandHidden();
+    expect(shown()).toEqual(['hero', 'agents', 'alerts']);
+    window.layout.overallBandHidden = [];
+    _applyBandHidden();
+    expect(shown()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
+  });
+
+  it('shows everything when the layout has no list', () => {
+    delete window.layout.overallBandHidden;
+    expect(() => _applyBandHidden()).not.toThrow();
+    expect(shown()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
   });
 });
