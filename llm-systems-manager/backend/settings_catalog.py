@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import math
+import re
 import tomllib
 from typing import Any, Optional
 
 from config.unified_config import Settings, settings
+import forecast_checks
 import tower_tools
 
 _UNSET_SECRETS = {"", "REPLACE_ME"}
@@ -23,6 +25,7 @@ GROUPS: list[tuple[str, str]] = [
     ("audit", "Audit Log"),
     ("discord", "Discord Bot"),
     ("tower", "Tower assistant"),
+    ("forecast", "Forecast"),
     ("companion", "Companion (PWA)"),
     ("gateway", "Inference Gateway"),
     ("proxies", "Proxied UIs"),
@@ -43,7 +46,9 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
        min: Optional[float] = None, max: Optional[float] = None,
        nullable: bool = False, hot: bool = False, common: bool = False,
        datalist: Optional[str] = None, exclude: bool = False,
-       labels: Optional[dict] = None, groups: Optional[dict] = None) -> dict:
+       labels: Optional[dict] = None, groups: Optional[dict] = None,
+       joins: Optional[str] = None, show_when: Optional[list] = None,
+       word: Optional[str] = None, span: Optional[str] = None) -> dict:
     d = {"path": path, "type": typ, "label": label, "help": help_,
          "group": group, "service": service, "secret": secret}
     if choices is not None:
@@ -66,6 +71,13 @@ def _e(path: str, typ: str, label: str, help_: str, group: str, service: str,
         d["labels"] = labels  # choice value -> display label
     if groups is not None:
         d["groups"] = groups  # group title -> list of choice values, for chips
+    if joins is not None:
+        d["joins"] = joins  # path of the row this control is drawn inside
+        d["word"] = word or ""  # the word shown before it, e.g. "at"
+        if show_when is not None:
+            d["show_when"] = show_when  # host-row values this control shows for
+        if span is not None:
+            d["span"] = span  # "hours": a number with an hours/days unit picker
     return d
 
 
@@ -171,6 +183,34 @@ CATALOG: list[dict] = [
     _e("manager.tower.history_days", "int", "Keep history (days)", "Threads and insights older than this are deleted daily.", "tower", MANAGER, min=1, max=365, hot=True),
     _e("manager.tower.discord", "bool", "Answer in Discord", "The Discord bot's /tower command asks Tower read-only for allowlisted users. Off = the command replies that it is disabled.", "tower", MANAGER, hot=True),
     _e("manager.tower.debug", "bool", "Debug logging", "Log every model call, tool call and approval step for Tower at DEBUG (names, sizes and timings, never text). Hot.", "tower", MANAGER, hot=True),
+    # forecast
+    _e("manager.forecast.enabled", "bool", "Run forecasts", "Looks for trends in stored history and warns before they become alarms. Read-only.", "forecast", MANAGER, hot=True, common=True),
+    _e("manager.forecast.every", "choice", "Run every", "How often all checks run, and the local time runs are counted from. Custom takes any number of hours or days.", "forecast", MANAGER, hot=True, common=True,
+       choices=["1h", "6h", "12h", "daily", "weekly", "custom"],
+       labels={"1h": "Hour", "6h": "6 hours", "12h": "12 hours", "daily": "Day", "weekly": "Week", "custom": "Custom…"}),
+    _e("manager.forecast.every_hours", "int", "Custom interval (hours)", "Hours between runs when Run every is Custom.", "forecast", MANAGER, min=1, max=720, hot=True,
+       joins="manager.forecast.every", show_when=["custom"], word="every", span="hours"),
+    _e("manager.forecast.run_day", "choice", "Run day", "Day of the weekly run.", "forecast", MANAGER, hot=True,
+       joins="manager.forecast.every", show_when=["weekly"], word="on",
+       choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+       labels={"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}),
+    _e("manager.forecast.at", "time", "Run time", "Local time of day runs are counted from.", "forecast", MANAGER, hot=True,
+       joins="manager.forecast.every", word="at"),
+    _e("manager.forecast.checks_disabled", "chips", "Forecast checks", "Click a check to switch it off.", "forecast", MANAGER, hot=True,
+       choices=list(forecast_checks.IDS), exclude=True, labels=dict(forecast_checks.TITLES)),
+    _e("manager.forecast.window_days", "int", "Look back (days)", "How much history each check reads. The alarm engine keeps 30 days.", "forecast", MANAGER, min=7, max=30, hot=True),
+    _e("manager.forecast.alerts", "bool", "Raise alerts", "Send findings through your alert channels as well as the Forecast page.", "forecast", MANAGER, hot=True, common=True),
+    _e("manager.forecast.alert_min_severity", "choice", "Alert from", "Findings below this only show on the Forecast page.", "forecast", MANAGER, choices=["info", "warning", "critical"], hot=True,
+       labels={"info": "Info", "warning": "Warning", "critical": "Critical"}),
+    _e("manager.forecast.tower_effort", "choice", "Tower effort", "How much of a forecast Tower does. Auto picks a level from the Tower model's evaluation score, size, tool check and speed — the better the model, the more it does. Light = one short digest tying the findings together. Standard = the digest plus a likely cause per finding. Full = Tower also investigates each flagged check with its read tools. The code's figures and advice are never replaced. Used only while Tower is on and a model is awake.", "forecast", MANAGER, hot=True, common=True,
+       choices=["auto", "off", "light", "standard", "full"],
+       labels={"auto": "Auto", "off": "Off", "light": "Light", "standard": "Standard", "full": "Full"}),
+    _e("manager.forecast.tower_history", "bool", "Save Tower conversation", "Full effort only: keep each run's Tower investigation threads. They are not yet viewable in the drawer.", "forecast", MANAGER, hot=True),
+    _e("manager.forecast.digest_day", "choice", "Weekly digest", "Day and local time the weekly roll-up is written.", "forecast", MANAGER, hot=True,
+       choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+       labels={"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}),
+    _e("manager.forecast.digest_at", "time", "Weekly digest time", "Local time for the weekly roll-up.", "forecast", MANAGER, hot=True,
+       joins="manager.forecast.digest_day", word="at"),
     # companion
     _e("manager.companion.push_contact", "str", "Push contact", "VAPID sub claim the browser push services see (mailto:…).", "companion", MANAGER),
     _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER, common=True),
@@ -358,6 +398,10 @@ def _coerce(entry: dict, value: Any):
         v = value.strip()
         if typ == "choice" and v not in entry["choices"]:
             raise ValueError(f"must be one of: {', '.join(entry['choices'])}")
+    elif typ == "time":
+        if not isinstance(value, str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value.strip()):
+            raise ValueError("expected a time like 03:00")
+        v = value.strip()
     elif typ in ("list", "chips"):
         if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
             raise ValueError("expected a list of strings")

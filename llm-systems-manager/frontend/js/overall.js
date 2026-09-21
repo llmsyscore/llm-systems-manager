@@ -134,6 +134,8 @@ function _ovPaintBand(llama, lms, vllm) {
   _ovPaintTiles(OV.tiles(llama, lms, vllm, rates, Date.now()));
   _ovPaintAgents(OV.agentRows([llama, lms, vllm], window._agentsByProvider || {}));
   _ovPaintAlerts();
+  // Forecast summary card (#1031) — self-throttled fetch, renders from cache.
+  if (typeof forecastOverallCard === 'function') forecastOverallCard();
 }
 
 function _ovPaintToplines(stats) {

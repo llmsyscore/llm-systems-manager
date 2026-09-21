@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
@@ -151,6 +151,24 @@ class ManagerTower(BaseModel):
     history_days: int = 30
     discord: bool = False       # the Discord bot's /tower command may ask Tower (read-only)
     debug: bool = False        # per-module DEBUG trace in the manager log
+
+
+class ManagerForecast(BaseModel):
+    """Forecast (#1031). Off by default; read-only trend checks over stored history."""
+    model_config = _MODEL_CFG
+    enabled: bool = False
+    every: Literal["1h", "6h", "12h", "daily", "weekly", "custom"] = "daily"
+    every_hours: int = Field(default=8, ge=1, le=720)
+    run_day: Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"
+    at: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    checks_disabled: list[str] = Field(default_factory=list)
+    window_days: int = Field(default=14, ge=7, le=30)
+    alerts: bool = False
+    alert_min_severity: Literal["info", "warning", "critical"] = "warning"
+    tower_effort: Literal["auto", "off", "light", "standard", "full"] = "auto"
+    tower_history: bool = False
+    digest_day: Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"
+    digest_at: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class ManagerModelMeta(BaseModel):
@@ -366,6 +384,7 @@ class ManagerConfig(BaseModel):
     energy: ManagerEnergy = Field(default_factory=ManagerEnergy)
     discord: ManagerDiscord = Field(default_factory=ManagerDiscord)
     tower: ManagerTower = Field(default_factory=ManagerTower)
+    forecast: ManagerForecast = Field(default_factory=ManagerForecast)
     model_meta: ManagerModelMeta = Field(default_factory=ManagerModelMeta)
     companion: ManagerCompanion = Field(default_factory=ManagerCompanion)
     history: ManagerHistory = Field(default_factory=ManagerHistory)

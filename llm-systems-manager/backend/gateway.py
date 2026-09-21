@@ -17,6 +17,7 @@ from flask import Response, jsonify, request as flask_request
 import agent_registry
 import auth
 import energy
+import forecast_wiring
 import gateway_usage
 import provider_state
 import providers
@@ -253,6 +254,8 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
     _dbg = log.isEnabledFor(logging.DEBUG)
     try:
         cands = _candidates(model_id, None, provider)
+        if cands:
+            forecast_wiring.count_gateway(model_id, "requests")
         if _dbg:
             log.debug("gateway completion label=%s model=%s provider=%s stream=%s candidates=%d",
                       label, model_id or "-", provider, False, len(cands))
@@ -266,6 +269,7 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
             if r is None:
                 hit_timeout = bool(getattr(err, "timed_out", False))
                 timed_out |= hit_timeout
+                forecast_wiring.count_gateway(model_id, "timeouts" if hit_timeout else "failovers")
                 errors.append(f"{_label(agent)}: {'timeout' if hit_timeout else err}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=%s", _label(agent),
@@ -273,12 +277,14 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
                 continue
             if r.status_code in _FAILOVER_STATUSES or (timed_out and r.status_code >= 400):
                 # An earlier timeout keeps failover alive past a sibling's 4xx.
+                forecast_wiring.count_gateway(model_id, "failovers")
                 errors.append(f"{_label(agent)}: {r.status_code}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), r.status_code)
                 continue
             if not (200 <= r.status_code < 300):
                 gateway_usage.record_error()
+                forecast_wiring.count_gateway(model_id, "errors")
                 if _dbg:
                     log.debug("gateway completion failed label=%s reason=upstream %d errors=%s",
                               label, r.status_code, "; ".join(errors) or "-")
@@ -297,6 +303,7 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
                           (u or ("-", "-"))[0], (u or ("-", "-"))[1], _finish_of(out))
             return out
         gateway_usage.record_error()
+        forecast_wiring.count_gateway(model_id, "errors")
         if _dbg:
             log.debug("gateway completion failed label=%s reason=%s errors=%s",
                       label, "timeout" if timed_out else "no_backend", "; ".join(errors) or "-")
@@ -337,6 +344,8 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
     _dbg = log.isEnabledFor(logging.DEBUG)
     try:
         cands = _candidates(model_id, None, provider)
+        if cands:
+            forecast_wiring.count_gateway(model_id, "requests")
         if _dbg:
             log.debug("gateway completion label=%s model=%s provider=%s stream=%s candidates=%d",
                       label, model_id or "-", provider, True, len(cands))
@@ -344,6 +353,7 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
             upstream = _dial_stream(agent, path, stream_body, read_timeout)
             if upstream is None or upstream is _TIMED_OUT:
                 timed_out |= upstream is _TIMED_OUT
+                forecast_wiring.count_gateway(model_id, "timeouts" if upstream is _TIMED_OUT else "failovers")
                 reason = "timeout" if upstream is _TIMED_OUT else "unreachable"
                 errors.append(f"{_label(agent)}: {reason}")
                 if _dbg:
@@ -351,6 +361,7 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                 continue
             if upstream.status_code in _FAILOVER_STATUSES:
                 upstream.close()
+                forecast_wiring.count_gateway(model_id, "failovers")
                 errors.append(f"{_label(agent)}: {upstream.status_code}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=status %d",
@@ -362,11 +373,13 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                 upstream.close()
                 if timed_out:
                     # An earlier timeout keeps failover alive past a sibling's 4xx.
+                    forecast_wiring.count_gateway(model_id, "failovers")
                     errors.append(f"{_label(agent)}: {status}")
                     if _dbg:
                         log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), status)
                     continue
                 gateway_usage.record_error()
+                forecast_wiring.count_gateway(model_id, "errors")
                 if _dbg:
                     log.debug("gateway completion failed label=%s reason=upstream %d errors=%s",
                               label, status, "; ".join(errors) or "-")
@@ -412,6 +425,7 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                 if e.err_type != "timeout" or not first:
                     raise
                 timed_out = True
+                forecast_wiring.count_gateway(model_id, "timeouts")
                 errors.append(f"{_label(agent)}: timeout")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=timeout", _label(agent))
@@ -419,6 +433,7 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                 gateway_usage.end(aid)
                 upstream.close()
         gateway_usage.record_error()
+        forecast_wiring.count_gateway(model_id, "errors")
         if _dbg:
             log.debug("gateway completion failed label=%s reason=%s errors=%s",
                       label, "timeout" if timed_out else "no_backend", "; ".join(errors) or "-")
@@ -454,6 +469,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
     _dbg = log.isEnabledFor(logging.DEBUG)
     try:
         cands = _candidates(model_id, agent_id, provider)
+        if cands:
+            forecast_wiring.count_gateway(model_id, "requests")
         if _dbg:
             log.debug("gateway completion caller=%s model=%s provider=%s stream=%s candidates=%d",
                       caller, model_id or "-", provider, wants_stream, len(cands))
@@ -464,6 +481,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                 if resp is not None:
                     stream_owns_client = getattr(resp, "gw_client_owned", False)
                     return resp
+                forecast_wiring.count_gateway(model_id, "failovers")
                 continue
             aid = agent.get("agent_id")
             gateway_usage.begin(aid)
@@ -472,11 +490,13 @@ def _handle_completion(sub: str, provider=None) -> Response:
             finally:
                 gateway_usage.end(aid)
             if r is None:
+                forecast_wiring.count_gateway(model_id, "failovers")
                 errors.append(f"{_label(agent)}: {err}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=unreachable", _label(agent))
                 continue
             if r.status_code in _FAILOVER_STATUSES:
+                forecast_wiring.count_gateway(model_id, "failovers")
                 errors.append(f"{_label(agent)}: {r.status_code}")
                 if _dbg:
                     log.debug("gateway candidate skipped host=%s reason=status %d", _label(agent), r.status_code)
@@ -493,6 +513,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                         gateway_usage.record(aid, *u)
             else:
                 gateway_usage.record_error()
+                forecast_wiring.count_gateway(model_id, "errors")
             if _dbg:
                 log.debug("gateway completion end caller=%s host=%s total_ms=%d prompt_tokens=%s "
                           "completion_tokens=%s finish=%s", caller, _label(agent),
@@ -507,6 +528,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
             log.debug("gateway completion failed caller=%s reason=no_backend errors=%s",
                       caller, "; ".join(errors) or "-")
         gateway_usage.record_error()
+        forecast_wiring.count_gateway(model_id, "errors")
         if not errors:
             # Zero candidates = nothing registered/configured for the provider —
             # a config state, not transient: non-retryable status + distinct type.

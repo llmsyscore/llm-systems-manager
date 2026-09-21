@@ -16,6 +16,7 @@ from pathlib import Path
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
 import autopilot_planner as pl  # type: ignore[import-not-found]  # sibling
+import forecast_wiring  # type: ignore[import-not-found]  # sibling; #1031 counters
 import manager_db  # type: ignore[import-not-found]  # sibling
 import providers        # type: ignore[import-not-found]  # sibling
 
@@ -990,10 +991,13 @@ def make_executor(deps: dict, entries_by_key):
 
         try:
             if action.kind in ("load", "scale_up"):
+                forecast_wiring.count("model_loads")
                 ok = _load(action)
             elif action.kind in _UNLOAD_KINDS:
+                forecast_wiring.count("model_unloads")
                 ok = _unload(action)
             elif action.kind == "wake":
+                forecast_wiring.count("model_wakes")
                 ok = _call(action.provider, "POST", "/llama/server/wake", {})
             else:
                 ok = False

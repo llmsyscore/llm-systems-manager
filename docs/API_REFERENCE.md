@@ -1197,6 +1197,25 @@ Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 
 
 ---
 
+## Forecast
+
+Scheduled, read-only trend analysis over stored history (#1031). Ships disabled and runs with Tower off; every route needs a dashboard session.
+
+### `GET /api/forecast`
+Any session. 401 `unauthorized` with no session. Returns `{ok, enabled, mode, digest, tower, last_run, next_run, running, window_days, checks, findings, cleared}`. `tower` is `null` while the tower effort was `off` for the last run, else `{tier, reason, model}`; `digest` is the last run's Tower digest (`null` when Tower wrote none). `checks` is one entry per detector — `{id, title, state: pending|collecting|ok|failed|off, have_days, min_days, found}`. `findings` (open) and `cleared` (the last 200 resolved, `status` `cleared` or `dismissed`) share a shape: `{id, host, subject, severity, summary, detail, since, predicted_at, rate, unit, confidence, suggested_action, graph, verified, status, first_seen, last_seen, resolved, thread_id, dismissed_by, check, title}`. `graph` is `null` or `{source, name, host, start, end, threshold, fit: {slope_per_s, intercept}|null, agg: mean|max, limit}` — `agg` is how the page buckets the series, and `limit: false` marks `threshold` as a reference level (a benchmark baseline) rather than a limit the projection stops at.
+
+---
+
+### `POST /api/forecast/run`
+Operator or admin (401 `unauthorized`, 403 `operator role required`). Queues one one-shot run. Returns `{ok, job_id}`, 202. 409 `Forecast is off` while `manager.forecast.enabled` is false; 409 `A forecast run is already in progress` while one is live. Track it via `GET /api/jobs/<job_id>`.
+
+---
+
+### `POST /api/forecast/<id>/dismiss`
+Operator or admin (401 `unauthorized`, 403 `operator role required`). Closes one open finding and its alert (if any). Returns `{ok: true}`; 404 `not found` for an unknown or already-resolved finding id.
+
+---
+
 ## Admin
 
 These endpoints require an admin-role session.

@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents', tools: 'openclaw' };
 
 const _SUB_TAB_MAP = {
-  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager'] },
+  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager','forecast'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing','settings'] },
   tools:     { tabId: 'toolsTab',     prefix: 'tools', subs: ['openclaw','llmchat','imggen'] },
@@ -131,6 +131,11 @@ function switchSubTab(parent, sub) {
   if (parent === 'dashboard' && sub === 'energy'
       && typeof initEnergyTab === 'function') {
     initEnergyTab();
+  }
+  // Forecast sub-tab loads its findings and starts its poll on entry (#1031).
+  if (parent === 'dashboard' && sub === 'forecast'
+      && typeof forecastLoad === 'function') {
+    forecastLoad();
   }
   // Manager sub-tab is poll-gated to skip when not active; kick a one-shot
   // refresh on entry so cards aren't stale up to the 10s interval boundary.

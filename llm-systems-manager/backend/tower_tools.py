@@ -915,10 +915,30 @@ def filter_log_lines(lines: list, *, search: Optional[str] = None, level: Option
     return {"lines": kept[start:end], "matched": total, "older": start, "newer": total - end}
 
 
+_FORECAST_OFF = {"enabled": False, "findings": []}
+
+
+def _local_day(ts) -> Optional[str]:
+    """An epoch or ISO timestamp as a local YYYY-MM-DD; None when unreadable."""
+    import datetime as _dt
+    n = parse_ts(ts)
+    return _dt.datetime.fromtimestamp(n).strftime("%Y-%m-%d") if n is not None else None
+
+
+def forecast_view(data) -> dict:
+    """Forecast state for the model: the run's own keys plus one trimmed row per finding."""
+    if not isinstance(data, dict):
+        return dict(_FORECAST_OFF)
+    rows = [{"host": f.get("host"), "check": f.get("check_title") or f.get("check"), "severity": f.get("severity"),
+             "summary": f.get("summary"), "predicted": _local_day(f.get("predicted_at")), "verified": f.get("verified")}
+            for f in (data.get("findings") or []) if isinstance(f, dict)]
+    return {**{k: v for k, v in data.items() if k != "findings"}, "findings": rows}
+
+
 # Every tool name build_registry can return, for the settings chip list.
 READ_TOOL_NAMES = ("hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history",
-                   "alert_detail", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health",
-                   "log_tail", "config_get", "help", "support", "wait_until", "audit_log", "jobs")
+                   "alert_detail", "forecast", "energy_summary", "gateway_flow", "recent_runs", "bench_speed",
+                   "service_health", "log_tail", "config_get", "help", "support", "wait_until", "audit_log", "jobs")
 ASK_TOOL_NAMES = ("ask_operator",)
 QUESTION_CHOICES_MAX = 6
 QUESTIONS_MAX = 4
@@ -1123,6 +1143,10 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              lambda a: deps["alarm_history"](a["window"], a["group_by"], a["top"], a.get("host"), a.get("rule"), a)),
         Tool("alert_detail", "One alert by id.", _obj({"alert_id": {"type": "string"}}, ["alert_id"]), "read", "read",
              lambda a: deps["alert"](a["alert_id"]) or {"error": "alert not found"}),
+        Tool("forecast", "Open Forecast findings (trends predicted from stored history) and each check's state: "
+             "the host, check, severity, one-line summary, the predicted date and whether the figures were verified.",
+             _obj({}), "read", "read",
+             lambda a: forecast_view((deps.get("forecast") or (lambda: dict(_FORECAST_OFF)))())),
         Tool("energy_summary", "Energy and cost for a window or a since/until range: fleet totals plus one row per host "
              "(kWh, cost, average watts, tokens). group_by adds a per-day or per-hour breakdown; host narrows to one host.",
              _obj({"window": {"type": "string", "enum": ["today", "24h", "7d", "month"], "default": "today"},
@@ -1513,6 +1537,7 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
               bench_start: Optional[Callable[[dict], dict]] = None,
               bench_options: Optional[Callable[[dict], list]] = None,
               card_result: Optional[Callable[[str], Optional[dict]]] = None,
+              forecast: Optional[Callable[[], dict]] = None,
               jobs_service=None) -> dict:
     """Production readers: Discord bot deps for hosts/host/alarms, plus models from the
     gateway index + polled provider state, energy, flow, runs, speed, health, log tail, masked config."""
@@ -2123,6 +2148,7 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         "pinned": pinned, "docs": docs_search,
         "run_result": lambda rid: next(iter(tools_runs(None, 1, {"run_id": rid}) or []), None) if rid else None,
         "card_result": card_result or (lambda jid: None),
+        "forecast": forecast or (lambda: dict(_FORECAST_OFF)),
         "bench_start": bench_start or (lambda a: {"ok": False, "message": "benchmarks are not wired"}),
         "bench_options": bench_options or (lambda a: []),
     }

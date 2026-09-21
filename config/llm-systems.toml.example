@@ -184,6 +184,25 @@ history_days = 30
 discord = false               # the Discord bot's /tower command may ask Tower (read-only)
 debug = false                 # per-module DEBUG trace in the manager log; payload text is never logged
 
+[manager.forecast]
+# Forecast (#1031): looks for trends in stored history (disk filling, load
+# shifts, failing models) and warns before the alarm does. Read-only. Off by default.
+enabled = false
+every = "daily"             # 1h | 6h | 12h | daily | weekly | custom
+every_hours = 8             # hours between runs when every = "custom" (1-720; 48 = every 2 days)
+run_day = "mon"             # day of the weekly run
+at = "03:00"                # local time runs are counted from (HH:MM)
+checks_disabled = []        # check ids to skip, e.g. ["idle_waste"]
+window_days = 14            # history to read, 7-30
+alerts = false               # also raise alarm-engine alerts
+alert_min_severity = "warning"
+tower_effort = "auto"        # auto | off | light | standard | full: how much of a forecast Tower does
+                             # auto picks the level from the Tower model's evaluation, size, tool check and speed
+tower_history = false        # Full effort only: keep each run's Tower investigation threads
+                             # (they are not yet viewable in the Tower drawer)
+digest_day = "mon"
+digest_at = "08:00"          # local time of the weekly roll-up (HH:MM)
+
 [manager.model_meta]
 # Hugging Face model metadata reader (#878): author-recommended sampling from
 # generation_config.json / model cards. Token only needed for gated repos.

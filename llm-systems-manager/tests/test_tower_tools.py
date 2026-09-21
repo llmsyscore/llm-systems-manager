@@ -61,7 +61,7 @@ def _cfg(**over):
 
 
 READ = {"hosts_overview", "host_detail", "host_history", "models", "model_profiles", "alarms", "alarm_history", "alert_detail",
-        "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get",
+        "forecast", "energy_summary", "gateway_flow", "recent_runs", "bench_speed", "service_health", "log_tail", "config_get",
         "help", "support", "audit_log", "wait_until", "jobs"}
 ACT = {"load_model", "unload_model", "wake_server", "restart_provider", "ack_alert", "close_alert", "start_benchmark",
        "resume_alert", "cancel_job"}
@@ -1632,6 +1632,26 @@ def test_jobs_tool_lists_and_details():
     out, ok_ = tt.run_tool(t, {"job_id": "j1"})
     assert ok_ and out["id"] == "j1"
     assert tt.validate_args(t, {"status": "bogus"})[1]
+
+
+def test_forecast_tool_trims_each_finding():
+    deps = _deps()
+    deps["forecast"] = lambda: {"enabled": True, "checks": [{"id": "disk_fill", "state": "ok"}],
+                                "findings": [{"check": "disk_fill", "check_title": "Disk fill", "host": "rig",
+                                              "severity": "warning", "summary": "/models full in 10 days",
+                                              "detail": "long detail the model does not need", "since": 1.8e9,
+                                              "predicted_at": 1800864000.0, "rate": 18.6, "unit": "GB/day",
+                                              "confidence": "high", "suggested_action": "Free space.",
+                                              "graph": {"points": [1, 2]}, "fingerprint": "disk_fill|rig|models",
+                                              "verified": "tower+code"}]}
+    t = tt.build_registry(deps)["forecast"]
+    assert (t.kind, t.tier) == ("read", "read") and "forecast" in tt.READ_TOOL_NAMES
+    out, ok_ = tt.run_tool(t, {})
+    day = time.strftime("%Y-%m-%d", time.localtime(1800864000.0))
+    assert ok_ and out["enabled"] is True and out["checks"] == [{"id": "disk_fill", "state": "ok"}]
+    assert out["findings"] == [{"host": "rig", "check": "Disk fill", "severity": "warning",
+                                "summary": "/models full in 10 days", "predicted": day, "verified": "tower+code"}]
+    assert tt.build_registry({})["forecast"].run({}) == {"enabled": False, "findings": []}
 
 
 def test_cancel_job_tool_is_an_operate_action_with_precheck_and_card():

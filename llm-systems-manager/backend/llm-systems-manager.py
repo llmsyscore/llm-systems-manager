@@ -177,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.18-5"
+__version__ = "v2026.09.21-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1933,6 +1933,7 @@ def llama_server_wake():
     # the wake forces a reload from disk that can take many seconds.
     data     = flask_request.get_json(silent=True) or {}
     model_id = data.get("model_id") or data.get("model")
+    forecast_wiring.count("model_wakes")
     return proxies.proxy_to_primary("llama", "POST", "/llama/server/wake",
                                     json=(data or None), timeout=WAKE_TIMEOUT_S, model_id=model_id)
 def _read_ini():
@@ -1963,12 +1964,14 @@ def llm_models():
 def llm_load():
     data     = flask_request.get_json(force=True)
     model_id = (data or {}).get("model_id") or (data or {}).get("model")
+    forecast_wiring.count("model_loads")
     return proxies.proxy_to_primary("llama", "POST", "/llama/load",
                                  json=data, timeout=60, model_id=model_id)
 @app.route("/api/llm/unload", methods=["POST"])
 def llm_unload_model():
     data     = flask_request.get_json(force=True)
     model_id = (data or {}).get("model_id") or (data or {}).get("model")
+    forecast_wiring.count("model_unloads")
     return proxies.proxy_to_primary("llama", "POST", "/llama/unload",
                                  json=data, model_id=model_id)
 @app.route("/api/llm/config", methods=["GET"])
@@ -3113,10 +3116,10 @@ def _push_bench_metrics(points: list) -> None:
     _ae_metrics_batch(points, _bench_push_state, "benchmark baseline")
 
 
-def _ae_ingest_alert(payload: dict) -> bool:
-    """POST one pre-formed alert to the alarm engine's generic ingest route."""
+def _ae_ingest_post(payload: dict):
+    """POST one pre-formed alert to the alarm engine's generic ingest route; the response, or None."""
     if not _alarm_engine_url:
-        return False
+        return None
     headers = {}
     ingest_tok = (settings.alarm_engine.ingest_token or "").strip()
     if ingest_tok and ingest_tok != "REPLACE_ME":
@@ -3125,10 +3128,42 @@ def _ae_ingest_alert(payload: dict) -> bool:
         r = _ae_session.post(f"{_alarm_engine_url.rstrip('/')}/api/alarm/ingest", json=payload, headers=headers, timeout=5)
     except requests.RequestException as e:
         log.warning(f"alarm ingest failed: {e}")
-        return False
+        return None
     if not r.ok:
         log.warning(f"alarm ingest failed: HTTP {r.status_code}")
-    return bool(r.ok)
+    return r
+
+
+def _ae_ingest_alert(payload: dict) -> bool:
+    """True when the alert reached the alarm engine."""
+    r = _ae_ingest_post(payload)
+    return bool(r is not None and r.ok)
+
+
+def _ae_ingest_alert_id(payload: dict) -> "str | None":
+    """The alert id the ingest route created; None when the post failed or the alert was de-duplicated."""
+    r = _ae_ingest_post(payload)
+    if r is None or not r.ok:
+        return None
+    try:
+        body = r.json()
+    except ValueError:
+        return None
+    ids = (body or {}).get("alert_ids") if isinstance(body, dict) else None
+    return (ids or [None])[0]
+
+
+def _ae_alert_close(alert_id: str) -> bool:
+    """Close one alert on the alarm engine; HTTP 200 and 409 both count as closed. Never raises."""
+    if not _alarm_engine_url or not alert_id:
+        return False
+    try:
+        r = _ae_session.post(f"{_alarm_engine_url.rstrip('/')}/api/alarm/alerts/"
+                             f"{urllib.parse.quote(str(alert_id), safe='')}/close", timeout=5)
+    except requests.RequestException as e:
+        log.warning(f"alarm close failed: {e}")
+        return False
+    return r.status_code in (200, 409)
 
 
 @app.route("/api/lmstudio/models")
@@ -3157,6 +3192,7 @@ def lmstudio_server_log():
 def lmstudio_load():
     data     = flask_request.get_json(force=True)
     # model_id lets lms_model_pins steer the target agent (llama parity).
+    forecast_wiring.count("model_loads")
     return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200,
                                     model_id=(data or {}).get("model"))
 def _valid_model_id(s) -> bool:
@@ -3173,6 +3209,7 @@ def _valid_hf_repo(s) -> bool:
 @app.route("/api/lmstudio/unload", methods=["POST"])
 def lmstudio_unload():
     data     = flask_request.get_json(force=True)
+    forecast_wiring.count("model_unloads")
     return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=120,
                                     model_id=(data or {}).get("model"))
 
@@ -3540,6 +3577,9 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "tower.config", "label": "Model pin / thread delete", "default_on": True},
         {"key": "tower.action", "label": "Action approved / denied / playbook applied", "default_on": True},
         {"key": "tower.violation", "label": "Rule-bypass attempt", "default_on": True}]},
+    {"key": "forecast", "title": "Forecast", "events": [
+        {"key": "forecast.run", "label": "Forecast run", "default_on": True},
+        {"key": "forecast.dismiss", "label": "Forecast finding dismissed", "default_on": True}]},
     {"key": "jobs", "title": "Jobs", "events": [
         {"key": "jobs", "label": "Job submitted / cancelled / failed", "default_on": True}]},
 ]
@@ -3608,6 +3648,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "tower.timer.complete": "Tower timer reported", "tower.timer.failed": "Tower timer failed",
     "tower.playbook.apply": "Applied a Tower playbook", "tower.playbook.auto": "Tower applied a safe playbook",
     "tower.violation": "Tower rule-bypass attempt",
+    "forecast.run": "Forecast run", "forecast.dismiss": "Dismissed a forecast finding",
     "jobs.submit": "Submitted a job", "jobs.cancel": "Cancelled a job", "jobs.failed": "A job failed",
     "jobs.ack": "Acknowledged a failed job",
 }
@@ -3747,7 +3788,8 @@ def _audit_reload_config() -> None:
 
 
 _AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation", "tower.playbook.auto": "tower.action",
-                                          "jobs.failed": "jobs"}
+                                          "jobs.failed": "jobs", "forecast.run": "forecast.run",
+                                          "forecast.dismiss": "forecast.dismiss"}
 
 
 def _audit_event_for(action: str) -> str:
@@ -6418,6 +6460,241 @@ _tower_watcher = tower_watch.Watcher(_tower_store, deps=_tower_deps, registry_fa
                                      report_violation=_tower_report_violation, audit=_tower_audit_auto)
 tower_watch.register_routes(app, ctx, runs=_tower_runs, registry_factory=_tower_registry, deps=_tower_deps)
 
+# ── Forecast (#1031): scheduled read-only trend analysis over stored history ──
+import forecast  # type: ignore[import-not-found]  # sibling; #1031
+import forecast_checks  # type: ignore[import-not-found]  # sibling; #1031
+import forecast_sampler  # type: ignore[import-not-found]  # sibling; #1031
+import forecast_tower  # type: ignore[import-not-found]  # sibling; #1031
+import forecast_wiring  # type: ignore[import-not-found]  # sibling; #1031
+
+
+def _forecast_tz_offset_s() -> float:
+    """Seconds east of UTC for the local zone right now."""
+    try:
+        return forecast_wiring.tz_offset_s()
+    except Exception as e:  # noqa: BLE001 — UTC is a safe fallback
+        log.debug("forecast tz offset failed: %s", type(e).__name__)
+        return 0.0
+
+
+def _forecast_approved_agents() -> dict:
+    return {aid: a for aid, a in (agent_registry.load_agents().get("agents") or {}).items()
+            if a.get("status") == "approved"}
+
+
+def _forecast_hosts() -> list:
+    """Hostnames of every approved agent plus the manager's own."""
+    names = {str(a["hostname"]) for a in _forecast_approved_agents().values() if a.get("hostname")}
+    names.add(_HOSTNAME)
+    return sorted(names)
+
+
+def _forecast_agent_hostnames() -> dict:
+    """agent_id → hostname for every registered agent; built once per forecast run."""
+    return {str(aid): str(a.get("hostname") or "")
+            for aid, a in (agent_registry.load_agents().get("agents") or {}).items()}
+
+
+def _forecast_host_alias(value) -> str:
+    """One host name as the fleet spells it; the raw value when nothing matches (#1039)."""
+    try:
+        out, _note, refusal = tower_tools.resolve_host(value, _forecast_hosts())
+        return str(value or "") if refusal else str(out or value or "")
+    except Exception as e:  # noqa: BLE001 — the raw name still keys a finding
+        log.debug("forecast host alias failed: %s", type(e).__name__)
+        return str(value or "")
+
+
+def _forecast_host_samples() -> dict:
+    """Freshest system block per approved hostname."""
+    out = {}
+    view = energy.store_view_from_provider_state()
+    for aid, a in _forecast_approved_agents().items():
+        host = a.get("hostname")
+        if not host:
+            continue
+        sample, _ls = discord_bot._freshest(view.get(aid) or {})
+        if sample:
+            out[str(host)] = energy._sys_block(sample)
+    return out
+
+
+def _forecast_agent_rows() -> list:
+    """{host, version, last_seen} per approved agent."""
+    return [{"host": str(a["hostname"]), "version": str(a.get("version") or ""),
+             "last_seen": a.get("last_heartbeat")}
+            for a in _forecast_approved_agents().values() if a.get("hostname")]
+
+
+def _forecast_catalog() -> list:
+    """{host, model, size_gb, pinned} for every model an approved host holds."""
+    sizes = autopilot._prod_model_sizes() or {}
+    rows = []
+    for e in _tower_gateway_entries():
+        prov, mid = str(e.get("provider") or "llama"), e.get("id")
+        if not mid:
+            continue
+        size_gb = float(sizes.get(f"{prov}:{mid}") or 0) / 1024.0
+        try:
+            pin = agent_registry.pinned_agent(prov, mid) or {}
+        except Exception:  # noqa: BLE001 — an unreadable registry means unpinned
+            pin = {}
+        pin_host = str(pin.get("hostname") or "").lower()
+        for host in e.get("catalog_hosts") or []:
+            rows.append({"host": str(host), "model": str(mid), "size_gb": size_gb,
+                         "pinned": str(host).lower() == pin_host and bool(pin_host)})
+    return rows
+
+
+def _forecast_ae_get(path: str):
+    """GET on the alarm engine's management API; None when no alarm engine is configured."""
+    if not _alarm_engine_url:
+        return None
+    return _ae_session.get(f"{_alarm_engine_url.rstrip('/')}{path}", timeout=(3, 20))
+
+
+def _forecast_data(now: float, window_s: float):
+    """CheckData bound to the live readers; never raises."""
+    readers = {}
+    try:
+        by_agent = _forecast_agent_hostnames()
+        readers = forecast_wiring.build_readers(
+            ae_get=_forecast_ae_get,
+            db_paths={"manager": DB_PATH, "audit": AUDIT_DB_PATH, "energy": ENERGY_DB_PATH},
+            now=float(now), hosts=_forecast_hosts, host_samples=_forecast_host_samples,
+            agent_rows=_forecast_agent_rows, host_of_agent=lambda aid: by_agent.get(str(aid or ""), ""),
+            catalog=_forecast_catalog, latest_agent_version=_latest_agent_version,
+            price_kwh=report_card._price_kwh, findings=_forecast_store.open)
+    except Exception as e:  # noqa: BLE001 — a failed build leaves every check "failed", not the run
+        log.warning("forecast readers unavailable: %s", type(e).__name__)
+    return forecast_checks.CheckData(now=float(now), window_s=float(window_s),
+                                     tz_offset_s=_forecast_tz_offset_s(), **readers)
+
+
+def _forecast_audit_auto(info: dict) -> None:
+    """Audit row for a forecast run or dismissal (no request context)."""
+    action = str(info.get("action") or "forecast.run")
+    event = _audit_event_for(action)
+    if event in _AUDIT_CFG["disabled"]:
+        return
+    ok = bool(info.get("ok"))
+    _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), str(info.get("actor") or "forecast"),
+                   "operator", "", "session", "POST", "forecast", action, str(info.get("target") or ""),
+                   200 if ok else 502, "ok" if ok else "error",
+                   json.dumps(info.get("detail") or {}, default=str), event))
+
+
+def _forecast_model_signals(model_id: str) -> dict:
+    """What is known about the Tower model's quality, for the forecast effort tier; every lookup guarded."""
+    mid = str(model_id or "")
+    out: dict = {"score_pct": None, "size_b": None, "tool_grade": None, "tok_s": None}
+    if not mid:
+        return out
+    try:
+        out["score_pct"] = (_tower_evals.store.latest_for(mid) or {}).get("score_pct")
+    except Exception as e:  # noqa: BLE001 — a missing evaluation only lowers the tier
+        log.debug("forecast eval signal failed: %s", type(e).__name__)
+    try:
+        out["size_b"] = tower_check.size_b(mid)
+    except Exception as e:  # noqa: BLE001
+        log.debug("forecast size signal failed: %s", type(e).__name__)
+    try:
+        out["tool_grade"] = (_tower_checks.get(mid) or {}).get("grade")
+    except Exception as e:  # noqa: BLE001
+        log.debug("forecast tool-grade signal failed: %s", type(e).__name__)
+    try:
+        speeds = [r.get("gen_tps") for r in (bench_live.speed_table(str(DB_PATH), mid) or []) if r.get("gen_tps")]
+        out["tok_s"] = min(speeds) if speeds else None
+    except Exception as e:  # noqa: BLE001
+        log.debug("forecast speed signal failed: %s", type(e).__name__)
+    return out
+
+
+forecast.init_tables(_jobs_conn())
+_forecast_store = forecast.Store(_jobs_conn)
+_forecast_tower = forecast_tower.TowerPass(
+    _tower_store, registry_factory=_tower_registry, complete_stream=gateway.complete_stream,
+    entries=_tower_gateway_entries, server_args_of=_tower_server_args,
+    tower_cfg=lambda: settings.manager.tower, forecast_cfg=lambda: settings.manager.forecast,
+    report_violation=_tower_report_violation, host_alias=_forecast_host_alias,
+    tz_offset_s=_forecast_tz_offset_s)
+_forecast = forecast.Forecast(_jobs_service, _forecast_store, cfg=lambda: settings.manager.forecast,
+                              data_factory=_forecast_data, alert_post=_ae_ingest_alert_id,
+                              alert_close=_ae_alert_close, audit=_forecast_audit_auto,
+                              tower_pass=_forecast_tower, model_signals=_forecast_model_signals,
+                              tz_offset_s=_forecast_tz_offset_s)
+forecast.register_routes(app, _forecast, role_of=auth.effective_role,
+                         user_of=lambda: tower.session_user(_flask_session))
+_tower_deps["forecast"] = _forecast.tower_view
+
+
+# ── Forecast sampler (#1031): the series only the manager can measure ──
+_forecast_log_errors = forecast_wiring.ErrorCounter()
+logging.getLogger("llm-systems-manager").addHandler(_forecast_log_errors)
+_forecast_push_state = {"failed": False}
+
+
+def _push_forecast_metrics(points: list) -> None:
+    """POST a forecast sampler metric batch to the alarm engine (#1031)."""
+    _ae_metrics_batch(points, _forecast_push_state, "forecast")
+
+
+def _forecast_backup_stat() -> tuple:
+    """(age_s, bytes) of the newest scheduled backup archive; (None, None) when there is none."""
+    files = _list_auto_backups()
+    if not files:
+        return None, None
+    st = files[-1].stat()
+    return max(0.0, time.time() - st.st_mtime), float(st.st_size)
+
+
+def _forecast_agents_stale() -> float:
+    return float(sum(1 for a in _forecast_approved_agents().values()
+                     if agent_registry.agent_liveness(a) in ("stale", "down")))
+
+
+_forecast_sampler = forecast_sampler.Sampler(
+    read={"db_manager_bytes": lambda: forecast_wiring.db_bytes([DB_PATH], os.path.getsize),
+          "db_audit_bytes": lambda: forecast_wiring.db_bytes([AUDIT_DB_PATH], os.path.getsize),
+          "db_energy_bytes": lambda: forecast_wiring.db_bytes([ENERGY_DB_PATH], os.path.getsize),
+          "db_wal_bytes": lambda: forecast_wiring.db_bytes(
+              [f"{p}-wal" for p in (DB_PATH, AUDIT_DB_PATH, ENERGY_DB_PATH)], os.path.getsize),
+          "backup_age_s": lambda: _forecast_backup_stat()[0],
+          "backup_bytes": lambda: _forecast_backup_stat()[1],
+          "agents_stale": _forecast_agents_stale,
+          "model_loads": lambda: forecast_wiring.counter_value("model_loads"),
+          "model_unloads": lambda: forecast_wiring.counter_value("model_unloads"),
+          "model_wakes": lambda: forecast_wiring.counter_value("model_wakes"),
+          "log_errors": lambda: float(_forecast_log_errors.n),
+          "gateway": forecast_wiring.gateway_counts,
+          "agents": lambda: forecast_wiring.agent_gaps(_forecast_agent_rows(), time.time())},
+    push=_push_forecast_metrics, hostname=_HOSTNAME,
+    enabled=lambda: bool(getattr(settings.manager.forecast, "enabled", False)))
+
+_FORECAST_TICK_S = 60.0
+
+
+def _start_forecast_ticker():
+    """Daemon loop realigning the periodic forecast job with the live settings; None under pytest."""
+    if "pytest" in sys.modules:
+        return None
+
+    def _loop():
+        while not _shutting_down:
+            try:
+                _forecast.ensure_schedule()
+            except Exception as e:  # noqa: BLE001 — one bad pass never kills the ticker
+                log.debug("forecast ensure_schedule failed: %s", type(e).__name__)
+            slept = 0.0
+            while slept < _FORECAST_TICK_S and not _shutting_down:
+                time.sleep(1.0)
+                slept += 1.0
+
+    t = _threading.Thread(target=_loop, name="forecast-ticker", daemon=True)
+    t.start()
+    return t
+
+
 import manager_users  # type: ignore[import-not-found]  # sibling
 manager_users.init(
     DATA_DIR / "manager_users.json",
@@ -6998,6 +7275,30 @@ def _tower_reload_config() -> None:
 
 _HOT_RELOADERS["manager.tower."] = _tower_reload_config
 _apply_debug_loggers()
+
+
+_FORECAST_KEYS = ("enabled", "every", "every_hours", "run_day", "at", "checks_disabled", "window_days", "alerts",
+                  "alert_min_severity", "tower_effort", "tower_history", "digest_day", "digest_at")
+
+
+def _forecast_reload_config() -> None:
+    """Re-apply [manager.forecast] from the on-disk config onto the live settings (hot)."""
+    try:
+        snap = settings_catalog._snapshot().manager.forecast
+        live = getattr(settings.manager, "forecast", None)
+        if live is None:
+            return
+        for k in _FORECAST_KEYS:
+            setattr(live, k, getattr(snap, k))
+    except Exception as e:
+        log.warning("forecast config reload failed (runtime keeps previous values): %s", e)
+    try:
+        _forecast.ensure_schedule()
+    except Exception as e:  # noqa: BLE001 — the ticker re-aligns within a minute anyway
+        log.debug("forecast reschedule after reload failed: %s", type(e).__name__)
+
+
+_HOT_RELOADERS["manager.forecast."] = _forecast_reload_config
 
 
 def _validate_nightly_at(value: str) -> "str | None":
@@ -9162,6 +9463,13 @@ if __name__ == "__main__":
         jobs.start_thread(_jobs_service, lambda: _shutting_down)
     except Exception as _e:
         log.warning("jobs dispatcher startup failed: %s", _e)
+
+    # Forecast (#1031): metric sampler + schedule ticker; both idle until manager.forecast.enabled.
+    try:
+        forecast_sampler.start_thread(_forecast_sampler, lambda: _shutting_down)
+        _start_forecast_ticker()
+    except Exception as _e:
+        log.warning("forecast startup failed: %s", _e)
 
     # Audit log retention purge (#794): at start, then every 24 h.
     _start_audit_purge_thread()

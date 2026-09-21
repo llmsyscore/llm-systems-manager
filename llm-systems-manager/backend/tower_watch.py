@@ -53,8 +53,9 @@ class _ReadOnly:
 
 
 def _own_alert(alert: dict) -> bool:
-    """Alerts Tower raised itself (rule-bypass reports) are never diagnosed."""
-    return str(alert.get("rule") or "").startswith("Tower ") or str(alert.get("metric") or "").startswith("tower/")
+    """Alerts Tower raised itself (rule-bypass reports) and Forecast's own alerts are never diagnosed."""
+    metric = str(alert.get("metric") or "")
+    return str(alert.get("rule") or "").startswith("Tower ") or metric.startswith("tower/") or metric.startswith("forecast/")
 
 
 def _asleep(entry: dict) -> bool:
