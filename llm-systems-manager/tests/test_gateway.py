@@ -4,6 +4,7 @@ import types
 
 from flask import Flask
 
+import forecast_wiring
 import gateway
 
 
@@ -32,6 +33,21 @@ def test_no_candidates_returns_nonretryable_no_backend(monkeypatch):
     assert r.status_code == 404
     err = r.get_json()["error"]
     assert err["code"] == 404 and err["type"] == "no_backend"
+
+
+def test_an_unknown_model_never_counts_a_forecast_request(monkeypatch):
+    """#1031: a model that resolves to no candidate is not a request Forecast should see."""
+    forecast_wiring._gateway.clear()
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [])
+    assert _client().post("/api/gateway/v1/chat/completions", json={"model": "ghost"}).status_code == 404
+    # no requests tick, and the no-backend errors tick cannot open a row of its own
+    assert "ghost" not in forecast_wiring.gateway_counts()
+    a1 = {"agent_id": "a" * 32, "hostname": "h1", "token": "t"}
+    monkeypatch.setattr(gateway, "_candidates", lambda m, a, p="llama", **kw: [a1])
+    monkeypatch.setattr(gateway, "_forward_json", lambda agent, p, b: (FakeResp(200, {"ok": True}), None))
+    assert _client().post("/api/gateway/v1/chat/completions", json={"model": "real"}).status_code == 200
+    assert forecast_wiring.gateway_counts()["real"]["requests"] == 1.0
+    forecast_wiring._gateway.clear()
 
 
 def test_all_candidates_failed_stays_retryable_503(monkeypatch):

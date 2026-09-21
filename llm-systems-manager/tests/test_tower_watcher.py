@@ -173,6 +173,17 @@ def test_towers_own_alerts_are_never_diagnosed():
     assert w.tick() == 0 and st.count_insights("new") == 0
 
 
+def test_forecast_alerts_are_never_diagnosed():
+    assert tw._own_alert({"rule": "Forecast: Disk fill", "metric": "forecast/disk_fill/models"}) is True
+    assert tw._own_alert({"rule": "Tower rule-bypass attempt", "metric": "tower/violation/x"}) is True
+    assert tw._own_alert({"rule": "GPU temp high", "metric": "system/gpu_temperature_c"}) is False
+    alerts = []
+    w, st, _ = _watcher(alerts, [ANSWER])
+    w.tick()
+    alerts.append({**ALERT, "id": "f1", "rule": "Forecast: Disk fill", "severity": "critical", "metric": "forecast/disk_fill/models"})
+    assert w.tick() == 0 and st.count_insights("new") == 0
+
+
 def test_no_model_skips_and_marks_seen():
     alerts = []
     w, st, _ = _watcher(alerts, [ANSWER], entries=[])

@@ -985,6 +985,7 @@
 
   window.towerToggle = towerToggle;
   window.towerOpen = towerOpen;
+  window.towerAsk = (text, ctx) => { towerOpen(); return send(text, ctx); };
   window.towerClose = towerClose;
   window.towerRefreshState = towerRefreshState;
   window.towerLoadTimers = loadTimers;

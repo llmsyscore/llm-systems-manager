@@ -411,3 +411,15 @@
 #admin-routing .rt-svg .rt-node.nomodel rect { stroke: var(--border-soft); }
 #admin-routing .rt-svg .rt-node.nomodel .nm, #admin-routing .rt-svg .rt-node.nomodel .sb { fill: var(--fg-faint); }
 #admin-routing .rt-svg .rt-node.nomodel circle { fill: var(--border-strong); }
+
+/* Joined settings controls (#1031): a setting drawn inside another setting's row; custom fields drop underneath. */
+#admin-settings .st-fld .row:has(.st-join) { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#admin-settings .st-join { display: contents; }
+#admin-settings .st-join-w { color: var(--fg-muted); font-size: 12px; }
+#adminTab .st-ct .row:has(.st-join) .sel { width: auto; flex: 0 0 auto; }
+#adminTab .st-ct .row:has(.st-join) > .sel { flex: 1 1 96px; min-width: 96px; }
+#admin-settings .st-join-under { display: flex; align-items: center; gap: 8px; order: 20; flex-basis: 100%; }
+#admin-settings .st-join[data-span] { display: flex; align-items: center; gap: 8px; order: 10; flex-basis: 100%; }
+#admin-settings .st-join input[type="number"] { width: 72px; }
+#admin-settings .st-join input[type="time"] { width: auto; flex: 1 1 120px; }
+#admin-settings .st-join .err { flex-basis: 100%; order: 30; }

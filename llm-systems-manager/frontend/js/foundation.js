@@ -892,8 +892,8 @@ function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
 }
 
-// Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown
-// ids are skipped; strips missing from the saved order append in DOM order.
+// Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown ids are
+// skipped; a strip missing from the saved order follows its data-strip-after strip, else appends.
 function _applyBandOrder() {
   const lay = (typeof layout !== 'undefined' && layout) || window.layout;
   const band = document.querySelector('.ov-band');
@@ -905,7 +905,11 @@ function _applyBandOrder() {
     const s = all.find(x => x.dataset.strip === id);
     if (s) ordered.push(s);
   });
-  all.forEach(s => { if (!ordered.includes(s)) ordered.push(s); });
+  all.forEach(s => {
+    if (ordered.includes(s)) return;
+    const after = ordered.findIndex(x => x.dataset.strip === s.dataset.stripAfter);
+    if (after >= 0) ordered.splice(after + 1, 0, s); else ordered.push(s);
+  });
   ordered.forEach(s => band.appendChild(s));
 }
 

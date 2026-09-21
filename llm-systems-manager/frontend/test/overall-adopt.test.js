@@ -194,6 +194,18 @@ describe('_applyBandOrder', () => {
     expect(order()).toEqual(['agents', 'hero', 'tiles', 'alerts']);
   });
 
+  it('places a strip missing from the saved order after its data-strip-after strip', () => {
+    const band = document.querySelector('.ov-band');
+    const extra = document.createElement('section');
+    extra.dataset.strip = 'forecast';
+    extra.dataset.stripAfter = 'alerts';
+    band.insertBefore(extra, band.children[1]);
+    window.layout.overallBandOrder = ['alerts', 'hero', 'tiles', 'agents'];
+    _applyBandOrder();
+    expect(order()).toEqual(['alerts', 'forecast', 'hero', 'tiles', 'agents']);
+    extra.remove();
+  });
+
   it('no-ops without a saved order or without the band', () => {
     delete window.layout.overallBandOrder;
     _applyBandOrder();

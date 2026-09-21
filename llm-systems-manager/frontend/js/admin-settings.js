@@ -181,8 +181,10 @@
   function toolsSummary(e, cur) {
     const all = e.choices || [];
     const off = all.filter(c => !toolOn(e, cur, c));
-    const head = esc(`${all.length - off.length} of ${all.length} tools on`);
-    return off.length ? `${head} · off: <span class="nm">${esc(off.join(', '))}</span>` : head;
+    const noun = /checks_disabled$/.test(e.path) ? 'checks' : 'tools';
+    const head = esc(`${all.length - off.length} of ${all.length} ${noun} on`);
+    const names = off.map(c => choiceLabel(e, c)).join(', ');
+    return off.length ? `${head} · off: <span class="nm">${esc(names)}</span>` : head;
   }
 
   function toolsGroupsHtml(e, cur) {
@@ -191,7 +193,7 @@
       const boxes = list.map(c => {
         const chipOn = toolOn(e, cur, c);
         return `<button type="button" class="st-tool-chip${chipOn ? ' on' : ''}" data-tool="${esc(c)}" `
-          + `aria-pressed="${chipOn}">${esc(c)}</button>`;
+          + `aria-pressed="${chipOn}">${esc(choiceLabel(e, c))}</button>`;
       }).join('');
       return `<section class="st-tools-grp"><h5>${esc(title)}<span class="cnt">${on}/${list.length}</span>`
         + '<button type="button" class="lnk" data-tools-all="on">All on</button>'
@@ -278,6 +280,81 @@
       + `<div class="st-sub">${defaultHtml(e, opt)}${resetHtml(e, opt)}</div>`;
   }
 
+  // ── joined controls: a setting drawn inside another setting's row ──
+  const TIME_PRESETS = ['00:00', '03:00', '06:00', '08:00', '12:00', '17:00', '18:00'];
+  function partsOf(host) {
+    return ((_data && _data.entries) || []).filter(x => x.joins === host.path);
+  }
+  function joinShown(part, opt) {
+    if (!part.show_when) return true;
+    const host = _entryByPath.get(part.joins);
+    return !!host && part.show_when.includes(String(opt.shown(host)));
+  }
+  function joinControl(e, opt) {
+    const p = esc(e.path), v = opt.shown(e);
+    if (e.type === 'choice') {
+      return `<select class="sel st-input" data-path="${p}" aria-label="${esc(e.label)}">`
+        + (e.choices || []).map(c =>
+          `<option value="${esc(c)}"${String(c) === String(v) ? ' selected' : ''}>${esc(choiceLabel(e, c))}</option>`).join('')
+        + '</select>';
+    }
+    if (e.type === 'time') {
+      const cur = String(v || ''), preset = TIME_PRESETS.includes(cur);
+      return `<select class="sel" data-time-for="${p}" aria-label="${esc(e.label)}">`
+        + TIME_PRESETS.map(t => `<option${t === cur ? ' selected' : ''}>${t}</option>`).join('')
+        + `<option value="custom"${preset ? '' : ' selected'}>Custom…</option></select>`
+        + `<span class="st-join-under"${preset ? ' hidden' : ''}><span class="st-join-w">time</span>`
+        + `<input type="time" class="st-in st-input" data-path="${p}" value="${esc(cur)}" `
+        + `aria-label="${esc(e.label)}, custom"></span>`;
+    }
+    if (e.span === 'hours') {
+      const n = Number(v) || 0, days = n >= 24 && n % 24 === 0;
+      return `<input type="number" class="st-in" data-span-for="${p}" min="1" value="${days ? n / 24 : n}" aria-label="${esc(e.label)}">`
+        + `<select class="sel" data-span-unit="${p}" aria-label="Unit"><option value="1"${days ? '' : ' selected'}>hours</option>`
+        + `<option value="24"${days ? ' selected' : ''}>days</option></select>`
+        + `<input type="hidden" class="st-input" data-path="${p}" value="${esc(String(v ?? ''))}">`;
+    }
+    const val = (v === null || v === undefined) ? '' : String(v);
+    return `<input type="text" class="st-in st-input" data-path="${p}" value="${esc(val)}" aria-label="${esc(e.label)}">`;
+  }
+  function joinsHtml(host, opt) {
+    return partsOf(host).map(part => {
+      const err = opt.invalid && opt.invalid.get(part.path);
+      return `<span class="settings-row st-join${err ? ' invalid' : ''}"${part.span ? ' data-span' : ''} data-path="${esc(part.path)}" `
+        + `data-label="${esc(part.label)}"${joinShown(part, opt) ? '' : ' hidden'}>`
+        + (part.word ? `<span class="st-join-w">${esc(part.word)}</span>` : '')
+        + joinControl(part, opt) + (err ? `<div class="err">${esc(err)}</div>` : '') + '</span>';
+    }).join('');
+  }
+  // Helper inputs of a joined control write through to its real .st-input; true when handled.
+  function onJoinHelper(ev) {
+    const t = ev.target;
+    const fire = el => el.dispatchEvent(new Event('input', { bubbles: true }));
+    if (t.dataset.timeFor) {
+      const inp = t.parentNode.querySelector(`.st-input[data-path="${CSS.escape(t.dataset.timeFor)}"]`);
+      if (!inp) return true;
+      inp.parentNode.hidden = t.value !== 'custom';
+      if (t.value !== 'custom') { inp.value = t.value; fire(inp); } else inp.focus();
+      return true;
+    }
+    const path = t.dataset.spanFor || t.dataset.spanUnit;
+    if (path) {
+      const box = t.parentNode;
+      const n = Number(box.querySelector('[data-span-for]').value), mult = Number(box.querySelector('[data-span-unit]').value);
+      const inp = box.querySelector(`.st-input[data-path="${CSS.escape(path)}"]`);
+      inp.value = Number.isFinite(n) && n > 0 ? String(n * mult) : '';
+      fire(inp);
+      return true;
+    }
+    return false;
+  }
+  function paintJoins(host) {
+    const opt = { shown: shownValue };
+    partsOf(host).forEach(part => {
+      document.querySelectorAll(`.st-join[data-path="${CSS.escape(part.path)}"]`).forEach(n => { n.hidden = !joinShown(part, opt); });
+    });
+  }
+
   // "default 0" / "cleared → default 0" once the field differs from its default.
   function defaultHtml(e, opt) {
     if (e.secret || !hasDefault(e, opt)) return '';
@@ -327,6 +404,8 @@
       control = secretControl(e, opt);
     } else {
       control = controlHtml(e, opt);
+      const joined = joinsHtml(e, opt);
+      if (joined) control = control.replace('</div>', joined + '</div>');
     }
     return `<div class="settings-row st-fld${isDirty ? ' dirty' : ''}${err ? ' invalid' : ''}" `
       + `data-path="${esc(e.path)}" data-label="${esc(e.label)}">`
@@ -359,7 +438,8 @@
         return isList(e) ? [] : (e.type === 'bool' ? false : '');
       },
     }, over || {});
-    const rows = entries.map(e => ({ path: e.path, html: fieldHtml(e, opt) }));
+    const rows = entries.filter(e => !(e.joins && _entryByPath.has(e.joins)))
+      .map(e => ({ path: e.path, html: fieldHtml(e, opt) }));
     // extra: {after, html} or a list of them — each lands right after its anchor field (or last).
     (Array.isArray(extra) ? extra : extra ? [extra] : []).forEach(x => {
       if (!x || !x.html) return;
@@ -386,6 +466,7 @@
       if (e.max != null && v > e.max) return rangeText(e);
       return null;
     }
+    if (e.type === 'time') return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v)) ? null : 'Enter a time like 03:00.';
     if (e.type === 'choice' && !(e.choices || []).includes(v)) {
       return `Must be one of: ${(e.choices || []).join(', ')}.`;
     }
@@ -970,6 +1051,7 @@
   }
   function onInput(ev) {
     if (ev.type === 'change' && onTowerGetChange(ev)) return;
+    if (onJoinHelper(ev)) return;
     const el = ev.target.closest('.st-input');
     if (!el || !_data || el.dataset.type === 'bool') return;
     const entry = _entryByPath.get(el.dataset.path);
@@ -977,6 +1059,7 @@
     noteChange(entry, entry.secret && entry.type !== 'list' ? el.value : readInput(el, entry));
     if (entry.secret) syncClearButton(entry.path);
     paintField(entry);
+    paintJoins(entry);
     updateSaveBar();
   }
 

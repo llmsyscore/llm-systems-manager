@@ -988,3 +988,70 @@ describe('Tower model check row (#1039)', () => {
     expect(win.document.getElementById('stTowerCheck')).toBeNull();
   });
 });
+
+// #1031: a setting drawn inside another setting's row (Run every … at …).
+describe('joined settings controls', () => {
+  const DAYS = ['mon', 'sun'];
+  const EVERY = { path: 'manager.forecast.every', label: 'Run every', help: '', group: 'forecast', service: 'manager',
+                  type: 'choice', choices: ['daily', 'weekly', 'custom'], labels: { daily: 'Day', weekly: 'Week', custom: 'Custom…' } };
+  const HOURS = { path: 'manager.forecast.every_hours', label: 'Custom interval (hours)', help: '', group: 'forecast',
+                  service: 'manager', type: 'int', min: 1, max: 720, joins: EVERY.path, show_when: ['custom'], word: 'every', span: 'hours' };
+  const DAY = { path: 'manager.forecast.run_day', label: 'Run day', help: '', group: 'forecast', service: 'manager',
+                type: 'choice', choices: DAYS, joins: EVERY.path, show_when: ['weekly'], word: 'on' };
+  const AT = { path: 'manager.forecast.at', label: 'Run time', help: '', group: 'forecast', service: 'manager',
+               type: 'time', joins: EVERY.path, word: 'at' };
+  const data = () => payload({
+    groups: [{ key: 'forecast', title: 'Forecast' }], entries: [EVERY, HOURS, DAY, AT],
+    values: { [EVERY.path]: 'daily', [HOURS.path]: 8, [DAY.path]: 'mon', [AT.path]: '03:00' },
+    defaults: { [EVERY.path]: 'daily', [HOURS.path]: 8, [DAY.path]: 'mon', [AT.path]: '03:00' } });
+  const fire = (win, el, type) => el.dispatchEvent(new win.Event(type, { bubbles: true }));
+  const save = async win => {
+    win.document.getElementById('adminSettingsSaveBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+    return win.__puts[0].changes;
+  };
+
+  test('parts sit inside the host row and show only for their host value', async () => {
+    const win = await boot(data());
+    win.adminSettingsOpenGroup('forecast');
+    const doc = win.document, host = doc.querySelector(`.st-fld[data-path="${cssq(EVERY.path)}"]`);
+    expect(doc.querySelectorAll('.st-fld')).toHaveLength(1);
+    const part = p => host.querySelector(`.st-join[data-path="${cssq(p)}"]`);
+    expect(part(AT.path).hidden).toBe(false);
+    expect(part(HOURS.path).hidden).toBe(true);
+    expect(part(DAY.path).hidden).toBe(true);
+    const sel = host.querySelector(`select.st-input[data-path="${cssq(EVERY.path)}"]`);
+    sel.value = 'weekly'; fire(win, sel, 'change');
+    expect(part(DAY.path).hidden).toBe(false);
+    expect(part(HOURS.path).hidden).toBe(true);
+  });
+
+  test('a custom interval in days and a typed time are saved as hours and HH:MM', async () => {
+    const win = await boot(data());
+    win.adminSettingsOpenGroup('forecast');
+    const doc = win.document;
+    const sel = doc.querySelector(`select.st-input[data-path="${cssq(EVERY.path)}"]`);
+    sel.value = 'custom'; fire(win, sel, 'change');
+    const n = doc.querySelector('[data-span-for]'), unit = doc.querySelector('[data-span-unit]');
+    n.value = '2'; unit.value = '24'; fire(win, unit, 'change');
+    const pick = doc.querySelector(`[data-time-for="${cssq(AT.path)}"]`);
+    const time = doc.querySelector(`input.st-input[data-path="${cssq(AT.path)}"]`);
+    expect(time.parentNode.hidden).toBe(true);
+    pick.value = 'custom'; fire(win, pick, 'change');
+    expect(time.parentNode.hidden).toBe(false);
+    time.value = '02:30'; fire(win, time, 'input');
+    expect(await save(win)).toEqual({ [EVERY.path]: 'custom', [HOURS.path]: 48, [AT.path]: '02:30' });
+  });
+
+  test('a preset time writes through to the saved value', async () => {
+    const win = await boot(data());
+    win.adminSettingsOpenGroup('forecast');
+    const doc = win.document;
+    const pick = doc.querySelector(`[data-time-for="${cssq(AT.path)}"]`);
+    pick.value = '06:00'; fire(win, pick, 'change');
+    const time = doc.querySelector(`input.st-input[data-path="${cssq(AT.path)}"]`);
+    expect(time.value).toBe('06:00');
+    expect(time.parentNode.hidden).toBe(true);
+    expect(await save(win)).toEqual({ [AT.path]: '06:00' });
+  });
+});

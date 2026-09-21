@@ -63,6 +63,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.10-4">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/forecast.css?v=2026.09.21-5">
   <link rel="stylesheet" href="/static/css/tower.css?v=2026.09.18-3">
 </head>
 <body>
@@ -130,6 +131,7 @@ Backend API endpoints consumed:
       <button class="sub-tab-btn" id="subTabBtnDashEnergy" onclick="switchSubTab('dashboard','energy')">Energy</button>
       <button class="sub-tab-btn" id="subTabBtnOpenclaw" style="display:none;" onclick="switchSubTab('dashboard','openclaw')">OpenClaw</button>
       <button class="sub-tab-btn" onclick="switchSubTab('dashboard','manager')">Manager</button>
+      <button class="sub-tab-btn" id="subTabBtnDashForecast" onclick="switchSubTab('dashboard','forecast')">Forecast</button>
     </div>
   </div>
   <!-- llama.cpp dashboard = existing cardGrid -->
@@ -573,7 +575,7 @@ Backend API endpoints consumed:
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.13-1">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.17-1">
-<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.18-5">
+<link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.21-4">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.17-1">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
@@ -1696,6 +1698,31 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     </div>
   </div>
 
+  <!-- Forecast sub-tab (#1031) — scheduled trend analysis, rendered by js/forecast.js -->
+  <div id="dash-forecast" class="sub-tab-panel" style="padding:8px 20px 20px;">
+    <div class="card fc-card">
+      <div class="fc-runbar" id="fcRunbar"></div>
+      <details class="fc-checks-box" id="fcChecksBox" hidden>
+        <summary id="fcChecksSum"></summary>
+        <div class="fc-checks" id="fcChecks"></div>
+      </details>
+      <details class="fc-brief" id="fcBrief" hidden>
+        <summary id="fcBriefSum"></summary>
+        <div class="fc-brief-body" id="fcBriefBody"></div>
+      </details>
+      <div class="fc-tabs" id="fcTabs" role="tablist" hidden></div>
+      <div class="fc-horizon" id="fcHorizon" hidden></div>
+      <div class="fc-toolbar" id="fcToolbar" hidden></div>
+      <div class="fc-split" id="fcSplit">
+        <div class="fc-list">
+          <div id="fcRows"></div>
+          <div class="fc-pager" id="fcPager" hidden></div>
+        </div>
+        <div class="fc-detail-pane" id="fcDetail"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="dash-openclaw" class="sub-tab-panel">
     <div style="padding:12px 20px 20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
@@ -1869,6 +1896,17 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
       <div class="ov-toplines" id="ovToplines"></div>
       <div class="ov-hero-chart"><canvas id="ovHeroChart" role="img"
            aria-label="Fleet token throughput, last 24 hours"></canvas></div>
+    </section>
+    <!-- Forecast strip (#1031) — filled by window.forecastOverallCard() -->
+    <section class="fc-ov" data-strip="forecast" data-strip-after="alerts" aria-label="Forecast">
+      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
+      <div class="fc-ov-head">
+        <span class="ov-eyebrow">Forecast</span>
+        <span class="fc-ov-count" id="fcOvCount"></span>
+        <span class="fc-ov-foot" id="fcOvFoot"></span>
+        <button type="button" class="fc-link" id="fcOvView" hidden>View all</button>
+      </div>
+      <div id="fcOvBody"></div>
     </section>
     <section class="ov-tiles-strip" data-strip="tiles" aria-label="Providers">
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
@@ -2630,7 +2668,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.09.09-3"></script>
-<script src="/static/js/foundation.js?v=2026.09.15-1"></script>
+<script src="/static/js/foundation.js?v=2026.09.19-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/dbstats.js?v=2026.09.18-1"></script>
@@ -2642,6 +2680,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/sseguard.js?v=2026.09.12-1"></script>
 <script src="/static/js/lib/tower-view.js?v=2026.09.18-3"></script>
 <script src="/static/js/lib/energy.js?v=2026.08.26-1"></script>
+<script src="/static/js/lib/forecast.js?v=2026.09.21-4"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
 <script src="/static/js/charts.js?v=2026.09.14-4"></script>
 <script src="/static/js/terminal.js?v=2026.09.04-1"></script>
@@ -2653,7 +2692,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/admin-health.js?v=2026.09.17-1"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
-<script src="/static/js/admin-settings.js?v=2026.09.18-5"></script>
+<script src="/static/js/admin-settings.js?v=2026.09.21-3"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.11-5"></script>
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.15-1"></script>
@@ -2668,9 +2707,10 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/report-card.js?v=2026.09.10-1"></script>
 <script src="/static/js/tools.js?v=2026.09.17-3"></script>
 <script src="/static/js/energy.js?v=2026.08.19-1"></script>
-<script src="/static/js/overall.js?v=2026.08.29-2"></script>
+<script src="/static/js/forecast.js?v=2026.09.21-5"></script>
+<script src="/static/js/overall.js?v=2026.09.19-1"></script>
 <script src="/static/js/dashboard-manager.js?v=2026.09.18-1"></script>
-<script src="/static/js/tower.js?v=2026.09.18-3"></script>
+<script src="/static/js/tower.js?v=2026.09.21-1"></script>
 
 <!-- Settings drawer — kept at body root so it's never inside a hidden tab container.
      Sections are rendered by foundation.js (renderSettingsPanel). -->
@@ -2939,6 +2979,6 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.09.14-1"></script>
-<script src="/static/js/boot.js?v=2026.09.12-2"></script>
+<script src="/static/js/boot.js?v=2026.09.19-1"></script>
 </body>
 </html>

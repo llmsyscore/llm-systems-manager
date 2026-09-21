@@ -446,6 +446,25 @@ Timers let Tower poll something and report later: ask for "the RAM on box every 
 
 llama.cpp serves native tool calls only when its server args include `--jinja`; otherwise Tower falls back to a fenced JSON tool format automatically. Nothing Tower reads or does leaves the lab.
 
+### Forecast
+
+A scheduled, read-only check that looks for trends in up to 30 days of stored history — alarm history, per-host hardware and load, energy and cost, benchmark and report-card results, model and gateway activity, the audit log — and reports what is heading toward trouble before it becomes an alarm. It runs on its own schedule, reads only, and never needs Tower to be on. Off by default.
+
+Turn it on in **Admin › Settings › Forecast**: switch **Run forecasts** on, pick how often it runs and at what local time (hourly through weekly, or **Custom…** for any number of hours or days and a time to the minute) and how far back it looks, and optionally let findings also raise alerts through your normal alert channels once they reach a chosen severity. Any check can be switched off individually from the same page. **Run now** starts an out-of-schedule pass at any time.
+
+Each finding is written by plain code — the trend, the projected date, the confidence, and a suggested next step all come from measured numbers, never from a language model. When Tower is enabled, it can additionally add a short plain-language gloss on top of the code's own findings: a **Tower effort** setting controls how much of that Tower does, and **Auto** (the default) picks a level for you based on how well the current Tower model scores, its size and its speed, so a small or slow model does less and a strong one does more:
+
+- **Off** — no Tower involvement; every finding shows only the code's own summary and next step.
+- **Light** — one short digest tying the run's findings together at the top of the page.
+- **Standard** — the digest, plus a one-line "Likely cause" under each finding.
+- **Full** — the digest and likely causes, plus Tower looking into each flagged check with its own read tools for a closer explanation.
+
+Tower is never allowed to invent or restate a number, date or rate — those figures always come from the code that measured them, and a finding's chart, facts and suggested step never change because of what Tower adds. A weekly digest summarising the run also appears on its own day and time, independent of how often forecasts run.
+
+The Forecast page lists open findings with search, severity/host/check filters, sortable columns and pages; a 30-day line shows every dated prediction. Cleared and dismissed findings have their own tabs. Each finding offers **Ask Tower** (opens Tower with the finding as the question) and, where there is somewhere useful to go, a button that opens that part of the dashboard. The Overall page shows only critical and warning findings.
+
+Two things worth knowing before you rely on it. **Dismissing a finding is not permanent:** dismissed and cleared findings are swept after 90 days, so a trend that is still running when its row is swept comes back as a new finding. **Tower conversation history is off by default** (`tower_history`) — at the Full effort level each check's investigation runs in its own private thread, and those threads are not yet readable from the Tower drawer, so keeping them only costs space.
+
 ### Backups
 
 **Admin → Backups.** A scheduled run writes an encrypted manager archive (config, agent registry, CA, users, model profiles, and the three SQLite files `manager.db`, `audit.db`, `energy.db`; archives made before the split, carrying a single `metrics.db`, still restore) and, when `[alarm_engine].management_token` is set, the alarm engine's own export in the same run — without a management token the run is recorded as `manager only`. Retention counts **runs**, not archives, so `keep_last = 7` can retain up to 14 files.
