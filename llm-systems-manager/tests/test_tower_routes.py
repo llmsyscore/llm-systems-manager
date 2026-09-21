@@ -934,9 +934,10 @@ def test_admins_read_forecast_conversations_but_cannot_write_to_them(client):
     assert got["ok"] and got["read_only"] is True and got["active_run"] is None
     assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
     assert f1 not in [t["id"] for t in client.get("/api/tower/threads").get_json()["threads"]]
-    assert client.post(f"/api/tower/threads/{f1}/messages", json={"text": "carry on"}).status_code == 404
-    assert client.patch(f"/api/tower/threads/{f1}", json={"title": "Mine now"}).status_code == 404
-    assert client.delete(f"/api/tower/threads/{f1}").status_code == 404
+    posted = client.post(f"/api/tower/threads/{f1}/messages", json={"text": "carry on"})
+    renamed = client.patch(f"/api/tower/threads/{f1}", json={"title": "Mine now"})
+    deleted = client.delete(f"/api/tower/threads/{f1}")
+    assert (posted.status_code, renamed.status_code, deleted.status_code) == (404, 404, 404)
     assert st.thread_user(f1) == tower.FORECAST_ACTOR and len(st.messages(f1)) == 2
     mine = client.post("/api/tower/threads", json={}).get_json()["thread"]["id"]
     assert client.get(f"/api/tower/threads/{mine}").get_json()["read_only"] is False
