@@ -21,6 +21,17 @@
   const MOST_USED = '__most_used__';
   let _group = MOST_USED;       // active rail group key
   let _filter = '';
+  // Rail nesting (#1098): parent keys the operator opened / closed by hand.
+  const NAV_STATE_KEY = 'st.navOpen';
+  const _navOpen = new Set(), _navClosed = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem(NAV_STATE_KEY) || '{}');
+    (saved.open || []).forEach(k => _navOpen.add(k));
+    (saved.closed || []).forEach(k => _navClosed.add(k));
+  } catch (_) { /* private mode */ }
+  function navSave() {
+    try { localStorage.setItem(NAV_STATE_KEY, JSON.stringify({ open: [..._navOpen], closed: [..._navClosed] })); } catch (_) { /* private mode */ }
+  }
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
   // Conversation eval + curated models (#1047): one read each, polled while a job runs.
   let _towerGetHidden = '', _towerGetKey = '', _towerGetAgent = '';
@@ -62,6 +73,10 @@
   // Sets the active rail group and clears any active filter, then renders.
   function selectGroup(key) {
     _group = key;
+    const parent = parentOf(key);
+    _navClosed.delete(key);
+    if (parent) _navClosed.delete(parent);
+    navSave();
     const f = $('stFilter');
     if (f && f.value) f.value = '';
     _filter = '';
@@ -494,32 +509,63 @@
       || (e.help || '').toLowerCase().includes(q);
   }
 
+  // Alphabetical top-level groups, each followed by its children in catalog order.
   function orderedGroups() {
     const common = _data.entries.some(e => e.common);
-    const gs = [..._data.groups].sort((a, b) => a.title.localeCompare(b.title))
-      .filter(g => _data.entries.some(e => e.group === g.key));
-    return common ? [{ key: MOST_USED, title: 'Most used' }, ...gs] : gs;
+    const present = _data.groups.filter(g => _data.entries.some(e => e.group === g.key));
+    const byTitle = (a, b) => a.title.localeCompare(b.title);
+    const has = k => present.some(g => g.key === k);
+    const out = [];
+    present.filter(g => !g.parent || !has(g.parent)).sort(byTitle).forEach(g => {
+      out.push({ ...g, parent: null });
+      present.filter(c => c.parent === g.key).forEach(c => out.push(c));
+    });
+    return common ? [{ key: MOST_USED, title: 'Most used', parent: null }, ...out] : out;
+  }
+  function parentOf(key) { return (_data && _data.groups.find(g => g.key === key) || {}).parent || null; }
+  function childrenOf(key) { return orderedGroups().filter(g => g.parent === key); }
+  function navExpanded(key) {
+    if (_filter) return true;
+    if (_navClosed.has(key)) return false;
+    return _navOpen.has(key) || _group === key || parentOf(_group) === key;
+  }
+  function navToggle(key) {
+    if (navExpanded(key)) { _navClosed.add(key); _navOpen.delete(key); }
+    else { _navOpen.add(key); _navClosed.delete(key); }
+    navSave();
+    const navEl = $('stNav');
+    if (navEl) navEl.innerHTML = navHtml().nav;
+    navEl?.querySelector(`button[data-group="${CSS.escape(key)}"]`)?.focus();
   }
   function entriesOf(key) {
     return key === MOST_USED ? _data.entries.filter(e => e.common) : _data.entries.filter(e => e.group === key);
   }
-  function groupFlag(key) {
+  function groupFlag(key, withChildren) {
     const paths = new Set([...(_data.restart_pending_paths || []), ...Object.keys(_data.drift || {})]);
-    return entriesOf(key).some(e => paths.has(e.path));
+    const keys = withChildren ? [key, ...childrenOf(key).map(c => c.key)] : [key];
+    return keys.some(k => entriesOf(k).some(e => paths.has(e.path)));
   }
-  function groupDirty(key) {
-    return entriesOf(key).filter(e => _dirty.has(e.path) || _invalid.has(e.path)).length;
+  function groupDirty(key, withChildren) {
+    const keys = withChildren ? [key, ...childrenOf(key).map(c => c.key)] : [key];
+    return keys.reduce((n, k) => n + entriesOf(k).filter(e => _dirty.has(e.path) || _invalid.has(e.path)).length, 0);
   }
   function navHtml() {
     const gs = orderedGroups();
     const btn = g => {
-      const n = groupDirty(g.key);
+      const kids = g.parent ? [] : childrenOf(g.key);
+      const open = kids.length ? navExpanded(g.key) : false;
+      const n = groupDirty(g.key, kids.length && !open);
       const dim = _filter && (g.key === MOST_USED || !entriesOf(g.key).some(matchesFilter));
-      return `<button type="button" data-group="${esc(g.key)}" class="${g.key === _group && !_filter ? 'on' : ''}${dim ? ' dim' : ''}">`
-        + `${esc(g.title)}${groupFlag(g.key) ? '<span class="flag" data-tip="Restart pending or drift">!</span>' : ''}`
-        + `${n ? `<span class="cnt">${n}</span>` : ''}</button>`;
+      const hidden = g.parent && !navExpanded(g.parent);
+      const cls = [g.key === _group && !_filter ? 'on' : '', dim ? 'dim' : '', g.parent ? 'sub' : '', kids.length ? 'has-sub' : '', open ? 'open' : '']
+        .filter(Boolean).join(' ');
+      return `<button type="button" data-group="${esc(g.key)}" class="${cls}"${hidden ? ' hidden' : ''}${kids.length ? ` aria-expanded="${open}"` : ''}>`
+        + `${esc(g.title)}${groupFlag(g.key, kids.length && !open) ? '<span class="flag" data-tip="Restart pending or drift">!</span>' : ''}`
+        + `${n ? `<span class="cnt">${n}</span>` : ''}`
+        + (kids.length ? `<span class="tog" aria-hidden="true" data-tip="${open ? 'Collapse' : 'Expand'}">${open ? '▾' : '▸'}</span>` : '')
+        + '</button>';
     };
-    const opt = g => `<option value="${esc(g.key)}"${g.key === _group ? ' selected' : ''}>${esc(g.title)}</option>`;
+    const opt = g => `<option value="${esc(g.key)}"${g.key === _group ? ' selected' : ''}>${g.parent ? '\u00a0\u00a0\u21b3 ' : ''}${esc(g.title)}</option>`;
     return { nav: gs.map(btn).join(''), sel: gs.map(opt).join('') };
   }
   // Tower model check (#1039): the status row above the Tower group's fields.
@@ -1322,7 +1368,15 @@
       nav.addEventListener('click', ev => {
         const b = ev.target.closest('button[data-group]');
         if (!b) return;
+        if (ev.target.closest('.tog')) { navToggle(b.dataset.group); return; }
         selectGroup(b.dataset.group);
+      });
+      nav.addEventListener('keydown', ev => {
+        if (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft') return;
+        const b = ev.target.closest('button.has-sub[data-group]');
+        if (!b) return;
+        ev.preventDefault();
+        if ((ev.key === 'ArrowRight') !== navExpanded(b.dataset.group)) navToggle(b.dataset.group);
       });
     }
     const sel = $('stNavSel');

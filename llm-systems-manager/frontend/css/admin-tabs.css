@@ -311,6 +311,12 @@
 #admin-settings .st-nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #admin-settings .st-nav .cnt { margin-left: auto; font: 500 10.5px var(--font-mono); color: var(--note); }
 #admin-settings .st-nav .flag { font: 600 10.5px var(--font-mono); color: var(--warn); }
+#admin-settings .st-nav button.sub { padding-left: 26px; font-size: 12px; }
+#admin-settings .st-nav button.sub::before { content: ''; position: absolute; left: 13px; top: 8px; bottom: 8px; border-left: 1px solid var(--border); }
+#admin-settings .st-nav .tog { margin-left: auto; padding: 0 2px; font: 500 12px var(--font-mono); color: var(--note); border-radius: 4px; }
+#admin-settings .st-nav .cnt + .tog { margin-left: 6px; }
+#admin-settings .st-nav .tog:hover { color: var(--fg); background: var(--bg-card); }
+#admin-settings .st-nav .tog:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #admin-settings .st-pane > .card { margin-top: 0; }
 #admin-settings .st-pane .card-h .meta b { color: var(--fg-muted); }
 #admin-settings .st-pane .savebar { position: sticky; bottom: 0; z-index: 2; }

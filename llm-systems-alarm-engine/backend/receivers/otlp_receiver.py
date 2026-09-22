@@ -9,15 +9,21 @@ operate on traces and logs the same way it does on native metrics:
   /v1/traces   → one duration_ms metric per span (name = "<span>.duration_ms")
   /v1/logs     → one count=1 metric per log record (name = "<source>.log.count")
 
-All OTEL attributes (resource + data-point + span/log) are preserved as tags
-so dashboards can slice arbitrarily. Span status and log severity become tags
-on the synthesized metric, which is what makes "alert on error rate" rules
-possible without a separate logs storage layer.
+OTEL attributes (resource + data-point + span/log) become tags under the
+policy in `_classify()`: identifier / network / free-text keys are dropped,
+numeric attributes become fields, and the remaining string tags are capped
+per key and per point so the InfluxDB series count stays bounded (#1080).
+Span status and log severity become tags on the synthesized metric, which is
+what makes "alert on error rate" rules possible without a separate logs
+storage layer.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
+import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -58,7 +64,139 @@ _otlp_trace_batches  = 0
 _otlp_log_batches    = 0
 _otlp_parse_errors   = 0
 _otlp_write_errors   = 0
+_otlp_tags_dropped   = 0   # attribute tags removed by key policy or per-point cap
+_otlp_tags_capped    = 0   # tag values replaced with "other" past the per-key cap
+_otlp_attr_fields    = 0   # numeric attributes stored as fields instead of tags
 _hb_task = None
+
+# ── Tag policy (#1080) ───────────────────────────────────────────────────
+# Keys are matched on a normalized form: dots/camelCase → snake_case words.
+_IDENT_WORDS = (
+    "id|ids|uuid|guid|hash|token|key|secret|password|credential|session|"
+    "trace|span|frame|pid|tid|instance|correlation|"
+    "addr|address|port|peer|endpoint|ip|url|uri|path|host|remote|local|"
+    "user_agent|message|messages|body|content|value|command|args|arguments|"
+    "prompt|text|description|stack|stacktrace|exception|parents|definitions"
+)
+_MEASURE_WORDS = (
+    "ms|s|sec|secs|bytes|chars|count|tokens|ratio|budget|lineno|line|"
+    "blocks|images|elapsed|duration|latency|time|timestamp|ts"
+)
+# Compound identifier names written without a separator (sessionid, apikey).
+_IDENT_SUFFIXES = (
+    "uuid|guid|token|secret|password|credential|apikey|sessionid|userid|"
+    "traceid|spanid|requestid|instanceid|clientid|deviceid|eventid|frameid"
+)
+_IDENT_RE = re.compile(rf"(^|_)({_IDENT_WORDS})(_|$)|({_IDENT_SUFFIXES})$")
+_MEASURE_RE = re.compile(rf"(^|_)({_MEASURE_WORDS})$")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+# Bounded dimensions the identifier pattern would otherwise catch.
+_BUILTIN_ALLOW = frozenset({
+    "gen_ai_token_type", "gen_ai_request_model", "gen_ai_response_model",
+    "gen_ai_operation_name", "gen_ai_provider_name", "gen_ai_system",
+    "gen_ai_tool_name", "error_type", "http_request_method",
+    "http_response_status_code", "http_route", "rpc_method", "rpc_service",
+    "service_version", "service_namespace", "deployment_environment",
+    "os_type", "host_arch",
+    "openclaw_security_policy_id", "openclaw_security_control_id",
+})
+# Fixed tag keys the receiver sets itself; attributes may not overwrite them.
+_RESERVED_TAGS = frozenset({"source", "metric_name", "unit", "hostname", "scope",
+                            "status", "span_kind", "severity", "severity_text"})
+_MAX_TRACKED_KEYS = 1024
+_CAPPED_VALUE = "other"
+# Per-key distinct values seen this process; drives the "other" substitution.
+_seen_values: dict[str, set[str]] = {}
+
+
+def reset_policy_state() -> None:
+    """Forget seen tag values and zero the policy counters (tests)."""
+    global _otlp_tags_dropped, _otlp_tags_capped, _otlp_attr_fields
+    _seen_values.clear()
+    _otlp_tags_dropped = _otlp_tags_capped = _otlp_attr_fields = 0
+
+
+def _normalize_key(key: str) -> str:
+    return _CAMEL_RE.sub("_", key).replace(".", "_").replace(" ", "_").replace("-", "_").lower()
+
+
+def _policy():
+    from config.unified_config import settings as _settings
+    return _settings.alarm_engine.otlp
+
+
+def _classify(key: str, cfg) -> str:
+    """Return "allow", "deny", "measure" or "tag" for one attribute key."""
+    return _classify_cached(key, tuple(cfg.tag_allow), tuple(cfg.tag_deny))
+
+
+@functools.lru_cache(maxsize=4096)
+def _classify_cached(key: str, allow: tuple, deny: tuple) -> str:
+    nk = _normalize_key(key)
+    tk = _safe_tag(key)
+    if tk in _RESERVED_TAGS or key in deny or tk in deny:
+        return "deny"
+    if key in allow or tk in allow or nk in _BUILTIN_ALLOW:
+        return "allow"
+    if _MEASURE_RE.search(nk):
+        return "measure"
+    if _IDENT_RE.search(nk):
+        return "deny"
+    return "tag"
+
+
+def _cap_value(key: str, value: str, cap: int) -> str:
+    """Return `value`, or "other" once `key` has `cap` distinct values."""
+    global _otlp_tags_capped
+    seen = _seen_values.get(key)
+    if seen is None:
+        if len(_seen_values) >= _MAX_TRACKED_KEYS:
+            _otlp_tags_capped += 1
+            return _CAPPED_VALUE
+        seen = _seen_values[key] = set()
+    if value in seen:
+        return value
+    if len(seen) < cap:
+        seen.add(value)
+        return value
+    _otlp_tags_capped += 1
+    return _CAPPED_VALUE
+
+
+def _apply_attr(key: str, v: AnyValue, cfg, tags: dict[str, str], fields: dict[str, float],
+                allowed: dict[str, str]) -> None:
+    """Route one attribute into `allowed`/`tags` (string dims) or `fields` (numbers)."""
+    global _otlp_tags_dropped, _otlp_attr_fields
+    kind = v.WhichOneof("value")
+    cls = _classify(key, cfg)
+    tk = _safe_tag(key)
+    if cls == "deny":
+        _otlp_tags_dropped += 1
+        return
+    numeric = kind in ("int_value", "double_value")
+    if cls == "measure" or (numeric and cls != "allow"):
+        num = v.int_value if kind == "int_value" else v.double_value if kind == "double_value" else None
+        if num is None and kind == "string_value":
+            try:
+                num = float(v.string_value)
+            except ValueError:
+                num = None
+        if num is None or not math.isfinite(num):
+            _otlp_tags_dropped += 1
+            return
+        tags.pop(tk, None)
+        allowed.pop(tk, None)
+        fields[tk] = float(num)
+        _otlp_attr_fields += 1
+        return
+    val = _attr_value(v)
+    fields.pop(tk, None)
+    if cls == "allow":
+        allowed[tk] = val
+    elif kind == "bool_value":
+        tags[tk] = val
+    else:
+        tags[tk] = _cap_value(tk, val, cfg.tag_value_cap)
 
 
 def configure(cache: Cache, db: Optional[InfluxDBClient]) -> None:
@@ -91,6 +229,7 @@ async def _heartbeat_loop() -> None:
     from config.unified_config import settings as _settings
     last_m = last_t = last_l = 0
     last_pe = last_we = 0
+    last_td = last_tc = last_af = 0
     while True:
         try:
             await _asyncio.sleep(_settings.alarm_engine.intervals.otlp_heartbeat_s)
@@ -99,22 +238,54 @@ async def _heartbeat_loop() -> None:
             dl = _otlp_logs_seen    - last_l
             dpe = _otlp_parse_errors - last_pe
             dwe = _otlp_write_errors - last_we
+            dtd = _otlp_tags_dropped - last_td
+            dtc = _otlp_tags_capped - last_tc
+            daf = _otlp_attr_fields - last_af
             last_m, last_t, last_l = _otlp_metrics_seen, _otlp_traces_seen, _otlp_logs_seen
             last_pe, last_we = _otlp_parse_errors, _otlp_write_errors
+            last_td, last_tc, last_af = _otlp_tags_dropped, _otlp_tags_capped, _otlp_attr_fields
             line = (
                 f"heartbeat otlp: metrics+{dm} traces+{dt} logs+{dl} "
                 f"(total m={_otlp_metrics_seen} t={_otlp_traces_seen} l={_otlp_logs_seen} "
                 f"batches m/t/l={_otlp_metric_batches}/{_otlp_trace_batches}/{_otlp_log_batches}) "
-                f"parse_err+{dpe} write_err+{dwe}"
+                f"parse_err+{dpe} write_err+{dwe} "
+                f"tags dropped+{dtd} capped+{dtc} fields+{daf} keys={len(_seen_values)}"
             )
             if dm or dt or dl or dpe or dwe:
                 logger.info(line)
+                _write_self_metrics(dtd, dtc, daf)
             else:
                 logger.debug(line)
         except _asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning("OTLP heartbeat tick failed: %s", e, exc_info=True)
+
+
+def _write_self_metrics(dropped: int, capped: int, fields: int) -> None:
+    """Write the per-tick tag-policy counters as `otlp-receiver` metric points."""
+    if _db is None:
+        return
+    import socket
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "localhost"
+    ts = datetime.now(timezone.utc)
+    records = [
+        _build_record(name, float(val), {"source": "otlp-receiver", "unit": "1", "hostname": host}, ts)
+        for name, val in (
+            ("otlp.tags_dropped", dropped),
+            ("otlp.tags_capped", capped),
+            ("otlp.attr_fields", fields),
+            ("otlp.tag_keys_tracked", len(_seen_values)),
+        )
+    ]
+    try:
+        _db.write_metrics_batch(records)
+        _seed_cache(records)
+    except Exception as e:
+        logger.debug("OTLP self-metric write failed: %s", e)
 
 
 def _attr_value(v: AnyValue) -> str:
@@ -141,8 +312,16 @@ def _attr_value(v: AnyValue) -> str:
     return ""
 
 
-def _attrs_to_dict(attrs) -> dict[str, str]:
-    return {kv.key: _attr_value(kv.value) for kv in attrs}
+_RESOURCE_KEYS = ("service.name", "host.name", "host.hostname")
+
+
+def _split_resource(attrs) -> tuple[str, Optional[str], list]:
+    """Pull source + hostname out of the resource attributes; return the rest."""
+    found = {kv.key: _attr_value(kv.value) for kv in attrs if kv.key in _RESOURCE_KEYS}
+    rest = [kv for kv in attrs if kv.key not in _RESOURCE_KEYS]
+    source = found.get("service.name") or "openclaw-otel"
+    hostname = found.get("host.name") or found.get("host.hostname") or None
+    return source, hostname, rest
 
 
 def _ts_from_nanos(nanos: int) -> datetime:
@@ -165,12 +344,8 @@ def _flatten_metrics(req: ExportMetricsServiceRequest) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
     for rm in req.resource_metrics:
-        resource_attrs = _attrs_to_dict(rm.resource.attributes)
         # service.name -> source so existing alarm rules can target the producer
-        source = resource_attrs.pop("service.name", "openclaw-otel")
-        hostname = resource_attrs.pop("host.name", None) or resource_attrs.pop(
-            "host.hostname", None
-        )
+        source, hostname, resource_attrs = _split_resource(rm.resource.attributes)
 
         for sm in rm.scope_metrics:
             scope_name = sm.scope.name if sm.HasField("scope") else ""
@@ -208,12 +383,12 @@ def _emit_number_point(
     unit: str,
     source: str,
     hostname: Optional[str],
-    resource_attrs: dict[str, str],
+    resource_attrs,
     scope_name: str,
 ) -> list[dict[str, Any]]:
     value = dp.as_double if dp.HasField("as_double") else float(dp.as_int)
-    tags = _build_tags(source, name, unit, hostname, resource_attrs, dp.attributes, scope_name)
-    return [_build_record(name, value, tags, _ts_from_nanos(dp.time_unix_nano))]
+    tags, fields = _build_tags(source, name, unit, hostname, resource_attrs, dp.attributes, scope_name)
+    return [_build_record(name, value, tags, _ts_from_nanos(dp.time_unix_nano), fields)]
 
 
 def _emit_histogram_point(
@@ -222,7 +397,7 @@ def _emit_histogram_point(
     unit: str,
     source: str,
     hostname: Optional[str],
-    resource_attrs: dict[str, str],
+    resource_attrs,
     scope_name: str,
 ) -> list[dict[str, Any]]:
     """Phase 1 emits only sum and count. Bucket counts (for percentile
@@ -231,11 +406,11 @@ def _emit_histogram_point(
     """
     out: list[dict[str, Any]] = []
     ts = _ts_from_nanos(dp.time_unix_nano)
-    base_tags = _build_tags(source, name, unit, hostname, resource_attrs, dp.attributes, scope_name)
+    base_tags, fields = _build_tags(source, name, unit, hostname, resource_attrs, dp.attributes, scope_name)
 
     if dp.HasField("sum"):
-        out.append(_build_record(f"{name}.sum", dp.sum, dict(base_tags), ts))
-    out.append(_build_record(f"{name}.count", float(dp.count), dict(base_tags), ts))
+        out.append(_build_record(f"{name}.sum", dp.sum, dict(base_tags), ts, dict(fields)))
+    out.append(_build_record(f"{name}.count", float(dp.count), dict(base_tags), ts, dict(fields)))
     return out
 
 
@@ -244,16 +419,18 @@ def _build_tags(
     metric_name: str,
     unit: str,
     hostname: Optional[str],
-    resource_attrs: dict[str, str],
+    resource_attrs,
     dp_attrs,
     scope_name: str,
-) -> dict[str, str]:
-    """Build the tag set for one InfluxDB record.
+) -> tuple[dict[str, str], dict[str, float]]:
+    """Build the tag set and attribute fields for one InfluxDB record.
 
-    The data-point-level OTEL attributes win on collision — they're more
-    specific than the resource-level ones (e.g., per-call `model` vs
-    process-level `service.version`).
+    Resource then data-point attributes pass through the tag policy; the
+    data-point ones win on key collision. Allowlisted keys survive the
+    per-point `max_tags` cap ahead of the rest.
     """
+    global _otlp_tags_dropped
+    cfg = _policy()
     tags: dict[str, str] = {
         "source": source,
         "metric_name": metric_name,
@@ -263,11 +440,20 @@ def _build_tags(
         tags["hostname"] = hostname
     if scope_name:
         tags["scope"] = scope_name
-    for k, v in resource_attrs.items():
-        tags[_safe_tag(k)] = v
+    allowed: dict[str, str] = {}
+    attr_tags: dict[str, str] = {}
+    fields: dict[str, float] = {}
+    for kv in resource_attrs:
+        _apply_attr(kv.key, kv.value, cfg, attr_tags, fields, allowed)
     for kv in dp_attrs:
-        tags[_safe_tag(kv.key)] = _attr_value(kv.value)
-    return tags
+        _apply_attr(kv.key, kv.value, cfg, attr_tags, fields, allowed)
+    room = max(0, cfg.max_tags - len(allowed))
+    if len(attr_tags) > room:
+        _otlp_tags_dropped += len(attr_tags) - room
+        attr_tags = dict(list(attr_tags.items())[:room])
+    tags.update(allowed)
+    tags.update(attr_tags)
+    return tags, fields
 
 
 def _safe_tag(key: str) -> str:
@@ -278,12 +464,15 @@ def _safe_tag(key: str) -> str:
     return key.replace(".", "_").replace(" ", "_")
 
 
-def _build_record(metric_name: str, value: float, tags: dict[str, str], ts: datetime) -> dict[str, Any]:
+def _build_record(metric_name: str, value: float, tags: dict[str, str], ts: datetime,
+                  fields: Optional[dict[str, float]] = None) -> dict[str, Any]:
     tags["metric_name"] = metric_name  # overwrite so histogram .sum/.count are distinct
+    rec_fields = {k: v for k, v in (fields or {}).items() if k != "value"}
+    rec_fields["value"] = float(value)
     return {
         "measurement": "metrics",
         "tags": tags,
-        "fields": {"value": float(value)},
+        "fields": rec_fields,
         "time": int(ts.timestamp() * 1e9),
     }
 
@@ -382,11 +571,7 @@ def _flatten_spans(req: ExportTraceServiceRequest) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
     for rs in req.resource_spans:
-        resource_attrs = _attrs_to_dict(rs.resource.attributes)
-        source = resource_attrs.pop("service.name", "openclaw-otel")
-        hostname = resource_attrs.pop("host.name", None) or resource_attrs.pop(
-            "host.hostname", None
-        )
+        source, hostname, resource_attrs = _split_resource(rs.resource.attributes)
 
         for ss in rs.scope_spans:
             scope_name = ss.scope.name if ss.HasField("scope") else ""
@@ -400,7 +585,7 @@ def _flatten_spans(req: ExportTraceServiceRequest) -> list[dict[str, Any]]:
                 duration_ms = (end_ns - start_ns) / 1e6
 
                 metric_name = f"{span.name}.duration_ms"
-                tags = _build_tags(
+                tags, fields = _build_tags(
                     source, metric_name, "ms", hostname,
                     resource_attrs, span.attributes, scope_name,
                 )
@@ -416,7 +601,7 @@ def _flatten_spans(req: ExportTraceServiceRequest) -> list[dict[str, Any]]:
                 tags["span_kind"] = _span_kind_name(span.kind)
 
                 records.append(_build_record(
-                    metric_name, duration_ms, tags, _ts_from_nanos(end_ns),
+                    metric_name, duration_ms, tags, _ts_from_nanos(end_ns), fields,
                 ))
 
     return records
@@ -517,11 +702,7 @@ def _flatten_logs(req: ExportLogsServiceRequest) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
     for rl in req.resource_logs:
-        resource_attrs = _attrs_to_dict(rl.resource.attributes)
-        source = resource_attrs.pop("service.name", "openclaw-otel")
-        hostname = resource_attrs.pop("host.name", None) or resource_attrs.pop(
-            "host.hostname", None
-        )
+        source, hostname, resource_attrs = _split_resource(rl.resource.attributes)
 
         for sl in rl.scope_logs:
             scope_name = sl.scope.name if sl.HasField("scope") else ""
@@ -529,7 +710,7 @@ def _flatten_logs(req: ExportLogsServiceRequest) -> list[dict[str, Any]]:
             for rec in sl.log_records:
                 ts_ns = rec.time_unix_nano or rec.observed_time_unix_nano
                 metric_name = f"{source}.log.count"
-                tags = _build_tags(
+                tags, fields = _build_tags(
                     source, metric_name, "1", hostname,
                     resource_attrs, rec.attributes, scope_name,
                 )
@@ -538,7 +719,7 @@ def _flatten_logs(req: ExportLogsServiceRequest) -> list[dict[str, Any]]:
                     tags["severity_text"] = rec.severity_text
 
                 records.append(_build_record(
-                    metric_name, 1.0, tags, _ts_from_nanos(ts_ns),
+                    metric_name, 1.0, tags, _ts_from_nanos(ts_ns), fields,
                 ))
 
     return records

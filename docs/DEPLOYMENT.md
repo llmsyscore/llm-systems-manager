@@ -510,6 +510,15 @@ diagnostics.otel.headers.Authorization = "Bearer <ingest_token>"
 
 Without the CA the exporter fails silently: the OpenClaw log shows `unable to verify the first certificate` and the engine's `heartbeat otlp` journal line stays at `metrics+0 traces+0 logs+0`. The ingest token is not involved in that failure. Note this feed is separate from the **Dashboards → OpenClaw** tab, which the agent fills from OpenClaw's own session store.
 
+**Which attributes become tags.** The receiver keeps telemetry attributes as InfluxDB tags only when they are bounded dimensions. Keys that name identifiers, network endpoints or free text (`*_id`, `*Id`, `*hash`, `token`, `session`, `trace`/`span`/`frame` ids, `pid`, `port`, `addr`, `endpoint`, `peer`, `url`, `path`, `userAgent`, `message(s)`, `content`, `value`, `command`, `prompt`, `description`, …) are dropped; numeric attributes and keys ending in a unit (`_ms`, `_bytes`, `_chars`, `_count`, `_tokens`, `_ratio`, …) are stored as fields on the point instead of tags; the standard `gen_ai.*`, `http.*`, `rpc.*`, `error.type` and `service.version` dimensions and OpenClaw's bounded `security.policy_id` / `security.control_id` are always kept. Every other string attribute is a tag until it has shown `[alarm_engine.otlp].tag_value_cap` distinct values (default 100), after which new values are stored as `other`; at most `max_tags` attribute tags (default 32) are kept per point. Add keys to `tag_allow` / `tag_deny` under `[alarm_engine.otlp]` to override the pattern rules (dotted OpenTelemetry names or their underscored tag form both work). The `heartbeat otlp` journal line reports `tags dropped+N capped+N fields+N`, and the same counters are written as `source=otlp-receiver` metrics (`otlp.tags_dropped`, `otlp.tags_capped`, `otlp.attr_fields`, `otlp.tag_keys_tracked`) so a rule can watch them.
+
+**Existing installs.** Series minted by the earlier receiver (one per event id, timing value or connection) stop growing as soon as the engine restarts on this version and age out with the raw bucket's retention; the rollup bucket keeps its copies for its own, longer retention. No manual cleanup is needed. To reclaim the index sooner, delete the OpenClaw source's history from both buckets with the InfluxDB CLI — note this removes all history for that source, and predicate deletes leave tombstones that slow queries until the next compaction:
+
+```
+influx delete --org <org> --bucket alarm_engine_metrics        --start 1970-01-01T00:00:00Z --stop $(date -u +%Y-%m-%dT%H:%M:%SZ) --predicate 'source="openclaw-gateway"'
+influx delete --org <org> --bucket alarm_engine_metrics_rollup --start 1970-01-01T00:00:00Z --stop $(date -u +%Y-%m-%dT%H:%M:%SZ) --predicate 'source="openclaw-gateway"'
+```
+
 ### Operator-Provided TLS Certificate
 
 By default the HTTPS port (`[manager].tls_port`, 5443) serves a certificate from the manager's internal CA, which browsers on other devices do not trust. To serve a certificate they do trust — a Let's Encrypt cert for your domain, or one from a corporate CA:

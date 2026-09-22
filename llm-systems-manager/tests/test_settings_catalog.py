@@ -25,6 +25,9 @@ def test_groups_cover_all_entries_and_are_ordered():
     keys = [k for k, _ in sc.GROUPS]
     assert len(keys) == len(set(keys))
     assert {e["group"] for e in sc.CATALOG} <= set(keys)
+    assert set(sc.GROUP_PARENTS) <= set(keys)
+    assert set(sc.GROUP_PARENTS.values()) <= set(keys)
+    assert not (set(sc.GROUP_PARENTS) & set(sc.GROUP_PARENTS.values()))
 
 
 def test_describe_masks_secrets():

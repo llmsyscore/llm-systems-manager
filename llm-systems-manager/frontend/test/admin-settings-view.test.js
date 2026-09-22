@@ -173,6 +173,73 @@ describe('rail + pane (#945)', () => {
   });
 });
 
+describe('nested rail groups (#1098)', () => {
+  const navBtns = doc => [...doc.querySelectorAll('#stNav button')];
+  const AE = { path: 'alarm_engine.port', label: 'AE port', help: 'Listen port.', group: 'alarm_engine', service: 'alarm_engine', type: 'int' };
+  const CAP = { path: 'alarm_engine.otlp.tag_value_cap', label: 'OTLP values per tag', help: 'Cap.', group: 'ae_behaviour', service: 'alarm_engine', type: 'int' };
+  const nested = (over = {}) => payload({
+    groups: [{ key: 'network', title: 'Network & TLS', parent: null }, { key: 'backup', title: 'Backups', parent: null },
+             { key: 'alarm_engine', title: 'Alarm Engine', parent: null }, { key: 'ae_behaviour', title: 'Alarms & Retention', parent: 'alarm_engine' }],
+    entries: [PORT, URLE, IDLE, SCHED, LEVEL, SECRET, AE, CAP],
+    values: { ...payload().values, 'alarm_engine.port': 8081, 'alarm_engine.otlp.tag_value_cap': 100 },
+    ...over,
+  });
+
+  test('children sit right under their parent in catalog order, hidden until the parent is selected', async () => {
+    const TW = { path: 'manager.tower.enabled', label: 'Tower', help: '', group: 'tower', service: 'manager', type: 'bool' };
+    const FC = { path: 'manager.forecast.enabled', label: 'Forecast', help: '', group: 'forecast', service: 'manager', type: 'bool' };
+    const GW = { path: 'manager.gateway.enabled', label: 'Gateway', help: '', group: 'gateway', service: 'manager', type: 'bool' };
+    const base = nested();
+    const win = await boot({ ...base,
+      groups: [...base.groups, { key: 'tower', title: 'Tower assistant', parent: 'gateway' }, { key: 'forecast', title: 'Forecast', parent: 'gateway' }, { key: 'gateway', title: 'Inference Gateway', parent: null }],
+      entries: [...base.entries, TW, FC, GW] });
+    const doc = win.document;
+    expect(navBtns(doc).map(b => b.dataset.group)).toEqual(['__most_used__', 'alarm_engine', 'ae_behaviour', 'backup', 'gateway', 'tower', 'forecast', 'network']);
+    const child = navBtns(doc)[2];
+    expect(child.classList.contains('sub')).toBe(true);
+    expect(child.hidden).toBe(true);
+    expect(navBtns(doc)[1].getAttribute('aria-expanded')).toBe('false');
+    navBtns(doc)[1].click();
+    expect(navBtns(doc)[2].hidden).toBe(false);
+    expect(navBtns(doc)[1].getAttribute('aria-expanded')).toBe('true');
+    navBtns(doc)[2].click();
+    expect(doc.querySelector('#adminSettingsRoot .card').dataset.group).toBe('ae_behaviour');
+    expect(navBtns(doc)[2].classList.contains('on')).toBe(true);
+    expect(navBtns(doc)[2].hidden).toBe(false);
+  });
+
+  test('the chevron collapses and expands without changing the pane, and the state survives a reload', async () => {
+    let win = await boot(nested());
+    navBtns(win.document)[1].click();
+    navBtns(win.document)[1].querySelector('.tog').click();
+    expect(navBtns(win.document)[2].hidden).toBe(true);
+    expect(win.document.querySelector('#adminSettingsRoot .card').dataset.group).toBe('alarm_engine');
+    const saved = win.localStorage.getItem('st.navOpen');
+    expect(JSON.parse(saved).closed).toEqual(['alarm_engine']);
+    navBtns(win.document)[1].querySelector('.tog').click();
+    expect(navBtns(win.document)[2].hidden).toBe(false);
+    expect(JSON.parse(win.localStorage.getItem('st.navOpen')).open).toEqual(['alarm_engine']);
+  });
+
+  test('a collapsed parent carries its children\'s flag and dirty count; the filter shows every child', async () => {
+    const win = await boot(nested({ restart_pending: ['alarm_engine'], restart_pending_paths: ['alarm_engine.otlp.tag_value_cap'] }));
+    const doc = win.document;
+    expect(navBtns(doc)[1].querySelector('.flag')).not.toBeNull();
+    navBtns(doc)[2].click();
+    type(win, 'alarm_engine.otlp.tag_value_cap', '50');
+    navBtns(doc)[3].click();
+    expect(navBtns(doc)[2].hidden).toBe(true);
+    expect(navBtns(doc)[1].querySelector('.cnt').textContent).toBe('1');
+    navBtns(doc)[1].click();
+    expect(navBtns(doc)[1].querySelector('.cnt')).toBeNull();
+    expect(navBtns(doc)[2].querySelector('.cnt').textContent).toBe('1');
+    const f = doc.getElementById('stFilter');
+    f.value = 'otlp'; f.dispatchEvent(new win.Event('input', { bubbles: true }));
+    expect(navBtns(doc).every(b => !b.hidden)).toBe(true);
+    expect([...doc.querySelectorAll('#stNavSel option')].map(o => o.textContent)).toContain('\u00a0\u00a0\u21b3 Alarms & Retention');
+  });
+});
+
 describe('group normalization (#945 fix round 1)', () => {
   test('with no common entries, the rail and pane agree on the first real group', async () => {
     const entries = [PORT, URLE, { ...IDLE, common: false }, { ...SCHED, common: false }, LEVEL, SECRET];

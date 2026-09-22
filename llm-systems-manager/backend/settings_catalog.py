@@ -38,6 +38,9 @@ GROUPS: list[tuple[str, str]] = [
     ("logging", "Logging"),
 ]
 
+# Rail nesting: child group key -> parent group key.
+GROUP_PARENTS = {"ae_behaviour": "alarm_engine", "tower": "gateway", "forecast": "gateway"}
+
 MANAGER, AE, BOTH = "manager", "alarm_engine", "both"
 
 
@@ -250,6 +253,10 @@ CATALOG: list[dict] = [
     _e("alarm_engine.correlation.notify_per_incident", "bool", "Notify per incident", "Suppress channel dispatch for joiner alerts (toasts unaffected).", "ae_behaviour", AE),
     _e("alarm_engine.retention.alert_history_days", "int", "Alert history (days)", "Purge alert history past this; 0 = keep forever.", "ae_behaviour", AE, min=0, max=3650),
     _e("alarm_engine.retention.purge_interval_s", "float", "Purge interval (s)", "How often the purge task runs.", "ae_behaviour", AE, min=60, max=86400),
+    _e("alarm_engine.otlp.tag_value_cap", "int", "OTLP values per tag", "Distinct values kept per telemetry attribute tag; later ones are stored as \"other\".", "ae_behaviour", AE, min=1, max=10000),
+    _e("alarm_engine.otlp.max_tags", "int", "OTLP tags per point", "Attribute tags kept on one telemetry point (source, metric and host don't count).", "ae_behaviour", AE, min=0, max=200),
+    _e("alarm_engine.otlp.tag_allow", "list", "OTLP tags always kept", "Telemetry attribute keys always stored as tags, even when they look like identifiers. One per line.", "ae_behaviour", AE),
+    _e("alarm_engine.otlp.tag_deny", "list", "OTLP tags always dropped", "Telemetry attribute keys never stored as tags. One per line.", "ae_behaviour", AE),
     _e("alarm_engine.default_rules.cpu_usage_critical", "float", "CPU usage critical (%)", "Seed threshold, applied only at first boot.", "ae_behaviour", AE, min=1, max=100),
     _e("alarm_engine.default_rules.cpu_temp_critical", "float", "CPU temp critical (°C)", "Seed threshold, applied only at first boot.", "ae_behaviour", AE, min=1, max=150),
     _e("alarm_engine.default_rules.gpu_temp_critical", "float", "GPU temp critical (°C)", "Seed threshold, applied only at first boot.", "ae_behaviour", AE, min=1, max=150),
@@ -366,7 +373,7 @@ def describe() -> dict:
         elif cur is not None:
             values[e["path"]] = cur
     return {
-        "groups": [{"key": k, "title": t} for k, t in GROUPS],
+        "groups": [{"key": k, "title": t, "parent": GROUP_PARENTS.get(k)} for k, t in GROUPS],
         "entries": [dict(e) for e in CATALOG],
         "values": values,
         "secrets": secrets,

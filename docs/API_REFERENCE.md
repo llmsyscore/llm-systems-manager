@@ -1982,3 +1982,5 @@ Ingests OpenTelemetry trace spans. Each span is recorded as a duration metric.
 
 ### `POST /v1/logs`
 Ingests OpenTelemetry log records. Each record is recorded as a log-count metric.
+
+**Attributes → tags.** Resource, data-point, span and log attributes become InfluxDB tags under a bounded policy (`[alarm_engine.otlp]`): identifier, network-endpoint and free-text keys are dropped, numeric attributes are stored as extra fields on the point, and the remaining string tags are capped per key (`tag_value_cap`, later values become `other`) and per point (`max_tags`). `service.name` becomes `source`, `host.name` becomes `hostname`; span status/kind and log severity are always tagged. See *Deployment → OpenClaw Telemetry (OTLP)* for the full rule set and the `tag_allow` / `tag_deny` overrides.
