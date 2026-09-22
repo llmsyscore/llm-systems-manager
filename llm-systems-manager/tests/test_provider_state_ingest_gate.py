@@ -92,3 +92,36 @@ def test_heartbeat_refreshes_capabilities(monkeypatch):
     assert r.status_code == 200
     assert data["agents"][aid]["capabilities"] == {"llama": True, "lms": False}
     assert saved  # flushed immediately on a capability change
+
+
+def test_heartbeat_records_clock_skew(monkeypatch):
+    """#1091: the heartbeat's own `ts` becomes last_heartbeat_data.clock_skew_s (agent minus manager)."""
+    from datetime import datetime, timedelta, timezone
+    import auth
+    aid = "e" * 32
+    data = {"agents": {aid: {"agent_id": aid, "hostname": "h", "status": "approved", "token": "tok"}}, "global": {}}
+    monkeypatch.setattr(agent_registry, "bearer_from_request", lambda: "tok")
+    monkeypatch.setattr(agent_registry, "agent_by_token", lambda tok: dict(data["agents"][aid]))
+    monkeypatch.setattr(auth, "_bearer_from_request", lambda: "tok", raising=False)
+    monkeypatch.setattr(auth, "_agent_by_token", lambda tok: dict(data["agents"][aid]), raising=False)
+    monkeypatch.setattr(agent_registry, "load_agents", lambda: data)
+    monkeypatch.setattr(agent_registry, "save_agents", lambda d: None)
+    M.app.config["TESTING"] = True
+    ahead = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+    with M.app.test_client() as c:
+        assert c.post("/api/agents/heartbeat", json={"ts": ahead}).status_code == 200
+        skew = data["agents"][aid]["last_heartbeat_data"]["clock_skew_s"]
+        assert 85.0 < skew < 91.0
+        assert c.post("/api/agents/heartbeat", json={}).status_code == 200
+        assert data["agents"][aid]["last_heartbeat_data"]["clock_skew_s"] is None
+
+
+def test_clock_skew_helper_parses_iso_forms():
+    now = __import__("datetime").datetime(2026, 9, 22, 12, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+    assert agent_registry.clock_skew_s("2026-09-22T12:00:04Z", now) == 4.0
+    assert agent_registry.clock_skew_s("2026-09-22T11:59:57.500+00:00", now) == -2.5
+    assert agent_registry.clock_skew_s("2026-09-22T14:00:00+02:00", now) == 0.0
+    assert agent_registry.clock_skew_s("2026-09-22T12:00:01", now) == 1.0  # naive = UTC
+    assert agent_registry.clock_skew_s("garbage", now) is None
+    assert agent_registry.clock_skew_s(None, now) is None
+    assert agent_registry.clock_skew_s("", now) is None

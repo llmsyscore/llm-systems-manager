@@ -152,8 +152,8 @@ def _rows(connect: Callable, path: Any, sql: str, params: tuple = ()) -> list:
 
 
 def agent_gaps(rows: Any, now: float) -> "list[dict]":
-    """One {host, gap_s} row per host (freshest wins) from agent registry rows."""
-    best: "dict[str, float]" = {}
+    """One {host, gap_s, skew_s} row per host (freshest wins) from agent registry rows; skew_s only when measured."""
+    best: "dict[str, dict]" = {}
     for r in rows or []:
         if not isinstance(r, dict):
             continue
@@ -162,9 +162,12 @@ def agent_gaps(rows: Any, now: float) -> "list[dict]":
         if not host or seen is None:
             continue
         gap = max(0.0, float(now) - seen)
-        if host not in best or gap < best[host]:
-            best[host] = gap
-    return [{"host": h, "gap_s": g} for h, g in sorted(best.items())]
+        if host not in best or gap < best[host]["gap_s"]:
+            best[host] = {"host": host, "gap_s": gap}
+            skew = _num(r.get("skew_s"))
+            if skew is not None:
+                best[host]["skew_s"] = skew
+    return [best[h] for h in sorted(best)]
 
 
 def db_bytes(paths, getsize: Callable[[str], int]) -> float:

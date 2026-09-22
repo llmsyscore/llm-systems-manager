@@ -399,6 +399,21 @@ def test_agent_gaps_dedupes_by_host_and_keeps_the_freshest():
     out = fw.agent_gaps(rows, now)
     assert [r["host"] for r in out] == ["box-a", "box-b"]
     assert out[0]["gap_s"] == 5.0 and out[1]["gap_s"] == 20.0
+    assert "skew_s" not in out[0] and "skew_s" not in out[1]
+
+
+def test_agent_gaps_carries_the_freshest_clock_skew():
+    """#1091: skew_s rides along from the freshest row only, and only when it is a finite number."""
+    now = 1_700_000_000.0
+    rows = [{"host": "box-a", "last_seen": now - 30, "skew_s": 40.0},
+            {"host": "box-a", "last_seen": now - 5, "skew_s": -2.5},
+            {"host": "box-b", "last_seen": now - 5, "skew_s": None},
+            {"host": "box-c", "last_seen": now - 5, "skew_s": "nan"},
+            {"host": "box-d", "last_seen": now - 5, "skew_s": "3"}]
+    out = {r["host"]: r for r in fw.agent_gaps(rows, now)}
+    assert out["box-a"]["skew_s"] == -2.5
+    assert "skew_s" not in out["box-b"] and "skew_s" not in out["box-c"]
+    assert out["box-d"]["skew_s"] == 3.0
 
 
 def test_db_bytes_sums_and_skips_missing(tmp_path):

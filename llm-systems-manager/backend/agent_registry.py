@@ -590,6 +590,20 @@ def agent_liveness(agent: dict) -> str:
     return "live"
 
 
+def clock_skew_s(agent_ts: Any, now: Optional[datetime] = None) -> Optional[float]:
+    """Seconds the agent's heartbeat `ts` runs ahead of the manager clock (negative = behind); None when absent."""
+    text = str(agent_ts or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return round((dt - (now or datetime.now(timezone.utc))).total_seconds(), 3)
+
+
 def agent_host_keys(agent: dict) -> "set[str]":
     """Lowercase set of host identifiers for an agent: hostname,
     short hostname, bind_url host, and registered_from IP. Used to
@@ -1375,12 +1389,15 @@ def _agents_heartbeat():
         live = data["agents"].get(agent["agent_id"])
         if live:
             prev_version = live.get("version")
-            live["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+            now_utc = datetime.now(timezone.utc)
+            live["last_heartbeat"] = now_utc.isoformat()
             live["last_heartbeat_data"] = {
                 "collection_enabled": body.get("collection_enabled"),
                 "llama_state": body.get("llama_state"),
                 "samples_posted": body.get("samples_posted"),
                 "tls_expires_at": body.get("tls_expires_at"),
+                # Agent clock minus manager clock, from the heartbeat's own `ts` (#1091).
+                "clock_skew_s": clock_skew_s(body.get("ts"), now_utc),
                 # True when the agent reports its MANAGER_URL is https — pairs
                 # with bind_url scheme in /api/admin/system-health to drive the
                 # admin tab's bidirectional-TLS indicator.
