@@ -82,8 +82,14 @@ _llama_build_last: str = ""
 # Last llama /v1/models probe, folded into HostResidency by the collector tick.
 _residency_inputs: dict[str, Any] = {"models": [], "server": "unknown", "ts": 0.0}
 _reconcile_hook: "Optional[Callable[[], None]]" = None
-_reconcile_mark = {"last": 0.0}
+# Early-tick coalescing window; a request inside it is deferred to its end.
+_RECONCILE_WINDOW_S = 1.0
+_reconcile_mark: dict[str, Any] = {"last": 0.0, "timer": None}
+_reconcile_lock = threading.Lock()
 _llama_main_pid = {"last": None}
+# Startup router-mode probe of /v1/models (lifespan blocks on it).
+_ROUTER_PROBE_TIMEOUT_S = 1.5
+_UNIT_PID_TIMEOUT_S = 2.0
 
 # /models/sse listener (router mode); feeds the llama_sse snapshot.
 _llama_sse_listener: "Optional[llama_sse.LlamaSseListener]" = None
@@ -240,16 +246,29 @@ def set_reconcile_hook(fn: "Optional[Callable[[], None]]") -> None:
 
 
 def reconcile_now() -> None:
-    """Ask the collector for an early tick (coalesced to once per second)."""
+    """Ask the collector for an early tick; calls inside the window coalesce into one deferred tick."""
     global _llama_info_last_poll
-    now = time.monotonic()
-    if now - _reconcile_mark["last"] < 1.0:
-        return
-    _reconcile_mark["last"] = now
+    with _reconcile_lock:
+        now = time.monotonic()
+        wait = _RECONCILE_WINDOW_S - (now - _reconcile_mark["last"])
+        if wait > 0:
+            if _reconcile_mark["timer"] is None:
+                t = threading.Timer(wait, _reconcile_deferred)
+                t.daemon = True
+                _reconcile_mark["timer"] = t
+                t.start()
+            return
+        _reconcile_mark["last"] = now
     _llama_info_last_poll = 0.0
     if _reconcile_hook is not None:
         with best_effort("reconcile_now hook", log=log):
             _reconcile_hook()
+
+
+def _reconcile_deferred() -> None:
+    with _reconcile_lock:
+        _reconcile_mark["timer"] = None
+    reconcile_now()
 
 
 _llama_server_args = {"pid": None, "args": None}
@@ -275,10 +294,13 @@ def _llama_server_cmdline(pid: "Optional[int]") -> "Optional[str]":
 
 
 def _llama_unit_main_pid() -> "Optional[int]":
-    """MainPID of the llama unit via systemctl show; None when unknown."""
+    """MainPID of the llama unit via systemctl show; None when unknown or not on Linux."""
+    cfg = _require_ctx().config
+    if getattr(cfg, "AGENT_OS", "linux") != "linux":
+        return None
     try:
-        r = subprocess.run(["systemctl", "show", _require_ctx().config.LLAMA_SYSTEMD_UNIT, "-p", "MainPID"],
-                           capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["systemctl", "show", cfg.LLAMA_SYSTEMD_UNIT, "-p", "MainPID"],
+                           capture_output=True, text=True, timeout=_UNIT_PID_TIMEOUT_S)
         val = (r.stdout or "").strip().split("=", 1)[-1]
         return int(val) if val.isdigit() else None
     except Exception:
@@ -634,7 +656,8 @@ def _llama_router_mode() -> bool:
     Only a non-empty model list decides; an empty one is not evidence either way.
     """
     try:
-        r = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models", timeout=3)
+        r = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models",
+                         timeout=_ROUTER_PROBE_TIMEOUT_S)
         models = ((r.json() or {}).get("data") or []) if r.ok else []
         if models:
             return llama_sse.router_mode_from_models(models)

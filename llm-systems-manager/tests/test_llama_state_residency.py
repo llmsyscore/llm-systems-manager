@@ -262,3 +262,17 @@ def test_power_changes_alone_fan_out_over_sse():
     changed = dict(base, power={"applied": "performance", "owner": "manual", "outcome": "verified"})
     store.broadcast_if_changed("llama", "a1", changed, fingerprint_keys=M._LLAMA_STATE_FP_KEYS)
     assert q.qsize() == 2
+
+
+def test_sweep_budget_is_not_charged_for_agents_inside_their_pull_gate(monkeypatch):
+    st = provider_state._ProviderSampleStore()
+    monkeypatch.setattr(M.provider_state, "STORE", st)
+    for aid in ("a1", "a2", "a3"):
+        st.put("llama", aid, {"llama": {"state": "awake"}})
+        st._samples["llama"][aid]["last_seen"] -= 40
+    monkeypatch.setattr(M, "_broadcast_llama_state_if_changed", lambda aid: None)
+    monkeypatch.setattr(M, "_pull_last", {"a1": time.monotonic(), "a2": time.monotonic()})
+    calls = []
+    monkeypatch.setattr(M, "_pull_llama_state_if_stale", lambda aid: calls.append(aid))
+    M._offline_sweep_once(time.time())
+    assert calls == ["a3"]
