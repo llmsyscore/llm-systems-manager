@@ -311,6 +311,19 @@ describe('defaults', () => {
     expect(win.__puts[0].changes).toEqual({ 'manager.alarm_engine_url': null });
   });
 
+  test('a reset choice shows the default it will take, not the first option', async () => {
+    const data = payload({ values: { ...payload().values, 'logging.level': 'DEBUG', 'manager.backup.enabled': true } });
+    const win = await boot(data);
+    win.adminSettingsOpenGroup('backup');
+    win.document.querySelector('[data-reset="logging.level"]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    const sel = field(win.document, 'logging.level').querySelector('select');
+    expect(sel.value).toBe('INFO');
+    expect(field(win.document, 'logging.level').querySelector('.dflt').textContent).toBe('cleared → default INFO');
+    win.document.getElementById('adminSettingsSaveBtn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(win.__puts[0].changes).toEqual({ 'logging.level': null });
+  });
+
   test('the reset button queues the same null clear', async () => {
     const win = await boot(payload());
     win.adminSettingsOpenGroup('network');

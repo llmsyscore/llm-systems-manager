@@ -523,6 +523,59 @@ def test_direct_call_fields_per_provider_thinking_always_off(provider, tier, max
     assert "reasoning_budget_tokens" not in body
 
 
+def _native_events(text, *, reasoning="", tokens=4):
+    out = [{"type": "chat.start", "model_instance_id": "m"}]
+    if reasoning:
+        out.append({"type": "reasoning.delta", "content": reasoning})
+    out += [{"type": "message.delta", "content": ch} for ch in text]
+    out.append({"type": "chat.end", "result": {"output": [{"type": "message", "content": text}],
+                                               "stats": {"input_tokens": 50, "total_output_tokens": tokens,
+                                                         "reasoning_output_tokens": 1 if reasoning else 0}}})
+    return out
+
+
+def test_direct_call_goes_native_on_lm_studio_when_the_agent_offers_it(monkeypatch):
+    import lms_native
+    monkeypatch.setattr(lms_native, "available", lambda mid: mid == "qwen3-14b")
+    monkeypatch.setattr(lms_native, "thinking_options", lambda mid: ["off", "on"])
+    entries = [{**ENTRIES[0], "provider": "lms"}]
+    oai, native = [], []
+    def native_stream(body, *, label, read_timeout=None):
+        native.append({"body": body, "label": label, "read_timeout": read_timeout})
+        yield from _native_events('{"digest": "Quiet."}', reasoning="hm")
+    tp, _st = _pass(tier="standard", entries=entries, cfg=_cfg(thinking="high"),
+                    stream=_stream(['{"digest": "never"}'], oai), native_stream=native_stream)
+    assert tp.digest([srow("a1")]) == "Quiet."
+    assert oai == [] and len(native) == 1
+    body = native[0]["body"]
+    assert body == {"model": "qwen3-14b", "system_prompt": ft.DIRECT_SYSTEM, "input": body["input"], "store": False,
+                    "temperature": 0.2, "max_output_tokens": 1200 + ft.REASONING_HEADROOM, "reasoning": "off"}
+    assert isinstance(body["input"], str) and body["input"]
+    assert native[0]["label"] == "forecast" and native[0]["read_timeout"] == min(ft.DIRECT_READ_MAX, fe.DIRECT_TIMEOUT_S["standard"])
+
+
+def test_direct_call_stays_on_the_openai_path_without_the_native_api(monkeypatch):
+    import lms_native
+    monkeypatch.setattr(lms_native, "available", lambda mid: False)
+    entries = [{**ENTRIES[0], "provider": "lms"}]
+    oai = []
+    def native_stream(body, *, label, read_timeout=None):  # pragma: no cover
+        raise AssertionError("must not go native")
+    tp, _st = _pass(tier="standard", entries=entries, stream=_stream(['{"digest": "Quiet."}'], oai),
+                    native_stream=native_stream)
+    assert tp.digest([srow("a1")]) == "Quiet."
+    assert len(oai) == 1 and oai[0]["body"]["reasoning_effort"] == "none"
+
+
+def test_native_body_maps_the_level_to_the_model_options(monkeypatch):
+    import lms_native
+    monkeypatch.setattr(lms_native, "thinking_options", lambda mid: ["low", "medium", "high"] if mid == "oss" else None)
+    body = ft.native_body({"model": "oss", "reasoning_effort": "medium", "temperature": 1.4, "max_tokens": 300}, "q")
+    assert body["reasoning"] == "medium" and body["temperature"] == 1.0 and body["max_output_tokens"] == 300
+    body = ft.native_body({"model": "other", "reasoning_effort": "none", "max_tokens": 300}, "q")
+    assert "reasoning" not in body and body["input"] == "q"
+
+
 def test_an_answer_that_is_only_reasoning_counts_as_no_answer():
     bodies = []
     tp, _st = _pass(stream=_stream([""], bodies, thinking="Let me think about this for a while."))

@@ -301,6 +301,7 @@
       return `<pre class="raw">${esc(s)}</pre>`;
     }
     function tickHtml(t, key) {
+      if (t.note) return `<div class="tick note"><span class="k">·</span>${esc(t.note)}</div>`;
       const open = c.openTicks.has(key);
       const label = String(t.summary || t.name || '').replace(/\s*·\s*\d+\s*ms\s*$/, '');
       const snap = t.name === 'timer' ? snapshotHtml(TW.timerSnapshot(t.result))

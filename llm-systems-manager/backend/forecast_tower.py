@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 import forecast_checks as fc
 import forecast_effort as fe
+import lms_native
 import tower
 from tower_watch import _ReadOnly, _asleep
 
@@ -538,14 +539,29 @@ def _figure_rows(rows: "list[dict]", tz_offset_s: float) -> "list[dict]":
              "rate": r.get("rate"), "unit": r.get("unit")} for r in rows]
 
 
+def native_body(body: dict, user_text: str) -> dict:
+    """The LM Studio native chat request for a direct call: one input turn, the short system prompt, and the
+    reasoning setting the model accepts for the call's thinking level."""
+    level = "off" if str(body.get("reasoning_effort") or "") in ("", "none") else str(body["reasoning_effort"])
+    out = {"model": body["model"], "system_prompt": DIRECT_SYSTEM, "input": user_text, "store": False,
+           "temperature": max(0.0, min(1.0, float(body.get("temperature") or 0.0))),
+           "max_output_tokens": int(body.get("max_tokens") or 0)}
+    setting = lms_native.reasoning_setting(level, lms_native.thinking_options(body["model"]))
+    if setting is not None:
+        out["reasoning"] = setting
+    return out
+
+
 class TowerPass:
     """Tower's optional part in a Forecast run: a digest and a likely cause through direct calls, and at the Full
     tier an investigation of each flagged check; measured summaries, figures and advice always stay the code's."""
 
     def __init__(self, store, *, registry_factory, complete_stream, entries, server_args_of, tower_cfg, forecast_cfg,
                  report_violation: Optional[Callable[[dict], None]] = None, host_alias: Callable[[str], str] = str,
-                 now: Callable[[], float] = time.time, tz_offset_s: Callable[[], float] = lambda: 0):
+                 now: Callable[[], float] = time.time, tz_offset_s: Callable[[], float] = lambda: 0,
+                 native_stream: Optional[Callable] = None):
         self._store, self._registry_factory, self._cs = store, registry_factory, complete_stream
+        self._native = native_stream
         self._entries, self._server_args_of = entries, server_args_of
         self._tower_cfg, self._forecast_cfg = tower_cfg, forecast_cfg
         self._report_violation, self._alias = report_violation, host_alias
@@ -733,12 +749,18 @@ class TowerPass:
         # Providers with no thinking switch get extra tokens to answer in.
         if provider not in _KWARGS_PROVIDERS:
             body["max_tokens"] = int(body["max_tokens"]) + REASONING_HEADROOM
+        native = self._native is not None and provider == "lms" and lms_native.available(model["model"])
         t0 = time.monotonic()
         deadline = t0 + float(timeout_s)
         parts: "list[str]" = []
         tokens, first, thought, reached = None, None, 0, False
         try:
-            gen = self._cs(body, label="forecast", read_timeout=min(DIRECT_READ_MAX, int(timeout_s)))
+            read_timeout = min(DIRECT_READ_MAX, int(timeout_s))
+            if native:
+                gen = lms_native.as_chunks(self._native(native_body(body, user_text), label="forecast",
+                                                        read_timeout=read_timeout))
+            else:
+                gen = self._cs(body, label="forecast", read_timeout=read_timeout)
             with contextlib.closing(gen):
                 for chunk in gen:
                     if not reached:
@@ -762,8 +784,8 @@ class TowerPass:
             return None
         self._record_speed(tokens, first, time.monotonic())
         text = "".join(parts)
-        log.debug("forecast tower direct call tier=%s provider=%s ms=%d chars=%d thought=%d reasoning_only=%s",
-                  profile.tier, provider, int((time.monotonic() - t0) * 1000), len(text), thought,
+        log.debug("forecast tower direct call tier=%s provider=%s native=%s ms=%d chars=%d thought=%d reasoning_only=%s",
+                  profile.tier, provider, native, int((time.monotonic() - t0) * 1000), len(text), thought,
                   bool(thought and not text))
         return text or None
 

@@ -16,6 +16,13 @@ ENTRIES = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"
            {"id": "gemma-3-12b", "provider": "lms"}]
 
 
+@pytest.fixture(autouse=True)
+def _no_native(monkeypatch):
+    """Keeps the loop off the live LM Studio capability lookup."""
+    import lms_native
+    monkeypatch.setattr(lms_native, "model_entry", lambda mid: None)
+
+
 def _cfg(**over):
     d = dict(enabled=True, model="", tool_mode="prompt", capabilities="read", off_topic="refuse",
              disabled_tools=[], max_tool_calls=3, max_tokens=256, temperature=0.2, history_days=30)
@@ -105,7 +112,7 @@ class _TimeoutError(RuntimeError):
 
 def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=None, alternates=None,
          approvals=None, role="operator", report_violation=None, registry=None, timers=None, prelude=None,
-         checks=None, server_args_of=None):
+         checks=None, server_args_of=None, model=None):
     """script: list of assistant messages the fake model returns, in order, delivered as
     stream deltas — "content" char by char, "chunks" verbatim as given, or one tool_calls
     delta chunk per native reply (one fragment per entry, each keeping its own index)."""
@@ -130,6 +137,8 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
         else:
             if msg.get("reasoning"):
                 yield {"choices": [{"delta": {"reasoning_content": msg["reasoning"]}}]}
+            for part in msg.get("reasoning_chunks") or []:
+                yield {"choices": [{"delta": {"reasoning_content": part}}]}
             for ch in msg.get("content") or "":
                 yield {"choices": [{"delta": {"content": ch}}]}
         if msg.get("finish"):
@@ -139,7 +148,7 @@ def _run(script, cfg=None, user_text="why is box red?", store=None, cancelled=No
     tid = st.create_thread("adriel", "t", {})
     out = tower.run_turn(thread_id=tid, user_text=user_text, page={"tab": "overall"}, cfg=cfg or _cfg(), role=role,
                          registry=registry or _registry(), complete_stream=complete_stream,
-                         store=st, emit=events.append, model={"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
+                         store=st, emit=events.append, model=model or {"model": "qwen3-14b", "provider": "llama", "hosts": ["box"]},
                          cancelled=cancelled or (lambda: False), alternates=alternates,
                          approvals=approvals, run_id="r1", actor="adriel", report_violation=report_violation,
                          user="adriel", timers=timers, prelude=prelude, checks=checks,
@@ -2369,3 +2378,85 @@ def test_thinking_setting_shapes_every_model_call():
     assert tower.thinking_params(_cfg(thinking="off"), "lms", 256) == {"reasoning_effort": "none"}
     assert tower.thinking_params(_cfg(thinking="bogus"), "llama", 256)["reasoning_effort"] == "medium"
     assert tower.thinking_params(_cfg(thinking="low"), "llama", tower.MAX_TOKENS_CAP)["max_tokens"] == tower.MAX_TOKENS_CAP
+
+
+# ── thinking budget for servers without one (#1089) ─────────────────────────
+
+_LMS = {"model": "qwen3.5-9b@q6_k", "provider": "lms", "hosts": ["mac"]}
+
+
+def test_thinking_budget_is_manager_side_everywhere_but_llama():
+    assert tower.thinking_budget(_cfg(thinking="low"), "lms") == 1024
+    assert tower.thinking_budget(_cfg(thinking="high"), "vllm") == 6144
+    assert tower.thinking_budget(_cfg(thinking="medium"), "llama") is None
+    assert tower.thinking_budget(_cfg(thinking="off"), "lms") is None
+
+
+def test_lms_thinking_past_the_budget_is_cut_and_asked_again_with_thinking_off():
+    out, events, seen, st, tid = _run([
+        {"reasoning_chunks": ["t"] * 1100, "content": "never reached"},
+        {"content": "42"},
+    ], cfg=_cfg(thinking="low"), model=_LMS)
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "42"
+    assert "thinking cut at the budget" in out["note"]
+    assert [e["text"] for e in events if e["event"] == "note"] == ["Thinking cut at the 1k budget; answering from its notes"]
+    first, second = seen["payloads"]
+    assert first["reasoning_effort"] == "low"
+    assert second["reasoning_effort"] == "none"
+    notes = second["messages"][-1]
+    assert notes["role"] == "user" and notes["content"].startswith(tower._NOTES_HEAD + "t" * 1024)
+    assert [r["role"] for r in st.messages(tid)] == ["user", "assistant"]
+
+
+def test_the_follow_up_after_a_cut_may_still_call_a_tool_and_thinking_returns_after_it():
+    out, events, seen, st, tid = _run([
+        {"reasoning_chunks": ["t"] * 1100},
+        {"content": '```tool\n{"name":"host_detail","args":{"host":"box"}}\n```'},
+        {"content": "box is hot."},
+    ], cfg=_cfg(thinking="low"), model=_LMS)
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "box is hot."
+    assert any(e["event"] == "tool" and e["name"] == "host_detail" for e in events)
+    efforts = [p["reasoning_effort"] for p in seen["payloads"]]
+    assert efforts == ["low", "none", "low"]
+
+
+def test_llama_keeps_its_server_side_budget_and_is_never_cut():
+    out, events, seen, st, tid = _run([
+        {"reasoning_chunks": ["t"] * 1100, "content": "ok"},
+    ], cfg=_cfg(thinking="low"))
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "ok"
+    assert len(seen["payloads"]) == 1 and "reasoning_budget_tokens" in seen["payloads"][0]
+    assert "thinking cut" not in (out.get("note") or "")
+
+
+def test_thinking_off_and_answered_thinking_are_never_cut():
+    out, events, seen, st, tid = _run([
+        {"reasoning_chunks": ["t"] * 1100, "content": "ok"},
+    ], cfg=_cfg(thinking="off"), model=_LMS)
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "ok"
+    assert len(seen["payloads"]) == 1
+    # thinking that stays under the budget streams the answer as before
+    out, events, seen, st, tid = _run([
+        {"reasoning_chunks": ["t"] * 100, "content": "fine"},
+    ], cfg=_cfg(thinking="low"), model=_LMS)
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "fine"
+    assert len(seen["payloads"]) == 1
+
+
+def test_one_big_reasoning_chunk_counts_by_characters():
+    out, events, seen, st, tid = _run([
+        {"reasoning": "t" * 5000, "content": "never"},
+        {"content": "done"},
+    ], cfg=_cfg(thinking="low"), model=_LMS)
+    assert "".join(e["text"] for e in events if e["event"] == "delta") == "done"
+    assert len(seen["payloads"]) == 2
+
+
+def test_lms_effort_field_is_dropped_for_on_off_models_that_think_by_default(monkeypatch):
+    import lms_native
+    entry = {"key": "qwen3.5-9b@q6_k", "capabilities": {"reasoning": {"allowed_options": ["off", "on"], "default": "on"}}}
+    monkeypatch.setattr(lms_native, "model_entry", lambda mid: entry)
+    out, events, seen, st, tid = _run([{"content": "ok"}], cfg=_cfg(thinking="medium"), model=_LMS)
+    assert "reasoning_effort" not in seen["payloads"][0] and seen["payloads"][0]["max_tokens"] == 256 + 2048
+    out, events, seen, st, tid = _run([{"content": "ok"}], cfg=_cfg(thinking="off"), model=_LMS)
+    assert seen["payloads"][0]["reasoning_effort"] == "none"

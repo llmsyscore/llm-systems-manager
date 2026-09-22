@@ -473,6 +473,25 @@ describe('checkChips (#1039)', () => {
     expect(TW.checkChips({ grade: 'failed', size_b: null, small: false, detail: 'no call' })).toEqual([
       { text: 'No tool support', short: 'No tools', cls: 'crit', title: 'No tool support: the model made no tool call in either mode (no call)' }]);
   });
+  test('a note event lands as a plain tick on the live turn (#1089)', () => {
+    let s = TW.reduce(TW.initial(), { event: 'user', text: 'q' });
+    s = TW.reduce(s, { event: 'note', text: 'Thinking cut at the 2k budget; answering from its notes' });
+    expect(s.turns[s.turns.length - 1].ticks).toEqual([{ note: 'Thinking cut at the 2k budget; answering from its notes' }]);
+    s = TW.reduce(s, { event: 'tool', name: 'hosts_overview', ok: true, ms: 5, summary: 'read hosts' });
+    expect(s.turns[s.turns.length - 1].ticks.length).toBe(2);
+  });
+  test('thinkingChip says how the model takes the Thinking levels (#1089)', () => {
+    expect(TW.thinkingChip(null)).toBeNull();
+    expect(TW.thinkingChip({ model: null, provider: 'lms' })).toBeNull();
+    expect(TW.thinkingChip({ model: 'm', provider: 'llama', thinking_options: null })).toEqual(
+      { text: 'Levels', cls: 'ok', title: 'llama.cpp stops thinking at the level’s token budget' });
+    expect(TW.thinkingChip({ model: 'm', provider: 'lms', thinking_options: ['off', 'on'] })).toEqual(
+      { text: 'On/Off + budget', cls: 'ok outline', title: 'LM Studio offers only off/on for this model; Tower stops thinking at the level’s token budget itself' });
+    expect(TW.thinkingChip({ model: 'm', provider: 'lms', thinking_options: ['low', 'medium', 'high'] })).toEqual(
+      { text: 'Levels', cls: 'ok', title: 'LM Studio takes the low, medium and high levels for this model' });
+    expect(TW.thinkingChip({ model: 'm', provider: 'vllm', thinking_options: null })).toEqual(
+      { text: 'Budget', cls: 'ok outline', title: 'Tower stops thinking at the level’s token budget itself' });
+  });
   test('stateView carries the check and the fallback', () => {
     expect(TW.stateView({ ok: true, enabled: true, model: 'm', check: { grade: 'native' } }).check).toEqual({ grade: 'native' });
     expect(TW.stateView({ ok: true, enabled: true, model: 'm' }).check).toBeNull();

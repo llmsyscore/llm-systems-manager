@@ -160,6 +160,17 @@ subsystems, each in its own module:
 | **PWA companion** | `companion.py` | Serves the installable phone app (`/companion`, manifest, service worker), stores web-push subscriptions, fans alarm-engine alerts out to devices via VAPID web push, and runs the opt-in release-availability check. |
 | **Job service** | `jobs.py` | One ledger and dispatcher for scheduled and queued manager work (Tower timers, autotune batches); exclusive keys, boot recovery, alarm-engine alert on failure, Tower and Admin › System Health surfaces |
 
+### How the manager talks to LM Studio
+
+The manager never dials LM Studio itself: every call goes to the agent on the LM Studio host, which forwards it to the LM Studio server on that host (`LMS_API_URL`, port 1235 by default). Two LM Studio APIs are in use:
+
+| API | Agent route | Used for |
+|---|---|---|
+| OpenAI-compatible `/v1/chat/completions`, `/v1/completions`, `/v1/models` | `/lms/openai/<sub>`, `/lms/models` | The inference gateway's client-facing contract, Tower's conversation loop (system prompt, history and client-side tools), the Tower tool check, benchmarks and the report card |
+| Native `/api/v1/chat`, `/api/v1/models` (LM Studio 0.4.0 or newer) | `/lms/native/chat`, `/lms/native/models` | Forecast's single-turn direct calls, and the per-model capability list (`reasoning.allowed_options`, quantization, context length, loaded instances) behind the Thinking chip in Admin › Settings › Tower. Model load, unload and download already use the native `/api/v1/models/*` routes |
+
+The native chat API takes one `input` turn plus a `system_prompt`, chains history only through a server-stored `previous_response_id`, has no client-declared tools (only server-run plugin integrations), and validates `reasoning` against the model's own `allowed_options` — `off`/`on` for the Qwen, Gemma and Nemotron class models, the effort levels only for models whose chat template takes one. Tower's tool loop therefore stays on the OpenAI-compatible path. The Thinking levels are enforced there by the manager: Tower counts the reasoning tokens as they stream, stops at the level's budget (1k / 2k / 6k) when no answer has started, and makes one more call with thinking off that carries the notes so far; llama.cpp gets the same budget as a server-side stop instead. An LM Studio without the native API (404 on `/lms/native/models`) keeps every caller on the OpenAI-compatible path; the capability list is cached for five minutes per agent.
+
 ---
 
 ## Security Model

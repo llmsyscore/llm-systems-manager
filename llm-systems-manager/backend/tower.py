@@ -10,9 +10,11 @@ import re
 import sqlite3
 import threading
 import time
+import types
 import uuid
 from typing import Any, Callable, Optional
 
+import lms_native
 import tower_timers
 import tower_tools
 
@@ -571,12 +573,13 @@ def _safe_len(tail: str) -> int:
 
 
 def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], None],
-                  cancelled: Callable[[], bool]) -> "tuple[dict, str]":
-    """Streams one completion, holding back any ```tool block and any code block;
-    returns the message and the text actually emitted."""
+                  cancelled: Callable[[], bool], reasoning_budget: Optional[int] = None) -> "tuple[dict, str]":
+    """Streams one completion, holding back any ```tool block and any code block; returns the message and the
+    text actually emitted. Thinking that reaches the reasoning budget before any answer is cut (reasoning_cut)."""
     text, out, emitted, pos, hold, mode = "", "", 0, 0, 0, "live"
     frags, announced, found = {}, False, False
     reasoning, finish, tag_free_until = 0, None, 0
+    thoughts, cut = [], False
 
     def _say(piece: str) -> None:
         nonlocal announced, out
@@ -653,7 +656,13 @@ def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], 
             choice = (chunk.get("choices") or [{}])[0]
             delta = choice.get("delta") or {}
             # thinking models stream reasoning separately; it is counted, never shown
-            reasoning += len(delta.get("reasoning_content") or "")
+            thought = delta.get("reasoning_content") or delta.get("reasoning") or ""
+            reasoning += len(thought)
+            if thought and reasoning_budget:
+                thoughts.append(thought)
+                if not text and max(len(thoughts), reasoning // 4) >= reasoning_budget:
+                    cut = True
+                    break
             finish = choice.get("finish_reason") or finish
             _merge_tool_call_delta(frags, delta.get("tool_calls") or [])
             piece = delta.get("content") or ""
@@ -688,6 +697,8 @@ def _stream_reply(complete_stream: Callable, body: dict, emit: Callable[[dict], 
         if not found and (mode not in ("tool", "tag") or parse_tool_call({"content": text[hold:]}) is None):
             show(len(text))
     msg = {"content": text, "finish_reason": finish, "reasoning_chars": reasoning}
+    if cut:
+        msg.update(reasoning_cut=True, reasoning_text="".join(thoughts))
     if frags:
         msg["tool_calls"] = [{"id": f["id"] or f"call_{i}", "type": "function", "function": f["function"]}
                              for i, f in sorted(frags.items())]
@@ -901,12 +912,15 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
         b = {"model": m["model"], "temperature": float(getattr(cfg, "temperature", 0.2)),
              "max_tokens": int(getattr(cfg, "max_tokens", 1024))}
         b.update(thinking_params(cfg, m["provider"], b["max_tokens"]))
+        if m["provider"] == "lms":
+            b = lms_native.trim_effort(m["model"], b)
         if native and tools:
             b["tools"] = [tower_tools.openai_schema(t) for t in tools]
         return msgs, b
 
     calls, note, force_final, preface, fell_back = 0, "", False, "", False
     retried_length = retried_reasoning = False
+    think_off, cuts = False, 0
     last_step = ""
     salvaged = 0
     fallback_on = bool(getattr(cfg, "fallback", False))
@@ -1072,8 +1086,13 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
             t_call = time.monotonic()
             log.debug("tower model call #%d model=%s max_tokens=%s messages=%d",
                       model_calls, model["model"], base.get("max_tokens"), len(messages))
+            body = {**base, "messages": messages, "stream": True}
+            budget = None if think_off else thinking_budget(cfg, model["provider"])
+            if think_off:
+                body.update(thinking_params(_THINK_OFF, model["provider"], int(body.get("max_tokens") or 0)))
+                think_off = False
             try:
-                msg, shown = _stream_reply(cs, {**base, "messages": messages, "stream": True}, emit, cancelled)
+                msg, shown = _stream_reply(cs, body, emit, cancelled, reasoning_budget=budget)
             except Exception as e:  # noqa: BLE001 — only a first-token timeout may fall back
                 alt = _alternate() if _is_timeout(e) else None
                 if alt is None:
@@ -1082,6 +1101,17 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 continue
             if cancelled():
                 return _stop_turn()
+            if msg.get("reasoning_cut"):
+                # thinking reached the level's budget: one more call, thinking off, with the notes so far
+                cuts += 1
+                if cuts == 1:
+                    note = "; ".join(x for x in (note, "thinking cut at the budget") if x)
+                log.debug("tower reasoning cut #%d reasoning_chars=%d", cuts, int(msg.get("reasoning_chars") or 0))
+                emit({"event": "note", "text": f"Thinking cut at the {budget // 1024}k budget; answering from its notes"})
+                messages.append({"role": "assistant", "content": ""})
+                messages.append({"role": "user", "content": _NOTES_HEAD + str(msg.get("reasoning_text") or "") + _NOTES_TAIL})
+                think_off = True
+                continue
             if force_final:
                 _finish_answer(store, thread_id, emit, shown,
                                f"I stopped after {cap} tool calls without a final answer; "
@@ -1576,6 +1606,9 @@ MAX_TOKENS_CAP = 32768
 THINKING_LEVELS = ("off", "low", "medium", "high")
 THINKING_BUDGET = {"low": 1024, "medium": 2048, "high": 6144}   # reasoning tokens per model call
 _BUDGET_MESSAGE = "Reasoning budget exhausted, answering now."
+_NOTES_HEAD = "Your working notes so far:\n"
+_NOTES_TAIL = "\n\nThinking time is up. Using these notes, answer now or make the tool call they lead to."
+_THINK_OFF = types.SimpleNamespace(thinking="off")
 
 
 def thinking_params(cfg, provider: str, max_tokens: int) -> dict:
@@ -1596,6 +1629,28 @@ def thinking_params(cfg, provider: str, max_tokens: int) -> dict:
         out["reasoning_budget_tokens"] = budget
         out["reasoning_budget_message"] = _BUDGET_MESSAGE
     return out
+
+
+def _thinking_options(m: dict) -> Optional[list]:
+    """The reasoning settings LM Studio lists for the model; None for other providers or an older LM Studio."""
+    if m.get("provider") != "lms" or not m.get("model"):
+        return None
+    try:
+        return lms_native.thinking_options(str(m["model"]))
+    except Exception as e:  # noqa: BLE001 — the state read never fails on a capability lookup
+        log.debug("tower thinking options failed: %s", type(e).__name__)
+        return None
+
+
+def thinking_budget(cfg, provider: str) -> Optional[int]:
+    """The reasoning budget Tower enforces itself, for servers without a budget of their own (every one but
+    llama.cpp); None when thinking is off."""
+    level = str(getattr(cfg, "thinking", "medium") or "medium").lower()
+    if provider == "llama" or level not in THINKING_BUDGET:
+        return None
+    return THINKING_BUDGET[level]
+
+
 _RATE_PER_MIN = 10
 _RATE_WINDOW_S = 60.0
 _SWEEP_EVERY_S = 86400.0
@@ -2039,6 +2094,7 @@ def register_routes(app, ctx, *, runs: Runs, gateway_entries, write_setting, che
         chk = _checks.ensure(m) if (_checks is not None and m) else None
         return jsonify({"ok": True, "enabled": True, "admin": role == "admin", "model": m.get("model"),
                         "provider": m.get("provider"), "hosts": m.get("hosts") or [], "check": chk,
+                        "thinking_options": _thinking_options(m),
                         "fallback": _fallback_view(cfg, m, "ensure"), "fallback_enabled": bool(getattr(cfg, "fallback", False)),
                         "capabilities": cfg.capabilities, "off_topic": cfg.off_topic,
                         "diagnose_alarms": bool(cfg.diagnose_alarms),
