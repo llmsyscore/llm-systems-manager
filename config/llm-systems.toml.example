@@ -389,6 +389,15 @@ influxdb_monitor_s         = 30                          # how often the influx 
 websocket_heartbeat_log_s  = 60                          # WS heartbeat log cadence
 otlp_heartbeat_s           = 60                          # OTLP receiver heartbeat log cadence
 
+# OTLP receiver tag policy (bounds InfluxDB series cardinality). Attribute
+# keys naming identifiers, network endpoints or free text are never tags;
+# numeric attributes are stored as fields; the rest are capped.
+[alarm_engine.otlp]
+tag_value_cap = 100                                      # distinct values kept per tag key; later ones become "other"
+max_tags      = 32                                       # attribute tags kept per point (source/metric/host don't count)
+tag_allow     = []                                       # attribute keys always kept as tags, e.g. ["openclaw.security.policy_id"]
+tag_deny      = []                                       # attribute keys always dropped
+
 [alarm_engine.caches]
 size                          = 100000                   # max entries in the in-memory cache
 ttl_s                         = 900                      # default cache entry TTL

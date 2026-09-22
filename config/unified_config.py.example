@@ -496,6 +496,19 @@ class AlarmEngineDefaultRules(BaseModel):
     ram_usage_critical: float = 90.0
 
 
+class AlarmEngineOtlp(BaseModel):
+    """Tag policy for the OTLP receiver (bounds InfluxDB series cardinality)."""
+    model_config = _MODEL_CFG
+    # Distinct values kept per string tag key; later values become "other".
+    tag_value_cap: int = 100
+    # Attribute tags kept per point beyond the fixed source/metric/host set.
+    max_tags: int = 32
+    # Attribute keys always kept as tags (exact, dotted or underscored).
+    tag_allow: list[str] = Field(default_factory=list)
+    # Attribute keys always dropped (exact, dotted or underscored).
+    tag_deny: list[str] = Field(default_factory=list)
+
+
 class AlarmEngineConfig(BaseModel):
     model_config = _MODEL_CFG
     host: str = "0.0.0.0"
@@ -537,6 +550,7 @@ class AlarmEngineConfig(BaseModel):
     retention: AlarmEngineRetention = Field(default_factory=AlarmEngineRetention)
     api_limits: AlarmEngineApiLimits = Field(default_factory=AlarmEngineApiLimits)
     history: AlarmEngineHistory = Field(default_factory=AlarmEngineHistory)
+    otlp: AlarmEngineOtlp = Field(default_factory=AlarmEngineOtlp)
     default_rules: AlarmEngineDefaultRules = Field(default_factory=AlarmEngineDefaultRules)
 
 
