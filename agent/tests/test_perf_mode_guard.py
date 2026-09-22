@@ -15,18 +15,24 @@ def llama():
 class _Arb:
     def __init__(self, mode="full", outcome=None):
         self.mode, self.calls, self.holds, self.timeouts = mode, [], {}, []
+        self.holders = {}
         self._outcome = outcome
 
-    def request(self, profile, owner, timeout=45.0):
+    def request(self, profile, owner, timeout=45.0, holder=None):
         self.calls.append(("request", profile, owner)); self.timeouts.append(timeout)
         self.holds[owner] = profile
+        self.holders.setdefault(owner, set()).add(holder)
         out = self._outcome or ("skipped" if self.mode != "full" else "verified")
         return {"outcome": out, "applied": profile if out == "verified" else None, "governor": "performance"
                 if profile == "performance" and out == "verified" else "powersave", "error": None, "owner": owner,
                 "desired": profile, "mode": self.mode}
 
-    def release(self, owner):
-        self.calls.append(("release", owner)); self.holds.pop(owner, None)
+    def release(self, owner, holder=None):
+        self.calls.append(("release", owner))
+        names = self.holders.setdefault(owner, set())
+        names.discard(holder) if holder else names.clear()
+        if not names:
+            self.holds.pop(owner, None)
 
     def snapshot(self):
         return {"mode": self.mode, "desired": None, "applied": None, "owner": next(iter(self.holds), None),
@@ -112,6 +118,42 @@ def test_offline_benchmark_resets_when_the_job_raises(llama, monkeypatch):
     llama._bench_run_all(["org/m:Q4"], "llama-bench", [])
     assert arb.calls[-1] == ("release", "job")
     assert any(e["type"] == "done" and not e["ok"] for e in events)
+
+
+def test_offline_bench_finishing_first_keeps_autotune_hold(llama, monkeypatch):
+    arb = _Arb()
+    _wire(llama, monkeypatch, arb)
+    events = []
+    llama._perf_job_set("awake", events.append, holder="autotune")
+    llama._perf_job_set("awake", events.append, holder="bench")
+    llama._perf_job_set("sleep", events.append, holder="bench")
+    assert arb.holds == {"job": "performance"} and arb.holders["job"] == {"autotune"}
+    llama._perf_job_set("sleep", events.append, holder="autotune")
+    assert arb.holds == {}
+
+
+def test_bench_and_autotune_runs_hold_under_their_own_names(llama, monkeypatch):
+    arb = _Arb()
+    _wire(llama, monkeypatch, arb)
+    monkeypatch.setattr(llama, "_bench_put", lambda e: None)
+    monkeypatch.setattr(llama, "_bench_run_one", lambda *a, **k: None)
+    monkeypatch.setattr(llama, "_autotune_put", lambda e: None)
+    monkeypatch.setattr(llama, "_bench_live_runtime", lambda: (_ for _ in ()).throw(RuntimeError("nope")))
+    seen = []
+    arb.request = lambda profile, owner, timeout=45.0, holder=None: seen.append(("req", holder)) or {
+        "outcome": "verified", "applied": profile, "governor": "performance", "error": None, "owner": owner,
+        "desired": profile, "mode": "full"}
+    arb.release = lambda owner, holder=None: seen.append(("rel", holder))
+    llama._bench_run_all(["org/m:Q4"], "llama-bench", [])
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "mode": "tune"})
+    assert seen == [("req", "bench"), ("rel", "bench"), ("req", "autotune"), ("rel", "autotune")]
+
+
+def test_offline_bench_start_is_refused_during_autotune(llama, monkeypatch):
+    _wire(llama, monkeypatch, _Arb())
+    monkeypatch.setattr(llama, "_autotune_active", True)
+    out = llama.llama_bench_run({"model_ids": ["org/m:Q4"], "tool": "llama-bench"})
+    assert out["ok"] is False and "in progress" in out["error"]
 
 
 def test_autotune_sets_and_resets_when_the_run_raises(llama, monkeypatch):

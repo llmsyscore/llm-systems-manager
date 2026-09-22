@@ -42,8 +42,9 @@ def _load_real_llama_sse():
 
 
 class _Resp:
-    def __init__(self, body, ok=True, text=""):
-        self._b, self.ok, self.text, self.status_code = body, ok, text, 200 if ok else 500
+    def __init__(self, body, ok=True, text="", status=None):
+        self._b, self.ok, self.text = body, ok, text
+        self.status_code = status if status is not None else (200 if ok else 500)
 
     def json(self):
         return self._b
@@ -118,6 +119,49 @@ def test_unreachable_server_reports_down_not_stale_awake(llama, monkeypatch):
     sample = llama.collect_llama_for_metrics()
     models, server = llama.residency_inputs()
     assert server == "down" and models == [] and sample["state"] == "unknown"
+
+
+def test_503_while_loading_is_up_and_loading_not_unknown(llama, monkeypatch):
+    ctx = _Ctx()
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_unit_main_pid", lambda: 1)
+
+    def _loading(url, **kw):
+        return _Resp({"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}},
+                     ok=False, status=503)
+    monkeypatch.setattr(llama.requests, "get", _loading, raising=False)
+    llama._llama_info_last_poll = 0.0
+    llama._llama_loaded["last"] = None
+    sample = llama.collect_llama_for_metrics()
+    models, server = llama.residency_inputs()
+    assert server == "up" and [m["status"] for m in models] == ["loading"]
+    res = llama.residency.reconcile(None, models=models, servers={"llama": server}, ts=1.0)
+    assert res["aggregate"] == "loading" and res["unknown_ticks"] == 0
+    assert llama.residency.desired_profile(res) == "performance"
+    assert sample["model"] == "(loading)"
+
+
+def test_503_while_loading_keeps_the_last_known_model_id(llama, monkeypatch):
+    ctx = _Ctx()
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_unit_main_pid", lambda: 1)
+    monkeypatch.setattr(llama.requests, "get", lambda url, **kw: _Resp({}, ok=False, status=503), raising=False)
+    llama._llama_info_last_poll = 0.0
+    llama._llama_loaded["last"] = "org/m:Q4"
+    llama.collect_llama_for_metrics()
+    models, server = llama.residency_inputs()
+    assert server == "up" and models == [llama.residency.model_entry("llama", "org/m:Q4", "loading", models[0]["ts"])]
+
+
+def test_other_http_errors_still_report_unknown(llama, monkeypatch):
+    ctx = _Ctx()
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_unit_main_pid", lambda: 1)
+    monkeypatch.setattr(llama.requests, "get", lambda url, **kw: _Resp({}, ok=False, status=500), raising=False)
+    llama._llama_info_last_poll = 0.0
+    llama.collect_llama_for_metrics()
+    models, server = llama.residency_inputs()
+    assert server == "unknown" and models == []
 
 
 def test_llama_get_state_projects_ctx_residency(llama, monkeypatch):

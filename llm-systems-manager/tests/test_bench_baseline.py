@@ -406,3 +406,83 @@ def test_recheck_skips_when_pending_is_starting(tmp_path):
     result = e.w.recheck(PIN)
     assert result == {"ok": True, "queued": [], "skipped": [{"run_id": PIN, "reason": "check already running"}]}
     assert e.w._pending[PIN] is entry  # not overwritten by the manual recheck
+
+
+def _restart(e):
+    """A fresh Watcher on the same DB, as after a manager restart."""
+    return bb.Watcher(db_path=e.db, cfg=lambda: dict(e.cfg), fleet_hosts=lambda: list(e.hosts), run_on_agent=e._run,
+                      llama_build_of=lambda aid: e.build, alert=lambda p: e.alerts.append(p) or True,
+                      push_metrics=e.points.extend, now=lambda: e.t, tz=UTC)
+
+
+def test_restart_resumes_in_flight_check(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick()  # nightly check started: run-1 in flight on the host
+    assert len(e.started) == 1
+    w2 = _restart(e)
+    snap = w2.snapshot()["baselines"][0]
+    assert snap["running"] is True and snap["active_run_id"] == "run-1" and snap["pending"] == "nightly"
+    assert w2.recheck(PIN)["skipped"] == [{"run_id": PIN, "reason": "check already running"}]
+    w2.tick()
+    assert len(e.started) == 1  # resumed, not restarted
+    e.store("run-1", 40.0)
+    w2.tick()
+    row = w2.snapshot()["baselines"][0]
+    assert row["running"] is False and row["last_check"]["status"] == "regressed"
+    assert row["last_check"]["run_id"] == "run-1" and row["last_check"]["trigger"] == "nightly"
+    assert len(e.alerts) == 1 and len(w2.history(PIN)) == 1
+
+
+def test_restart_keeps_build_from_for_the_alert(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()
+    e.build = "b101-bbb"
+    e.w.tick()  # build-change check started
+    assert len(e.started) == 2
+    w2 = _restart(e)
+    e.store("run-2", 20.0)
+    w2.tick()
+    last = w2.snapshot()["baselines"][0]["last_check"]
+    assert last["trigger"] == "build" and last["status"] == "regressed" and last["llama_build"] == "b101-bbb"
+    assert "b100-aaa" in e.alerts[0]["message"] and "b101-bbb" in e.alerts[0]["message"]
+    assert len(w2.history(PIN)) == 2
+
+
+def test_restart_times_out_from_the_original_start(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick()
+    e.t += bb.CHECK_MAX_WAIT_S / 2
+    w2 = _restart(e)
+    e.t += bb.CHECK_MAX_WAIT_S / 2 + 1
+    w2.tick()
+    last = w2.snapshot()["baselines"][0]["last_check"]
+    assert last["status"] == "failed" and last["error"] == "timed out" and last["run_id"] == "run-1"
+    assert w2.snapshot()["baselines"][0]["running"] is False
+
+
+def test_running_row_is_not_a_settled_check(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()
+    e.build = "b101-bbb"
+    e.w.tick()  # build check in flight on b101-bbb
+    assert e.w.snapshot()["baselines"][0]["build_changed"] is True  # last settled check ran on b100-aaa
+
+
+def test_last_check_keeps_the_settled_result_while_a_recheck_runs(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 49.0); e.w.tick()
+    e.w.recheck(PIN); e.w.tick()
+    row = e.w.snapshot()["baselines"][0]
+    assert row["running"] is True and row["last_check"]["status"] == "ok" and row["last_check"]["delta_pct"] == -2.0
+    assert [h["status"] for h in e.w.history(PIN)] == ["running", "ok"]
+
+
+def test_unpinning_a_running_check_settles_its_row(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick()
+    conn = sqlite3.connect(e.db); conn.execute("UPDATE bench_live_runs SET baseline = 0"); conn.commit(); conn.close()
+    e.w.tick()
+    assert [h["status"] for h in e.w.history(PIN)] == ["skipped"]
+    assert e.w.history(PIN)[0]["error"] == "baseline unpinned"
+    w2 = _restart(e)
+    assert w2._active == {}
