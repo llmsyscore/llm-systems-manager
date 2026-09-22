@@ -441,3 +441,31 @@ def test_recover_adopts_the_record_without_cpufreq(tmp_path):
     snap = a.snapshot()
     assert snap["applied"] == "powersave" and snap["governor"] is None
     a.stop()
+
+
+def test_job_hold_stays_until_the_last_holder_releases():
+    fs = FakeSys()
+    a = _arb(fs, dwell_ticks=1)
+    a.set_policy("powersave")
+    a.wait_idle(5.0)
+    a.request("performance", "job", holder="autotune")
+    a.request("performance", "job", holder="bench")
+    a.release("job", holder="bench")
+    a.wait_idle(5.0)
+    assert a.snapshot()["owner"] == "job" and a.snapshot()["desired"] == "performance"
+    assert fs.switches() == ["eco", "turbo"]
+    a.release("job", holder="autotune")
+    a.wait_idle(5.0)
+    assert a.snapshot()["owner"] == "policy" and fs.switches() == ["eco", "turbo", "eco"]
+    a.stop()
+
+
+def test_release_without_a_holder_drops_every_holder():
+    fs = FakeSys()
+    a = _arb(fs)
+    a.request("performance", "job", holder="autotune")
+    a.request("performance", "job", holder="bench")
+    a.release("job")
+    a.wait_idle(5.0)
+    assert a.snapshot()["owner"] is None
+    a.stop()

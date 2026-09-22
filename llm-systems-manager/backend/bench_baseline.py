@@ -37,6 +37,9 @@ def init_tables(conn) -> None:
             severity        TEXT, error TEXT, llama_build TEXT
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_baseline_checks ON bench_baseline_checks(baseline_run_id, id)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(bench_baseline_checks)").fetchall()}
+    if "build_from" not in cols:
+        conn.execute("ALTER TABLE bench_baseline_checks ADD COLUMN build_from TEXT NOT NULL DEFAULT ''")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bench_baseline_agents (
             agent_id    TEXT PRIMARY KEY,
@@ -115,13 +118,14 @@ def _parse_iso(s: Any) -> Optional[float]:
         return None
 
 
-_CHECK_COLS = "id, baseline_run_id, run_id, model_id, agent_id, ts, trigger, status, gen_tps, base_tps, delta_pct, severity, error, llama_build"
+_CHECK_COLS = ("id, baseline_run_id, run_id, model_id, agent_id, ts, trigger, status, gen_tps, base_tps, delta_pct,"
+               " severity, error, llama_build, build_from")
 
 
 def _check_row(r) -> dict:
     return {"id": r[0], "baseline_run_id": r[1], "run_id": r[2], "model_id": r[3], "agent_id": r[4], "ts": r[5],
             "trigger": r[6], "status": r[7], "gen_tps": r[8], "base_tps": r[9], "delta_pct": r[10],
-            "severity": r[11], "error": r[12], "llama_build": r[13]}
+            "severity": r[11], "error": r[12], "llama_build": r[13], "build_from": r[14]}
 
 
 class Watcher:
@@ -139,6 +143,7 @@ class Watcher:
         self._pending: dict[str, dict] = {}     # baseline run_id -> {trigger, attempts, retry_at, build_from}
         with self._lock:
             init_tables(self._conn())
+            self._resume_running()
 
     def _conn(self):
         conn = getattr(self._tls, "conn", None)
@@ -155,7 +160,7 @@ class Watcher:
         return [bench_live._row(r) for r in rows]
 
     def _last_check(self, baseline_run_id: str, auto_only: bool = False, settled_only: bool = False) -> Optional[dict]:
-        q = f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE baseline_run_id = ?"
+        q = f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE baseline_run_id = ? AND status != 'running'"
         args: list = [baseline_run_id]
         if auto_only:
             q += " AND trigger IN (?, ?)"
@@ -177,21 +182,48 @@ class Watcher:
         return [_check_row(r) for r in rows]
 
     def _record(self, b: dict, trigger: str, status: str, *, run_id=None, gen_tps=None, delta=None, sev=None,
-                error=None, build="") -> dict:
+                error=None, build="", build_from="", check_id=None) -> dict:
+        """Insert a check row, or with check_id settle the `running` row written at launch."""
         row = {"baseline_run_id": b["run_id"], "run_id": run_id, "model_id": b["model_id"], "agent_id": b["agent_id"],
                "ts": _iso(self._now()), "trigger": trigger, "status": status, "gen_tps": gen_tps,
-               "base_tps": b.get("gen_tps"), "delta_pct": delta, "severity": sev, "error": error, "llama_build": build}
-        self._conn().execute(
-            "INSERT INTO bench_baseline_checks (baseline_run_id, run_id, model_id, agent_id, ts, trigger, status,"
-            " gen_tps, base_tps, delta_pct, severity, error, llama_build) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (row["baseline_run_id"], row["run_id"], row["model_id"], row["agent_id"], row["ts"], row["trigger"],
-             row["status"], row["gen_tps"], row["base_tps"], row["delta_pct"], row["severity"], row["error"], row["llama_build"]))
-        self._conn().execute(
+               "base_tps": b.get("gen_tps"), "delta_pct": delta, "severity": sev, "error": error, "llama_build": build,
+               "build_from": build_from or ""}
+        conn = self._conn()
+        if check_id is not None:
+            conn.execute(
+                "UPDATE bench_baseline_checks SET ts = ?, status = ?, gen_tps = ?, delta_pct = ?, severity = ?, error = ?"
+                " WHERE id = ?", (row["ts"], status, gen_tps, delta, sev, error, check_id))
+            row["id"] = check_id
+        else:
+            cur = conn.execute(
+                "INSERT INTO bench_baseline_checks (baseline_run_id, run_id, model_id, agent_id, ts, trigger, status,"
+                " gen_tps, base_tps, delta_pct, severity, error, llama_build, build_from) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row["baseline_run_id"], row["run_id"], row["model_id"], row["agent_id"], row["ts"], row["trigger"],
+                 row["status"], row["gen_tps"], row["base_tps"], row["delta_pct"], row["severity"], row["error"],
+                 row["llama_build"], row["build_from"]))
+            row["id"] = cur.lastrowid
+        conn.execute(
             "DELETE FROM bench_baseline_checks WHERE baseline_run_id = ? AND id NOT IN"
             " (SELECT id FROM bench_baseline_checks WHERE baseline_run_id = ? ORDER BY id DESC LIMIT 200)",
             (row["baseline_run_id"], row["baseline_run_id"]))
-        self._conn().commit()
+        conn.commit()
         return row
+
+    def _resume_running(self) -> None:
+        """Re-adopt checks that were in flight when the previous manager instance stopped."""
+        rows = self._conn().execute(
+            f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE status = 'running' ORDER BY id").fetchall()
+        for r in rows:
+            c = _check_row(r)
+            if not c["run_id"]:
+                self._conn().execute("UPDATE bench_baseline_checks SET status = 'failed', error = ? WHERE id = ?",
+                                     ("lost across a manager restart", c["id"]))
+                continue
+            self._active[c["baseline_run_id"]] = {
+                "run_id": c["run_id"], "started": _parse_iso(c["ts"]) or self._now(), "trigger": c["trigger"],
+                "build": c["llama_build"] or "", "build_from": c["build_from"] or "", "check_id": c["id"]}
+            self._log.info("bench baseline: resuming %s check %s for %s", c["trigger"], c["run_id"], c["model_id"])
+        self._conn().commit()
 
     # ── public ─────────────────────────────────────────────────────────
     def recheck(self, run_id: Optional[str] = None) -> dict:
@@ -352,8 +384,11 @@ class Watcher:
             if self._pending.get(b["run_id"]) is not pend:
                 return  # baseline unpinned, or its pending entry was replaced meanwhile
             if ok:
+                row = self._record(b, pend["trigger"], "running", run_id=str(val), build=build,
+                                   build_from=pend.get("build_from") or "")
                 self._active[b["run_id"]] = {"run_id": str(val), "started": started, "trigger": pend["trigger"],
-                                             "build": build, "build_from": pend.get("build_from") or ""}
+                                             "build": build, "build_from": pend.get("build_from") or "",
+                                             "check_id": row["id"]}
                 self._pending.pop(b["run_id"], None)
                 return
             pend["starting"] = False
@@ -378,11 +413,16 @@ class Watcher:
             b = pins.get(rid)
             if b is None:
                 self._active.pop(rid, None)
+                if act.get("check_id") is not None:
+                    self._conn().execute("UPDATE bench_baseline_checks SET ts = ?, status = 'skipped', error = ? WHERE id = ?",
+                                         (_iso(now), "baseline unpinned", act["check_id"]))
+                    self._conn().commit()
                 continue
             hit = bench_live.read_run(self._conn(), act["run_id"])
             if hit is None:
                 if now - act["started"] > CHECK_MAX_WAIT_S:
-                    self._record(b, act["trigger"], "failed", run_id=act["run_id"], error="timed out", build=act["build"])
+                    self._record(b, act["trigger"], "failed", run_id=act["run_id"], error="timed out", build=act["build"],
+                                 check_id=act.get("check_id"))
                     self._active.pop(rid, None)
                 continue
             meta, _doc = hit
@@ -397,7 +437,8 @@ class Watcher:
         status = "regressed" if sev else ("ok" if cur is not None else "failed")
         hostname = ({x["agent_id"]: x for x in self._hosts()}.get(b["agent_id"]) or {}).get("hostname") or b["agent_id"][:8]
         row = self._record(b, act["trigger"], status, run_id=act["run_id"], gen_tps=cur, delta=d, sev=sev,
-                           error=None if cur is not None else "run failed on the agent", build=act["build"])
+                           error=None if cur is not None else "run failed on the agent", build=act["build"],
+                           check_id=act.get("check_id"))
         tag = _metric_tag(b["model_id"])
         metric = f"decode_tps:{tag}"
         if cur is not None:

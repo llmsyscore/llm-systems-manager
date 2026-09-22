@@ -69,6 +69,7 @@ class PowerArbiter:
         self._log = logger or _log
         self._cv = threading.Condition()
         self._holds: dict[str, Optional[str]] = {"job": None, "manual": None}
+        self._holders: dict[str, dict[str, str]] = {"job": {}, "manual": {}}
         self._policy: Optional[str] = None
         self._pending: tuple[Optional[str], int] = (None, 0)
         self._applied: Optional[str] = None
@@ -140,19 +141,29 @@ class PowerArbiter:
             self._cv.notify_all()
 
     # ── requests ─────────────────────────────────────────────────────
-    def request(self, profile: str, owner: str, timeout: float = 45.0) -> dict[str, Any]:
-        """Set an owner hold and block until an attempt made after this call settles."""
+    def request(self, profile: str, owner: str, timeout: float = 45.0,
+                holder: Optional[str] = None) -> dict[str, Any]:
+        """Set an owner hold (per named holder) and block until an attempt made after this call settles."""
         if profile not in PROFILES or owner not in ("job", "manual"):
             raise ValueError(f"bad request {owner}:{profile}")
         with self._cv:
             seq0 = self._attempts
             self._holds[owner] = profile
+            self._holders[owner][holder or ""] = profile
             self._cv.notify_all()
         return self._wait_settled(profile, owner, timeout, seq0)
 
-    def release(self, owner: str) -> None:
+    def release(self, owner: str, holder: Optional[str] = None) -> None:
+        """Drop one named holder; the owner hold stays while other holders remain. No holder drops all."""
+        if owner not in ("job", "manual"):
+            raise ValueError(f"bad release {owner}")
         with self._cv:
-            self._holds[owner] = None
+            names = self._holders[owner]
+            if holder is None:
+                names.clear()
+            else:
+                names.pop(holder, None)
+            self._holds[owner] = next(reversed(names.values()), None) if names else None
             self._cv.notify_all()
 
     def set_policy(self, profile_or_hold: str) -> None:
@@ -170,6 +181,7 @@ class PowerArbiter:
         with self._cv:
             if self._last_aggregate is not None and aggregate != self._last_aggregate and self._holds["manual"]:
                 self._holds["manual"] = None
+                self._holders["manual"].clear()
                 self._log.info("power: manual hold released (aggregate %s -> %s)", self._last_aggregate, aggregate)
                 self._cv.notify_all()
             self._last_aggregate = aggregate

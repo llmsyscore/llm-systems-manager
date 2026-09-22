@@ -297,8 +297,8 @@ def power_snapshot(fresh: bool = False) -> dict:
     return snap
 
 
-def _perf_job_set(phase: str, put) -> None:
-    """Take (awake) or drop (sleep) the job hold on the power arbiter; emits a perf_mode event."""
+def _perf_job_set(phase: str, put, holder: str = "") -> None:
+    """Take (awake) or drop (sleep) this holder's job hold on the power arbiter; emits a perf_mode event."""
     cfg = _require_ctx().config
     unit = cfg.PERF_TARGET_AWAKE if phase == "awake" else cfg.PERF_TARGET_SLEEP
     arb = power_arbiter.get()
@@ -311,12 +311,12 @@ def _perf_job_set(phase: str, put) -> None:
         put(ev)
         return
     if phase == "awake":
-        res = arb.request("performance", "job")
+        res = arb.request("performance", "job", holder=holder or None)
         ok = res["outcome"] in ("verified", "applied_unverifiable", "deferred")
         ev.update({"ok": ok, "rc": 0 if ok else 1, "skipped": res["outcome"] == "skipped",
                    "outcome": res["outcome"], "error": res.get("error"), "governor": res.get("governor")})
     else:
-        arb.release("job")
+        arb.release("job", holder=holder or None)
         ev.update({"ok": True, "rc": 0, "skipped": False, "outcome": "released",
                    "error": None, "governor": power_snapshot(fresh=True)["governor"]})
     put(ev)
@@ -431,6 +431,12 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                 _llama_loaded["last"] = None
                 if models:
                     llama["model"] = (models[0].get("id") or "") + " (unloaded)"
+        elif resp.status_code == 503:
+            # Single-model build answering 503 while its model loads: up + loading.
+            last = _llama_loaded["last"]
+            _residency_inputs.update({"models": [residency.model_entry("llama", last or "loading", "loading", now)],
+                                      "server": "up", "ts": now})
+            llama["model"] = f"{last} (loading)" if last else "(loading)"
         else:
             _residency_inputs.update({"models": [], "server": "unknown", "ts": now})
     except Exception as e:
@@ -2204,7 +2210,7 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
     _bench_cancel_event.clear()
     try:
         # llama-bench owns the GPU for this run; restored in finally.
-        _perf_job_set("awake", _bench_put)
+        _perf_job_set("awake", _bench_put, "bench")
         env = os.environ.copy()
         parent = str(Path(_require_ctx().config.LLAMA_BIN).parent) if _require_ctx().config.LLAMA_BIN else ""
         existing = env.get("LD_LIBRARY_PATH", "")
@@ -2222,7 +2228,7 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
         _bench_put({"type": "done", "ok": False, "error": str(e)})
     finally:
         with best_effort("bench: restore sleep perf mode", log=log):
-            _perf_job_set("sleep", _bench_put)
+            _perf_job_set("sleep", _bench_put, "bench")
         _bench_proc = None
         with _bench_lock:
             _bench_active = False
@@ -2244,8 +2250,8 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
     if not isinstance(switches, list):
         raise HTTPException(status_code=400, detail="switches must be a list")
     with _bench_lock:
-        if _bench_active:
-            return {"ok": False, "error": "Another benchmark is in progress"}
+        if _bench_active or _autotune_active:
+            return {"ok": False, "error": "Another benchmark or autotune is in progress"}
         _bench_active = True
         # Reset the buffer before the lock drops: a stream landing between
         # active=True and start_run would replay the prior run's stale done.
@@ -3568,7 +3574,7 @@ def _autotune_run_all(req: dict) -> None:
         env["FORCE_COLOR"] = "0"
         env["PYTHONUNBUFFERED"] = "1"
         # Flip to performance so load timing isn't skewed; restored in finally.
-        _perf_job_set("awake", _autotune_put)
+        _perf_job_set("awake", _autotune_put, "autotune")
         rt = _bench_live_runtime()
         sizes = {}
         with best_effort("autotune: catalog sweep", log=log):
@@ -3610,7 +3616,7 @@ def _autotune_run_all(req: dict) -> None:
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
     finally:
         with best_effort("autotune: restore sleep perf mode", log=log):
-            _perf_job_set("sleep", _autotune_put)
+            _perf_job_set("sleep", _autotune_put, "autotune")
         # base.kld and the stick JSONs are scratch; the summaries already went out as events.
         with best_effort("autotune: drop run scratch dir", log=log):
             shutil.rmtree(_bl.bench_dir(_require_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}",

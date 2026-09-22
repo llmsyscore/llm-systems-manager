@@ -718,7 +718,7 @@ def test_preflight_reports_help_valued(llama, tmp_path, monkeypatch):
 def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeypatch):
     binp = _fake_llama_bin(tmp_path)
     _wire(llama, tmp_path, monkeypatch, llama_bin=str(binp))
-    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put: None)
+    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put, holder="": None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -740,7 +740,7 @@ def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeyp
 
 def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch, llama_bin="")
-    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put: None)
+    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put, holder="": None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -766,7 +766,7 @@ def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
 
 def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp_path, monkeypatch):
     _wire(llama, tmp_path, monkeypatch)
-    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put: None)
+    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put, holder="": None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
@@ -809,7 +809,7 @@ def test_run_all_removes_the_run_scratch_dir(llama, tmp_path, monkeypatch):
     """base.kld and the stick JSONs are GBs per run; the run dir must not survive it."""
     _wire(llama, tmp_path, monkeypatch)
     monkeypatch.setattr(llama, "_autotune_run_id", "rX")
-    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put: None)
+    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put, holder="": None)
     monkeypatch.setattr(llama, "_bench_live_runtime",
                         lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
