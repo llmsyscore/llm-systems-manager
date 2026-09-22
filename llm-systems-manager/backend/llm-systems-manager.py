@@ -177,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-3"
+__version__ = "v2026.09.22-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6520,9 +6520,10 @@ def _forecast_host_samples() -> dict:
 
 
 def _forecast_agent_rows() -> list:
-    """{host, version, last_seen} per approved agent."""
+    """{host, version, last_seen, skew_s} per approved agent."""
     return [{"host": str(a["hostname"]), "version": str(a.get("version") or ""),
-             "last_seen": a.get("last_heartbeat")}
+             "last_seen": a.get("last_heartbeat"),
+             "skew_s": (a.get("last_heartbeat_data") or {}).get("clock_skew_s")}
             for a in _forecast_approved_agents().values() if a.get("hostname")]
 
 

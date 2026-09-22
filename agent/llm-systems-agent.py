@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.22-1"
+VERSION = "v2026.09.22-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2062,7 +2062,6 @@ def heartbeat_loop() -> None:
                 continue
             body = {
                 "agent_id": aid,
-                "ts": _now_iso(),
                 "collection_enabled": CONFIG.COLLECTION_ENABLED,
                 "llama_state": (llama_get_state() if CONFIG.LLAMA_ENABLED else None),
                 "samples_posted": _state.get("samples_posted"),
@@ -2074,6 +2073,8 @@ def heartbeat_loop() -> None:
                 "control_channel_tls": (CONFIG.MANAGER_URL or "").lower().startswith("https://"),
                 "providers": _provider_specs(),
             }
+            # Wall clock stamped last, right before the POST (#1091).
+            body["ts"] = _now_iso()
             r = _post_session.post(
                 f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/heartbeat",
                 json=body,

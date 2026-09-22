@@ -750,6 +750,17 @@ def _alarm_patterns(d: CheckData) -> "list[Finding]":
     return out
 
 
+def _clock_drift(skew) -> Optional[float]:
+    """Seconds a day the absolute clock offset grows; None under 3 days of data, 1 s a day, or a flat daily median."""
+    pts = fm.clean([(t, abs(v)) for t, v in skew])
+    fit = fm.linear_fit(pts)
+    if fit is None or pts[-1][0] - pts[0][0] < 3 * DAY:
+        return None
+    per_day = fit.slope_per_s * DAY
+    first, last = _ends([v for _, v in _daily(pts, _median)], 1)
+    return per_day if per_day >= 1.0 and last > first else None
+
+
 def _agent_health(d: CheckData) -> "list[Finding]":
     """Heartbeat gaps, version drift and clock skew on the agents."""
     out, best, seen = [], 0.0, False
@@ -783,6 +794,14 @@ def _agent_health(d: CheckData) -> "list[Finding]":
                                    since=skew[0][0], rate=_median(recent), unit="s",
                                    suggested_action=f"Turn on time sync on {host}.",
                                    graph=graph_spec("forecast", "agent_clock_skew_s", host, d.start, d.now)))
+            else:
+                drift = _clock_drift(skew)
+                if drift is not None:
+                    out.append(Finding("agent_health", host, "clock", "info", f"Clock is drifting {drift:.1f} s a day",
+                                       detail=f"The clock on {host} is moving away from the manager's a little more each day.",
+                                       since=skew[0][0], rate=drift, unit="s per day",
+                                       suggested_action=f"Check the time-sync service on {host} before the offset grows.",
+                                       graph=graph_spec("forecast", "agent_clock_skew_s", host, d.start, d.now)))
     for r in rows:
         host, version = r.get("host"), str(r.get("version") or "")
         if host and version and latest and version != latest:

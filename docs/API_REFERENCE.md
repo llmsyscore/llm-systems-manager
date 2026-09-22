@@ -721,7 +721,7 @@ Allows an agent to look up its own registration record using its bearer token. N
 ---
 
 ### `POST /api/agents/heartbeat`
-Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent.
+Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent. The body's `ts` (the agent's UTC wall clock, stamped just before the request is sent) is compared with the manager's clock and kept as `last_heartbeat_data.clock_skew_s` (agent minus manager, seconds); the Forecast sampler pushes it as the per-agent `forecast/agent_clock_skew_s` series behind the Agent health check's clock findings.
 
 **Access:** (Agent-facing)
 

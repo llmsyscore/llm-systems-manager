@@ -365,6 +365,40 @@ def test_agent_health_gaps_version_clock():
     assert by["clock"].severity == "warning" and by["clock"].summary == "Clock is 8 s off"
 
 
+def _skew_series(per_day: float, days: int = 5, base: float = 0.0):
+    """Hourly |offset| growing per_day seconds a day with ±0.2 s jitter, ending at NOW."""
+    return [(NOW - (days * DAY - h * 3600.0), -(base + per_day * (h / 24.0) + (0.2 if h % 2 else -0.2)))
+            for h in range(days * 24)]
+
+
+def test_agent_health_clock_drift_is_an_info_finding():
+    """#1091: an offset still under 5 s but growing 1+ s a day is reported as drift."""
+    d = data({("forecast", "agent_clock_skew_s", "rig"): _skew_series(1.2, days=4)},
+             agents=lambda: [{"host": "rig", "version": "v1", "last_seen": NOW}], latest_agent_version=lambda: "v1")
+    by = {f.subject: f for f in run("agent_health", d)}
+    assert by["clock"].severity == "info" and by["clock"].summary == "Clock is drifting 1.2 s a day"
+    assert by["clock"].unit == "s per day" and abs(by["clock"].rate - 1.2) < 0.05
+    assert "time-sync" in by["clock"].suggested_action
+
+
+def test_agent_health_clock_drift_needs_three_days_and_a_slope():
+    quiet = data({("forecast", "agent_clock_skew_s", "rig"): _skew_series(1.2, days=2)},
+                 agents=lambda: [{"host": "rig", "version": "v1", "last_seen": NOW}], latest_agent_version=lambda: "v1")
+    assert run("agent_health", quiet) == []
+    flat = data({("forecast", "agent_clock_skew_s", "rig"): _skew_series(0.0, base=3.0)},
+                agents=lambda: [{"host": "rig", "version": "v1", "last_seen": NOW}], latest_agent_version=lambda: "v1")
+    assert run("agent_health", flat) == []
+
+
+def test_agent_health_offset_warning_replaces_the_drift_note():
+    """A large offset keeps the single 'clock' subject at warning, so the ledger sees a severity rise, not two rows."""
+    d = data({("forecast", "agent_clock_skew_s", "rig"): _skew_series(2.0, base=2.0)},
+             agents=lambda: [{"host": "rig", "version": "v1", "last_seen": NOW}], latest_agent_version=lambda: "v1")
+    rows = [f for f in run("agent_health", d) if f.subject == "clock"]
+    assert len(rows) == 1 and rows[0].severity == "warning" and rows[0].summary.startswith("Clock is ")
+    assert "drifting" not in rows[0].summary
+
+
 def test_agent_health_is_quiet_when_the_agent_is_current():
     d = data(agents=lambda: [{"host": "rig", "version": "v2026.09.17-1", "last_seen": NOW}],
              latest_agent_version=lambda: "v2026.09.17-1")

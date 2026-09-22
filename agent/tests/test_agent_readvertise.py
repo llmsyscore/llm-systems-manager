@@ -184,3 +184,13 @@ def test_heartbeat_loop_calls_readvertise():
     body = _extract("heartbeat_loop")
     assert re.search(r"_maybe_readvertise\(tok\)", body), \
         "heartbeat_loop never re-checks the advertised host"
+
+
+def test_heartbeat_loop_stamps_ts_right_before_the_post():
+    """#1091: the manager derives clock skew from `ts`, so it is set after the body build, just before the POST."""
+    body = _extract("heartbeat_loop")
+    assert not re.search(r'"ts": _now_iso\(\)', body), "ts must not be stamped inside the body literal"
+    stamp = body.find('body["ts"] = _now_iso()')
+    post = body.find("_post_session.post(")
+    specs = body.find("_provider_specs()")
+    assert 0 <= specs < stamp < post, "ts must be stamped after the body build and before the POST"
