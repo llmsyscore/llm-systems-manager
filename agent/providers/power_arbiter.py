@@ -56,7 +56,7 @@ class PowerArbiter:
                  logger: Optional[logging.Logger] = None) -> None:
         self.units = dict(units)
         self.mode = mode
-        self._run = run or (lambda *a, **k: subprocess.run(*a, **k))
+        self._run = run
         self._gov = governor_reader or (lambda fresh=False: None)
         self._readback = readback or self._governor_readback
         self._readback_last: list[dict[str, Any]] = []
@@ -361,16 +361,17 @@ class PowerArbiter:
             self._log.info("power: %s -> %s (%s, owner=%s)", unit, profile, outcome, owner)
 
     def _switch(self, unit: str, profile: str) -> tuple[str, Optional[str], dict[str, Any]]:
+        run = self._run or subprocess.run
         try:
-            r = self._run(["sudo", "-n", _SYSTEMCTL, "reload-or-restart", unit],
-                          capture_output=True, text=True, timeout=30)
+            r = run(["sudo", "-n", _SYSTEMCTL, "reload-or-restart", unit],
+                    capture_output=True, text=True, timeout=30)
         except Exception as e:
             return OUTCOME_FAILED, str(e)[:240], self._safe_readback(profile)
         if r.returncode != 0:
             return OUTCOME_FAILED, (r.stderr or r.stdout or f"rc={r.returncode}").strip()[:240], self._safe_readback(profile)
         try:
-            s = self._run([_SYSTEMCTL, "show", unit, "-p", "Result,ExecMainStatus"],
-                          capture_output=True, text=True, timeout=10)
+            s = run([_SYSTEMCTL, "show", unit, "-p", "Result,ExecMainStatus"],
+                    capture_output=True, text=True, timeout=10)
             if "Result=success" not in (s.stdout or ""):
                 return OUTCOME_FAILED, f"unit result: {(s.stdout or '').strip()[:120]}", self._safe_readback(profile)
         except Exception as e:
