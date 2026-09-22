@@ -23,6 +23,7 @@ _RETRY_S = (5.0, 15.0, 60.0)
 _SIM_STEP = 0.2
 _SIM_REAL_WAIT = 0.05
 _SYSTEMCTL = "/usr/bin/systemctl"
+_STOP_JOIN_S = 5.0
 
 _log = logging.getLogger("llm-systems-agent.power_arbiter")
 
@@ -47,7 +48,7 @@ def select_mode(*, enabled: bool, is_linux: bool, sudo_list: Optional[str],
 class PowerArbiter:
     """Owns the perf units: one worker thread applies the highest-priority desired profile."""
 
-    def __init__(self, units: dict[str, str], *, mode: str = "full", run=subprocess.run,
+    def __init__(self, units: dict[str, str], *, mode: str = "full", run=None,
                  governor_reader: Optional[Callable[..., Optional[str]]] = None,
                  readback: Optional[Callable[[str], dict[str, Any]]] = None,
                  record_path: Optional[str] = None, clock=time.monotonic, sleep=time.sleep,
@@ -86,18 +87,25 @@ class PowerArbiter:
         self._fail_streak = 0
         self._retry_at: Optional[float] = None
         self._warned_governors: set[str] = set()
+        self._warned_switch_error: Optional[tuple[str, str]] = None
         self._busy = False
         self._stop = False
         self._thread: Optional[threading.Thread] = None
 
     # ── lifecycle ────────────────────────────────────────────────────
-    def start(self) -> None:
-        """No-op while a worker thread is still alive."""
+    def start(self, after: Optional[threading.Thread] = None) -> None:
+        """No-op while a worker thread is still alive; `after` is a predecessor worker to wait out first."""
         if self._thread is not None and self._thread.is_alive():
             return
         with self._cv:
             self._stop = False
-        self._thread = threading.Thread(target=self._loop, name="power-arbiter", daemon=True)
+
+        def _worker() -> None:
+            if after is not None and after.is_alive():
+                after.join()
+            self._loop()
+
+        self._thread = threading.Thread(target=_worker, name="power-arbiter", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -108,11 +116,22 @@ class PowerArbiter:
         thread = self._thread
         if thread is None:
             return
-        thread.join(timeout=5.0)
+        thread.join(timeout=_STOP_JOIN_S)
         if thread.is_alive():
-            self._log.warning("power: worker thread did not exit within 5s; keeping the slot (no new worker)")
+            self._log.warning("power: worker thread did not exit within %ss; keeping the slot (no new worker)",
+                              _STOP_JOIN_S)
             return
         self._thread = None
+
+    def adopt_holds(self, other: "PowerArbiter") -> None:
+        """Carry the job/manual holds (and their holders) over from a predecessor arbiter."""
+        with other._cv:
+            holds, holders = dict(other._holds), {k: dict(v) for k, v in other._holders.items()}
+            last_aggregate = other._last_aggregate
+        with self._cv:
+            self._holds, self._holders = holds, holders
+            self._last_aggregate = last_aggregate
+            self._cv.notify_all()
 
     def recover(self) -> None:
         """Adopt the durable record when the governor agrees; holds are never restored."""
@@ -331,21 +350,28 @@ class PowerArbiter:
                       "outcome": outcome, "host_has_cpufreq": governor is not None}
         self._write_record(record)
         if outcome == OUTCOME_FAILED:
-            self._log.warning("power: switch to %s (%s) failed: %s", profile, unit, error)
+            key = (profile, error or "")
+            if key != self._warned_switch_error:
+                self._warned_switch_error = key
+                self._log.warning("power: switch to %s (%s) failed: %s", profile, unit, error)
+            else:
+                self._log.debug("power: switch to %s (%s) failed again: %s", profile, unit, error)
         else:
+            self._warned_switch_error = None
             self._log.info("power: %s -> %s (%s, owner=%s)", unit, profile, outcome, owner)
 
     def _switch(self, unit: str, profile: str) -> tuple[str, Optional[str], dict[str, Any]]:
+        run = self._run or subprocess.run
         try:
-            r = self._run(["sudo", "-n", _SYSTEMCTL, "reload-or-restart", unit],
-                          capture_output=True, text=True, timeout=30)
+            r = run(["sudo", "-n", _SYSTEMCTL, "reload-or-restart", unit],
+                    capture_output=True, text=True, timeout=30)
         except Exception as e:
             return OUTCOME_FAILED, str(e)[:240], self._safe_readback(profile)
         if r.returncode != 0:
             return OUTCOME_FAILED, (r.stderr or r.stdout or f"rc={r.returncode}").strip()[:240], self._safe_readback(profile)
         try:
-            s = self._run([_SYSTEMCTL, "show", unit, "-p", "Result,ExecMainStatus"],
-                          capture_output=True, text=True, timeout=10)
+            s = run([_SYSTEMCTL, "show", unit, "-p", "Result,ExecMainStatus"],
+                    capture_output=True, text=True, timeout=10)
             if "Result=success" not in (s.stdout or ""):
                 return OUTCOME_FAILED, f"unit result: {(s.stdout or '').strip()[:120]}", self._safe_readback(profile)
         except Exception as e:
@@ -436,13 +462,17 @@ def configure(*, enabled: bool, is_linux: bool, awake_unit: str, sleep_unit: str
         lg.info("power arbiter mode=%s", mode)
     with _LOCK:
         old = _ARBITER
+        old_thread = None
         if old is not None:
             old.stop()
+            old_thread = old._thread
         readback = readback_factory(units) if readback_factory else None
         arb = PowerArbiter(units, mode=mode, governor_reader=governor_reader, readback=readback,
                            record_path=record_path, dwell_ticks=dwell_ticks, logger=lg)
         arb.recover()
-        arb.start()
+        if old is not None:
+            arb.adopt_holds(old)
+        arb.start(after=old_thread)
         _ARBITER = arb
         return arb
 

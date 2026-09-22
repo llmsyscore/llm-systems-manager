@@ -177,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-5"
+__version__ = "v2026.09.22-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1387,12 +1387,16 @@ _PULLS_PER_SWEEP = 2
 _pull_last: dict[str, float] = {}
 
 
+def _pull_gate_open(agent_id: str) -> bool:
+    """True when the agent is past its per-agent pull interval."""
+    return time.monotonic() - _pull_last.get(agent_id, 0.0) >= _PULL_MIN_INTERVAL_S
+
+
 def _pull_llama_state_if_stale(agent_id: str) -> None:
     """Refresh a stale sample from GET /llama/state when the agent is still reachable."""
-    now = time.monotonic()
-    if now - _pull_last.get(agent_id, 0.0) < _PULL_MIN_INTERVAL_S:
+    if not _pull_gate_open(agent_id):
         return
-    _pull_last[agent_id] = now
+    _pull_last[agent_id] = time.monotonic()
     agent = agent_registry.resolve_agent_by_id(agent_id)
     if not agent:
         return
@@ -1437,7 +1441,7 @@ def _offline_sweep_once(now: float) -> None:
             age = now - last_seen
             if prov == "llama" and age > provider_state.STALE_AFTER_S:
                 _broadcast_llama_state_if_changed(aid)
-                if pulls_this_sweep < _PULLS_PER_SWEEP:
+                if pulls_this_sweep < _PULLS_PER_SWEEP and _pull_gate_open(aid):
                     pulls_this_sweep += 1
                     _pull_llama_state_if_stale(aid)
             if age <= threshold:

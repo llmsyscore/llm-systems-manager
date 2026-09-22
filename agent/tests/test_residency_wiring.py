@@ -218,10 +218,31 @@ def test_reconcile_now_is_coalesced_and_invalidates_the_probe_cache(llama, monke
     hits = []
     llama.set_reconcile_hook(lambda: hits.append(1))
     llama._llama_info_last_poll = 12345.0
-    llama._reconcile_mark["last"] = 0.0
+    llama._reconcile_mark.update(last=0.0, timer=None)
     llama.reconcile_now()
     llama.reconcile_now()
     assert hits == [1] and llama._llama_info_last_poll == 0.0
+    timer = llama._reconcile_mark["timer"]
+    assert timer is not None
+    timer.cancel()
+    llama._reconcile_mark["timer"] = None
+
+
+def test_reconcile_now_defers_a_trailing_request_instead_of_dropping_it(llama, monkeypatch):
+    import time as _t
+    hits = []
+    llama.set_reconcile_hook(lambda: hits.append(1))
+    monkeypatch.setattr(llama, "_RECONCILE_WINDOW_S", 0.05)
+    llama._reconcile_mark.update(last=0.0, timer=None)
+    llama.reconcile_now()
+    llama.reconcile_now()
+    llama.reconcile_now()
+    assert hits == [1]
+    deadline = _t.monotonic() + 2.0
+    while len(hits) < 2 and _t.monotonic() < deadline:
+        _t.sleep(0.01)
+    _t.sleep(0.1)
+    assert hits == [1, 1] and llama._reconcile_mark["timer"] is None
 
 
 def test_perf_controller_symbols_are_gone(llama):
@@ -419,3 +440,31 @@ def test_router_mode_empty_model_list_is_not_evidence_and_defers_to_the_unit_fil
     monkeypatch.setattr(llama.requests, "get", lambda url, **kw: _Resp({"data": []}), raising=False)
     monkeypatch.setattr(llama, "_llama_router_mode_from_unit_file", lambda: True)
     assert llama._llama_router_mode() is True
+
+
+def test_router_mode_probe_uses_the_short_startup_timeout(llama, monkeypatch):
+    ctx = _Ctx()
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    seen = {}
+
+    def _get(url, **kw):
+        seen.update(kw)
+        return _Resp({"data": [{"id": "a", "status": {"value": "loaded"}}]})
+    monkeypatch.setattr(llama.requests, "get", _get, raising=False)
+    llama._llama_router_mode()
+    assert seen["timeout"] == llama._ROUTER_PROBE_TIMEOUT_S <= 1.5
+
+
+def test_unit_main_pid_is_linux_only_with_a_short_timeout(llama, monkeypatch):
+    ctx = _Ctx()
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    seen = []
+
+    def _run(argv, **kw):
+        seen.append(kw.get("timeout"))
+        return types.SimpleNamespace(returncode=0, stdout="MainPID=42\n", stderr="")
+    monkeypatch.setattr(llama.subprocess, "run", _run)
+    ctx.config.AGENT_OS = "macos"
+    assert llama._llama_unit_main_pid() is None and seen == []
+    ctx.config.AGENT_OS = "linux"
+    assert llama._llama_unit_main_pid() == 42 and seen == [llama._UNIT_PID_TIMEOUT_S] and seen[0] <= 2.0

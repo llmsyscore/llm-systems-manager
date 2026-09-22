@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -469,3 +470,72 @@ def test_release_without_a_holder_drops_every_holder():
     a.wait_idle(5.0)
     assert a.snapshot()["owner"] is None
     a.stop()
+
+
+# ── #969: log hygiene + reload continuity ────────────────────────────
+
+def test_repeated_switch_failure_warns_once_per_distinct_error():
+    fs = FakeSys(rc=1)
+    lg = RecLogger()
+    a = _arb(fs, dwell_ticks=1, logger=lg)
+    a.request("performance", "manual", timeout=5.0)
+    deadline = time.monotonic() + 10.0    # backoffs elapse on the fake clock; retries fail the same way
+    while a.snapshot()["counters"]["failures"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert a.snapshot()["counters"]["failures"] >= 2
+    assert len([w for w in lg.warnings if "switch to performance" in w]) == 1
+    fs.rc = 0
+    a.wait_idle(120.0)
+    assert a.snapshot()["applied"] == "performance"
+    fs.rc = 1
+    a.request("powersave", "manual", timeout=5.0)
+    assert len([w for w in lg.warnings if "switch to powersave" in w]) == 1
+    a.stop()
+
+
+def _configure(fs, tmp_path, enabled=True):
+    return PA.configure(enabled=enabled, is_linux=True, awake_unit="turbo", sleep_unit="eco",
+                        record_path=str(tmp_path / "power.json"),
+                        sudo_list_fn=lambda: "(root) NOPASSWD: /usr/bin/systemctl reload-or-restart turbo, "
+                                             "/usr/bin/systemctl reload-or-restart eco",
+                        unit_exists_fn=lambda u: True, governor_reader=fs.read_governor,
+                        dwell_ticks=1)
+
+
+def test_configure_carries_holds_across_a_config_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(PA, "_ARBITER", None)
+    fs = FakeSys()
+    monkeypatch.setattr(PA.subprocess, "run", fs.run)
+    first = _configure(fs, tmp_path)
+    first.request("performance", "job", holder="autotune")
+    first.set_policy("powersave")
+    second = _configure(fs, tmp_path)
+    assert second is not first and PA.get() is second
+    snap = second.snapshot()
+    assert snap["owner"] == "job" and snap["desired"] == "performance"
+    assert second._holders["job"] == {"autotune": "performance"}
+    second.release("job", holder="autotune")
+    assert second.snapshot()["owner"] is None
+    second.stop()
+
+
+def test_configure_hands_over_to_a_stuck_worker_before_starting_the_next(tmp_path, monkeypatch):
+    monkeypatch.setattr(PA, "_ARBITER", None)
+    monkeypatch.setattr(PA, "_STOP_JOIN_S", 0.2)
+    fs = FakeSys()
+    monkeypatch.setattr(PA.subprocess, "run", fs.run)
+    first = _configure(fs, tmp_path)
+    first.stop()
+    gate = threading.Event()
+    stuck = threading.Thread(target=gate.wait, daemon=True)
+    stuck.start()
+    first._thread = stuck
+    second = _configure(fs, tmp_path)
+    time.sleep(0.05)
+    second.set_policy("powersave")
+    time.sleep(0.2)
+    assert fs.switches() == []            # the new worker waits for the old one
+    gate.set()
+    second.wait_idle(5.0)
+    assert fs.switches() == ["eco"]
+    second.stop()
