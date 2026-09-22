@@ -177,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.21-4"
+__version__ = "v2026.09.22-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6614,6 +6614,7 @@ forecast.init_tables(_jobs_conn())
 _forecast_store = forecast.Store(_jobs_conn)
 _forecast_tower = forecast_tower.TowerPass(
     _tower_store, registry_factory=_tower_registry, complete_stream=gateway.complete_stream,
+    native_stream=gateway.native_chat_stream,
     entries=_tower_gateway_entries, server_args_of=_tower_server_args,
     tower_cfg=lambda: settings.manager.tower, forecast_cfg=lambda: settings.manager.forecast,
     report_violation=_tower_report_violation, host_alias=_forecast_host_alias,

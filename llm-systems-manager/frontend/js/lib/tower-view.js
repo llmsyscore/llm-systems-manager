@@ -55,6 +55,11 @@
         const t = { ...last(s.turns), ticks: last(s.turns).ticks.concat([{ name: ev.name, ok: !!ev.ok, ms: ev.ms, summary: ev.summary, result: ev.result }]) };
         s.turns[s.turns.length - 1] = t; return s;
       }
+      case 'note': {
+        s.turns = ensureTower(s.turns);
+        const t = { ...last(s.turns), ticks: last(s.turns).ticks.concat([{ note: String(ev.text || '') }]) };
+        s.turns[s.turns.length - 1] = t; return s;
+      }
       case 'delta': {
         s.turns = ensureTower(s.turns);
         const t = { ...last(s.turns), text: last(s.turns).text + (ev.text || '') };
@@ -475,6 +480,16 @@
     return out;
   }
 
+  // Thinking support chip (#1089): how the current model takes the Thinking levels.
+  function thinkingChip(s) {
+    if (!s || !s.model) return null;
+    const opts = Array.isArray(s.thinking_options) ? s.thinking_options : null;
+    if (s.provider === 'llama') return { text: 'Levels', cls: 'ok', title: 'llama.cpp stops thinking at the level\u2019s token budget' };
+    if (opts && opts.includes('low') && opts.includes('high')) return { text: 'Levels', cls: 'ok', title: `${PROVIDER[s.provider] || s.provider} takes the low, medium and high levels for this model` };
+    if (opts) return { text: 'On/Off + budget', cls: 'ok outline', title: `${PROVIDER[s.provider] || s.provider} offers only ${opts.join('/')} for this model; Tower stops thinking at the level\u2019s token budget itself` };
+    return { text: 'Budget', cls: 'ok outline', title: 'Tower stops thinking at the level\u2019s token budget itself' };
+  }
+
   // Conversation eval (#1047): one stored result as a chip + summary line; one live job as a progress line.
   function evalSummary(r, nowS) {
     if (!r || r.total == null) return null;
@@ -515,7 +530,7 @@
              chip: a.model ? { model: a.model, provider: PROVIDER[a.provider] || a.provider || '', host: (a.hosts || [])[0] || '' } : null };
   }
 
-  return { Q_OTHER, qToggle, qPicked, qAnswer, qAnswered, initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, evalSummary, evalProgress, esc, PROVIDER, waitText, HELP_SUGS,
+  return { Q_OTHER, qToggle, qPicked, qAnswer, qAnswered, initial, reduce, md, threadView, liveRun, historyGroups, suggestions, pageContext, stateView, checkChips, thinkingChip, evalSummary, evalProgress, esc, PROVIDER, waitText, HELP_SUGS,
            ageText, insightView, insightsHeader, visibleInsights, sparkline, troubleshootTitle, troubleshootPrompt,
            timerLine, liveTimers, finishedTimers, timerSnapshot, historyCharts, historyChart };
 });

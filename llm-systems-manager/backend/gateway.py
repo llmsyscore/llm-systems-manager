@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+from typing import Callable
 
 import requests
 from flask import Response, jsonify, request as flask_request
@@ -19,6 +20,7 @@ import auth
 import energy
 import forecast_wiring
 import gateway_usage
+import lms_native
 import provider_state
 import providers
 import proxies
@@ -66,6 +68,7 @@ _GATEWAY_PROVIDERS = tuple(
 _AGENT_PATHS = {p: {s: f"/{p}/openai/{s}" for s in _GATEWAY_SUBS}
                 for p in _GATEWAY_PROVIDERS}
 _MODELS_PATHS = {p: f"/{p}/models" for p in _GATEWAY_PROVIDERS}
+NATIVE_CHAT_PATH = "/lms/native/chat"
 
 
 def _gw_cfg():
@@ -326,15 +329,45 @@ def _stream_lines(upstream, waiting_first):
         raise GatewayError("upstream dropped", 502, "upstream") from e
 
 
+def _oai_usage(chunk: dict) -> "tuple[int, int] | None":
+    u = chunk.get("usage")
+    return (u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0) if isinstance(u, dict) else None
+
+
+def _native_usage(event: dict) -> "tuple[int, int] | None":
+    if event.get("type") != "chat.end":
+        return None
+    stats = (event.get("result") or {}).get("stats") or {}
+    return int(stats.get("input_tokens") or 0), int(stats.get("total_output_tokens") or 0)
+
+
+def _native_last(event: dict) -> bool:
+    return event.get("type") == "chat.end"
+
+
 def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "float | None" = None):
     """In-process streaming completion; yields parsed `data:` chunks until [DONE].
     read_timeout bounds the wait for each upstream read; a miss raises GatewayError(timeout)."""
     model_id, provider = _resolve(body, provider)
-    path = _AGENT_PATHS[provider]["chat/completions"]
-    counted = provider in _USAGE_COUNTED_PROVIDERS
     stream_body = {**body, "stream": True}
     if bool(getattr(_gw_cfg(), "usage_probe", True)):
         stream_body, _ = _with_usage_probe(stream_body)
+    yield from _stream_chunks(model_id, provider, _AGENT_PATHS[provider]["chat/completions"], stream_body,
+                              label=label, read_timeout=read_timeout, usage_of=_oai_usage, last=lambda c: False)
+
+
+def native_chat_stream(body: dict, *, label: str, read_timeout: "float | None" = None):
+    """LM Studio native chat over the agent (#910); yields the typed SSE events up to chat.end."""
+    model_id, provider = _resolve(body, "lms")
+    yield from _stream_chunks(model_id, provider, NATIVE_CHAT_PATH, {**body, "stream": True},
+                              label=label, read_timeout=read_timeout, usage_of=_native_usage, last=_native_last)
+
+
+def _stream_chunks(model_id, provider: str, path: str, stream_body: dict, *, label: str, read_timeout,
+                   usage_of: Callable[[dict], "tuple[int, int] | None"], last: Callable[[dict], bool]):
+    """Failover loop shared by the streaming completions: dials each candidate agent in turn and yields
+    every parsed `data:` object until [DONE] or `last` says the stream is over."""
+    counted = provider in _USAGE_COUNTED_PROVIDERS
     client = gateway_usage.client_begin(label, "", model=model_id)
     t0 = time.perf_counter()
     errors: list = []
@@ -406,15 +439,17 @@ def complete_stream(body: dict, *, label: str, provider=None, read_timeout: "flo
                         gateway_usage.record_latency(ms)
                         if _dbg:
                             log.debug("gateway first_token_ms=%d host=%s", int(ms), _label(agent))
-                    u = chunk.get("usage")
-                    if isinstance(u, dict):
-                        p_tok, g_tok = u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0
+                    u = usage_of(chunk)
+                    if u is not None:
+                        p_tok, g_tok = u
                         gateway_usage.client_record(client, p_tok, g_tok)
                         if counted:
                             gateway_usage.record(aid, p_tok, g_tok)
                     if _dbg and (f := _finish_of(chunk)) != "-":
                         finish = f
                     yield chunk
+                    if last(chunk):
+                        break
                 if _dbg:
                     log.debug("gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s "
                               "completion_tokens=%s finish=%s", label, _label(agent),
@@ -1050,3 +1085,6 @@ def register_routes(app, ctx) -> None:
                              _completion_handler(sub, p), methods=["POST"])
         app.add_url_rule(f"/api/gateway/{p}/v1/models", f"gateway_{p}_models",
                          lambda p=p: _gateway_models(provider=p), methods=["GET"])
+
+
+lms_native.wire(lambda model_id: _candidates(model_id, None, "lms", advance_rr=False))

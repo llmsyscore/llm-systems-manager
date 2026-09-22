@@ -154,7 +154,7 @@ CATALOG: list[dict] = [
     _e("manager.tower.fallback", "bool", "Fallback model", "When the primary model misses the request timeout, fails the tool check, or keeps writing tool calls as text, ask the next loaded chat model (another host first) this one question and say so in the reply. Later questions use the primary model again.", "tower", MANAGER, hot=True),
     _e("manager.tower.temperature", "float", "Temperature", "Sampling temperature for Tower's model calls.", "tower", MANAGER, min=0, max=1, hot=True),
     _e("manager.tower.thinking", "choice", "Thinking",
-       "How much a thinking model may reason before it answers. Off skips thinking; low, medium and high cap it at 1k, 2k or 6k tokens on llama.cpp and add that room on top of the answer length.",
+       "How much a thinking model may reason before it answers. Off skips thinking; low, medium and high cap it at 1k, 2k or 6k tokens and add that room on top of the answer length. llama.cpp stops at the cap itself; on LM Studio and vLLM Tower stops the thinking and asks for the answer with the notes so far.",
        "tower", MANAGER, choices=["off", "low", "medium", "high"], hot=True,
        labels={"off": "Off", "low": "Low (1k tokens)", "medium": "Medium (2k tokens)", "high": "High (6k tokens)"}),
     _e("manager.tower.max_tokens", "int", "Answer length (tokens)", "Token cap for the answer per model call; the Thinking setting adds its own room on top.", "tower", MANAGER, min=128, max=32768, hot=True),

@@ -303,6 +303,7 @@
     return `<pre class="raw">${TW.esc(s.slice(0, 4000))}</pre>`;
   }
   function tickHtml(t, key) {
+    if (t.note) return `<div class="tick note"><span class="k">·</span>${TW.esc(t.note)}</div>`;
     const open = _openTicks.has(key);
     const label = String(t.summary || t.name || '').replace(/\s*·\s*\d+\s*ms\s*$/, '');
     const ms = t.ms == null ? '' : `${t.ms} ms`;

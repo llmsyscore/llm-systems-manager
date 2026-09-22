@@ -233,7 +233,9 @@
 
   function controlHtml(e, opt) {
     const p = esc(e.path);
-    const v = opt.shown(e);
+    let v = opt.shown(e);
+    // A cleared choice shows the default it will take, never the first option.
+    if (v === null && e.type === 'choice' && hasDefault(e, opt)) v = defsOf(opt)[e.path];
     const dirty = opt.dirty && opt.dirty.has(e.path) ? ' dirty' : '';
     const { unit } = splitUnit(e);
     if (e.type === 'bool') {
@@ -541,12 +543,14 @@
     else {
       btn = s.admin ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerCheckBtn"${_towerBusy ? ' disabled' : ''}>`
         + `${_towerBusy ? 'Verifying\u2026' : 'Verify'}</button>` : '';
+      const th = (window.TW && TW.thinkingChip) ? TW.thinkingChip(s) : null;
       control = `<div class="row"><span class="d w">Primary</span>${checkChipsHtml(s.check, s.model)}</div>`
-        + `<div class="row fb"><span class="d w">Fallback</span>${towerFallbackHtml(s)}</div>`;
+        + `<div class="row fb"><span class="d w">Fallback</span>${towerFallbackHtml(s)}</div>`
+        + (th ? `<div class="row fb"><span class="d w">Thinking</span><span class="st-chip ${th.cls} tl" data-tip="${esc(`${s.model} \u00b7 ${th.title}`)}">${esc(th.text)}</span></div>` : '');
     }
     return '<div class="settings-row st-fld st-checkrow" id="stTowerCheck">'
       + `<div class="st-lb"><label>Tool response check</label>${btn}</div>`
-      + '<div class="help">Whether the primary and fallback models answer with a tool call. Runs when Tower is switched on or a model changes; Verify runs it again now. Hover a status for the model.</div>'
+      + '<div class="help">Whether the primary and fallback models answer with a tool call, and how the primary model takes the Thinking levels. Runs when Tower is switched on or a model changes; Verify runs it again now. Hover a status for the model.</div>'
       + `<div class="st-ct">${control}</div></div>`;
   }
   function towerPending(s) {

@@ -137,11 +137,11 @@ def openai_wants_stream(body: bytes) -> bool:
         return False
 
 
-async def openai_forward(sub: str, request: Request, api_url: str):
-    """Narrow OpenAI passthrough to <api_url>/v1/<sub> (#214).
+async def openai_forward(sub: str, request: Request, api_url: str, prefix: str = "v1"):
+    """Narrow passthrough to <api_url>/<prefix>/<sub> (#214); prefix "api/v1" reaches LM Studio's native API.
     Caller has already checked bearer auth + provider-enabled."""
     body = await request.body()
-    url = f"{api_url.rstrip('/')}/v1/{sub}"
+    url = f"{api_url.rstrip('/')}/{prefix}/{sub}"
     headers = {"Content-Type": "application/json"}
     # Blocking requests.post calls run off-loop via run_in_threadpool.
     if openai_wants_stream(body):

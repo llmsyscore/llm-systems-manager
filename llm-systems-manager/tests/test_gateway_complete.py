@@ -329,3 +329,37 @@ def test_agent_request_marks_read_timeout(monkeypatch):
     errs["http://h2/x"] = requests.exceptions.ConnectionError("refused")
     _r, _t, err = agent_registry.agent_request("POST", AGENT, "/x")
     assert err.timed_out is False
+
+
+# ── LM Studio native chat over the agent (#910) ─────────────────────────────
+
+def _native_lines(stop_after_end=True):
+    end = {"type": "chat.end", "result": {"model_instance_id": "m", "output": [{"type": "message", "content": "Hi."}],
+                                          "stats": {"input_tokens": 9, "total_output_tokens": 4, "reasoning_output_tokens": 2}}}
+    lines = ["event: chat.start", "data: " + json.dumps({"type": "chat.start", "model_instance_id": "m"}), "",
+             "event: reasoning.delta", "data: " + json.dumps({"type": "reasoning.delta", "content": "hm"}), "",
+             "event: message.delta", "data: " + json.dumps({"type": "message.delta", "content": "Hi."}), "",
+             "event: chat.end", "data: " + json.dumps(end), ""]
+    if stop_after_end:
+        lines += ["event: never", "data: " + json.dumps({"type": "never"}), ""]
+    return lines
+
+
+def test_native_chat_stream_dials_the_native_route_and_stops_at_chat_end(monkeypatch):
+    seen = {}
+    def dial(agent, path, body, read_timeout=None):
+        seen.update(path=path, body=body); return _Resp(200, lines=_native_lines(), ctype="text/event-stream")
+    monkeypatch.setattr(gateway, "_dial_stream", dial)
+    recorded = []
+    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g: recorded.append((aid, p, g)))
+    events = list(gateway.native_chat_stream({"model": "m", "input": "hi", "reasoning": "off"}, label="forecast"))
+    assert seen["path"] == "/lms/native/chat" and seen["body"]["stream"] is True and "stream_options" not in seen["body"]
+    assert [e["type"] for e in events] == ["chat.start", "reasoning.delta", "message.delta", "chat.end"]
+    assert (AGENT["agent_id"], 9, 4) in recorded
+
+
+def test_native_chat_stream_missing_route_raises_upstream_error(monkeypatch):
+    monkeypatch.setattr(gateway, "_dial_stream", lambda agent, path, body, read_timeout=None: _Resp(404, {"detail": "Not Found"}))
+    with pytest.raises(gateway.GatewayError) as ei:
+        list(gateway.native_chat_stream({"model": "m", "input": "hi"}, label="forecast"))
+    assert ei.value.status == 404

@@ -345,6 +345,35 @@ async def lms_openai_completions(request: Request,
     return await _lms_openai_forward("completions", request, authorization)
 
 
+async def lms_native_chat(request: Request,
+                          authorization: Optional[str] = Header(default=None)):
+    """Passthrough to LM Studio's native POST /api/v1/chat (#910)."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
+    _lms_check_enabled()
+    return await _shared.openai_forward("chat", request, ctx.config.LMS_API_URL, prefix="api/v1")
+
+
+def lms_native_models(authorization: Optional[str] = Header(default=None)) -> dict:
+    """LM Studio's native GET /api/v1/models: per-model capabilities, quantization and loaded instances (#910)."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization)
+    _lms_check_enabled()
+    try:
+        r = _get_session().get(f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models", timeout=5)
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if r.status_code == 404:
+        raise HTTPException(status_code=404, detail="LM Studio has no native API (needs 0.4.0 or newer)")
+    if not r.ok:
+        raise HTTPException(status_code=502, detail=f"LM Studio /api/v1/models returned {r.status_code}")
+    try:
+        models = r.json().get("models") or []
+    except ValueError:
+        raise HTTPException(status_code=502, detail="LM Studio /api/v1/models returned no JSON")
+    return {"models": models}
+
+
 def reconcile_now() -> None:
     """Ask the collector for an early residency tick; lazy import keeps the provider cycle out."""
     from . import llama as _llama
@@ -660,6 +689,8 @@ _ROUTES: tuple = (
     ("POST", "/lms/delete",         lms_delete_endpoint),
     ("POST", "/lms/openai/chat/completions", lms_openai_chat),
     ("POST", "/lms/openai/completions",      lms_openai_completions),
+    ("POST", "/lms/native/chat",             lms_native_chat),
+    ("GET",  "/lms/native/models",           lms_native_models),
 )
 
 

@@ -93,6 +93,7 @@ def test_disabled_routes_404(client):
 def test_state_reports_model_and_tiers(client):
     d = client.get("/api/tower/state").get_json()
     assert d["enabled"] is True and d["model"] == "qwen3-14b" and d["provider"] == "llama"
+    assert d["thinking_options"] is None
     assert d["capabilities"] == "read" and d["off_topic"] == "refuse" and d["insights_new"] == 0 and d["latest_insight"] is None
     iid = M._tower_runs.store.create_insight({"alert_id": "a1", "rule": "GPU hot", "host": "box", "severity": "critical", "summary": "hot"})
     d = client.get("/api/tower/state").get_json()
@@ -1255,3 +1256,12 @@ def test_state_and_check_cover_the_fallback_model_when_the_toggle_is_on(client, 
     d = client.post("/api/tower/check").get_json()
     assert d["check"]["grade"] == "fenced" and d["fallback"]["model"] == "gemma-3-12b" and d["fallback"]["check"]["grade"] == "fenced"
     assert ("run", "gemma-3-12b") in calls
+
+
+def test_state_carries_lm_studio_thinking_options(client, monkeypatch):
+    import lms_native
+    monkeypatch.setattr(lms_native, "thinking_options", lambda mid: ["off", "on"])
+    monkeypatch.setattr(tower, "_thinking_options", lambda m: lms_native.thinking_options(m["model"]) if m.get("provider") == "lms" else None)
+    assert client.get("/api/tower/state").get_json()["thinking_options"] is None   # llama model
+    monkeypatch.setattr(tower, "resolve_model", lambda cfg, entries: {"model": "qwen3.5-9b@q6_k", "provider": "lms", "hosts": ["mac"]})
+    assert client.get("/api/tower/state").get_json()["thinking_options"] == ["off", "on"]

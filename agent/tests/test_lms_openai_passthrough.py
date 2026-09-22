@@ -53,3 +53,64 @@ def test_forward_refused_when_lms_disabled(lms, monkeypatch):
     assert not isinstance(ei.value, AssertionError)
     sc = getattr(ei.value, "status_code", None)
     assert sc in (None, 503)
+
+
+def test_native_routes_registered(lms):
+    routes = {(m, p) for m, p, _h in lms._ROUTES}
+    assert ("POST", "/lms/native/chat") in routes
+    assert ("GET", "/lms/native/models") in routes
+
+
+def test_native_chat_forwards_to_api_v1(lms, monkeypatch):
+    seen = {}
+
+    async def fake_forward(sub, request, api_url, prefix="v1"):
+        seen.update(sub=sub, api_url=api_url, prefix=prefix)
+        return "resp"
+
+    monkeypatch.setattr(lms._shared, "openai_forward", fake_forward)
+    out = asyncio.run(lms.lms_native_chat(request=object(), authorization="Bearer t"))
+    assert out == "resp"
+    assert seen == {"sub": "chat", "api_url": "http://lms-host:1235", "prefix": "api/v1"}
+
+
+class _Resp:
+    def __init__(self, status, payload=None):
+        self.status_code, self.ok, self._payload = status, 200 <= status < 300, payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+
+def test_native_models_relays_capabilities(lms, monkeypatch):
+    calls = []
+    payload = {"models": [{"key": "m@q6_k", "capabilities": {"reasoning": {"allowed_options": ["off", "on"]}}}]}
+
+    class S:
+        def get(self, url, timeout):
+            calls.append(url)
+            return _Resp(200, payload)
+
+    monkeypatch.setattr(lms, "_get_session", lambda: S())
+    assert lms.lms_native_models(authorization="Bearer t") == payload
+    assert calls == ["http://lms-host:1235/api/v1/models"]
+
+
+def test_native_models_404_means_no_native_api(lms, monkeypatch):
+    class S:
+        def get(self, url, timeout):
+            return _Resp(404)
+
+    class _Http(Exception):
+        def __init__(self, status_code, detail=""):
+            super().__init__(detail)
+            self.status_code = status_code
+
+    # Other test files replace the fastapi stub; pin our own so the status code is readable.
+    monkeypatch.setattr(lms, "HTTPException", _Http)
+    monkeypatch.setattr(lms, "_get_session", lambda: S())
+    with pytest.raises(_Http) as ei:
+        lms.lms_native_models(authorization="Bearer t")
+    assert ei.value.status_code == 404
