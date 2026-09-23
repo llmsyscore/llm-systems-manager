@@ -52,6 +52,13 @@
   }
   function ms(v) { return v == null ? '—' : `${Math.round(v)} ms`; }
   function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+  // OTLP receiver summary for the AE detail strip: "12 batches · 3m ago" / "none yet".
+  function otlpStr(o) {
+    const n = ['metric_batches', 'trace_batches', 'log_batches'].reduce((t, k) => t + (Number(o[k]) || 0), 0);
+    if (!n) return 'none yet';
+    const age = o.last_batch_age_s != null ? upStr(o.last_batch_age_s) : null;
+    return plural(n, 'batch', 'batches') + (age ? ` · ${age} ago` : '');
+  }
 
   // ── services column ──────────────────────────────────────────────────
   // One row per service: dot, name (+ link chip), version, uptime, restart.
@@ -290,7 +297,7 @@
       const auth = authState(ae);
       const serving = !tls ? 'unknown'
         : (tls.enabled && tls.active) ? 'https' : (tls.enabled ? 'cert missing → http' : 'http');
-      return [
+      const rows = [
         ['version', dash(ae.version)],
         ['up', dash(upStr(ae.uptime_s))],
         ['serving', serving, serving === 'https' ? 'ok' : (serving.indexOf('cert') === 0 ? 'crit' : '')],
@@ -300,6 +307,8 @@
         ['active alerts', dash(ae.active_alerts), ae.active_alerts ? 'warn' : ''],
         ['probe from manager', ms(ae.latency_ms)],
       ];
+      if (ae.otlp && typeof ae.otlp === 'object') rows.splice(5, 0, ['OTLP received', otlpStr(ae.otlp)]);
+      return rows;
     }
     const inOk = !!(influx && influx.ok);
     if (!inOk) {
@@ -346,6 +355,7 @@
           + `<span class="m">${esc(au.latest || '')}</span> · `
           + '<button type="button" class="lnk" data-act="updateall">Update all</button>' });
     }
+    for (const a of ((d && d.advisories) || [])) rows.push({ k: 'info', g: 'i', t: esc(a) });
     const info = releaseInfoText(rel);
     if (info) rows.push({ k: 'info', g: 'i', t: esc(info) });
     const rank = { crit: 0, warn: 1, note: 2, info: 3 };

@@ -24,6 +24,7 @@ import functools
 import logging
 import math
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -67,6 +68,8 @@ _otlp_write_errors   = 0
 _otlp_tags_dropped   = 0   # attribute tags removed by key policy or per-point cap
 _otlp_tags_capped    = 0   # tag values replaced with "other" past the per-key cap
 _otlp_attr_fields    = 0   # numeric attributes stored as fields instead of tags
+_otlp_last_batch_at: Optional[float] = None   # epoch of the last accepted batch
+_otlp_last_error_at: Optional[float] = None   # epoch of the last parse/write error
 _hb_task = None
 
 # ── Tag policy (#1080) ───────────────────────────────────────────────────
@@ -197,6 +200,32 @@ def _apply_attr(key: str, v: AnyValue, cfg, tags: dict[str, str], fields: dict[s
         tags[tk] = val
     else:
         tags[tk] = _cap_value(tk, val, cfg.tag_value_cap)
+
+
+def _note_batch() -> None:
+    global _otlp_last_batch_at
+    _otlp_last_batch_at = time.time()
+
+
+def _note_error() -> None:
+    global _otlp_last_error_at
+    _otlp_last_error_at = time.time()
+
+
+def stats() -> dict:
+    """Cumulative receiver counters since process start, for the AE /health payload."""
+    now = time.time()
+    return {
+        "metric_batches": _otlp_metric_batches,
+        "trace_batches": _otlp_trace_batches,
+        "log_batches": _otlp_log_batches,
+        "parse_errors": _otlp_parse_errors,
+        "write_errors": _otlp_write_errors,
+        "last_batch_at": _otlp_last_batch_at,
+        "last_error_at": _otlp_last_error_at,
+        "last_batch_age_s": round(now - _otlp_last_batch_at, 1) if _otlp_last_batch_at else None,
+        "last_error_age_s": round(now - _otlp_last_error_at, 1) if _otlp_last_error_at else None,
+    }
 
 
 def configure(cache: Cache, db: Optional[InfluxDBClient]) -> None:
@@ -527,6 +556,7 @@ async def receive_metrics(request: Request, _auth: None = Depends(require_ingest
     except Exception as e:
         global _otlp_parse_errors
         _otlp_parse_errors += 1
+        _note_error()
         logger.warning(f"OTLP metrics parse error: {e}")
         return Response(status_code=400, content=b"protobuf parse error")
 
@@ -542,6 +572,7 @@ async def receive_metrics(request: Request, _auth: None = Depends(require_ingest
         except Exception as e:
             global _otlp_write_errors
             _otlp_write_errors += 1
+            _note_error()
             logger.exception(f"OTLP InfluxDB write failed: {e}")
             return Response(status_code=500, content=b"db write failed")
 
@@ -549,6 +580,7 @@ async def receive_metrics(request: Request, _auth: None = Depends(require_ingest
     global _otlp_metrics_seen, _otlp_metric_batches
     _otlp_metrics_seen += len(records)
     _otlp_metric_batches += 1
+    _note_batch()
 
     logger.debug(f"OTLP metrics ingested: {len(records)} points")
     return Response(
@@ -643,6 +675,7 @@ async def receive_traces(request: Request, _auth: None = Depends(require_ingest_
     except Exception as e:
         global _otlp_parse_errors
         _otlp_parse_errors += 1
+        _note_error()
         logger.warning(f"OTLP traces parse error: {e}")
         return Response(status_code=400, content=b"protobuf parse error")
 
@@ -658,6 +691,7 @@ async def receive_traces(request: Request, _auth: None = Depends(require_ingest_
         except Exception as e:
             global _otlp_write_errors
             _otlp_write_errors += 1
+            _note_error()
             logger.exception(f"OTLP traces InfluxDB write failed: {e}")
             return Response(status_code=500, content=b"db write failed")
 
@@ -665,6 +699,7 @@ async def receive_traces(request: Request, _auth: None = Depends(require_ingest_
     global _otlp_traces_seen, _otlp_trace_batches
     _otlp_traces_seen += len(records)
     _otlp_trace_batches += 1
+    _note_batch()
 
     logger.debug(f"OTLP traces ingested: {len(records)} spans")
     return Response(
@@ -746,6 +781,7 @@ async def receive_logs(request: Request, _auth: None = Depends(require_ingest_to
     except Exception as e:
         global _otlp_parse_errors
         _otlp_parse_errors += 1
+        _note_error()
         logger.warning(f"OTLP logs parse error: {e}")
         return Response(status_code=400, content=b"protobuf parse error")
 
@@ -761,6 +797,7 @@ async def receive_logs(request: Request, _auth: None = Depends(require_ingest_to
         except Exception as e:
             global _otlp_write_errors
             _otlp_write_errors += 1
+            _note_error()
             logger.exception(f"OTLP logs InfluxDB write failed: {e}")
             return Response(status_code=500, content=b"db write failed")
 
@@ -768,6 +805,7 @@ async def receive_logs(request: Request, _auth: None = Depends(require_ingest_to
     global _otlp_logs_seen, _otlp_log_batches
     _otlp_logs_seen += len(records)
     _otlp_log_batches += 1
+    _note_batch()
 
     logger.debug(f"OTLP logs ingested: {len(records)} records")
     return Response(
