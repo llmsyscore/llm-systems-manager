@@ -874,14 +874,15 @@ def _bench_summary(extra: dict) -> dict:
 
 
 def _bench_model_done(model: str, ok: bool, rc, cancelled: bool,
-                      error: Optional[str], extra: dict) -> None:
+                      error: Optional[str], extra: dict, switches: Optional[list] = None) -> None:
     """Emit model_done with the run summary and record the ledger row."""
     summary = _bench_summary(extra or {})
     _bench_put({"type": "model_done", "ok": ok, "rc": rc, "cancelled": cancelled,
                 "error": error, "model_id": model,
                 "run_id": _bench_replay.run_id, **summary})
     _shared.post_tool_run(_require_ctx(), "benchmark", "vllm",
-                          _bench_replay.run_id, model, ok, summary)
+                          _bench_replay.run_id, model, ok,
+                          {**summary, "switches": _shared.switch_map(switches or [])})
 
 
 def _bench_run_one(binpath: str, model: str, switches: list) -> None:
@@ -931,10 +932,10 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
                 error = f"benchmark finished but result.json unreadable: {e}"
         elif not cancelled and error is None:
             error = f"vllm bench serve exited rc={rc}"
-        _bench_model_done(model, ok, rc, cancelled, error, extra)
+        _bench_model_done(model, ok, rc, cancelled, error, extra, switches)
     except Exception as e:
         _bench_model_done(model, False, rc, _bench_job.cancel_event.is_set(),
-                          str(e), {})
+                          str(e), {}, switches)
     finally:
         _bench_job.untrack()
         shutil.rmtree(tmpdir, ignore_errors=True)

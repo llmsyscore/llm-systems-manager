@@ -2223,7 +2223,8 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
             _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
             measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
                        "pg_tps": mx["pg"], "bench_tool": tool,
-                       "wh_per_ktok": wh_per_ktok})
+                       "wh_per_ktok": wh_per_ktok,
+                       "switches": _shared.switch_map(switches)})
     finally:
         if not stopped:
             energy.stop()
@@ -2653,7 +2654,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                                    "accept_rate": first.get("accept_rate"), "levels": len(levels),
                                    "wh_per_ktok": wh_per_ktok, "bench": req["bench"], "osl": req.get("osl"),
                                    "limit": req.get("limit"),
-                                   "concurrency": ",".join(str(r.get("concurrency")) for r in levels)})
+                                   "concurrency": ",".join(str(r.get("concurrency")) for r in levels),
+                                   "switches": _bl.ledger_switches(req, server)})
         _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1})
         _bench_proc = None
         _bench_pgid = None

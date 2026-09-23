@@ -217,3 +217,11 @@ def test_venv_python_prefers_the_agent_interpreter_then_newest_python3(bl):
     assert bl.venv_python(which, runner, executable="/opt/agent/llm-systems-agent", frozen=True) == "/opt/homebrew/bin/python3.13"
     # an old system python3 alone falls through to plain python3
     assert bl.venv_python(lambda n: "/usr/bin/python3" if n == "python3" else None, runner, executable="", frozen=True) == "python3"
+
+
+def test_ledger_switches_flatten_the_run_settings(bl):
+    req = bl.validate_run_request({"model_id": "m", "bench": "qualitative", "concurrency": [1, 4]})
+    sw = bl.ledger_switches(req, {"spec": None})
+    assert sw == {"bench": "qualitative", "categories": "all", "osl": "1024", "limit": "8",
+                  "concurrency": "1, 4", "timeout_s": "600", "extra_inputs": '{"temperature": 0}'}
+    assert bl.ledger_switches({**req, "categories": ["a", "b"]}, {"spec": "draft-mtp"})["spec"] == "draft-mtp"

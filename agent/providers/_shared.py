@@ -60,6 +60,21 @@ def bench_maxes(rows: list) -> dict:
     return out
 
 
+def switch_map(switches: list) -> dict:
+    """Bench switch list [{flag, value}] as {flag: value}; bare flags read "on"."""
+    out: dict = {}
+    for sw in switches or []:
+        if not isinstance(sw, dict):
+            continue
+        flag = str(sw.get("flag") or "").strip()
+        if not flag:
+            continue
+        val = sw.get("value")
+        val = "on" if val is None or str(val).strip() == "" else str(val)
+        out[flag] = f"{out[flag]}, {val}" if flag in out else val
+    return out
+
+
 def post_tool_run(ctx, tool: str, provider: str, run_id: str, model_id: str,
                   ok: bool, summary: dict) -> None:
     """Record a finished run in the manager's tool ledger; best effort so a

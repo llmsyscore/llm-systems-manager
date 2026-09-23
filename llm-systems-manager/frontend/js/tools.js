@@ -12,6 +12,7 @@
   let _ledgerSort = { key: 'ts', dir: 'desc' };
   let _ledgerTool = 'all';
   let _ledgerPage = 0;
+  let _ledgerPicks = [];   // run keys picked for the ledger diff (#892), at most two
   let _toolsActivity = { reportcard: false, benchmark: false, autotune: false };
   let _toolsLocalWas = { rc: false, bench: false, at: false };
   const _LEDGER_CAP = 100, _LEDGER_PAGE = 15;
@@ -427,7 +428,7 @@
         if (s.ppt_tps != null) bits.push(TC.esc(_tNum(s.ppt_tps, 0)) + ' pp/s');
         if (s.bench_tool) bits.push(TC.esc(s.bench_tool));
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
-        rows.push({ icon: '◷', tool: 'Benchmark',
+        rows.push({ icon: '◷', tool: 'Benchmark', run: r,
           toolId: clickable ? 'benchmark' : null, target,
           title: clickable ? 'Open Benchmark' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
@@ -440,7 +441,7 @@
         if (r.ok && s.gain_pct != null) bits.push('<b>' + (s.gain_pct >= 0 ? '+' : '') + TC.esc(String(Math.round(s.gain_pct))) + ' %</b>');
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
         else if (s.verify_ok === false) bits.push('verify failed');
-        rows.push({ icon: '⌖', tool: 'Autotune',
+        rows.push({ icon: '⌖', tool: 'Autotune', run: r,
           toolId: clickable ? 'autotune' : null, target,
           title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
@@ -491,7 +492,7 @@
       _ledgerPage = Math.min(Math.max(0, _ledgerPage), pages - 1);
       const page = rows.slice(_ledgerPage * _LEDGER_PAGE,
                               (_ledgerPage + 1) * _LEDGER_PAGE);
-      body.innerHTML = TC.ledger(page, _ledgerSort);
+      body.innerHTML = TC.ledger(page.map(_ledgerPickOf), _ledgerSort);
       if (pager) {
         pager.innerHTML = pages > 1
           ? `<button class="mcbtn mcbtn-ghost mcbtn-sm" data-pg="prev"${_ledgerPage === 0 ? ' disabled' : ''}>‹</button>` +
@@ -500,9 +501,49 @@
           : '';
       }
     }
+    _toolsRenderDiff();
     const sec = _tEl('toolsLedgerSec');
     const l = _tLayout();
     if (sec) sec.classList.toggle('collapsed', !!(l && l.toolsLedgerCollapsed));
+  }
+
+  // Ledger diff (#892): two Benchmark or two Autotune runs of one model.
+  function _runKey(r) { return [r.tool, r.agent_id, r.model_id, r.ts].join('|'); }
+  function _runCmp(r) { return r.tool + '|' + r.model_id; }
+  function _pickedRuns() {
+    const byKey = new Map(_toolsRuns.map(r => [_runKey(r), r]));
+    _ledgerPicks = _ledgerPicks.filter(k => byKey.has(k));
+    return _ledgerPicks.map(k => byKey.get(k));
+  }
+
+  function _ledgerPickOf(row) {
+    if (!row.run) return row;
+    const key = _runKey(row.run);
+    const picked = _pickedRuns();
+    const on = _ledgerPicks.includes(key);
+    let disabled = false, why = null;
+    if (!on && picked.length >= 2) { disabled = true; why = 'Two runs are picked; clear one to pick another'; }
+    else if (!on && picked.length === 1 && _runCmp(picked[0]) !== _runCmp(row.run)) {
+      disabled = true; why = `Compare needs another ${row.tool} run of ${picked[0].model_id}`;
+    }
+    return { ...row, pick: { key, on, disabled, why } };
+  }
+
+  function _toolsRenderDiff() {
+    const host = _tEl('toolsLedgerDiff');
+    if (!host) return;
+    const picked = _pickedRuns();
+    if (!picked.length) { host.innerHTML = ''; return; }
+    const withHost = r => ({ ...r, host: _tHost(r.agent_id) });
+    host.innerHTML = picked.length === 1
+      ? TC.diffHint(picked[0].tool === 'autotune' ? 'Autotune' : 'Benchmark', picked[0].model_id)
+      : TC.diffHtml(TC.diffRuns(withHost(picked[0]), withHost(picked[1])));
+  }
+
+  function _ledgerTogglePick(key) {
+    if (_ledgerPicks.includes(key)) _ledgerPicks = _ledgerPicks.filter(k => k !== key);
+    else if (_ledgerPicks.length < 2) _ledgerPicks = _ledgerPicks.concat(key);
+    _toolsRenderLedger();
   }
 
   // Called by report-card.js/bench-autotune.js whenever a run stream opens or
@@ -565,15 +606,15 @@
   function toolsOpenTool(id, modelId, opts) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
+    // Read before _toolsHideModules detaches the outgoing module's stream (#920).
+    const run = _toolsRunningLocal();
     // A deep link names its host; the picker keeps the last target otherwise (#916).
     if (opts && opts.provider && (id === 'benchmark' || id === 'autotune')) {
-      const run = _toolsRunningLocal();
       if (!(id === 'benchmark' ? run.bench : run.at)) toolsSetTarget(opts.provider, opts.agent);
     }
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
     _toolsHideModules(id);
-    const run = _toolsRunningLocal();
     const mod = _tEl(modId);
     if (mod) mod.style.display = 'block';
     // Chip only when the model actually pre-fills — a live run keeps its state.
@@ -670,11 +711,20 @@
         _toolsRenderLedger();
         return;
       }
+      const pk = ev.target.closest('button[data-pick]');
+      if (pk) { if (!pk.disabled) _ledgerTogglePick(pk.dataset.pick); return; }
+      if (ev.target.closest('td.pick')) return;
       const tr = ev.target.closest('tr.rowlink');
       if (tr && tr.dataset.tool) {
         const opts = tr.dataset.provider ? { provider: tr.dataset.provider, agent: tr.dataset.agent || null } : undefined;
         toolsOpenTool(tr.dataset.tool, tr.dataset.model || null, opts);
       }
+    });
+    const diff = _tEl('toolsLedgerDiff');
+    if (diff) diff.addEventListener('click', ev => {
+      if (!ev.target.closest('[data-diff="clear"]')) return;
+      _ledgerPicks = [];
+      _toolsRenderLedger();
     });
     const filter = _tEl('toolsLedgerFilter');
     if (filter) filter.addEventListener('change', () => {

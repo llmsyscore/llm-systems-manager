@@ -147,7 +147,13 @@
           (r.target.agent ? ` data-agent="${esc(r.target.agent)}"` : '') : '') +
         ` title="${esc(r.title || 'Open ' + r.tool)}"`
       : '';
-    return `<tr${attrs}>` +
+    const pk = r.pick;
+    const pick = pk
+      ? `<button type="button" class="tl-pick${pk.on ? ' on' : ''}" data-pick="${esc(pk.key)}"` +
+        ` aria-pressed="${pk.on ? 'true' : 'false'}" aria-label="Pick for compare"` +
+        ` title="${esc(pk.why || 'Pick two runs of the same model to compare')}"${pk.disabled ? ' disabled' : ''}></button>`
+      : '';
+    return `<tr${attrs}><td class="pick">${pick}</td>` +
       `<td class="tool"><i>${esc(r.icon)}</i>${esc(r.tool)}</td>` +
       `<td>${esc(r.model || '—')}</td><td>${esc(r.host || '—')}</td>` +
       `<td class="${r.live ? 'live' : 'res'}">${r.result || '—'}</td>` +
@@ -161,7 +167,7 @@
 
   // sort: {key, dir:'asc'|'desc'} — marks the active column header.
   function ledgerHeader(sort) {
-    return '<tr>' + LEDGER_COLS.map(([key, label]) => {
+    return '<tr><th class="pick" aria-label="Compare"></th>' + LEDGER_COLS.map(([key, label]) => {
       const on = sort && sort.key === key;
       const arr = on ? (sort.dir === 'asc' ? ' ▴' : ' ▾') : '';
       return `<th class="sortable${on ? ' on' : ''}" data-sort="${key}"` +
@@ -177,7 +183,77 @@
       rows.map(r => ledgerRow(r, nowMs)).join('') + '</table>';
   }
 
-  const _TC_API = { VIEWS, esc, validView, viewOf, age, when, stamp, toMs, pill, statsHtml, card, row, listHeader, chip, launcher, ledgerRow, ledgerHeader, ledger };
+  // Ledger diff (#892): [summary key, label, decimals, +1 higher is better / -1 lower is better].
+  const DIFF_METRICS = {
+    benchmark: [['gen_tps', 'Gen t/s', 1, 1], ['ppt_tps', 'Prompt t/s', 0, 1], ['pg_tps', 'Prompt + gen t/s', 1, 1],
+      ['latency_s', 'Latency s', 2, -1], ['accept_rate', 'Draft accept', 2, 1], ['wh_per_ktok', 'Wh / 1k tok', 2, -1]],
+    autotune: [['decode_tps', 'Decode t/s', 1, 1], ['prefill_tps', 'Prefill t/s', 0, 1], ['agg_tps', 'Aggregate t/s', 0, 1],
+      ['ctx_size', 'Context', 0, 1], ['free_mb', 'Memory free MB', 0, 1], ['gain_pct', 'Gain vs before %', 0, 1],
+      ['avg_w', 'Average W', 0, -1], ['wh_per_ktok', 'Wh / 1k tok', 2, -1], ['kl', 'KL', 4, -1]],
+  };
+  const DIFF_SETUP = {
+    benchmark: [['bench_tool', 'Bench tool']],
+    autotune: [['objective', 'Objective'], ['mode', 'Mode'], ['llama_build', 'Build']],
+  };
+
+  function _num(v) { return v == null || v === '' || !isFinite(v) ? null : Number(v); }
+
+  // Two ledger runs {tool, model_id, ok, summary, ts, host} → rows for diffHtml; older run is A.
+  function diffRuns(x, y) {
+    const [a, b] = (toMs(x.ts) || 0) <= (toMs(y.ts) || 0) ? [x, y] : [y, x];
+    const sa = a.summary || {}, sb = b.summary || {};
+    const row = (label, va, vb) => ({ label, a: va == null || va === '' ? null : String(va),
+      b: vb == null || vb === '' ? null : String(vb) });
+    const setup = [row('Host', a.host, b.host), row('Result', a.ok === false ? 'failed' : 'ok', b.ok === false ? 'failed' : 'ok')]
+      .concat((DIFF_SETUP[a.tool] || []).map(([k, l]) => row(l, sa[k], sb[k])))
+      .filter(r => r.a != null || r.b != null);
+    const swa = sa.switches && typeof sa.switches === 'object' ? sa.switches : null;
+    const swb = sb.switches && typeof sb.switches === 'object' ? sb.switches : null;
+    const keys = Array.from(new Set(Object.keys(swa || {}).concat(Object.keys(swb || {})))).sort();
+    const switches = keys.map(k => row(k, swa && swa[k], swb && swb[k]));
+    const results = (DIFF_METRICS[a.tool] || []).map(([k, label, dp, dir]) => {
+      const va = _num(sa[k]), vb = _num(sb[k]);
+      if (va == null && vb == null) return null;
+      const pct = va != null && vb != null && va !== 0 ? (vb - va) / Math.abs(va) * 100 : null;
+      const tone = pct == null || Math.abs(pct) < 0.5 ? '' : (pct * dir > 0 ? 'good' : 'bad');
+      return { label, a: va == null ? null : va.toFixed(dp), b: vb == null ? null : vb.toFixed(dp), pct, tone };
+    }).filter(Boolean);
+    [...setup, ...switches].forEach(r => { r.changed = r.a !== r.b; });
+    return { tool: a.tool, model: a.model_id || '', a, b, setup, switches, results,
+             recorded: { a: !!swa, b: !!swb } };
+  }
+
+  function diffHtml(d, nowMs) {
+    const cell = (v, cls) => `<td class="${cls}">${v == null ? '—' : esc(v)}</td>`;
+    const tr = (r, mono) => `<tr class="${r.changed ? 'chg' : 'same'}"><td${mono ? ' class="mono"' : ''}>${esc(r.label)}</td>` +
+      cell(r.a, r.changed ? 'old' : 'mono') + cell(r.b, r.changed ? 'new' : 'mono') + '</tr>';
+    const sec = t => `<tr class="sec"><td colspan="3">${esc(t)}</td></tr>`;
+    const toolName = d.tool === 'autotune' ? 'Autotune' : 'Benchmark';
+    const miss = !d.recorded.a && !d.recorded.b ? 'Neither run recorded its switches.'
+      : !d.recorded.a ? 'Run A predates switch recording.' : !d.recorded.b ? 'Run B recorded no switches.' : '';
+    const changed = d.switches.filter(r => r.changed).length;
+    let body = sec('Setup') + d.setup.map(r => tr(r, false)).join('');
+    body += sec(d.switches.length ? `Switches · ${changed} of ${d.switches.length} differ` : 'Switches');
+    body += d.switches.length ? d.switches.map(r => tr(r, true)).join('')
+      : `<tr class="same"><td colspan="3" class="ev">${esc(miss || 'No switches set on either run.')}</td></tr>`;
+    body += sec('Results') + (d.results.length ? d.results.map(r => {
+      const dl = r.pct == null ? '' : ` <span class="tl-dl ${r.tone}">${r.pct >= 0 ? '+' : ''}${Math.round(r.pct)} %</span>`;
+      return `<tr class="same"><td>${esc(r.label)}</td>${cell(r.a, 'mono')}<td class="mono">${r.b == null ? '—' : esc(r.b)}${dl}</td></tr>`;
+    }).join('') : '<tr class="same"><td colspan="3" class="ev">No comparable results.</td></tr>');
+    return `<div class="tl-diff"><div class="tl-diff-h"><span class="t">Compare · ${esc(toolName)} · ${esc(d.model)}</span>` +
+      '<span class="lgap"></span><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" data-diff="clear">Clear</button></div>' +
+      (miss && d.switches.length ? `<div class="tl-diff-note">${esc(miss)}</div>` : '') +
+      '<div class="tl-diff-b"><table class="at-rt tl-diff-t"><thead><tr><th style="width:30%">Setting</th>' +
+      `<th>Run A · ${esc(stamp(d.a.ts, nowMs) || '—')}</th><th>Run B · ${esc(stamp(d.b.ts, nowMs) || '—')}</th></tr></thead>` +
+      `<tbody>${body}</tbody></table></div></div>`;
+  }
+
+  function diffHint(toolName, model) {
+    return `<div class="tl-diff tl-diff-hint"><span>Pick one more ${esc(toolName)} run of <b>${esc(model)}</b> to compare.</span>` +
+      '<span class="lgap"></span><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" data-diff="clear">Clear</button></div>';
+  }
+
+  const _TC_API = { VIEWS, esc, validView, viewOf, age, when, stamp, toMs, pill, statsHtml, card, row, listHeader, chip, launcher, ledgerRow, ledgerHeader, ledger, diffRuns, diffHtml, diffHint };
   if (typeof window !== 'undefined') window.TC = _TC_API;
   if (typeof module !== 'undefined' && module.exports) module.exports = _TC_API;
 })();
