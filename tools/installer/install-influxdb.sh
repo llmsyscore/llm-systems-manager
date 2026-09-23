@@ -329,6 +329,12 @@ else
   log "sudoers rule already present at $SUDOERS_DU"
 fi
 
+banner "InfluxDB — memory protection"
+# Mode 6 is a DB-only host: OOM drop-in only, no GOMEMLIMIT.
+_colocated=1
+[[ "${LLMSYS_INSTALL_MODE:-}" == "6" ]] && _colocated=0
+apply_influxdb_host_tuning "$_colocated"
+
 # Reload so the tuning takes effect now — restart is part of the install
 # transaction the operator already opted into.
 $SUDO systemctl restart influxdb
@@ -349,6 +355,8 @@ InfluxDB provisioned.
   Org:                $INFLUX_ORG
   Health:             $INFLUX_URL/health
   Tuned config:       $CONF  (managed block — re-run installer to refresh)
+  OOM protection:     $LLMSYS_INFLUX_DROPIN_DIR/$LLMSYS_INFLUX_DROPIN_NAME  (OOMScoreAdjust=-500)
+  GOMEMLIMIT:         $LLMSYS_INFLUX_GOMEMLIMIT
 EOF
 
 if [[ "${SHOW_TOKENS_AT_END:-0}" == "1" ]]; then

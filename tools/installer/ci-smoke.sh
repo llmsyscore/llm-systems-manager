@@ -77,6 +77,21 @@ _unit_active llm-systems-alarm-engine
 _unit_active llm-systems-manager
 $CHECK_AGENT && _unit_active llm-systems-agent
 
+echo "── influxdb memory protection (#1073, #1074) ──────────────────"
+_dropin=/etc/systemd/system/influxdb.service.d/llm-systems-manager.conf
+if [[ -f "$_dropin" ]]; then _pass "OOM drop-in present"; else _fail "OOM drop-in missing: $_dropin"; fi
+_oom="$(systemctl show -p OOMScoreAdjust --value influxdb 2>/dev/null)"
+if [[ "$_oom" == "-500" ]]; then _pass "influxdb OOMScoreAdjust=-500"; else _fail "influxdb OOMScoreAdjust='$_oom' (want -500)"; fi
+_ipid="$(systemctl show -p MainPID --value influxdb 2>/dev/null)"
+_live="$(cat "/proc/${_ipid:-0}/oom_score_adj" 2>/dev/null)"
+if [[ "$_live" == "-500" ]]; then _pass "influxd oom_score_adj=-500 (pid $_ipid)"; else _fail "influxd oom_score_adj='$_live' (want -500, pid '$_ipid')"; fi
+_gml="$(tr '\0' '\n' < "/proc/${_ipid:-0}/environ" 2>/dev/null | sed -n 's/^GOMEMLIMIT=//p')"
+if [[ "$_gml" =~ ^[0-9]+MiB$ ]] && grep -qx "GOMEMLIMIT=$_gml" /etc/default/influxdb2 2>/dev/null; then
+  _pass "influxd runs with GOMEMLIMIT=$_gml from the managed block"
+else
+  _fail "influxd GOMEMLIMIT='$_gml' (want the managed value in /etc/default/influxdb2)"
+fi
+
 echo "── endpoints ──────────────────────────────────────────────────"
 _http_ok "InfluxDB /health" "$(_probe_code http://127.0.0.1:8086/health)"
 _http_ok "Manager /health"  "$(_probe_code http://127.0.0.1:5000/health)"
