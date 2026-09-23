@@ -274,6 +274,124 @@ Cancels an in-progress benchmark run.
 
 ---
 
+### Live benchmark (`speed-bench` against the running server)
+
+The routes below drive the Benchmark tool's **Live** mode: the agent runs llama.cpp `speed-bench` against the model already loaded in `llama-server` and stores the result on the manager. Offline (`llama-bench`) results stay under `/api/benchmark/results`.
+
+### `GET /api/benchmark/live/preflight`
+Proxies the selected llama agent's readiness check: server up, bench runtime installed, available bench sets and their categories.
+
+---
+
+### `POST /api/benchmark/live/setup`
+Installs the bench runtime on the selected agent (pinned `speed-bench` script in its own venv) and prefetches the requested bench sets.
+
+**Body:** `{"prefetch": ["qualitative"]}`
+
+---
+
+### `POST /api/benchmark/live/run`
+Starts a live run on the selected agent. Progress streams over `/api/benchmark/stream`; the agent stores the finished document through `/api/benchmark/live/store`.
+
+**Body:** `{"model_id": "...", "bench": "qualitative", "concurrency": [1, 2, 4], "osl": 256, "limit": 20, "timeout_s": 600, "baseline_run_id": "..."}` (fields beyond `model_id` are optional).
+
+---
+
+### `POST /api/benchmark/live/store`
+Agent-only (machine bearer token): saves a finished live-run document. Keeps 50 runs per model and agent; pinned baselines survive pruning.
+
+---
+
+### `GET /api/benchmark/live/runs`
+Lists stored runs for the selected agent (newest first, baselines always included).
+
+**Query:** `model_id` (optional filter), `agent_id` (optional; defaults to the selected llama agent)
+
+---
+
+### `DELETE /api/benchmark/live/runs`
+Deletes the selected agent's stored runs (baselines kept).
+
+---
+
+### `GET /api/benchmark/live/runs/<run_id>`
+Returns one run: `meta` (row) and `run` (the full document with per-level results).
+
+---
+
+### `POST /api/benchmark/live/runs/<run_id>/baseline`
+Pins the run as the baseline for its model and agent (unpins the previous one).
+
+---
+
+### `DELETE /api/benchmark/live/runs/<run_id>`
+Deletes one stored run.
+
+---
+
+### `GET /api/benchmark/live/latest`
+Newest successful live run per model for one agent — the source of the **Live bench** section on model cards.
+
+**Query:** `agent_id` (optional; defaults to the selected llama agent)
+
+**Returns:** `{"ok": true, "agent_id": "...", "models": {"<model_id>": {"run_id", "ts", "bench", "gen_tps", "ppt_tps", "latency_s", "wh_per_ktok", "hostname"}}}`
+
+---
+
+### `GET /api/benchmark/live/speed`
+Newest successful live run per **agent** for one model, sorted by decode speed — the measured speed table the Model Autopilot ranks hosts with.
+
+**Query:** `model_id` (required)
+
+**Returns:** `{"ok": true, "model_id": "...", "hosts": [{"agent_id", "hostname", "run_id", "ts", "bench", "gen_tps", "ppt_tps", "latency_s", "accept_rate", "wh_per_ktok", "llama_build"}]}`
+
+---
+
+### `GET /api/benchmark/live/hosts`
+Lists approved llama agents for a model with a `loaded` flag (online, model loaded, not sleeping).
+
+**Query:** `model_id` (required)
+
+---
+
+### `POST /api/benchmark/live/fleet`
+Runs the same live benchmark on every host that has the model loaded, in parallel, and ranks the results.
+
+**Body:** `{"model_id": "...", "agents": ["<agent_id>", ...], "config": {...}}` (`agents` optional = every loaded host; `config` = a `/api/benchmark/live/run` body without `model_id`)
+
+**Returns:** `{"ok": true, "job_id": "..."}`
+
+---
+
+### `GET /api/benchmark/live/fleet/<job_id>`
+Job status: per-host state and metrics plus a `ranking` by decode t/s.
+
+---
+
+### `POST /api/benchmark/live/fleet/<job_id>/cancel`
+Cancels the job on every host still running.
+
+---
+
+### `GET /api/benchmark/live/baselines`
+Pinned-baseline watcher snapshot: each baseline's last check, the nightly schedule and the primary agent.
+
+---
+
+### `POST /api/benchmark/live/baselines/recheck`
+Re-runs a pinned baseline now (all of them when `run_id` is omitted). Audited.
+
+**Body:** `{"run_id": "..."}` (optional)
+
+---
+
+### `GET /api/benchmark/live/baselines/checks`
+Check history for one baseline.
+
+**Query:** `run_id` (required)
+
+---
+
 ### `POST /api/llm/autotune/run`
 Starts the Auto-Tune context wizard, which automatically finds the largest context window size the currently loaded model can sustain within GPU memory. Progress is streamed via `/api/llm/autotune/stream`.
 

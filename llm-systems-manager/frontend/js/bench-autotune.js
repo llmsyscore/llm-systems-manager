@@ -4,6 +4,7 @@
 let _benchEventSrc      = null;
 let _benchChart         = null;
 let _benchData          = {};   // model_id → stored results (DB)
+let _liveBenchData      = {};   // model_id → newest live-bench run (#893)
 let _benchSwitches      = [];   // current editable switch list
 let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
 let _benchRawRows       = [];   // all result rows for axis re-render: {model_id, ts, seq, gen_tps, ppt_tps, n_prompt, n_gen, n_depth, n_batch, n_ubatch, avg_ts}
@@ -504,6 +505,12 @@ async function loadBenchmarkData() {
   } catch (e) {
     // Keep the previously loaded data — blanking it would wipe every badge.
     console.warn('loadBenchmarkData failed:', e);
+  }
+  try {
+    const d = await fetch('/api/benchmark/live/latest').then(r => r.json());
+    if (d && d.ok) _liveBenchData = d.models || {};
+  } catch (e) {
+    console.warn('loadBenchmarkData (live) failed:', e);
   }
 }
 

@@ -102,7 +102,7 @@ describe('companion DOM contract', () => {
     expect(html).toMatch(/id="towerIns" data-scroller/);
     expect(js.includes("querySelector('[data-scroller]:not([hidden])')")).toBe(true);
     const sw = read('sw.js');
-    for (const p of ['/static/js/lib/sseguard.js', '/static/js/lib/tower-view.js', '/static/js/companion-tower.js']) expect(sw.includes(`'${p}'`), p).toBe(true);
+    for (const p of ['/static/js/lib/sseguard.js', '/static/js/lib/tower-view.js', '/static/js/companion-tower.js']) expect(sw.includes(`'${p}?v=__MGR_VERSION__'`), p).toBe(true);
   });
 
   it('the Actions screen is gone — its ids must not linger', () => {
@@ -127,11 +127,22 @@ describe('companion DOM contract', () => {
 
   it('the service-worker SHELL references only paths that exist on disk', () => {
     const sw = read('sw.js');
-    const shell = [...sw.matchAll(/'(\/static\/[^']+)'/g)].map((m) => m[1]);
+    const shell = [...sw.matchAll(/'(\/static\/[^'?]+)(?:\?[^']*)?'/g)].map((m) => m[1]);
     expect(shell.length).toBeGreaterThanOrEqual(5);
     shell.forEach((p) => {
       const rel = p.replace('/static/', '');
       expect(fs.existsSync(path.join(root, rel)), rel).toBe(true);
     });
+  });
+
+  it('companion assets are version-stamped and the SHELL precaches the same URLs (#973)', () => {
+    const sw = read('sw.js');
+    const tags = [...html.matchAll(/(?:src|href)="(\/static\/(?:css|js)\/[^"]+)"/g)].map((m) => m[1]);
+    expect(tags.length).toBeGreaterThanOrEqual(10);
+    tags.forEach((u) => {
+      expect(u.endsWith('?v=__MGR_VERSION__'), u).toBe(true);
+      expect(sw.includes(`'${u}'`), u).toBe(true);
+    });
+    expect(sw.includes('SHELL_PATHS.has(url.pathname)')).toBe(true);
   });
 });

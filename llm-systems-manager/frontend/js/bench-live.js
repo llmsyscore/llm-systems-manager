@@ -226,7 +226,7 @@
     if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     const wantFleet = !!(opts && opts.fleet);
-    setMode(wantFleet ? 'live' : ((typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
+    setMode(wantFleet ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
     try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();

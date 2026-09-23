@@ -67,12 +67,13 @@
 .mc-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--fg); letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
 .mc-name input { width: 100%; background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; color: var(--fg); font-family: var(--font-mono); font-size: 13px; padding: 2px 5px; box-sizing: border-box; }
 .mc-repo { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-specs { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; column-gap: 24px; row-gap: 8px; padding: 12px 15px; margin: 0; }
+/* Drawer panels: parameters, profile row, bench sections all share one outlined look. */
+.mc-specs { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; column-gap: 24px; row-gap: 8px; padding: 8px 10px 9px; margin: 12px 15px 0; border: 1px solid var(--border-strong); border-radius: 6px; }
 .mc-spec { min-width: 0; }
 .mc-spec dt { font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); margin-bottom: 2px; white-space: nowrap; }
 .mc-spec dd { font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; color: var(--fg-muted); margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mc-spec dd em { font-style: normal; color: var(--accent-2); }
-.mc-tele { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 9px 15px; flex-wrap: wrap; min-height: 24px; }
+.mc-tele { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 8px 15px 0; border: 1px solid var(--border-strong); border-radius: 6px; flex-wrap: wrap; min-height: 24px; }
 /* #887: bounded, truncating zone — a long profile name can't grow past this */
 .mc-tele-prof { flex: 0 1 auto; max-width: 150px; min-width: 0; }
 .mc-tele-prof .mc-profchip { display: inline-flex; max-width: 100%; min-width: 0; }
@@ -84,21 +85,21 @@
 .mc-profchip select option { background: var(--bg-elev); color: var(--fg); }
 .mc-profchip .mc-profbtn { background: none; border: 0; color: var(--fg-dim); cursor: pointer; font-size: 11px; padding: 0 1px; line-height: 1; }
 .mc-profchip .mc-profbtn:hover { color: var(--fg); }
-/* #887: badges (bench/re-bench/tuned) and stat cells are separate zones so
-   neither interleaves with, or reflows because of, the other. */
-.mc-stats { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; min-width: 0; }
-.mc-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.mc-cells { display: flex; flex-wrap: nowrap; align-items: center; gap: 14px; }
-.mc-stat { text-align: right; }
+/* Badges (re-bench / tuned) sit on the profile row; bench stats get their own sections. */
+.mc-badges { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.mc-bench { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; padding: 8px 15px 10px; }
+.mc-bsect { position: relative; min-width: 0; border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px 10px 7px; background: color-mix(in srgb, var(--bg-card-alt) 55%, transparent); }
+.mc-bhdr { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-muted); margin-bottom: 4px; white-space: nowrap; }
+.mc-bnone { font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); }
+.mc-cells { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.mc-stat { text-align: left; }
 .mc-stat .l { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); white-space: nowrap; }
 .mc-stat .v { font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mc-stat .v b { color: var(--fg); font-weight: 600; }
-.mc-stat .v.live { color: var(--accent-2); }
 .mc-stale { font-family: var(--font-sans); font-size: 10px; font-weight: 600; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent); border-radius: 999px; padding: 1px 7px; white-space: nowrap; cursor: help; }
 .mc-tune { font-family: var(--font-sans); font-size: 10px; font-weight: 600; color: var(--fg-muted); background: color-mix(in srgb, var(--fg-muted) 10%, transparent); border: 1px solid color-mix(in srgb, var(--fg-muted) 22%, transparent); border-radius: 999px; padding: 1px 7px; white-space: nowrap; cursor: help; }
 .mc-tune[role="button"] { cursor: pointer; }
 .mc-tune.stale { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border-color: color-mix(in srgb, var(--warn) 26%, transparent); cursor: pointer; }
-.mc-benchtag { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
 .mc-prof-edit { cursor: pointer; }
 .mc-prof-edit:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .mc-actions { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 10px 15px; margin-top: auto; }
@@ -106,12 +107,13 @@
 
 /* ---------- list view ---------- */
 .mc-listwrap { border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; background: var(--bg-card); }
-.mc-list { min-width: 830px; }
-.mc-row { display: grid; grid-template-columns: 10px minmax(220px, 1fr) minmax(240px, 1.4fr) 224px minmax(118px, auto) minmax(140px, auto); gap: 14px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
+/* One set of column tracks for header + rows (subgrid), so cells always line up. */
+.mc-list { min-width: 1060px; display: grid; grid-template-columns: 10px minmax(200px, 1fr) minmax(220px, 1.3fr) 214px 176px minmax(118px, auto) minmax(140px, auto); padding: 0 16px; }
+.mc-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; gap: 14px; align-items: center; margin: 0 -16px; padding: 10px 16px; border-top: 1px solid var(--border-soft); transition: background .12s, opacity .15s; }
 .mc-row:first-child { border-top: 0; }
 .mc-row.mc-transition { opacity: .6; }
-.mc-row-hdr { background: var(--bg-card-alt); padding: 7px 16px; font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); border-top: 0 !important; }
-.mc-grouprow { background: color-mix(in srgb, var(--bg-card-alt) 55%, transparent); padding: 5px 16px; }
+.mc-row-hdr { background: var(--bg-card-alt); padding: 7px 16px; margin: 0 -16px; font-family: var(--font-sans); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); border-top: 0 !important; }
+.mc-grouprow { background: color-mix(in srgb, var(--bg-card-alt) 55%, transparent); padding: 5px 16px; margin: 0 -16px; }
 .mc-grouprow .g { grid-column: 2 / -1; font-family: var(--font-sans); font-size: 10.5px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase; color: var(--fg-muted); }
 .mc-row:not(.mc-row-hdr):not(.mc-grouprow):hover { background: color-mix(in srgb, var(--bg-card-alt) 45%, transparent); }
 .mc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); flex-shrink: 0; }
@@ -127,12 +129,17 @@
 .mc-rowcfg[role="button"] { cursor: pointer; }
 .mc-rowcfg[role="button"]:hover { color: var(--fg); }
 .mc-rowcfg[role="button"]:focus-visible,
-.mc-stats[role="button"]:focus-visible,
+.mc-bsect[role="button"]:focus-visible,
 .mc-rowmet[role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
-.mc-stats[role="button"], .mc-rowmet[role="button"] { cursor: pointer; }
-.mc-stats[role="button"]:hover .mc-stat .v b,
-.mc-rowmet[role="button"]:hover .mc-stat .v b { color: var(--accent); }
-.mc-rowmet { display: flex; justify-content: flex-end; align-items: baseline; gap: 16px; padding-right: 14px; font-variant-numeric: tabular-nums; }
+.mc-bsect[role="button"], .mc-rowmet[role="button"] { cursor: pointer; }
+.mc-bsect[role="button"]:hover .mc-stat .v b,
+.mc-rowmet[role="button"]:hover .mc-rstat b { color: var(--accent); }
+.mc-rowmet, .mc-rowlive { display: flex; justify-content: center; align-items: center; gap: 14px; font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; }
+.mc-rowlive { border-left: 1px solid var(--border-soft); padding-left: 14px; align-self: stretch; }
+.mc-rowlive[role="button"] { cursor: pointer; }
+.mc-rowlive[role="button"]:hover .mc-rstat b { color: var(--accent); }
+.mc-row-hdr .mc-rowmet, .mc-row-hdr .mc-rowlive { color: var(--fg-muted); }
+.mc-row-hdr .mc-rowlive { border-left-color: transparent; }
 .mc-rstat { display: inline-flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .mc-rstat .rl { font-family: var(--font-sans); font-size: 9px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--fg-faint); }
 .mc-rstat b { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--fg); }

@@ -269,7 +269,7 @@ function renderVllmModelCards(models, activeId) {
       id, actAttr: 'data-vllmact',
       name: shortName(id), repo: id,
       pill: serving ? { state: 'active', label: 'Serving' } : { state: 'unloaded', label: 'Adapter' },
-      specs: [], stats,
+      specs: [], stats, benchAge: b && b.ts ? MC.age(b.ts) : null,
       fresh: null,
       benchTitle: 'Benchmark results — not live throughput' + (b && b.ts && MC.age(b.ts) ? ' (last run ' + MC.age(b.ts) + ')' : ''),
       benchClick: serving ? 'bench' : null,
@@ -290,7 +290,7 @@ function renderVllmModelCards(models, activeId) {
   MC.syncSeg('vllm');
   if (view === 'list') {
     host.className = '';
-    host.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Bench (t/s)', '', 'Benchmark results — not live throughput')}${models.map(id => MC.row(descriptor(id))).join('')}</div></div>`;
+    host.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Offline bench (t/s)', '', 'Benchmark results — not live throughput')}${models.map(id => MC.row(descriptor(id))).join('')}</div></div>`;
   } else {
     const compactView = view === 'compact';
     host.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');
