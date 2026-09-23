@@ -15,6 +15,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -2316,10 +2317,15 @@ def _pkill_strays(patterns: list[str], what: str) -> dict[str, Any]:
 
 def llama_bench_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    return _bench_cancel_impl(['llama-bench'])
+
+
+def _bench_cancel_impl(strays: list) -> dict[str, Any]:
+    """Cancel the tracked benchmark process group; strays are pkill'd when nothing is tracked."""
     _bench_cancel_event.set()
     proc, pgid = _bench_proc, _bench_pgid
     if proc is None:
-        res = _pkill_strays(['llama-bench'], "bench cancel")
+        res = _pkill_strays(strays, "bench cancel") if strays else {"ok": True}
         if res["ok"]:
             res["msg"] = "no tracked benchmark process"
         return res
@@ -2479,7 +2485,7 @@ def _bench_live_setup_job(benches: list) -> None:
         py, src = _bl.runtime_python(cfg.AGENT_INSTALL_DIR, getattr(cfg, "SPEED_BENCH_PYTHON", "") or "")
         steps: list = []
         if py is None:
-            steps.append(("venv", ["python3", "-m", "venv", str(root / "venv")]))
+            steps.append(("venv", [_bl.venv_python(frozen=bool(getattr(sys, "frozen", False))), "-m", "venv", str(root / "venv")]))
             py = str(root / "venv" / "bin" / "python")
         req = _bench_live_root() / "bench" / "requirements-bench.txt"
         pkgs = ["-r", str(req)] if req.is_file() else list(_bl.REQUIREMENTS)
@@ -2555,7 +2561,7 @@ def _bench_live_store(doc: dict) -> None:
         log.debug("live bench store failed: %s", e)
 
 
-def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> None:
+def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provider: str = "llama") -> None:
     global _bench_active, _bench_proc, _bench_pgid
     cfg = _require_ctx().config
     run_id = _bench_replay.run_id
@@ -2635,12 +2641,13 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str) -> No
         doc = {"type": "model_done", "model_id": model_id, "run_id": run_id, "ok": ok and not cancelled,
                "cancelled": cancelled, "bench": req["bench"], "config": req, "levels": levels,
                "energy_wh": wh, "energy_source": src, "wh_per_ktok": wh_per_ktok,
-               "spec": server.get("spec"), "server_url": server.get("url"), "llama_build": _llama_build_last or "",
+               "spec": server.get("spec"), "server_url": server.get("url"), "provider": provider,
+               "llama_build": (_llama_build_last or "") if provider == "llama" else str(server.get("build") or ""),
                "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id")}
         _bench_put(doc)
         if levels:
             _bench_live_store(doc)
-            _shared.post_tool_run(_require_ctx(), "benchmark", "llama", run_id, model_id, ok and not cancelled,
+            _shared.post_tool_run(_require_ctx(), "benchmark", provider, run_id, model_id, ok and not cancelled,
                                   {"bench_tool": "speed-bench", "gen_tps": first.get("pred_tps"),
                                    "ppt_tps": first.get("prompt_tps"), "latency_s": first.get("latency_s"),
                                    "accept_rate": first.get("accept_rate"), "levels": len(levels),
@@ -3727,6 +3734,11 @@ def llama_autotune_stream(
 
 def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    return _autotune_cancel_impl(['llama-server'])
+
+
+def _autotune_cancel_impl(strays: list) -> dict[str, Any]:
+    """Cancel the tuning run: the aux (bench/KL) group first, then the tracked server group."""
     _autotune_cancel_event.set()
     aux, aux_pgid = _autotune_aux_proc, _autotune_aux_pgid
     if aux is not None and aux.poll() is None:
@@ -3746,7 +3758,7 @@ def llama_autotune_cancel(authorization: Optional[str] = Header(default=None)) -
                     aux.kill()
     proc, pgid = _autotune_proc, _autotune_pgid
     if proc is None:
-        res = _pkill_strays(['llama-server'], "autotune cancel")
+        res = _pkill_strays(strays, "autotune cancel") if strays else {"ok": True}
         if res["ok"]:
             res["msg"] = "no tracked autotune process"
         return res

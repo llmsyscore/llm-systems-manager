@@ -55,6 +55,8 @@
   .at-card-h .meta { font-family:var(--font-mono); font-size:11px; color:var(--fg-dim); }
   .at-card-h .gap, .at-strip .gap, .at-card-f .gap { flex:1; }
   .at-strip .warn { color:var(--warn); }
+  .at-done-models { margin:0 0 10px; }
+  .at-done-models .bl-chip .at-dot { margin-right:5px; }
   .at-card-h.tog { cursor:pointer; }
   .at-card.collapsed .at-card-b { display:none; }
   .at-card.collapsed .chev { transform:rotate(-90deg); }

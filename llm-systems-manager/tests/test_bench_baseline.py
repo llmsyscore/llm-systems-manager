@@ -54,7 +54,7 @@ class Env:
                      (self.cfg["nightly_at"], repr(since)))
         conn.commit(); conn.close()
 
-    def _run(self, aid, body):
+    def _run(self, aid, body, provider="llama"):
         self.started.append((aid, body))
         if self.refuse:
             return False, "Another benchmark or autotune is in progress"
@@ -277,7 +277,7 @@ def test_busy_refusal_never_consumes_an_attempt(tmp_path):
 def test_other_failures_still_count_toward_max_attempts(tmp_path):
     e = Env(tmp_path)
 
-    def boom(aid, body):
+    def boom(aid, body, provider="llama"):
         e.started.append((aid, body))
         return False, "agent unreachable"
 

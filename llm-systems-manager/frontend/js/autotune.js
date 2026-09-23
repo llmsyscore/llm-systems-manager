@@ -10,16 +10,69 @@
     serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
     quiet: '<b>Quiet</b> keeps the host under a watt cap: every candidate is metered and the fastest one under the cap wins. Threads, slots and MoE offload are tuned; KV, speculative and sampling stay off.',
   };
-  const STAGE_NAME = { context: 'Context size', kv: 'KV cache type', moe: 'MoE CPU offload', threads: 'CPU threads',
-                       spec: 'Speculative decoding', slots: 'Parallel slots', sampling: 'Sampling defaults', verify: 'Verify' };
-  const STAGE_FLAG = { context: '-c', kv: '-ctk -ctv', moe: '--n-cpu-moe', threads: '-t -tb', spec: '--spec-type',
-                       slots: '-np', sampling: 'sidecar', verify: '' };
-  const STAGE_SHORT = { context: 'Context', kv: 'KV cache', moe: 'MoE offload', threads: 'Threads', spec: 'Speculative',
-                        slots: 'Slots', sampling: 'Sampling', verify: 'Verify' };
-  const ORDER = ['context', 'kv', 'moe', 'threads', 'spec', 'slots', 'sampling', 'verify'];
-  const MEASURED = ['threads', 'spec', 'slots'];
+  // Target host (#916): the Tools picker's provider + agent; llama default keeps URLs unchanged.
+  const tq = p => (typeof toolsUrl === 'function' ? toolsUrl(p) : p);
+  const prov = () => (typeof toolsTarget === 'function' ? toolsTarget().provider : 'llama');
+  const tagent = () => (typeof toolsTarget === 'function' ? toolsTarget().agent : null);
+  const isLms = () => prov() === 'lms';
+  const LLAMA_MAPS = {
+    name: { context: 'Context size', kv: 'KV cache type', moe: 'MoE CPU offload', threads: 'CPU threads',
+            spec: 'Speculative decoding', slots: 'Parallel slots', sampling: 'Sampling defaults', verify: 'Verify' },
+    flag: { context: '-c', kv: '-ctk -ctv', moe: '--n-cpu-moe', threads: '-t -tb', spec: '--spec-type',
+            slots: '-np', sampling: 'sidecar', verify: '' },
+    short: { context: 'Context', kv: 'KV cache', moe: 'MoE offload', threads: 'Threads', spec: 'Speculative',
+             slots: 'Slots', sampling: 'Sampling', verify: 'Verify' },
+    order: ['context', 'kv', 'moe', 'threads', 'spec', 'slots', 'sampling', 'verify'],
+    measured: ['threads', 'spec', 'slots'],
+    est: { context: 360, kv: 180, moe: 420, threads: 60, spec: 120, slots: 60, sampling: 5, verify: 120 },
+  };
+  // LM Studio tunes the load options its API accepts; every stage after Context is measured.
+  const LMS_MAPS = {
+    name: { context: 'Context length', flash: 'Flash attention', batch: 'Batch size', kvgpu: 'KV cache on GPU',
+            spec: 'Speculative decoding', slots: 'Parallel slots', verify: 'Verify' },
+    flag: { context: 'context_length', flash: 'flash_attention', batch: 'eval_batch_size', kvgpu: 'offload_kv_cache_to_gpu',
+            spec: 'speculative_draft_*', slots: 'parallel', verify: '' },
+    short: { context: 'Context', flash: 'Flash attn', batch: 'Batch', kvgpu: 'KV on GPU', spec: 'Speculative',
+             slots: 'Slots', verify: 'Verify' },
+    order: ['context', 'flash', 'batch', 'kvgpu', 'spec', 'slots', 'verify'],
+    measured: ['flash', 'batch', 'kvgpu', 'spec', 'slots'],
+    est: { context: 150, flash: 60, batch: 60, kvgpu: 60, spec: 120, slots: 60, verify: 120 },
+  };
+  let STAGE_NAME = LLAMA_MAPS.name, STAGE_FLAG = LLAMA_MAPS.flag, STAGE_SHORT = LLAMA_MAPS.short;
+  let ORDER = LLAMA_MAPS.order, MEASURED = LLAMA_MAPS.measured, EST = LLAMA_MAPS.est;
+  let _provUi = '';
   const SKIP_TEXT = { off: 'off', runtime: 'no bench runtime', budget: 'out of budget', fits: 'already fits', not_moe: 'dense model',
                       manager: 'from metadata', kv_unified: 'kv-unified', no_candidates: 'nothing to try' };
+  const LMS_OBJ_HINT = {
+    fit: '<b>Fit</b> finds the largest context length that still leaves the target memory free; other dimensions run only if enabled.',
+    speed: '<b>Speed</b> spends memory on single-request throughput: one slot, the fastest batch size and speculative setup.',
+    balanced: '<b>Balanced</b> keeps at least the minimum context per slot and takes any change that is speed-neutral or better.',
+    serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
+  };
+  // Swaps the stage maps and the rail rows to the picked provider's set.
+  function applyProvider() {
+    const p = prov(), M = p === 'lms' ? LMS_MAPS : LLAMA_MAPS;
+    STAGE_NAME = M.name; STAGE_FLAG = M.flag; STAGE_SHORT = M.short; ORDER = M.order; MEASURED = M.measured; EST = M.est;
+    if (_provUi === p) return;
+    _provUi = p;
+    document.querySelectorAll('#toolsModAt [data-prov]').forEach(el => { el.style.display = el.dataset.prov === p ? '' : 'none'; });
+    document.querySelectorAll('#atSpecChips .bl-chip').forEach(c => {
+      if (c.dataset.prov && c.dataset.prov !== p) c.classList.remove('on');
+    });
+    const quiet = document.querySelector('#atObjSeg button[data-obj="quiet"]');
+    if (quiet) quiet.style.display = p === 'lms' ? 'none' : '';
+    if (p === 'lms' && objective() === 'quiet') setObjective('balanced');
+    const tl = $('atTargetLbl'); if (tl) tl.textContent = p === 'lms' ? 'Target free memory' : 'Target free VRAM';
+    const cn = document.querySelector('#toolsModAt .at-dim[data-dim="context"] .n'); if (cn) cn.textContent = p === 'lms' ? 'Context length' : 'Context size';
+    // Fields still at the other provider's default take this provider's default.
+    const swap = (id, mine, theirs) => { const el = $(id); if (el && (el.value === '' || String(el.value) === String(theirs))) el.value = String(mine); };
+    const tm = $('atTargetMb'); if (tm) { tm.max = p === 'lms' ? '65536' : '16384'; tm.step = p === 'lms' ? '256' : '64'; }
+    if (p === 'lms') { swap('atTargetMb', 2048, 1024); swap('atToleranceMb', 250, 50); swap('atMinCtxSlot', 8192, 32768); }
+    else { swap('atTargetMb', 1024, 2048); swap('atToleranceMb', 50, 250); swap('atMinCtxSlot', 32768, 8192); }
+    const rl = $('atRestartLbl'); if (rl) rl.textContent = p === 'lms' ? 'Reload model after apply' : 'Restart server after apply';
+    const bg = $('atBatchGrp'); if (bg) bg.style.display = p === 'lms' ? 'none' : '';
+    ['atProfileBtn', 'atCopyArgsBtn'].forEach(id => { const b = $(id); if (b) b.style.display = p === 'lms' ? 'none' : ''; });
+  }
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
@@ -53,7 +106,10 @@
       prev.style.display = '';
       buildNote(prev).textContent = 'Tune status could not be loaded, so whether an earlier tune is stale is unknown.';
     }
-    if (prev && st) {
+    if (prev && st && isLms()) {
+      prev.style.display = '';
+      buildNote(prev).textContent = 'Re-verify loads the model with its current settings and measures it again.';
+    } else if (prev && st) {
       prev.style.display = '';
       const note = buildNote(prev);
       // The line above already carries the date, so this sentence only adds the build.
@@ -71,6 +127,18 @@
   function num(id, def) { const el = $(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : def; }
   function moeVisible() { const el = document.querySelector('.at-dim[data-dim="moe"]'); return !el || el.style.display !== 'none'; }
   function dimsState() {
+    if (isLms()) {
+      return {
+        context: { on: true, target_mb: num('atTargetMb', 2048), tolerance_mb: num('atToleranceMb', 256) },
+        flash: { on: dimOn('flash'), candidates: [true, false] },
+        batch: { on: dimOn('batch'), candidates: chips('atBatchChips').map(Number) },
+        kvgpu: { on: dimOn('kvgpu'), candidates: [true, false] },
+        spec: { on: dimOn('spec'), types: chips('atSpecChips').filter(v => ['auto', 'mtp', 'draft', 'none'].includes(v)),
+                draft_model: ($('atDraftSel') || {}).value || 'auto',
+                n_min: num('atSpecNmin', 0), n_max: num('atSpecNmax', 16), p_min: num('atSpecPmin', 0.75) },
+        slots: { on: dimOn('slots'), candidates: chips('atSlotChips').map(Number), min_ctx_per_slot: num('atMinCtxSlot', 8192) },
+      };
+    }
     return {
       context: { on: true, target_mb: num('atTargetMb', 1024), tolerance_mb: num('atToleranceMb', 50),
                  custom_args: (($('atCustomArgs') || {}).value || '').trim().split(/\s+/).filter(Boolean) },
@@ -85,8 +153,9 @@
   }
   function objective() { const b = document.querySelector('#atObjSeg button.on'); return (b && b.dataset.obj) || 'balanced'; }
   function setObjective(o) {
+    if (isLms() && o === 'quiet') o = 'balanced';
     document.querySelectorAll('#atObjSeg button').forEach(b => b.classList.toggle('on', b.dataset.obj === o));
-    const h = $('atObjHint'); if (h) h.innerHTML = OBJ_HINT[o] || '';
+    const h = $('atObjHint'); if (h) h.innerHTML = (isLms() ? LMS_OBJ_HINT[o] : OBJ_HINT[o]) || '';
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L) { L.atObjective = o; try { saveLayout(); } catch (_) {} }
     if (o === 'quiet') applyQuietDefaults();
@@ -150,7 +219,10 @@
       lab.innerHTML = `<button type="button" class="mc-toggle${on ? ' on' : ''}" data-model="${esc(m)}"><span class="track"></span></button><b>${esc(m)}</b>`;
       const moe = isMoe(m);
       if (moe) { const t = document.createElement('span'); t.className = 'at-tag moe'; t.textContent = `MoE · ${factsFor(m).n_expert} experts`; lab.appendChild(t); }
-      if (noFit(m)) { const t = document.createElement('span'); t.className = 'at-tag nofit'; t.textContent = 'no fit'; lab.appendChild(t); }
+      const lrow = isLms() && _pre && (_pre.models || []).find(x => x.key === m);
+      if (lrow && lrow.loaded) { const t = document.createElement('span'); t.className = 'at-tag moe'; t.textContent = 'loaded'; lab.appendChild(t); }
+      if (lrow && lrow.params) { const t = document.createElement('span'); t.className = 'at-tag'; t.textContent = lrow.params + (lrow.quant ? ' · ' + lrow.quant : ''); lab.appendChild(t); }
+      if (!isLms() && noFit(m)) { const t = document.createElement('span'); t.className = 'at-tag nofit'; t.textContent = 'no fit'; lab.appendChild(t); }
       host.appendChild(lab);
       if (on) _sel.add(m);
     });
@@ -160,7 +232,7 @@
     const n = selected().length;
     const c = $('atModelsCount'); if (c) c.textContent = `${n} selected`;
     const moeRow = document.querySelector('.at-dim[data-dim="moe"]');
-    if (moeRow) { const p = primaryModel(); moeRow.style.display = (p && isMoe(p) === false) ? 'none' : ''; }
+    if (moeRow && !isLms()) { const p = primaryModel(); moeRow.style.display = (p && isMoe(p) === false) ? 'none' : ''; }
     const prev = $('atPrevTune');
     if (prev) {
       const p = primaryModel();
@@ -196,6 +268,15 @@
   function seedDrafts(drafts, mid) {
     const sel = $('atDraftSel'); if (!sel) return;
     const cur = sel.value;
+    if (isLms()) {
+      // LM Studio drafts are other downloaded models of the same family; the agent picks the smallest on auto.
+      const auto = mid && _pre && _pre.drafts_for ? _pre.drafts_for[mid] : null;
+      const rows = (_pre && _pre.models || []).filter(m => m.key !== mid && (!m.type || m.type === 'llm'));
+      sel.innerHTML = `<option value="auto">auto${auto ? ' · ' + esc(auto) : ''}</option><option value="none">none</option>` +
+        rows.map(m => `<option value="${esc(m.key)}">${esc(m.key)}${m.params ? ' · ' + esc(m.params) : ''}</option>`).join('');
+      sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
+      return;
+    }
     sel.innerHTML = '<option value="auto">auto</option><option value="none">none</option>' +
       draftsFor(drafts, mid).map(d => `<option value="${esc(d.path)}">${esc(d.file)} · ${esc(d.repo)}</option>`).join('');
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : 'auto';
@@ -215,6 +296,7 @@
   async function syncDraft() {
     const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
     if (!row) return;
+    if (isLms()) { row.style.display = 'none'; dimSummaries(); return; }
     const mid = primaryModel();
     if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) { row.style.display = 'none'; dimSummaries(); } return; }
     if (_draftFor !== mid) {
@@ -271,7 +353,14 @@
     const d = dimsState();
     const tv = $('atTargetMbVal'); if (tv) tv.textContent = `${d.context.target_mb} MB`;
     const tol = $('atToleranceMbVal'); if (tol) tol.textContent = `${d.context.tolerance_mb} MB`;
-    const s = {
+    const s = isLms() ? {
+      context: `free ${d.context.target_mb} ± ${d.context.tolerance_mb} MB`,
+      flash: 'on · off',
+      batch: `${d.batch.candidates.join(' · ') || '—'}`,
+      kvgpu: 'GPU · system memory',
+      spec: `${d.spec.types.join(' · ') || '—'} · window ${d.spec.n_min}–${d.spec.n_max}`,
+      slots: `${d.slots.candidates.join(' · ') || '—'} · ≥ ${d.slots.min_ctx_per_slot.toLocaleString()} ctx`,
+    } : {
       context: `free ${d.context.target_mb} ± ${d.context.tolerance_mb} MB`,
       kv: `${d.kv.candidates.join(' → ') || '—'} · KL ≤ ${d.kv.guard_kl_max}`,
       moe: `--n-cpu-moe ${d.moe.min} … ${d.moe.max}`,
@@ -288,8 +377,29 @@
   }
 
   // ── plan ──
-  const EST = { context: 360, kv: 180, moe: 420, threads: 60, spec: 120, slots: 60, sampling: 5, verify: 120 };
+  function planRowsLms(obj, dims, pre) {
+    const rt = !!(pre && pre.runtime && pre.runtime.ok);
+    const rows = [];
+    ORDER.forEach(stage => {
+      const d = dims[stage] || {};
+      const on = stage === 'context' || stage === 'verify' || !!d.on;
+      let desc = '', n = 1;
+      if (stage === 'context') desc = obj === 'fit' ? `largest context that leaves ${dims.context.target_mb} ± ${dims.context.tolerance_mb} MB free · a few loads` : `verify the loaded context leaves ${dims.context.target_mb} ± ${dims.context.tolerance_mb} MB free · 1 load, a few more only if it misses`;
+      else if (stage === 'flash') { n = 2; desc = 'on · off — keep the faster decode'; }
+      else if (stage === 'batch') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — keep the fastest prompt processing`; }
+      else if (stage === 'kvgpu') { n = 2; desc = 'GPU · system memory — keep the faster decode'; }
+      else if (stage === 'spec') { n = 3; desc = `${(d.types || []).join(' · ')} · draft ${d.draft_model === 'auto' ? 'auto-picked' : d.draft_model} · window ${d.n_min}–${d.n_max}`; }
+      else if (stage === 'slots') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} with ≥ ${Number(d.min_ctx_per_slot).toLocaleString()} ctx each — live concurrency sweep`; }
+      else desc = `reload with the recommended set once, confirm fit + ${rt ? '60 s of chat traffic' : 'free memory'}`;
+      const measured = MEASURED.includes(stage);
+      if (measured && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
+      const est_s = on ? (measured && !rt ? 0 : EST[stage] * n) : 0;
+      rows.push({ stage, name: STAGE_NAME[stage], flag: STAGE_FLAG[stage], desc, on, est_s });
+    });
+    return rows;
+  }
   function planRows(obj, dims, pre, facts) {
+    if (isLms()) return planRowsLms(obj, dims, pre);
     const rt = !!(pre && pre.runtime && pre.runtime.ok);
     const moe = facts && facts.n_expert != null ? facts.n_expert > 1 : null;
     const rows = [];
@@ -342,9 +452,25 @@
   }
   // Re-reads preflight unless the caller passes a fresh doc; a cached unit_active would
   // keep the banner up after a stop.
+  const RT_MISSING = '<b>Bench runtime missing.</b> Measured stages will be skipped; install it to tune speed.';
+  function runtimeMissing() { return !!(_pre && _pre.runtime && _pre.runtime.ok === false); }
   async function checkServer(pre) {
-    const banner = $('atPreflight'), msg = $('atPreflightMsg'), btn = $('atStopBtn'), run = $('atRunBtn');
+    const banner = $('atPreflight'), msg = $('atPreflightMsg'), btn = $('atStopBtn'), run = $('atRunBtn'), inst = $('atInstallBtn');
     if (!banner) return;
+    if (inst) inst.style.display = 'none';
+    if (isLms()) {
+      // LM Studio stays up: the tuner unloads and reloads the model itself.
+      let p = pre;
+      if (!p) { try { p = await fetch(tq('/api/llm/autotune/preflight')).then(r => r.json()); } catch (_) { p = null; } }
+      if (p && p.ok) _pre = p;
+      const srvUp = !!(p && p.ok && p.server && p.server.up);
+      banner.style.display = srvUp && !runtimeMissing() ? 'none' : '';
+      if (!srvUp && msg) msg.innerHTML = '<b>LM Studio server is not running.</b> Start it on the LM Studio tab, then come back.';
+      else if (runtimeMissing() && msg) { msg.innerHTML = RT_MISSING; if (inst) inst.style.display = ''; }
+      if (btn) btn.style.display = 'none';
+      if (run && !running()) run.disabled = !srvUp;
+      return;
+    }
     const up = await serverUp();
     let active = false, helpBad = false;
     try {
@@ -361,11 +487,21 @@
       if (msg) msg.textContent = 'Could not read llama-server --help — on/off flags will be guessed; loads may fail.';
       if (btn) btn.style.display = 'none';
       if (run && !running()) run.disabled = false;
+    } else if (runtimeMissing()) {
+      banner.style.display = '';
+      if (msg) msg.innerHTML = RT_MISSING;
+      if (btn) btn.style.display = 'none';
+      if (inst) inst.style.display = '';
+      if (run && !running()) run.disabled = false;
     } else {
       banner.style.display = 'none';
       if (btn) btn.style.display = 'none';
       if (run && !running()) run.disabled = false;
     }
+  }
+  // Hands the install to the Benchmark module on the same host; it owns the setup stream.
+  function installRuntime() {
+    if (typeof toolsOpenTool === 'function') toolsOpenTool('benchmark', null, { provider: prov(), agent: tagent(), install: true });
   }
   async function stopServer() {
     try { await fetch('/api/llm/server/stop', { method: 'POST' }); } catch (_) {}
@@ -413,21 +549,31 @@
   }
   async function onOpen(preselect, opts) {
     wire();
+    applyProvider();
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
     if (running()) return;
+    if (opts && opts.retarget) { _sel = new Set(); _pre = null; _done = {}; _doneModel = null; setPane('Plan'); }
+    const lms = isLms();
     const [models, pre, runs] = await Promise.all([
-      fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
-      fetch('/api/llm/autotune/preflight').then(r => r.json()).catch(() => null),
+      lms ? Promise.resolve({}) : fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
+      fetch(tq('/api/llm/autotune/preflight')).then(r => r.json()).catch(() => null),
       fetch('/api/tools/runs?limit=100').then(r => r.json()).catch(() => ({})),
       loadStatus(),
-      loadPeak(),
-      loadBatchHosts(),
+      lms ? Promise.resolve() : loadPeak(),
+      lms ? Promise.resolve() : loadBatchHosts(),
     ]);
-    _models = (models && models.models) || [];
     _pre = pre && pre.ok ? pre : _pre;
+    if (lms) {
+      // Downloaded LLMs on the host, loaded ones first.
+      const rows = ((_pre && _pre.models) || []).filter(m => m.key && (!m.type || m.type === 'llm'));
+      rows.sort((a, b) => (b.loaded ? 1 : 0) - (a.loaded ? 1 : 0) || String(a.key).localeCompare(String(b.key)));
+      _models = rows.map(m => m.key);
+    } else {
+      _models = (models && models.models) || [];
+    }
     _runs = (runs && runs.runs) || [];
-    if (_pre) seedThreads(_pre.cores);
+    if (_pre && !lms) seedThreads(_pre.cores);
     renderModels(preselect);
     syncDraft();
     syncCap();
@@ -535,6 +681,13 @@
   }
   const DIM_FALLBACK = { kv: ['f16', 'q8_0', 'q4_0'], slots: [1, 2, 4, 8], spec: ['auto'] };
   function dimsProblem(d) {
+    if (isLms()) {
+      if (d.batch.on && !d.batch.candidates.length) return 'Pick at least one batch size, or switch the Batch size dimension off.';
+      if (d.slots.on && !d.slots.candidates.length) return 'Pick at least one slot count, or switch the Parallel slots dimension off.';
+      if (d.spec.on && !d.spec.types.length) return 'Pick at least one speculative decoding type, or switch that dimension off.';
+      if (d.spec.on && d.spec.n_min >= d.spec.n_max) return 'Speculative decoding: the draft window minimum must be below the maximum.';
+      return null;
+    }
     if (d.kv.on && !d.kv.candidates.length) return 'Pick at least one KV cache type, or switch the KV cache type dimension off.';
     if (d.threads.on && !d.threads.candidates.length) return 'Pick at least one thread count, or switch the CPU threads dimension off.';
     if (d.slots.on && !d.slots.candidates.length) return 'Pick at least one slot count, or switch the Parallel slots dimension off.';
@@ -546,6 +699,13 @@
   // The agent validates every candidates key it is sent, empty or not, so an off
   // dimension must carry a usable list or omit the key entirely.
   function fillDimDefaults(d) {
+    if (isLms()) {
+      if (!d.batch.candidates.length) d.batch.candidates = [512, 1024, 2048];
+      if (!d.slots.candidates.length) d.slots.candidates = DIM_FALLBACK.slots.slice();
+      if (!d.spec.types.length) d.spec.types = DIM_FALLBACK.spec.slice();
+      if (d.spec.n_min >= d.spec.n_max) d.spec.n_max = d.spec.n_min + 1;
+      return;
+    }
     if (!d.kv.candidates.length) d.kv.candidates = DIM_FALLBACK.kv.slice();
     if (!d.slots.candidates.length) d.slots.candidates = DIM_FALLBACK.slots.slice();
     if (!d.spec.types.length) d.spec.types = DIM_FALLBACK.spec.slice();
@@ -561,7 +721,7 @@
     const problem = dimsProblem(dims);
     if (problem) { alert(problem); return; }
     fillDimDefaults(dims);
-    const quiet = objective() === 'quiet', cap = capValue();
+    const quiet = !isLms() && objective() === 'quiet', cap = capValue();
     if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
     return startRun(body, ids);
@@ -572,7 +732,7 @@
     if (gateBusy) { s.queue({ body, ids }); return; }
     let r;
     try {
-      const resp = await fetch('/api/llm/autotune/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const resp = await fetch(tq('/api/llm/autotune/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await resp.json();
     } catch (e) { alert('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
     if (!r || !r.ok) {
@@ -585,7 +745,7 @@
       alert((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
     }
     _done = {}; _doneModel = null; _meta = {}; _section = {};
-    fetchMeta(ids);
+    if (!isLms()) fetchMeta(ids);
     newRun(null);
     _run.powerCap = body.power_cap_w != null ? Number(body.power_cap_w) : null;
     setPane('Run');
@@ -602,7 +762,7 @@
     const baseline = {};
     [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
       .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
-    const quiet = objective() === 'quiet', cap = capValue();
+    const quiet = !isLms() && objective() === 'quiet', cap = capValue();
     if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
                    baseline_tps: sm.decode_tps ?? null, baseline, dims, ...(quiet ? { power_cap_w: cap } : {}) };
@@ -622,7 +782,8 @@
   function slot() {
     if (!_slot && typeof toolsQueueSlot === 'function') {
       _slot = toolsQueueSlot('autotune', {
-        provider: () => 'llama',
+        provider: () => prov(),
+        agent: () => tagent(),
         start: (p) => startRun(p.body, p.ids, true),
         render: (st) => syncQueue(st),
       });
@@ -662,7 +823,7 @@
   function openStream(agentId) {
     if (_es) { try { _es.close(); } catch (_) {} }
     _es = SG.open({
-      url: '/api/llm/autotune/stream' + (agentId ? '?agent=' + encodeURIComponent(agentId) : ''), maxDrops: 20,
+      url: agentId ? '/api/llm/autotune/stream?agent=' + encodeURIComponent(agentId) : tq('/api/llm/autotune/stream'), maxDrops: 20,
       onReconnecting: () => { const p = $('atRunPill'); if (p) p.textContent = 'reconnecting…'; },
       onRestored: () => { const p = $('atRunPill'); if (p) p.textContent = 'running'; },
       onLost: (rs) => { log(`stream lost (readyState=${rs})`, 'crit'); _es = null; _attached = false; stopElapsed(); busy(false); },
@@ -672,7 +833,7 @@
   }
   function cancel() {
     if (!running() && !_busyOn && _slot && _slot.drop()) { log('queued run dropped', 'warn'); return; }
-    fetch('/api/llm/autotune/cancel', { method: 'POST' }).catch(() => {});
+    fetch(tq('/api/llm/autotune/cancel'), { method: 'POST' }).catch(() => {});
     log('cancel requested', 'warn');
   }
   // Tool switch: drop this module's stream, leaving the run itself alone.
@@ -760,7 +921,11 @@
     if (!s) { if (title) title.textContent = 'Starting'; if (meta) meta.textContent = ''; if (body) body.innerHTML = '<div class="at-hint">Waiting for the first stage…</div>'; return; }
     const cands = _run.cands[s] || [];
     if (title) title.textContent = STAGE_NAME[s];
-    if (s === 'context') {
+    if (s === 'context' && isLms()) {
+      if (meta) meta.textContent = 'free memory after each load · target band';
+      const d = dimsState().context;
+      if (body) body.innerHTML = `<table class="at-kvt"><thead><tr><th>context</th><th>free</th><th>fits</th></tr></thead><tbody>${cands.map(c => `<tr><td>${esc(c.value === 'current' ? 'as loaded' : Number(c.value).toLocaleString())}</td><td>${c.free_mb != null ? esc(Number(c.free_mb).toLocaleString()) + ' MB' : (c.status === 'pending' ? '…' : '—')}</td><td>${c.fits === true || (c.value === 'current' && c.ok) ? '<span class="ok">yes</span>' : c.fits === false ? '<span class="warn">no</span>' : (c.ok === false ? '<span class="crit">' + esc(c.error || 'failed') + '</span>' : '—')}</td></tr>`).join('')}</tbody></table><div class="at-hint" style="margin-top:6px">target ${esc(d.target_mb)} ± ${esc(d.tolerance_mb)} MB free · probes are read under one request and carry a 512 MB traffic margin; the loaded context and verify are read through real traffic</div>`;
+    } else if (s === 'context') {
       if (meta) meta.textContent = 'free VRAM after each -fitt load · target band';
       const last = _run.iters[_run.iters.length - 1];
       const d = dimsState().context;
@@ -775,7 +940,7 @@
     } else if (s === 'verify') {
       if (meta) meta.textContent = 'recommended set · traffic at the chosen concurrency';
       const c = cands[cands.length - 1] || {};
-      if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">free VRAM</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
+      if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">${isLms() ? 'free memory' : 'free VRAM'}</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
     } else {
       const metric = s === 'slots' && objective() === 'serve' ? 'agg_tps' : 'decode_tps';
       if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (_run.powerCap != null ? ` · cap ${esc(_run.powerCap)} W` : '');
@@ -855,7 +1020,7 @@
     } else if (t === 'model_done') {
       if (msg.mode === 'quality') return;   // a Quality-guard run on the shared stream is not ours
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
     } else if (t === 'done') {
       finish(msg);
@@ -922,7 +1087,7 @@
       ? '<div class="at-hint" style="margin-bottom:8px">The last tune recorded no measurements to compare against, so this verify becomes the baseline for the next one.</div>' : '';
     host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
-      + row('VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
+      + row(isLms() ? 'Memory free' : 'VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
   // Verify draw vs the cap: over, at (within the agent's tolerance), or under.
   function capReadout(w, cap, over) {
@@ -931,15 +1096,31 @@
     const tail = state === 'at' ? ` (${Math.round(w)} W is within the cap's tolerance)` : '';
     return `<b${cls}>${Math.round(w)} W</b> ${state} the ${Math.round(cap)} W cap${tail}`;
   }
+  // One chip per finished model; the pane shows the picked one (a batch of several models shares one run).
+  function renderDoneModels() {
+    const host = $('atDoneModels'); if (!host) return;
+    const ids = Object.keys(_done);
+    host.style.display = ids.length > 1 ? '' : 'none';
+    host.innerHTML = ids.map(id => { const d = _done[id] || {}; const dot = d.regressed ? 'warn' : (d.ok ? 'ok' : 'crit');
+      return `<span class="bl-chip${id === _doneModel ? ' on' : ''}" data-model="${esc(id)}" title="${esc(d.ok ? `${(d.changes || []).length} changes` : (d.stop_reason || 'stopped'))}"><span class="at-dot ${dot}"></span>${esc(id)}</span>`; }).join('');
+    host.querySelectorAll('.bl-chip').forEach(c => c.addEventListener('click', () => showModel(c.dataset.model)));
+  }
+  function showModel(mid) {
+    if (!_done[mid] || mid === _doneModel) return;
+    _doneModel = mid; setMsg('');
+    renderDone(_done[mid]);
+  }
   function renderDone(done) {
-    const section = _section[done.model_id] || {}, meta = _meta[done.model_id] || null;
-    const d = dimsState().sampling;
+    renderDoneModels();
+    const lms = isLms() || done.provider === 'lms';
+    const section = lms ? (done.base_config || {}) : (_section[done.model_id] || {}), meta = lms ? null : (_meta[done.model_id] || null);
+    const d = lms ? { on: false, overwrite: false } : dimsState().sampling;
     _rows = recRows(done, section, d.on ? meta : null, d.overwrite);
     const b = done.before || {}, a = done.after || {};
     const g = pct(a.decode_tps, b.decode_tps), x = b.ctx && a.ctx ? a.ctx / b.ctx : null;
     const big = $('atRecBig');
     if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
-                              a.free_mb != null ? `VRAM free ${fmt(a.free_mb, 0)} MB` : '',
+                              a.free_mb != null ? `${lms ? 'memory' : 'VRAM'} free ${fmt(a.free_mb, 0)} MB` : '',
                               done.power_cap_w != null && a.avg_w != null
                                 ? capReadout(a.avg_w, done.power_cap_w, done.over_cap) : ''].filter(Boolean).join(' · ');
     const warn = $('atRecWarn');
@@ -995,18 +1176,20 @@
       loadStatus().then(syncVerify);
       return;
     }
-    if (qb) qb.style.display = (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
-    if (guardCard) guardCard.style.display = '';
-    renderGuard(done);
-    setMsg(`Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
+    if (qb) qb.style.display = !lms && (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
+    if (guardCard) guardCard.style.display = lms ? 'none' : '';
+    if (!lms) renderGuard(done);
+    setMsg(lms ? 'Apply keeps these load options for this model on this host and reloads it with them.'
+      : `Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
   }
   function selectedRows() { return _rows.filter(r => r.selected); }
-  async function postJson(url, body) {
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  async function postJson(url, body, method) {
+    const r = await fetch(url, { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     let j = null; try { j = await r.json(); } catch (_) {}
     if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || `HTTP ${r.status}`);
     return j;
   }
+  function putJson(url, body) { return postJson(url, body, 'PUT'); }
   async function readConfig(mid) {
     const cfg = await fetch('/api/llm/config').then(r => r.json());
     if (!cfg || typeof cfg !== 'object' || !cfg[mid] || typeof cfg[mid] !== 'object') throw new Error(`config unavailable for ${mid}`);
@@ -1018,6 +1201,22 @@
     const restart = restartOn(), enc = encodeURIComponent(mid);
     const btn = $('atApplyBtn'); if (btn) btn.disabled = true;
     let step = 'read config';
+    if (isLms()) {
+      const config = {};
+      sel.forEach(r => { config[r.key] = r.value !== undefined ? r.value : r.recommended; });
+      try {
+        step = 'save load preferences';
+        await putJson(tq('/api/lmstudio/load-prefs'), { model: mid, config, note: `tuned ${today()}` });
+        if (restart) { step = 'reload model'; await postJson(tq('/api/lmstudio/load'), { model: mid, reload: true, ...config }); }
+        setMsg(`Applied ${sel.length} change${sel.length === 1 ? '' : 's'}${restart ? ' and reloaded the model' : ' — they take effect on the next load from this dashboard'}. Remove them from the model's ⋯ menu on the LM Studio tab.`, 'ok');
+        if (typeof fetchLMStudioMetrics === 'function') { try { fetchLMStudioMetrics(); } catch (_) {} }
+        return { ok: true };
+      } catch (e) {
+        setMsg(`Stopped at “${step}”: ${e && e.message ? e.message : e}. Nothing after that step was attempted.`, 'crit');
+        if (btn) btn.disabled = false;
+        return { ok: false, step };
+      }
+    }
     try {
       const cfg = await readConfig(mid);
       const section = { ...cfg[mid] };
@@ -1240,7 +1439,7 @@
     } catch (e) { alert('Cancel failed: ' + (e && e.message ? e.message : e)); }
   }
 
-  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, running, downloadDraft, startBatch, cancelBatch, batchWatch, batchActive, batchStartAt, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
+  window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, installRuntime, showModel, running, downloadDraft, startBatch, cancelBatch, batchWatch, batchActive, batchStartAt, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };

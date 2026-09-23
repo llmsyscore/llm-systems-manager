@@ -172,6 +172,11 @@ async function fetchLMStudioMetrics() {
     if (typeof _selectedAgent === 'function' && _selectedAgent('lms') !== agentAtStart) return;
     if (pillOnly) { _updateLmsHeaderPill(d); return; }
     _lmsMetrics = d;
+    // Tuned load options (#916): refreshed on a host change or every 30 s.
+    if (_lmsTunedAgent !== agentAtStart || Date.now() - _lmsTunedAt > 30000) {
+      _lmsTunedAgent = agentAtStart; _lmsTunedAt = Date.now();
+      await lmsLoadTuned();
+    }
 
     const sys    = d.system || {};
     const ps     = d.ps || [];
@@ -411,6 +416,36 @@ function _currentLmsModelSort() {
   return VALID_MODEL_SORTS.includes(v) ? v : 'loaded_first';
 }
 let _lmsLastPs = null, _lmsLastModels = null, _lmsAliasesHydrated = false;
+let _lmsTuned = {};   // model id → saved load preferences on the selected host (#916)
+let _lmsTunedAt = 0, _lmsTunedAgent = null;
+
+// Tools tab deep link for this host: Benchmark · Live or Autotune on the LM Studio provider (#916).
+function lmsOpenTool(tool, modelId, opts) {
+  if (typeof toolsDeepLink !== 'function') return;
+  const agent = typeof _selectedAgent === 'function' ? _selectedAgent('lms') : null;
+  toolsDeepLink(tool, modelId, { provider: 'lms', agent, ...(opts || {}) });
+}
+
+async function lmsLoadTuned() {
+  try {
+    const d = await _fetchT('/api/lmstudio/load-prefs', {}, 8000).then(r => r.json());
+    _lmsTuned = (d && d.ok && d.models) || {};
+  } catch (_) { _lmsTuned = {}; }
+}
+
+async function lmsForgetTuned(modelId) {
+  const ok = await _themedConfirm({
+    title: `Forget the tuned load options for "${adminEsc(modelId)}"?`,
+    bodyHtml: 'Future loads from this dashboard use LM Studio\'s own defaults again. The model stays loaded as it is.',
+    confirmLabel: 'Forget', cancelLabel: 'Cancel',
+  });
+  if (!ok) return;
+  try {
+    await _fetchT('/api/lmstudio/load-prefs?model=' + encodeURIComponent(modelId), { method: 'DELETE' }, 8000);
+  } catch (e) { alert('Error: ' + e); return; }
+  await lmsLoadTuned();
+  renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
+}
 
 function renderLMSModelCards(ps, models) {
   const container = document.getElementById('lmsModelCards');
@@ -495,6 +530,7 @@ function renderLMSModelCards(ps, models) {
     ].filter(Boolean) : [];
 
     const csub = [
+      _lmsTuned[modelId] ? 'tuned' : null,
       psRow?.quant ? MC.esc(psRow.quant) : null,
       psRow?.context ? 'ctx ' + MC.esc(Math.round(Number(psRow.context) / 1024) + 'k') : null,
       psRow?.device ? MC.esc(psRow.device) : null,
@@ -506,7 +542,9 @@ function renderLMSModelCards(ps, models) {
       pill, specs, stats: [], fresh: null,
       primary: isLoaded ? { act: 'unload', icon: '⏹', label: 'Unload' } : { act: 'load', icon: '▶', label: 'Load' },
       buttons: [],
-      menu: isLoaded ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : [],
+      menu: [...(isLoaded ? [{ act: 'reload', icon: '↺', label: 'Reload' }] : []),
+             { act: 'bench', icon: '◷', label: 'Benchmark' }, { act: 'autotune', icon: '⌖', label: 'Autotune' },
+             ...(_lmsTuned[modelId] ? [{ act: 'untune', icon: '↩', label: 'Forget tuned load options' }] : [])],
       transition: !!busy, csub,
       open: MC.isOpen('lms', modelId),
     };
@@ -555,6 +593,9 @@ function renderLMSModelCards(ps, models) {
       if (act === 'load')   lmsLoad(id);
       else if (act === 'unload') lmsUnload(id);
       else if (act === 'reload') { MC.closeMenus(); lmsReload(id); }
+      else if (act === 'bench') { MC.closeMenus(); lmsOpenTool('benchmark', id, { mode: 'live' }); }
+      else if (act === 'autotune') { MC.closeMenus(); lmsOpenTool('autotune', id); }
+      else if (act === 'untune') { MC.closeMenus(); lmsForgetTuned(id); }
     });
   }
 }

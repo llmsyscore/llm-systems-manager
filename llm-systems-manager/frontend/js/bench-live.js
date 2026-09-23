@@ -1,6 +1,12 @@
 // Live benchmark module (#879): speed-bench against the running server.
 // Classic script; exposes window.BL. Shares /api/benchmark/stream + cancel.
 (function () {
+  // Target host (#916): the Tools picker's provider + agent; llama default keeps URLs unchanged.
+  const tq = p => (typeof toolsUrl === 'function' ? toolsUrl(p) : p);
+  const prov = () => (typeof toolsTarget === 'function' ? toolsTarget().provider : 'llama');
+  const tagent = () => (typeof toolsTarget === 'function' ? toolsTarget().agent : null);
+  const isLms = () => prov() === 'lms';
+  const serverName = () => (isLms() ? 'LM Studio server' : 'llama-server');
   const $ = id => document.getElementById(id);
   const esc = s => (window.TC && TC.esc ? TC.esc(String(s ?? '')) : String(s ?? ''));
   const PRESETS = {
@@ -201,10 +207,10 @@
     if (start) start.style.display = s.up ? 'none' : '';
     const missing = !rt.python || !rt.script;
     setRunBar(missing);
-    if (!s.up) { dot.className = 'bl-dot warn'; d.innerHTML = '<b>llama-server is down.</b> Live runs need the running server.'; el.className = 'bl-preflight warn'; }
+    if (!s.up) { dot.className = 'bl-dot warn'; d.innerHTML = `<b>${esc(serverName())} is down.</b> Live runs need the running server.`; el.className = 'bl-preflight warn'; }
     else if (missing) { const st = rt.script_status && rt.script_status !== 'ok' ? ` (${esc(rt.script_status)})` : '';
       dot.className = 'bl-dot warn'; d.innerHTML = `<b>Bench runtime missing.</b> Install it with the button below.${st}`; el.className = 'bl-preflight warn'; }
-    else { dot.className = 'bl-dot ok'; d.innerHTML = `<b>llama-server</b> · ${esc(s.loaded_id || 'no model loaded')} · ${esc(s.slots_idle)}/${esc(s.slots_total)} slots idle`; el.className = 'bl-preflight ok'; }
+    else { dot.className = 'bl-dot ok'; d.innerHTML = `<b>${esc(serverName())}</b> · ${esc(s.loaded_id || 'no model loaded')} · ${esc(s.slots_idle)}/${esc(s.slots_total)} slots idle`; el.className = 'bl-preflight ok'; }
     if (!_model && s.loaded_id) _model = s.loaded_id;
     const names = ((_pre.datasets || {})[$('blBench').value] || {}).categories || [];
     if (!document.querySelectorAll('#blCats .bl-chip').length) renderCats(names, 'all');
@@ -212,7 +218,7 @@
   async function loadRuns() {
     if (!_model) return;
     try {
-      const r = await fetch('/api/benchmark/live/runs?model_id=' + encodeURIComponent(_model)).then(r => r.json());
+      const r = await fetch(tq('/api/benchmark/live/runs?model_id=' + encodeURIComponent(_model))).then(r => r.json());
       _runs = (r && r.runs) || [];
     } catch (_) { _runs = []; }
     const sel = $('blBaseline');
@@ -223,13 +229,20 @@
     updateEstimate();
   }
   async function onOpen(modelId, opts) {
+    // A new target host benchmarks its own loaded model, not the last host's (#916).
+    if (opts && opts.retarget && !running()) { _model = null; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn(); }
     if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     const wantFleet = !!(opts && opts.fleet);
-    setMode(wantFleet ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
+    // LM Studio has no offline (llama-bench) mode.
+    const off = document.querySelector('#benchModeSeg button[data-mode="offline"]');
+    if (off) off.style.display = isLms() ? 'none' : '';
+    setMode(wantFleet || isLms() ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
-    try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
+    try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     renderPreflight();
+    const rt = (_pre && _pre.runtime) || {};
+    if (opts && opts.install && !running() && (!rt.python || !rt.script) && (_pre.server || {}).up) setup();
     await loadRuns();
     await loadBaselines();
     if (!_chart && window.Chart && $('blChart')) mkChart();
@@ -249,7 +262,7 @@
     syncSweepUi();
     const rb = $('blRunBtn'); if (rb && rb._blLabel == null) rb._blLabel = rb.textContent;
     // Another tool holding the host (an autotune batch item, say) is gated, not attached to.
-    const holder = typeof toolsGateBusy === 'function' ? toolsGateBusy('llama', null) : null;
+    const holder = typeof toolsGateBusy === 'function' ? toolsGateBusy(prov(), tagent()) : null;
     const foreign = !!(holder && !holder.unresolved && holder.tool && holder.tool !== 'benchmark');
     if (_pre && _pre.busy && !running() && !foreign) attach();
     const sl = slot(); if (sl) sl.sync();
@@ -408,7 +421,7 @@
   async function loadFleetHosts() {
     if (!_model) { _fleetHosts = []; return; }
     let r;
-    try { r = await fetch('/api/benchmark/live/hosts?model_id=' + encodeURIComponent(_model)).then(res => res.json()); }
+    try { r = await fetch(tq('/api/benchmark/live/hosts?model_id=' + encodeURIComponent(_model))).then(res => res.json()); }
     catch (_) { r = null; }
     _fleetHosts = (r && r.hosts) || [];
     const host = $('blFleetHosts');
@@ -617,7 +630,8 @@
   function slot() {
     if (!_slot && typeof toolsQueueSlot === 'function') {
       _slot = toolsQueueSlot('benchmark', {
-        provider: () => 'llama',
+        provider: () => prov(),
+        agent: () => tagent(),
         start: (cfg) => run(cfg, { now: true }),
         render: (st) => syncQueue(st),
       });
@@ -668,7 +682,7 @@
       if ($('blRunBtn').disabled) return;
       const { model_id, ...config } = c;
       let d;
-      try { d = await fetch('/api/benchmark/live/fleet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id, agents, config }) }).then(r => r.json()); }
+      try { d = await fetch(tq('/api/benchmark/live/fleet'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id, agents, config }) }).then(r => r.json()); }
       catch (e) { d = { ok: false, error: String(e) }; }
       if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'failed to start', 'err'); return; }
       _fleetJob = { job_id: d.job_id, hosts: [] };
@@ -687,7 +701,7 @@
     if (c.baseline_run_id) { try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(c.baseline_run_id)).then(r => r.json()); _baseline = r && r.run; } catch (_) {} }
     redraw(); setStatus('starting…', 'running');
     let d;
-    try { d = await fetch('/api/benchmark/live/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }).then(r => r.json()); }
+    try { d = await fetch(tq('/api/benchmark/live/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }).then(r => r.json()); }
     catch (e) { d = { ok: false, error: String(e) }; }
     if (!d || !d.ok) {
       busy(false); stopElapsed();
@@ -700,7 +714,7 @@
   }
   function openStream() {
     if (_es) { try { _es.close(); } catch (_) {} }
-    _es = SG.open({ url: '/api/benchmark/stream', maxDrops: 6,
+    _es = SG.open({ url: tq('/api/benchmark/stream'), maxDrops: 6,
       onReconnecting: () => setStatus('reconnecting…', 'running'),
       onRestored: () => setStatus('running', 'running'),
       onLost: () => { _es = null; _attached = false; notice(false); runLabel(null); setStatus('disconnected', 'err'); busy(false); stopElapsed(); },
@@ -753,20 +767,20 @@
     }
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
     _queued = null; leaveAttached(); stopElapsed(); _curLevel = null; redraw();
-    fetch('/api/benchmark/cancel', { method: 'POST' }).catch(() => {}); setStatus('cancelled', 'err'); busy(false); }
+    fetch(tq('/api/benchmark/cancel'), { method: 'POST' }).catch(() => {}); setStatus('cancelled', 'err'); busy(false); }
   async function setup() {
     if (_attached) { setStatus('a run is in progress on this host', 'err'); return; }
     if ($('blRunBtn').disabled) return;
     busy(true); $('blLog').innerHTML = ''; setStatus('installing runtime…', 'running');
-    let d; try { d = await fetch('/api/benchmark/live/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefetch: [$('blBench').value] }) }).then(r => r.json()); } catch (e) { d = { ok: false, error: String(e) }; }
+    let d; try { d = await fetch(tq('/api/benchmark/live/setup'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefetch: [$('blBench').value] }) }).then(r => r.json()); } catch (e) { d = { ok: false, error: String(e) }; }
     if (!d || !d.ok) { setStatus(d && d.error ? d.error : 'setup failed', 'err'); busy(false); return; }
     _runId = d.run_id || null; openStream();
   }
   async function startServer() {
     const b = $('blStartBtn'); if (b) b.disabled = true;
-    try { await fetch('/api/llm/server/start', { method: 'POST' }); } catch (_) {}
+    try { await fetch(isLms() ? tq('/api/lmstudio/server/start') : '/api/llm/server/start', { method: 'POST' }); } catch (_) {}
     await new Promise(r => setTimeout(r, 3000));
-    try { _pre = await fetch('/api/benchmark/live/preflight').then(r => r.json()); } catch (_) {}
+    try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) {}
     if (b) b.disabled = false;
     renderPreflight();
   }

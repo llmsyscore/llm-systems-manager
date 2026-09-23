@@ -130,7 +130,7 @@ def _check_row(r) -> dict:
 
 class Watcher:
     def __init__(self, *, db_path: str, cfg: Callable[[], dict], fleet_hosts: Callable[[], list],
-                 run_on_agent: Callable[[str, dict], tuple], llama_build_of: Callable[[str], str],
+                 run_on_agent: Callable[..., tuple], llama_build_of: Callable[[str], str],
                  alert: Callable[[dict], bool], push_metrics: Callable[[list], None],
                  now: Callable[[], float] = time.time, tz=None, log=None) -> None:
         self._db_path = db_path
@@ -377,7 +377,7 @@ class Watcher:
     def _launch(self, b: dict, pend: dict, body: dict, build: str, started: float) -> None:
         """Outside the lock: the actual (slow) agent call, then apply the outcome under the lock."""
         try:
-            ok, val = self._run(b["agent_id"], body)
+            ok, val = self._run(b["agent_id"], body, b.get("provider") or "llama")
         except Exception as e:  # noqa: BLE001 - a host error must not stop the watcher
             ok, val = False, str(e)
         with self._lock:

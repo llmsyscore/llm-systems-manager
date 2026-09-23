@@ -205,3 +205,15 @@ def test_matrix_cells_times_levels_capped(bl):
     with pytest.raises(ValueError, match="matrix too large"):
         bl.validate_run_request({"model_id": "m", "concurrency": [1, 2, 4, 8, 16, 32, 48, 64],
                                  "matrix": {"benches": ["throughput_1k", "throughput_8k"], "osls": [256, 1024]}})
+
+
+def test_venv_python_prefers_the_agent_interpreter_then_newest_python3(bl):
+    # source install: the agent's own interpreter wins when it is new enough
+    which = lambda n: {"python3.13": "/opt/homebrew/bin/python3.13", "python3": "/usr/bin/python3"}.get(n)  # noqa: E731
+    new_enough = {"/venv/bin/python3", "/opt/homebrew/bin/python3.13"}
+    runner = lambda argv: 0 if argv[0] in new_enough else 1  # noqa: E731
+    assert bl.venv_python(which, runner, executable="/venv/bin/python3") == "/venv/bin/python3"
+    # frozen binary: skip sys.executable, take the newest python3.x that passes
+    assert bl.venv_python(which, runner, executable="/opt/agent/llm-systems-agent", frozen=True) == "/opt/homebrew/bin/python3.13"
+    # an old system python3 alone falls through to plain python3
+    assert bl.venv_python(lambda n: "/usr/bin/python3" if n == "python3" else None, runner, executable="", frozen=True) == "python3"

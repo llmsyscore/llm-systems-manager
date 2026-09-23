@@ -54,7 +54,8 @@ Local endpoints served:
     POST /api/lmstudio/server/stop      — lms server stop (proxied via primary LMS agent)
     POST /api/lmstudio/server/restart   — lms server stop+start (proxied via primary LMS agent)
     GET  /api/lmstudio/server/log       — recent LMS server log (proxied via primary LMS agent)
-    POST /api/lmstudio/load             — load model in LM Studio
+    POST /api/lmstudio/load             — load model in LM Studio (saved load preferences fill unset keys)
+    GET/PUT/DELETE /api/lmstudio/load-prefs — per-model LM Studio load preferences (tuned load options)
     POST /api/lmstudio/unload           — unload model from LM Studio
     POST /api/lmstudio/download         — start LM Studio model download (proxied via primary LMS agent)
     GET  /api/layout                    — load card layout JSON
@@ -177,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-8"
+__version__ = "v2026.09.23-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -199,6 +200,7 @@ import sse_daemon     # type: ignore[import-not-found]  # noqa: E402  # leaf, la
 # for live worker-thread + backlog counts.
 _cheroot_servers: list = []
 import model_profiles  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+import lms_load_prefs  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #916
 import report_card  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #468
 import energy  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #470
 import manager_db  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1036
@@ -2106,7 +2108,20 @@ def benchmark_run():
 
 @app.route("/api/benchmark/stream")
 def benchmark_stream():
-    return proxies.proxy_stream_to_primary("llama", "/llama/bench/stream", long_running=True)
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    return proxies.proxy_stream_to_primary(provider, f"/{provider}/bench/stream", long_running=True)
+
+
+def _tool_provider() -> "tuple[str, str | None]":
+    """(provider, error) for the Benchmark/Autotune tool routes: ?provider=, default llama, llama or lms only."""
+    provider, err = _bench_provider(flask_request.args.get("provider"))
+    if err:
+        return "llama", err
+    if provider not in bench_live.BENCH_PROVIDERS:
+        return provider, f"provider {provider} has no benchmark tools"
+    return provider, None
 
 
 def _bench_provider(value: "str | None") -> "tuple[str | None, str | None]":
@@ -2388,8 +2403,11 @@ def benchmark_perf_mode():
 
 @app.route("/api/benchmark/cancel", methods=["POST"])
 def benchmark_cancel():
-    """Terminate the running benchmark subprocess on the primary llama agent."""
-    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/cancel", timeout=10)
+    """Terminate the running benchmark subprocess on the picked agent."""
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    return proxies.proxy_to_primary(provider, "POST", f"/{provider}/bench/cancel", timeout=10)
 
 
 # --- Auto-tune CTX (iterative -fitt convergence) ---
@@ -2399,24 +2417,34 @@ def benchmark_cancel():
 @app.route("/api/llm/autotune/run", methods=["POST"])
 def llm_autotune_run():
     body = flask_request.get_json(force=True) or {}
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    body.pop("provider", None)
     # The quality guard shares this route; it is a tool of its own to the gate.
     tool = "quality" if (body.get("mode") or "") == "quality" else "autotune"
-    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/run", json=body, timeout=15,
-                                    on_target=_note_tool_start("llama", tool))
+    return proxies.proxy_to_primary(provider, "POST", f"/{provider}/autotune/run", json=body, timeout=15,
+                                    on_target=_note_tool_start(provider, tool))
 
 
 @app.route("/api/llm/autotune/stream")
 def llm_autotune_stream():
-    return proxies.proxy_stream_to_primary("llama", "/llama/autotune/stream", long_running=True)
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    return proxies.proxy_stream_to_primary(provider, f"/{provider}/autotune/stream", long_running=True)
 
 
 @app.route("/api/llm/autotune/stream-info")
 def llm_autotune_stream_info():
     """Direct-agent SSE URL for auto-tune progress (matches download/log pattern)."""
-    agent = _request_agent("llama")
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    agent = _request_agent(provider)
     if not agent:
-        return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
-    path = "/llama/autotune/stream"
+        return jsonify({"ok": False, "error": f"no primary {provider} agent set"}), 503
+    path = f"/{provider}/autotune/stream"
     token = agent_registry.issue_stream_token(agent["agent_id"], path, ttl=1800)
     return jsonify({
         "ok": True,
@@ -2427,12 +2455,18 @@ def llm_autotune_stream_info():
 
 @app.route("/api/llm/autotune/cancel", methods=["POST"])
 def llm_autotune_cancel():
-    return proxies.proxy_to_primary("llama", "POST", "/llama/autotune/cancel", timeout=10)
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    return proxies.proxy_to_primary(provider, "POST", f"/{provider}/autotune/cancel", timeout=10)
 
 
 @app.route("/api/llm/autotune/preflight")
 def llm_autotune_preflight():
-    return proxies.proxy_to_primary("llama", "GET", "/llama/autotune/preflight", timeout=20)
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
+    return proxies.proxy_to_primary(provider, "GET", f"/{provider}/autotune/preflight", timeout=20)
 
 
 @app.route("/api/llm/autotune/status")
@@ -3194,11 +3228,69 @@ def lmstudio_server_log():
     return proxies.proxy_to_primary("lms", "GET", "/lms/server/log")
 @app.route("/api/lmstudio/load", methods=["POST"])
 def lmstudio_load():
-    data     = flask_request.get_json(force=True)
+    data     = flask_request.get_json(force=True) or {}
     # model_id lets lms_model_pins steer the target agent (llama parity).
     forecast_wiring.count("model_loads")
-    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200,
-                                    model_id=(data or {}).get("model"))
+    model_id = data.get("model")
+    saved = lms_load_prefs.STORE.get(_lms_prefs_agent_id(model_id), model_id) if model_id else None
+    if saved:
+        # Saved load preferences fill in every key the caller left unset.
+        data = dict(saved.get("config") or {}, **data)
+    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200, model_id=model_id)
+
+
+# LM Studio model keys carry an @quant suffix (qwen3.5-9b@q6_k).
+_LMS_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@/:\-]{0,199}$")
+
+
+def _lms_prefs_agent_id(model_id: "str | None") -> str:
+    """The agent an LM Studio load resolves to: the picker, else the pin, else the primary."""
+    aid = flask_request.args.get("agent")
+    if aid:
+        return str(aid)
+    pinned = agent_registry.pinned_agent("lms", model_id) if model_id else None
+    if pinned:
+        return str(pinned.get("agent_id") or "")
+    return str(agent_registry.default_agent_id_for("lms") or "")
+
+
+@app.route("/api/lmstudio/load-prefs", methods=["GET"])
+def lmstudio_load_prefs_get():
+    """Saved load preferences (tuned load options) for one model on the picked LM Studio agent, or every model."""
+    model_id = (flask_request.args.get("model") or "").strip()
+    agent_id = _lms_prefs_agent_id(model_id or None)
+    if model_id:
+        return jsonify({"ok": True, "agent_id": agent_id, "model": model_id,
+                        "prefs": lms_load_prefs.STORE.get(agent_id, model_id)})
+    return jsonify({"ok": True, "agent_id": agent_id, "models": lms_load_prefs.STORE.list_agent(agent_id)})
+
+
+@app.route("/api/lmstudio/load-prefs", methods=["PUT"])
+def lmstudio_load_prefs_put():
+    body = flask_request.get_json(force=True) or {}
+    model_id = str(body.get("model") or "").strip()
+    if not model_id or not _LMS_MODEL_ID_RE.match(model_id):
+        return jsonify({"ok": False, "error": "model required"}), 400
+    cfg = body.get("config")
+    if not isinstance(cfg, dict) or not cfg:
+        return jsonify({"ok": False, "error": "config object required"}), 400
+    clean, err = lms_load_prefs.clean_config(cfg)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    agent_id = _lms_prefs_agent_id(model_id)
+    if not agent_id:
+        return jsonify({"ok": False, "error": "no LM Studio agent"}), 503
+    rec = lms_load_prefs.STORE.put(agent_id, model_id, clean, note=str(body.get("note") or "")[:120])
+    return jsonify({"ok": True, "agent_id": agent_id, "model": model_id, "prefs": rec})
+
+
+@app.route("/api/lmstudio/load-prefs", methods=["DELETE"])
+def lmstudio_load_prefs_delete():
+    model_id = (flask_request.args.get("model") or "").strip()
+    if not model_id:
+        return jsonify({"ok": False, "error": "model required"}), 400
+    agent_id = _lms_prefs_agent_id(model_id)
+    return jsonify({"ok": True, "deleted": lms_load_prefs.STORE.delete(agent_id, model_id)})
 def _valid_model_id(s) -> bool:
     return isinstance(s, str) and bool(_MODEL_ID_RE.match(s))
 
@@ -3625,6 +3717,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "model.build": "Started a llama.cpp build", "model.cache-prune": "Pruned the model cache",
     "model.cache-rm": "Removed a cached model",
     "tools.autotune": "Started an autotune run", "tools.vllm-bench": "Started a vLLM benchmark",
+    "lms.load-prefs.save": "Saved LM Studio load preferences", "lms.load-prefs.delete": "Removed LM Studio load preferences",
     "autotune.batch": "Started an overnight autotune batch",
     "autotune.batch-cancel": "Cancelled an overnight autotune batch",
     "autopilot.toggle": "Turned autopilot on or off",
@@ -3692,6 +3785,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load",         "llama.model"),
     ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload",       "llama.model"),
     ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load",           "lms.model"),
+    ("PUT",    re.compile(r"^/api/lmstudio/load-prefs$"),              "lms.load-prefs.save", "lms.model"),
+    ("DELETE", re.compile(r"^/api/lmstudio/load-prefs$"),              "lms.load-prefs.delete", "lms.model"),
     ("POST",   re.compile(r"^/api/lmstudio/unload$"),                  "lms.unload",         "lms.model"),
     ("POST",   re.compile(r"^/api/lmstudio/download$"),                "lms.download",       "model.downloads"),
     ("POST",   re.compile(r"^/api/llm/server/(?P<v>stop|start|restart|wake)$"), "llama.server.{v}", "llama.server"),
@@ -5683,6 +5778,7 @@ proxies.register_routes(
 import openclaw  # type: ignore[import-not-found]  # sibling; PR M5
 openclaw.register_routes(app, ctx)
 model_profiles.register_routes(app, ctx, profiles_path=DATA_DIR / "model_profiles.json")
+lms_load_prefs.configure(DATA_DIR / "lms_load_prefs.json")
 import gateway  # type: ignore[import-not-found]  # sibling; #214
 gateway.register_routes(app, ctx)
 import store_reconcile  # type: ignore[import-not-found]  # sibling; #1009
@@ -5766,32 +5862,42 @@ model_meta.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_ini)
 
 
-def _fleet_hosts() -> list:
-    """Every approved llama-capable agent, for the fleet-benchmark host picker."""
+def _fleet_hosts(provider: "str | None" = "llama") -> list:
+    """Approved bench-capable agents for the fleet host picker; None = llama and LM Studio hosts together."""
+    if provider is None:
+        return _fleet_hosts("llama") + _fleet_hosts("lms")
     out = []
-    spec = providers.get("llama")
-    cap_key = spec.capability_key if spec else "llama"
+    spec = providers.get(provider)
+    cap_key = spec.capability_key if spec else provider
     now = time.time()
     for aid, a in (agent_registry.load_agents().get("agents") or {}).items():
         if a.get("status") != "approved" or not (a.get("capabilities") or {}).get(cap_key):
             continue
-        wrap = provider_state.STORE.get("llama", aid) or {}
+        wrap = provider_state.STORE.get(provider, aid) or {}
         last_seen = float(wrap.get("last_seen") or 0)
-        llama = ((wrap.get("sample") or {}).get("llama") or {})
-        out.append({"agent_id": aid, "hostname": a.get("hostname"),
-                    "online": bool(last_seen) and (now - last_seen) < (spec.online_threshold_s if spec else 30.0),
-                    "model": providers.llama.clean_display_model(llama.get("model")), "state": llama.get("state")})
+        sample = wrap.get("sample") or {}
+        row = {"agent_id": aid, "hostname": a.get("hostname"), "provider": provider,
+               "online": bool(last_seen) and (now - last_seen) < (spec.online_threshold_s if spec else 30.0)}
+        if provider == "lms":
+            # LM Studio hosts hold several models; the ps rows name every loaded instance.
+            ids = [str(r.get("identifier") or r.get("model") or "") for r in (sample.get("ps") or []) if isinstance(r, dict)]
+            ids = [i for i in ids if i]
+            row.update({"model": ids[0] if ids else None, "models": ids, "state": "awake" if ids else "idle"})
+        else:
+            llama = sample.get("llama") or {}
+            row.update({"model": providers.llama.clean_display_model(llama.get("model")), "state": llama.get("state")})
+        out.append(row)
     return out
 
 
-def _fleet_run_on_agent(agent_id: str, body: dict):
+def _fleet_run_on_agent(agent_id: str, body: dict, provider: str = "llama"):
     """Start a live-bench run on one agent, for a fleet job."""
-    spec = providers.get("llama")
-    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
+    spec = providers.get(provider)
+    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else provider)
     if not agent:
         return False, "unknown agent"
     resp, _tried, err = agent_registry.agent_request(
-        "POST", agent, "/llama/bench/live/run", json=body,
+        "POST", agent, f"/{provider}/bench/live/run", json=body,
         headers={"Authorization": f"Bearer {agent.get('token') or ''}"}, timeout=20)
     if resp is None:
         return False, err or "agent unreachable"
@@ -5804,18 +5910,18 @@ def _fleet_run_on_agent(agent_id: str, body: dict):
     run_id = data.get("run_id")
     if not run_id:
         return False, "agent returned no run id"
-    tool_activity.note_start(agent_id, "llama", "benchmark")
+    tool_activity.note_start(agent_id, provider, "benchmark")
     return True, str(run_id)
 
 
-def _fleet_cancel_on_agent(agent_id: str) -> bool:
+def _fleet_cancel_on_agent(agent_id: str, provider: str = "llama") -> bool:
     """Cancel a fleet job's run on one agent."""
-    spec = providers.get("llama")
-    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else "llama")
+    spec = providers.get(provider)
+    agent = agent_registry.resolve_agent_by_id(agent_id, capability=spec.capability_key if spec else provider)
     if not agent:
         return False
     resp, _tried, _err = agent_registry.agent_request(
-        "POST", agent, "/llama/bench/live/cancel",
+        "POST", agent, f"/{provider}/bench/cancel",
         headers={"Authorization": f"Bearer {agent.get('token') or ''}"}, timeout=10)
     return bool(resp is not None and resp.status_code == 200)
 
@@ -5829,7 +5935,7 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
                            run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent,
-                           llama_build_of=_llama_build_of)
+                           llama_build_of=_llama_build_of, valid_provider=lambda p: p in providers.names())
 
 
 # --- Overnight autotune batch (#891): agent callables for autotune_batch.Runner ---
@@ -6024,7 +6130,7 @@ def _bench_baseline_cfg() -> dict:
 
 
 _bench_watcher = bench_baseline.Watcher(
-    db_path=str(DB_PATH), cfg=_bench_baseline_cfg, fleet_hosts=_fleet_hosts,
+    db_path=str(DB_PATH), cfg=_bench_baseline_cfg, fleet_hosts=lambda: _fleet_hosts(None),
     run_on_agent=_fleet_run_on_agent, llama_build_of=_llama_build_of,
     alert=_ae_ingest_alert, push_metrics=_push_bench_metrics, log=log)
 bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent)
