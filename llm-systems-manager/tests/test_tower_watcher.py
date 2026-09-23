@@ -201,13 +201,55 @@ def test_timeout_stores_a_partial_insight(monkeypatch):
     assert row["summary"] == tw._TIMED_OUT and row["playbook_id"] == "wake_llama"
 
 
+def test_diag_budget_follows_the_setting_with_a_floor():
+    assert tw.diag_budget_s(_cfg()) == tw.DIAG_BUDGET_S == 180.0
+    assert tw.diag_budget_s(_cfg(diagnose_timeout_s=0)) == 180.0
+    assert tw.diag_budget_s(_cfg(diagnose_timeout_s=10)) == tw.DIAG_MIN_S
+    assert tw.diag_budget_s(_cfg(diagnose_timeout_s=240)) == 240.0
+    assert tw.diag_budget_s(_cfg(diagnose_timeout_s="x")) == 180.0
+
+
+def _clock(monkeypatch, *, step: float):
+    """tower_watch sees a monotonic clock that jumps `step` s after its first read."""
+    reads = []
+    def mono():
+        reads.append(1)
+        return 1000.0 if len(reads) == 1 else 1000.0 + step
+    monkeypatch.setattr(tw, "time", types.SimpleNamespace(monotonic=mono, time=time.time))
+
+
+def test_diagnose_timeout_setting_is_read_per_diagnosis(monkeypatch):
+    cfg = _cfg(diagnose_timeout_s=30)
+    w, st, _ = _watcher([], [ANSWER, ANSWER], cfg)
+    _clock(monkeypatch, step=60.0)
+    w.diagnose(ALERT)
+    assert st.list_insights()[0]["summary"] == tw._TIMED_OUT
+    cfg.diagnose_timeout_s = 180
+    _clock(monkeypatch, step=60.0)
+    w.diagnose({**ALERT, "id": "a2"})
+    assert st.list_insights()[0]["summary"] == "llama-server asleep on box"
+
+
+def test_tick_budget_defers_diagnoses_that_would_overrun(monkeypatch):
+    alerts = []
+    w, st, _ = _watcher(alerts, [ANSWER] * 3)
+    w.tick()
+    alerts.extend({**ALERT, "id": f"b{i}"} for i in range(3))
+    monkeypatch.setattr(tw, "TICK_BUDGET_S", 150.0)
+    assert w.tick() == 1 and st.count_insights("new") == 1
+    monkeypatch.setattr(tw, "TICK_BUDGET_S", 1000.0)
+    assert w.tick() == 2 and st.count_insights("new") == 3
+
+
 def test_read_only_cfg_view_caps_calls_timeout_and_hides_act_tools():
     v = tw._ReadOnly(_cfg(capabilities="admin", off_topic="allow", max_tool_calls=8, max_tokens=512, request_timeout_s=600))
     assert v.capabilities == "read" and v.off_topic == "refuse" and v.max_tool_calls == 5 and v.max_tokens == 512
-    assert v.request_timeout_s == 60
+    assert v.request_timeout_s == 180
     assert tw._ReadOnly(_cfg(max_tool_calls=2, request_timeout_s=0)).max_tool_calls == 2
-    assert tw._ReadOnly(_cfg(request_timeout_s=0)).request_timeout_s == 60
+    assert tw._ReadOnly(_cfg(request_timeout_s=0)).request_timeout_s == 180
     assert tw._ReadOnly(_cfg(request_timeout_s=20)).request_timeout_s == 20
+    assert tw._ReadOnly(_cfg(request_timeout_s=600, diagnose_timeout_s=30)).request_timeout_s == 30
+    assert tw._ReadOnly(_cfg(request_timeout_s=600, diagnose_timeout_s=400)).request_timeout_s == 400
     assert tw.severity_ok("critical", "warning") and tw.severity_ok("warning", "warning") and not tw.severity_ok("info", "warning")
     assert tw.severity_ok(None, "info") and not tw.severity_ok("warning", "critical")
 

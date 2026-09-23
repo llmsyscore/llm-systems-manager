@@ -140,6 +140,7 @@ class ManagerTower(BaseModel):
     report_violations: bool = True     # audit + critical alert when a message tries to bypass Tower's rules
     disabled_tools: list[str] = Field(default_factory=list)
     diagnose_alarms: bool = False
+    diagnose_timeout_s: int = 180      # seconds one alert diagnosis may run before it is stopped
     playbooks_auto: bool = False
     min_severity: str = "warning"      # info | warning | critical
     max_tool_calls: int = 16

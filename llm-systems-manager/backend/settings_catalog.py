@@ -181,6 +181,7 @@ CATALOG: list[dict] = [
        "written to the audit log as critical and raised as a critical alert. Off = refused only.",
        "tower", MANAGER, hot=True),
     _e("manager.tower.diagnose_alarms", "bool", "Diagnose new alarms", "Read-only look at each new alert at or above the lowest severity; the result lands in the drawer as an insight.", "tower", MANAGER, hot=True, common=True),
+    _e("manager.tower.diagnose_timeout_s", "int", "Diagnosis time limit (s)", "Seconds one alert diagnosis may run before it stops and the insight reads \"Diagnosis ran out of time.\" Raise it for slower models.", "tower", MANAGER, min=30, max=900, hot=True),
     _e("manager.tower.min_severity", "choice", "Lowest severity", "Alerts below this are not diagnosed.", "tower", MANAGER, choices=["info", "warning", "critical"], hot=True),
     _e("manager.tower.playbooks_auto", "bool", "Apply safe playbooks", "Wake a sleeping server, reload a dropped model, ack a recovered alert without asking. Needs operate. Anything else is always proposed.", "tower", MANAGER, hot=True),
     _e("manager.tower.history_days", "int", "Keep history (days)", "Threads and insights older than this are deleted daily.", "tower", MANAGER, min=1, max=365, hot=True),

@@ -16,9 +16,11 @@ import tower_tools
 log = logging.getLogger("llm-systems-manager.tower.watch")
 
 POLL_S = 30.0
-DIAG_BUDGET_S = 60.0
+DIAG_BUDGET_S = 180.0
+DIAG_MIN_S = 30
 DIAG_MAX_CALLS = 5
 PER_TICK = 3
+TICK_BUDGET_S = 300.0
 WATCH_USER = "tower:watch"
 _SEV_RANK = {"info": 0, "warning": 1, "critical": 2}
 _JSON_FENCE = re.compile(r"```json\s*\n(.*?)\n\s*```", re.S)
@@ -27,6 +29,15 @@ _TIMED_OUT = "Diagnosis ran out of time."
 _NO_ANSWER = "No diagnosis produced."
 _ASLEEP = "Not diagnosed: every loaded chat model is asleep, and a diagnosis would wake it."
 _OPEN_ALERT = ("active", "acknowledged")
+
+
+def diag_budget_s(cfg) -> float:
+    """Seconds one diagnosis may run: manager.tower.diagnose_timeout_s, else DIAG_BUDGET_S; never below DIAG_MIN_S."""
+    try:
+        want = int(getattr(cfg, "diagnose_timeout_s", 0) or 0)
+    except (TypeError, ValueError):
+        want = 0
+    return float(max(DIAG_MIN_S, want)) if want > 0 else DIAG_BUDGET_S
 
 
 class _ReadOnly:
@@ -48,7 +59,7 @@ class _ReadOnly:
 
     @property
     def request_timeout_s(self) -> int:
-        cap = max(5, int(DIAG_BUDGET_S))
+        cap = max(5, int(diag_budget_s(self._cfg)))
         return max(5, min(cap, int(getattr(self._cfg, "request_timeout_s", 0) or 0) or cap))
 
 
@@ -215,12 +226,17 @@ class Watcher:
         due = [r for r in fresh if severity_ok(r.get("severity"), getattr(cfg, "min_severity", "warning"))]
         for r in due[PER_TICK:]:
             self._seen.discard(str(r["id"]))
+        budget, t0, ran = diag_budget_s(cfg), time.monotonic(), 0
         for r in due[:PER_TICK]:
+            if ran and time.monotonic() - t0 + budget > TICK_BUDGET_S:
+                self._seen.discard(str(r["id"]))
+                continue
+            ran += 1
             try:
                 self.diagnose(r, cfg)
             except Exception as e:  # noqa: BLE001 — one failed diagnosis never drops the rest
                 log.warning("tower watch diagnose failed: %s", type(e).__name__)
-        return len(due[:PER_TICK])
+        return ran
 
     def diagnose(self, alert: dict, cfg=None) -> Optional[str]:
         """One read-only diagnosis of an alert; stores and returns the insight id (None: no model, or already known)."""
@@ -237,7 +253,7 @@ class Watcher:
         tid = self._store.create_thread(WATCH_USER, f"Alert {alert.get('rule') or aid}"[:60], {"tab": "events", "alert_id": aid})
         events: list = []
         t0 = time.monotonic()
-        deadline = t0 + DIAG_BUDGET_S
+        deadline = t0 + diag_budget_s(cfg)
         log.debug("tower watch diagnose alert=%s host=%s model=%s playbooks=%s", aid, alert.get("host") or "-",
                   model["model"], ",".join(p.id for p in pbs) or "-")
         out = tower.run_turn(thread_id=tid, user_text=diagnosis_prompt(alert, pbs), page={"tab": "events", "alert_id": aid},
