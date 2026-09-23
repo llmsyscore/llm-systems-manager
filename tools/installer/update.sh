@@ -931,6 +931,20 @@ if $HAVE_AGENT && component_wanted "agent"; then
   fi
 fi
 
+# InfluxDB OOM drop-in + GOMEMLIMIT block; a change queues influxdb first in the restart prompt.
+if $HAVE_INFLUX && component_wanted "alarm-engine"; then
+  if (( DRY_RUN )); then
+    log "[dry-run] would refresh the influxdb OOM drop-in and GOMEMLIMIT block"
+  else
+    apply_influxdb_host_tuning 1
+    if (( LLMSYS_INFLUX_TUNING_CHANGED )); then
+      RESTART_UNITS=("influxdb.service" ${RESTART_UNITS[@]+"${RESTART_UNITS[@]}"})
+    else
+      log "influxdb memory protection already current (GOMEMLIMIT $LLMSYS_INFLUX_GOMEMLIMIT)"
+    fi
+  fi
+fi
+
 # ── Config reconcile (unified_config.py + TOML key-merge) ─────────────────
 # Both are required for the services to come back up cleanly:
 #   1. unified_config.py is the typed schema the services import. New

@@ -172,6 +172,65 @@ install_unit_template() {
   return "$rc"
 }
 
+# ── InfluxDB host memory tuning (#1073, #1074) ────────────────────────────
+LLMSYS_INFLUX_DROPIN_DIR="${LLMSYS_INFLUX_DROPIN_DIR:-/etc/systemd/system/influxdb.service.d}"
+LLMSYS_INFLUX_DROPIN_NAME="llm-systems-manager.conf"
+LLMSYS_INFLUX_ENV_FILE="${LLMSYS_INFLUX_ENV_FILE:-/etc/default/influxdb2}"
+LLMSYS_INFLUX_ENV_BEGIN="# === llm-systems-manager memory (managed) ==="
+LLMSYS_INFLUX_ENV_END="# === END llm-systems-manager memory ==="
+
+# influx_gomemlimit_mib <mem_total_kib> — 35% of RAM in MiB, floor 1024,
+# floor 1600 on hosts with >= 4 GiB.
+influx_gomemlimit_mib() {
+  local mib=$(( $1 / 1024 )) lim
+  lim=$(( mib * 35 / 100 ))
+  (( lim < 1024 )) && lim=1024
+  (( mib >= 4096 && lim < 1600 )) && lim=1600
+  printf '%s\n' "$lim"
+}
+
+# apply_influxdb_host_tuning <colocated 0|1> — writes the OOMScoreAdjust drop-in and
+# the managed GOMEMLIMIT env block; sets LLMSYS_INFLUX_TUNING_CHANGED and LLMSYS_INFLUX_GOMEMLIMIT.
+# shellcheck disable=SC2034  # LLMSYS_INFLUX_TUNING_CHANGED is read by callers
+apply_influxdb_host_tuning() {
+  local colocated="$1" dropin="$LLMSYS_INFLUX_DROPIN_DIR/$LLMSYS_INFLUX_DROPIN_NAME"
+  local envf="$LLMSYS_INFLUX_ENV_FILE" tmp cur want kib lim op
+  LLMSYS_INFLUX_TUNING_CHANGED=0
+  tmp="$(mktemp)"
+  printf '[Service]\nOOMScoreAdjust=-500\n' > "$tmp"
+  if ! $SUDO cmp -s "$tmp" "$dropin" 2>/dev/null; then
+    $SUDO install -d -m 0755 "$LLMSYS_INFLUX_DROPIN_DIR"
+    $SUDO install -o root -g root -m 0644 "$tmp" "$dropin"
+    $SUDO systemctl daemon-reload
+    LLMSYS_INFLUX_TUNING_CHANGED=1
+    ok "influxdb OOM protection drop-in written ($dropin)"
+  fi
+  cur="$($SUDO cat "$envf" 2>/dev/null || true)"
+  want="$(awk -v b="$LLMSYS_INFLUX_ENV_BEGIN" -v e="$LLMSYS_INFLUX_ENV_END" '
+    $0 == b { skip=1; next }
+    $0 == e { skip=0; next }
+    !skip' <<<"$cur")"
+  op="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?GOMEMLIMIT=(.*)$/\2/p' <<<"$want" | tail -n1)"
+  if [[ -n "$op" ]]; then
+    LLMSYS_INFLUX_GOMEMLIMIT="$op (operator setting in $envf)"
+  elif [[ "$colocated" == "1" ]]; then
+    kib="$(awk '/^MemTotal:/ {print $2}' "${LLMSYS_MEMINFO:-/proc/meminfo}")"
+    lim="$(influx_gomemlimit_mib "${kib:-0}")MiB"
+    want="${want:+$want$'\n'}$(printf '%s\nGOMEMLIMIT=%s\n%s' "$LLMSYS_INFLUX_ENV_BEGIN" "$lim" "$LLMSYS_INFLUX_ENV_END")"
+    LLMSYS_INFLUX_GOMEMLIMIT="$lim (35% of RAM)"
+  else
+    LLMSYS_INFLUX_GOMEMLIMIT="unset (dedicated InfluxDB host)"
+  fi
+  want="$(sed '/./,$!d' <<<"$want")"
+  if [[ "$want" != "$cur" ]]; then
+    printf '%s\n' "$want" > "$tmp"
+    $SUDO install -o root -g root -m 0644 "$tmp" "$envf"
+    LLMSYS_INFLUX_TUNING_CHANGED=1
+    ok "influxdb GOMEMLIMIT: $LLMSYS_INFLUX_GOMEMLIMIT ($envf)"
+  fi
+  rm -f "$tmp"
+}
+
 # install_sudoers_fragment <tpl> <dst> — render @@RUN_USER@@, visudo-validate, and
 # install 0440 root:root only if valid. Removes the temp on every path. Returns 0
 # on install, 1 on missing template / invalid fragment.

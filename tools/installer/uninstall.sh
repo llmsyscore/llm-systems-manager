@@ -344,6 +344,24 @@ if $INFLUX_INSTALLED; then
     else
       ok "influxdb2 + influxdb2-cli purged (dpkg state clean)"
     fi
+    # Memory protection written by install-influxdb.sh / update.sh (#1073, #1074).
+    $SUDO rm -f /etc/systemd/system/influxdb.service.d/llm-systems-manager.conf
+    $SUDO rmdir /etc/systemd/system/influxdb.service.d 2>/dev/null || true
+    if $SUDO test -f /etc/default/influxdb2; then
+      _envtmp="$(mktemp)"
+      $SUDO cat /etc/default/influxdb2 | awk '
+        $0 == "# === llm-systems-manager memory (managed) ===" { skip=1; next }
+        $0 == "# === END llm-systems-manager memory ===" { skip=0; next }
+        !skip' > "$_envtmp"
+      if grep -q '[^[:space:]]' "$_envtmp"; then
+        $SUDO install -o root -g root -m 0644 "$_envtmp" /etc/default/influxdb2
+      else
+        $SUDO rm -f /etc/default/influxdb2
+      fi
+      rm -f "$_envtmp"
+    fi
+    $SUDO systemctl daemon-reload 2>/dev/null || true
+    ok "removed influxdb memory protection (OOM drop-in, GOMEMLIMIT block)"
     if confirm "Also delete /var/lib/influxdb (all bucket data)?"; then
       $SUDO rm -rf /var/lib/influxdb /etc/influxdb
       ok "removed /var/lib/influxdb /etc/influxdb"

@@ -139,6 +139,10 @@ if [ "$INFLUX_WAS_INSTALLED" = 1 ]; then
   done
   ! grep -q "apt purge failed" "$OUT" || fail "uninstall warned 'apt purge failed'"
   ! grep -q "residual dpkg state" "$OUT" || fail "uninstall warned of residual dpkg state"
+  [ ! -e /etc/systemd/system/influxdb.service.d/llm-systems-manager.conf ] \
+    || fail "influxdb OOM drop-in survived uninstall"
+  ! grep -qs "llm-systems-manager memory" /etc/default/influxdb2 \
+    || fail "managed GOMEMLIMIT block survived uninstall"
   pass "influxdb.service removed, /var/lib/influxdb gone, dpkg state clean"
 else
   pass "InfluxDB was not installed on this host — nothing to purge"
