@@ -284,6 +284,27 @@ describe('AT preflight gating', () => {
     expect(win.document.getElementById('atRunBtn').disabled).toBe(false);
   });
 
+  it('offers the bench runtime install when preflight says it is missing, and hands it to Benchmark', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, runtime: { ok: false, python: null, script: '/s' } };
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    const d = win.document;
+    expect(d.getElementById('atPreflight').style.display).toBe('');
+    expect(d.getElementById('atPreflightMsg').textContent).toContain('Bench runtime missing');
+    expect(d.getElementById('atInstallBtn').style.display).toBe('');
+    expect(d.getElementById('atStopBtn').style.display).toBe('none');
+    expect(d.getElementById('atRunBtn').disabled).toBe(false);
+    win.AT.installRuntime();
+    expect(win.__opened).toEqual(['benchmark', null, { provider: 'llama', agent: null, install: true }]);
+    // a running llama-server outranks the runtime notice
+    win.__pre = { ...PRE, runtime: { ok: false }, unit_active: true };
+    await win.AT.stopServer();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(d.getElementById('atInstallBtn').style.display).toBe('none');
+    expect(d.getElementById('atPreflightMsg').textContent).toContain('llama-server is running');
+  });
+
   it('hides the banner when --help parsed fine and the server is stopped', async () => {
     const win = boot();
     win.__pre = { ...PRE, help_valued: { ok: true, count: 12 } };
@@ -673,6 +694,36 @@ describe('re-verify (#887)', () => {
     expect(body.baseline).toEqual({ decode_tps: 41.5 });
     expect(body.budget_min).toBe(15);
   });
+  it('a batch of models gets one chip per result and the pane switches on click', async () => {
+    const win = boot();
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    const d = win.document;
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', run_id: 'r1', ok: true, mode: 'tune', objective: 'fit', changes: [],
+                     before: { decode_tps: 40, ctx: 32768 }, after: { decode_tps: 41, ctx: 32768 }, verify: { ok: true, seconds: 60 }, stages: [{ stage: 'context', status: 'done' }], elapsed_s: 100, loads: 2 });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/big:Q4', run_id: 'r1', ok: false, mode: 'tune', objective: 'fit', changes: [], stop_reason: 'Insufficient memory',
+                     before: {}, after: {}, verify: {}, stages: [], elapsed_s: 5, loads: 1 });
+    win.AT.onEvent({ type: 'done', ok: true, count: 2 });
+    expect(d.getElementById('atPaneDone').style.display).toBe('');
+    const chips = [...d.querySelectorAll('#atDoneModels .bl-chip')];
+    expect(d.getElementById('atDoneModels').style.display).toBe('');
+    expect(chips.map(c => c.dataset.model)).toEqual(['org/m:Q4', 'org/big:Q4']);
+    expect(chips[0].classList.contains('on')).toBe(true);
+    expect(d.getElementById('atDoneStats').textContent).toContain('1 stages');
+    chips[1].click();
+    expect(win.AT.state().doneModel).toBe('org/big:Q4');
+    expect(d.getElementById('atDonePill').textContent).toBe('stopped');
+    expect(d.getElementById('atDoneStats').textContent).toContain('0 stages');
+    expect(d.querySelector('#atDoneModels .bl-chip.on').dataset.model).toBe('org/big:Q4');
+    // a single-model run keeps the strip hidden
+    const win2 = boot();
+    win2.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    win2.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, mode: 'tune', changes: [], before: {}, after: {}, verify: { ok: true }, stages: [], elapsed_s: 1, loads: 1 });
+    win2.AT.onEvent({ type: 'done', ok: true, count: 1 });
+    expect(win2.document.getElementById('atDoneModels').style.display).toBe('none');
+  });
+
   it('model_done in verify mode records mode + build in the ledger and shows the regression headline', async () => {
     const win = await opened();
     win.__status = { ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, summary: { decode_tps: 41.5 } }] };

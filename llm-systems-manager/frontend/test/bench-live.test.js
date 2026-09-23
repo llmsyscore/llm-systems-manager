@@ -200,6 +200,15 @@ describe('BL presets and mode', () => {
     expect(setup.className).toBe('mcbtn mcbtn-pri');
     expect(setup.textContent).toBe('Install bench runtime');
   });
+  it('onOpen with install starts the runtime setup only while the runtime is missing', async () => {
+    const win = boot('window.__noRt = true; BL.onOpen("org/m:Q4", { install: true });');
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.__fetches.some(f => f[0] === '/api/benchmark/live/setup')).toBe(true);
+    expect(win.document.getElementById('blStatus').textContent).toBe('installing runtime…');
+    const win2 = boot('BL.onOpen("org/m:Q4", { install: true });');
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win2.__fetches.some(f => f[0] === '/api/benchmark/live/setup')).toBe(false);
+  });
   it('attaches when preflight says busy', async () => {
     const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
     await flush();

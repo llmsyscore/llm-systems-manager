@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import subprocess
 import threading
 import time
@@ -22,7 +23,7 @@ SCRIPT_SHA256 = "9eacf67452c2b9a829da61c8b077bc5ece9219482e1e2734ad4a9340bdb0391
 REQUIREMENTS = ("datasets", "requests", "tqdm")
 _CAT_RE = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
 _PROG_RE = re.compile(r"%\|.*?\|\s*(\d+)/(\d+)\s*\[")
-_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{0,199}$")
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:/\-]{0,199}$")
 _ELAPSED_RE = re.compile(r"^Summary \(elapsed=(\d+(?:\.\d+)?)s\)")
 
 
@@ -38,6 +39,32 @@ def runtime_python(install_dir: str, override: str) -> tuple[Optional[str], str]
     if py.is_file():
         return str(py), "venv"
     return None, "missing"
+
+
+VENV_MIN = (3, 10)
+
+
+def venv_python(which=None, runner=None, executable=None, frozen=False) -> str:
+    """Interpreter that creates the bench venv: the agent's own (source installs), else the newest
+    python3.x on PATH that is at least VENV_MIN, else plain python3."""
+    import shutil as _sh
+    import subprocess as _sp
+    which = which or _sh.which
+    executable = sys.executable if executable is None else executable
+    cands = [] if frozen or not executable else [executable]
+    for name in ("python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3"):
+        hit = which(name)
+        if hit and hit not in cands:
+            cands.append(hit)
+    for cand in cands:
+        try:
+            ok = (runner or (lambda argv: _sp.run(argv, capture_output=True, timeout=10).returncode))(
+                [cand, "-c", f"import sys; raise SystemExit(0 if sys.version_info >= {VENV_MIN} else 1)"]) == 0
+        except Exception:
+            ok = False
+        if ok:
+            return cand
+    return "python3"
 
 
 def _sha_ok(p: Path) -> bool:

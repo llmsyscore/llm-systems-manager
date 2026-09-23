@@ -20,6 +20,8 @@
                         autotune: 'Autotune', quality: 'Quality guard', tower_eval: 'Tower eval' };
   let _toolsActivityAgents = {};   // agent_id -> tools running on it
   let _toolsDefaultAgent = {};     // provider -> primary agent id
+  let _toolsByProvider = {};       // provider -> [{agent_id, hostname, is_default}] (#916 target picker)
+  let _toolsTarget = { provider: 'llama', agent: null };   // host the Benchmark/Autotune modules drive (#916)
   let _toolsPending = {};          // tool id -> what its queued run waits for
   let _toolsAgentsLoad = null;
   let _toolsAgentsReady = false;
@@ -79,12 +81,63 @@
     _toolsAgents = {};
     _toolsDefaultAgent = {};
     _toolsAgentsReady = true;
+    _toolsByProvider = byProvider || {};
     Object.entries(byProvider || {}).forEach(([prov, list]) =>
       (list || []).forEach(a => {
         _toolsAgents[a.agent_id] = a.hostname;
         if (a.is_default) _toolsDefaultAgent[prov] = a.agent_id;
       }));
     if (_toolsDefaultAgent.llama) _toolsDefaultLlama = _toolsDefaultAgent.llama;
+    toolsRenderTargetPickers();
+  }
+
+  // ── tool target (#916): the provider + host the Benchmark and Autotune modules drive ──
+  function toolsTarget() { return { provider: _toolsTarget.provider, agent: _toolsTarget.agent }; }
+  // Query string for the tool routes: empty for the default llama host, so llama-only
+  // dashboards keep their URLs byte-identical.
+  function toolsTargetQs(sep) {
+    const t = _toolsTarget;
+    if (t.provider === 'llama' && !t.agent) return '';
+    const parts = ['provider=' + encodeURIComponent(t.provider)];
+    if (t.agent) parts.push('agent=' + encodeURIComponent(t.agent));
+    return (sep == null ? '?' : sep) + parts.join('&');
+  }
+  function toolsUrl(path) { return path + toolsTargetQs(path.indexOf('?') >= 0 ? '&' : '?'); }
+  function toolsSetTarget(provider, agent) {
+    const p = provider === 'lms' ? 'lms' : 'llama';
+    _toolsTarget = { provider: p, agent: p === 'lms' ? (agent || _toolsDefaultAgent.lms || null) : null };
+    document.querySelectorAll('select.tools-target').forEach(sel => { sel.value = _toolsTargetKey(); });
+  }
+  function _toolsTargetKey() { return _toolsTarget.provider + '|' + (_toolsTarget.agent || ''); }
+  // One picker per module head; hidden until an LM Studio host is approved, since
+  // llama runs always target the default llama host.
+  function toolsRenderTargetPickers() {
+    const rows = [];
+    const llama = (_toolsByProvider.llama || []).find(a => a.is_default) || (_toolsByProvider.llama || [])[0];
+    if (llama) rows.push({ key: 'llama|', label: 'llama.cpp · ' + (llama.hostname || '') });
+    (_toolsByProvider.lms || []).forEach(a => rows.push({ key: 'lms|' + a.agent_id, label: 'LM Studio · ' + (a.hostname || a.agent_id.slice(0, 8)) }));
+    const show = (_toolsByProvider.lms || []).length > 0;
+    document.querySelectorAll('select.tools-target').forEach(sel => {
+      sel.style.display = show ? '' : 'none';
+      const cur = _toolsTargetKey();
+      sel.innerHTML = rows.map(r => `<option value="${TC.esc(r.key)}">${TC.esc(r.label)}</option>`).join('');
+      sel.value = rows.some(r => r.key === cur) ? cur : (rows[0] ? rows[0].key : '');
+      if (!sel._tt) {
+        sel._tt = 1;
+        sel.addEventListener('change', () => {
+          const [p, a] = sel.value.split('|');
+          toolsSetTarget(p, a || null);
+          _toolsRetarget();
+        });
+      }
+    });
+    if (show && _toolsTarget.provider === 'lms' && !_toolsTarget.agent) toolsSetTarget('lms', null);
+  }
+  // Re-open the module that is showing so it reads the newly picked host; a live run keeps its target.
+  function _toolsRetarget() {
+    if (_toolsOpenId === 'benchmark' && window.BL && !BL.running()) BL.onOpen(undefined, { retarget: true });
+    if (_toolsOpenId === 'autotune' && window.AT && !AT.running()) AT.onOpen(undefined, { retarget: true });
+    _toolsGateNotify();
   }
 
   // A deep link opens a module before the launcher's own fetch runs.
@@ -111,9 +164,11 @@
     const vb = typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc;
     const va = typeof _vatEventSrc !== 'undefined' && _vatEventSrc;
     const rcTarget = typeof _rcRunTarget !== 'undefined' && _rcRunTarget;
+    // The Benchmark/Autotune modules drive the picked target host (#916).
+    const tgt = _toolsTarget.agent || _toolsDefaultAgent[_toolsTarget.provider] || _toolsDefaultAgent.llama;
     if (l.rc) add((rcTarget && rcTarget.agent) || _toolsDefaultAgent.llama, 'reportcard');
-    if (l.bench) add(vb ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama, 'benchmark');
-    if (l.at) add(va ? _toolsDefaultAgent.vllm : _toolsDefaultAgent.llama,
+    if (l.bench) add(vb ? _toolsDefaultAgent.vllm : ((window.BL && BL.running()) ? tgt : _toolsDefaultAgent.llama), 'benchmark');
+    if (l.at) add(va ? _toolsDefaultAgent.vllm : ((window.AT && AT.running()) ? tgt : _toolsDefaultAgent.llama),
                   (window.QG && QG.running()) ? 'quality' : 'autotune');
     return out;
   }
@@ -362,9 +417,10 @@
     });
     _toolsRuns.forEach(r => {
       const s = r.summary || {};
-      // These modules only drive the primary llama agent; rows recorded
-      // from other providers or hosts stay inert (#769 semantics).
-      const clickable = r.provider === 'llama' && r.agent_id === _toolsDefaultLlama;
+      // Rows open on the default llama host or any LM Studio host (#916); vLLM
+      // and other-host rows stay inert (#769 semantics).
+      const clickable = (r.provider === 'llama' && r.agent_id === _toolsDefaultLlama) || r.provider === 'lms';
+      const target = clickable ? { provider: r.provider, agent: r.provider === 'lms' ? r.agent_id : null } : null;
       if (r.tool === 'benchmark') {
         const bits = [];
         if (s.gen_tps != null) bits.push('<b>' + TC.esc(_tNum(s.gen_tps)) + ' t/s</b> gen');
@@ -372,7 +428,7 @@
         if (s.bench_tool) bits.push(TC.esc(s.bench_tool));
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
         rows.push({ icon: '◷', tool: 'Benchmark',
-          toolId: clickable ? 'benchmark' : null,
+          toolId: clickable ? 'benchmark' : null, target,
           title: clickable ? 'Open Benchmark' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
           result: bits.join(' · ') || '—', tps: s.gen_tps, ts: r.ts });
@@ -385,7 +441,7 @@
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
         else if (s.verify_ok === false) bits.push('verify failed');
         rows.push({ icon: '⌖', tool: 'Autotune',
-          toolId: clickable ? 'autotune' : null,
+          toolId: clickable ? 'autotune' : null, target,
           title: clickable ? 'Open Autotune' : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
           result: bits.join(' · ') || '—', tps: s.decode_tps ?? null, ts: r.ts });
@@ -509,6 +565,11 @@
   function toolsOpenTool(id, modelId, opts) {
     const modId = _TOOL_MODS[id];
     if (!modId) return;
+    // A deep link names its host; the picker keeps the last target otherwise (#916).
+    if (opts && opts.provider && (id === 'benchmark' || id === 'autotune')) {
+      const run = _toolsRunningLocal();
+      if (!(id === 'benchmark' ? run.bench : run.at)) toolsSetTarget(opts.provider, opts.agent);
+    }
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
     _toolsHideModules(id);
@@ -610,7 +671,10 @@
         return;
       }
       const tr = ev.target.closest('tr.rowlink');
-      if (tr && tr.dataset.tool) toolsOpenTool(tr.dataset.tool, tr.dataset.model || null);
+      if (tr && tr.dataset.tool) {
+        const opts = tr.dataset.provider ? { provider: tr.dataset.provider, agent: tr.dataset.agent || null } : undefined;
+        toolsOpenTool(tr.dataset.tool, tr.dataset.model || null, opts);
+      }
     });
     const filter = _tEl('toolsLedgerFilter');
     if (filter) filter.addEventListener('change', () => {
@@ -722,5 +786,9 @@
   window.toolsGateOn = toolsGateOn;
   window.toolsGateRefusal = toolsGateRefusal;
   window.toolsSetQueued = toolsSetQueued;
+  window.toolsTarget = toolsTarget;
+  window.toolsTargetQs = toolsTargetQs;
+  window.toolsUrl = toolsUrl;
+  window.toolsSetTarget = toolsSetTarget;
   window.toolsQueueSlot = toolsQueueSlot;
 })();

@@ -36,7 +36,7 @@ def env(tmp_path, monkeypatch):
              {"agent_id": A3["agent_id"], "hostname": "charlie", "online": True, "model": "other", "state": "awake"}]
     started, cancelled = [], []
 
-    def run_on_agent(aid, body):
+    def run_on_agent(aid, body, provider="llama"):
         started.append((aid, body))
         if aid == A2["agent_id"] and body.get("fail"):
             return False, "Another benchmark or autotune is in progress"
@@ -44,8 +44,8 @@ def env(tmp_path, monkeypatch):
 
     bl.register_routes(app, None, db_path=str(tmp_path / "t.db"), proxy=lambda *a, **k: {"ok": True},
                        agent_by_token=lambda t: TOK.get(t), request_agent=lambda p: A1,
-                       note_tool_start=lambda p, t: None, fleet_hosts=lambda: hosts,
-                       run_on_agent=run_on_agent, cancel_on_agent=lambda aid: cancelled.append(aid) or True)
+                       note_tool_start=lambda p, t: None, fleet_hosts=lambda provider=None: hosts,
+                       run_on_agent=run_on_agent, cancel_on_agent=lambda aid, provider="llama": cancelled.append(aid) or True)
     c = app.test_client()
     c.started, c.cancelled, c.hosts = started, cancelled, hosts
     return c

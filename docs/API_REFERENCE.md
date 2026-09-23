@@ -276,7 +276,7 @@ Cancels an in-progress benchmark run.
 
 ### Live benchmark (`speed-bench` against the running server)
 
-The routes below drive the Benchmark tool's **Live** mode: the agent runs llama.cpp `speed-bench` against the model already loaded in `llama-server` and stores the result on the manager. Offline (`llama-bench`) results stay under `/api/benchmark/results`.
+The routes below drive the Benchmark tool's **Live** mode: the agent runs llama.cpp `speed-bench` against the model already loaded in `llama-server` — or, with `?provider=lms` (and an optional `&agent=<id>`), in LM Studio on that host — and stores the result on the manager. Offline (`llama-bench`) results stay under `/api/benchmark/results`. Every live route, `/api/benchmark/stream`, `/api/benchmark/cancel` and the `/api/llm/autotune/*` routes take the same `provider` query parameter (`llama` by default; `lms` for LM Studio); `POST` bodies may carry `provider` instead. Any other value answers 400.
 
 ### `GET /api/benchmark/live/preflight`
 Proxies the selected llama agent's readiness check: server up, bench runtime installed, available bench sets and their categories.
@@ -468,9 +468,22 @@ Returns recent log output from the LM Studio server.
 ---
 
 ### `POST /api/lmstudio/load`
-Instructs LM Studio to load a specific model.
+Instructs LM Studio to load a specific model. Load options LM Studio's native API accepts may be passed alongside (`context_length`, `eval_batch_size`, `parallel`, `flash_attention`, `offload_kv_cache_to_gpu`, `speculative_draft_*`, …); saved load preferences for the model on that host (see below) fill in every key the body leaves unset. `"reload": true` unloads the model's instances first so the options take effect.
 
-**Body:** `{"model": "<model_id>"}`
+**Body:** `{"model": "<model_id>", "reload": false, "context_length": 32768}`
+
+---
+
+### `GET /api/lmstudio/load-prefs`
+Saved load preferences (the load options an Autotune applied) for the selected LM Studio agent: `?model=<id>` returns `{prefs: {config, note, ts} | null}`, without it `{models: {<model_id>: {...}}}`.
+
+### `PUT /api/lmstudio/load-prefs`
+Saves load preferences for one model on the selected agent; only the native load option keys are accepted, values are typed.
+
+**Body:** `{"model": "<model_id>", "config": {"flash_attention": true, "parallel": 2}, "note": "tuned 2026-09-22"}`
+
+### `DELETE /api/lmstudio/load-prefs?model=<id>`
+Forgets the saved load preferences for that model on the selected agent.
 
 ---
 

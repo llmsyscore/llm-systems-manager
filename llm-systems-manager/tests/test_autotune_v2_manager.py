@@ -11,12 +11,13 @@ def test_preflight_route_proxies_to_the_agent():
     m = re.search(r'@app\.route\("/api/llm/autotune/preflight"\)\s*\ndef (\w+)\(\):(.*?)\n\n', SRC, re.S)
     assert m, "preflight route missing"
     body = m.group(2)
-    assert 'proxy_to_primary("llama", "GET", "/llama/autotune/preflight"' in body
+    # #916: the route is provider-aware (llama by default, LM Studio via ?provider=lms).
+    assert 'proxy_to_primary(provider, "GET", f"/{provider}/autotune/preflight"' in body and "_tool_provider()" in body
 
 
 def test_run_route_still_notes_tool_start():
     m = re.search(r'@app\.route\("/api/llm/autotune/run", methods=\["POST"\]\)(.*?)\n\n', SRC, re.S)
-    assert m and '_note_tool_start("llama", tool)' in m.group(1)
+    assert m and '_note_tool_start(provider, tool)' in m.group(1) and "_tool_provider()" in m.group(1)
     # The quality guard shares this route but is its own tool to the gate (#887).
     assert '"quality" if (body.get("mode") or "") == "quality" else "autotune"' in m.group(1)
 

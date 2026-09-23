@@ -445,7 +445,11 @@ def lms_server_log_endpoint(authorization: Optional[str] = Header(default=None))
         return {"ok": False, "lines": [], "error": str(e)}
 
 
-_LMS_LOAD_OPTIONS = ("context_length", "eval_batch_size", "flash_attention", "num_experts", "offload_kv_cache_to_gpu")
+_LMS_LOAD_OPTIONS = ("context_length", "eval_batch_size", "physical_batch_size", "parallel", "flash_attention",
+                     "context_checkpoints", "num_experts", "offload_kv_cache_to_gpu",
+                     "speculative_draft_mtp", "speculative_draft_simple", "speculative_draft_model",
+                     "speculative_draft_max_tokens", "speculative_draft_min_tokens",
+                     "speculative_draft_min_continue_probability")
 
 
 def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -457,6 +461,19 @@ def lms_load_endpoint(body: dict, authorization: Optional[str] = Header(default=
     if not _valid_model_id(model_id):
         raise HTTPException(status_code=400, detail="invalid model id")
     resident = _lms_resident_instances(model_id)
+    if resident and body.get("reload"):
+        # A reload applies new load options: drop every instance first.
+        for iid in resident:
+            try:
+                _get_session().post(f"{ctx.config.LMS_API_URL.rstrip('/')}/api/v1/models/unload",
+                                    json={"instance_id": iid},
+                                    timeout=_cfg_timeout("LMS_UNLOAD_TIMEOUT_S", _LMS_UNLOAD_TIMEOUT_DEFAULT_S))
+            except Exception as e:
+                log.warning("lms reload %s: unload %s failed: %s", model_id, iid, e)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and _lms_resident_instances(model_id):
+            time.sleep(1)
+        resident = _lms_resident_instances(model_id)
     if resident:
         log.info("lms load %s: already resident as %s", model_id, resident)
         return {"ok": True, "already_loaded": True, "instances": resident}

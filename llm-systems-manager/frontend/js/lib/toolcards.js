@@ -143,6 +143,8 @@
     const attrs = r.toolId
       ? ` class="rowlink" data-tool="${esc(r.toolId)}"` +
         (r.model ? ` data-model="${esc(r.model)}"` : '') +
+        (r.target && r.target.provider ? ` data-provider="${esc(r.target.provider)}"` +
+          (r.target.agent ? ` data-agent="${esc(r.target.agent)}"` : '') : '') +
         ` title="${esc(r.title || 'Open ' + r.tool)}"`
       : '';
     return `<tr${attrs}>` +
