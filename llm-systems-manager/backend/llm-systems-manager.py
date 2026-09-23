@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.23-1"
+__version__ = "v2026.09.23-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -7405,7 +7405,7 @@ _HOT_RELOADERS["manager.bench_baselines."] = _bench_baseline_reload_config
 
 
 _TOWER_KEYS = ("enabled", "model", "tool_mode", "capabilities", "off_topic", "report_violations",
-               "disabled_tools", "diagnose_alarms", "playbooks_auto", "min_severity", "max_tool_calls",
+               "disabled_tools", "diagnose_alarms", "diagnose_timeout_s", "playbooks_auto", "min_severity", "max_tool_calls",
                "max_tokens", "temperature", "thinking", "request_timeout_s", "fallback", "history_days", "discord", "debug")
 
 

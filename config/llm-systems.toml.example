@@ -172,6 +172,7 @@ off_topic = "refuse"       # refuse | allow
 report_violations = true   # audit + critical alert when a message tries to bypass Tower's rules
 disabled_tools = []           # tool names turned off everywhere; Settings shows them as chips
 diagnose_alarms = false
+diagnose_timeout_s = 180      # seconds one alert diagnosis may run before it is stopped (30-900)
 playbooks_auto = false
 min_severity = "warning"
 max_tool_calls = 16

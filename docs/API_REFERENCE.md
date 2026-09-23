@@ -1314,7 +1314,7 @@ The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok
 ---
 
 ### `GET /api/tower/insights`
-Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after about a minute), and `checks` lists what it read. Insights are shared by every session.
+Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after `manager.tower.diagnose_timeout_s`, default 180 s), and `checks` lists what it read. Insights are shared by every session.
 
 ---
 
