@@ -195,7 +195,8 @@ def test_load_prefs_routes_and_load_merge(monkeypatch, tmp_path):
     assert loads[2][2] == {"model": "other"}
     # The picker's agent scopes the record; a different agent has none.
     assert c.get("/api/lmstudio/load-prefs?model=qwen3.5-9b@q6_k&agent=lms-agent-2").get_json()["prefs"] is None
-    assert c.delete("/api/lmstudio/load-prefs?model=qwen3.5-9b@q6_k").get_json()["deleted"] is True
+    deleted = c.delete("/api/lmstudio/load-prefs?model=qwen3.5-9b@q6_k").get_json()
+    assert deleted["deleted"] is True
     assert c.get("/api/lmstudio/load-prefs?model=qwen3.5-9b@q6_k").get_json()["prefs"] is None
 
 
