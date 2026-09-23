@@ -34,7 +34,7 @@ Unauthenticated liveness probe for external monitors and load balancers. Not gat
 ### `GET /health` (Alarm Engine)
 The Alarm Engine's own liveness probe, served on its own port — not proxied through the Manager. Also pings InfluxDB and always returns 200 so a monitor can distinguish "process up" from "InfluxDB unreachable" via the body.
 
-**Response:** `{"status": "ok", "version", "uptime_s", "auth": "open"|"enforced", "ingest_points_per_s", "influx_writes_per_s", "active_alerts", "evaluation_interval_s", "components": {"cache", "influxdb", "influxdb_ping_ms", "influxdb_version", "rule_eval_last_cycle_ms", "tls", "auth": {"management", "ingest", "loopback_only", "open_on_network", "bearer_ok"}}}`. This is what the Manager's `/api/admin/system-health` polls to derive the alarm-engine row.
+**Response:** `{"status": "ok", "version", "uptime_s", "auth": "open"|"enforced", "ingest_points_per_s", "influx_writes_per_s", "active_alerts", "evaluation_interval_s", "components": {"cache", "influxdb", "influxdb_ping_ms", "influxdb_version", "rule_eval_last_cycle_ms", "tls", "auth": {"management", "ingest", "loopback_only", "open_on_network", "bearer_ok"}, "otlp": {"metric_batches", "trace_batches", "log_batches", "parse_errors", "write_errors", "last_batch_at", "last_error_at", "last_batch_age_s", "last_error_age_s"}}}`. The `otlp` counters are cumulative since the engine started; the `_at` timestamps are epoch seconds and the `_age_s` values are seconds measured on the engine's clock, each `null` until the first batch or error. This is what the Manager's `/api/admin/system-health` polls to derive the alarm-engine row.
 
 ---
 
@@ -1339,7 +1339,7 @@ Operator or admin (401 `unauthorized`, 403 `operator role required`). Closes one
 These endpoints require an admin-role session.
 
 ### `GET /api/admin/system-health`
-Returns a rolled-up health summary of the whole system: agent connectivity, service availability, TLS certificate expiry, InfluxDB status, and recent error counts. Powers the red/green Admin tab indicator dot. Also carries connection counts, the WebSocket relay's state, the alarm engine's ingest/write rates and rule-evaluation time, its probe history, the count of agents with an update available, `ae_restart` (whether/how the Alarm Engine can be restarted from here), and — on the alarm-engine service entry — `auth`, `auth_detail`, and `bearer_configured` describing its auth posture as seen by the Manager.
+Returns a rolled-up health summary of the whole system: agent connectivity, service availability, TLS certificate expiry, InfluxDB status, and recent error counts. Powers the red/green Admin tab indicator dot. Also carries connection counts, the WebSocket relay's state, the alarm engine's ingest/write rates and rule-evaluation time, its probe history, the count of agents with an update available, `ae_restart` (whether/how the Alarm Engine can be restarted from here), and — on the alarm-engine service entry — `auth`, `auth_detail`, and `bearer_configured` describing its auth posture as seen by the Manager, plus `otlp` (the engine's OTLP receiver counters). `advisories` lists info-level notes that don't affect `overall`: when OpenClaw is configured and the engine has received no OTLP data 15 minutes after it started, no data for 30 minutes, or rejected OTLP data in the last 15 minutes.
 
 **Access:** [Admin]
 
@@ -2090,7 +2090,7 @@ Returns size/pragma/row-count stats for the Alarm Engine's SQLite databases, bac
 
 These endpoints accept telemetry from external pipelines that speak the OpenTelemetry protocol. They are served by the Alarm Engine directly (not under the `/api/alarm/` proxy prefix) and require the ingest bearer token when one is configured. Each payload is converted into metric points and stored alongside the agents' own metrics.
 
-The receiver is served over TLS with a certificate signed by the manager's internal CA. OTLP exporters verify that certificate, so the exporter must trust the internal CA (the agent installs it as `data/tls-ca.pem`; Node exporters need it via `NODE_EXTRA_CA_CERTS`); an untrusted certificate fails silently on the exporter side and the engine's `heartbeat otlp` log line stays at zero batches. See *Deployment → OpenClaw Telemetry (OTLP)* for the OpenClaw setup.
+The receiver is served over TLS with a certificate signed by the manager's internal CA. OTLP exporters verify that certificate, so the exporter must trust the internal CA (the agent installs it as `data/tls-ca.pem`; Node exporters need it via `NODE_EXTRA_CA_CERTS`); an untrusted certificate fails silently on the exporter side and the engine's `heartbeat otlp` log line stays at zero batches. When OpenClaw is configured, the Admin System Health card shows a note once the engine has run 15 minutes with no OTLP data. See *Deployment → OpenClaw Telemetry (OTLP)* for the OpenClaw setup.
 
 ### `POST /v1/metrics`
 Ingests OpenTelemetry metrics (counters, gauges, histograms).

@@ -177,7 +177,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-7"
+__version__ = "v2026.09.22-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5038,6 +5038,35 @@ def _agent_update_state(agents: list) -> dict:
             "hostnames": hostnames}
 
 
+_OTLP_GRACE_S = 900
+_OTLP_STALE_S = 1800
+_OTLP_ERROR_WINDOW_S = 900
+
+
+def _otlp_advisories(otlp: dict | None, ae_uptime_s: float | None,
+                     has_openclaw: bool) -> list[str]:
+    """Info-level System Health notes for an OTLP exporter that is silent, stale or erroring."""
+    if not otlp or not has_openclaw:
+        return []
+    batches = sum(int(otlp.get(k) or 0) for k in ("metric_batches", "trace_batches", "log_batches"))
+    batch_age = otlp.get("last_batch_age_s")
+    error_age = otlp.get("last_error_age_s")
+    out: list[str] = []
+    if batches == 0:
+        if isinstance(ae_uptime_s, (int, float)) and ae_uptime_s >= _OTLP_GRACE_S:
+            out.append(f"OpenClaw is set up but the alarm engine has received no OTLP data in "
+                       f"{ae_uptime_s / 60:.0f} min — check the exporter's endpoint and "
+                       "that it trusts the engine's TLS certificate")
+    elif isinstance(batch_age, (int, float)) and batch_age >= _OTLP_STALE_S:
+        out.append(f"No OTLP data has reached the alarm engine for {batch_age / 60:.0f} min "
+                   "— the OpenClaw exporter may have stopped sending")
+    if isinstance(error_age, (int, float)) and error_age < _OTLP_ERROR_WINDOW_S:
+        errs = int(otlp.get("parse_errors") or 0) + int(otlp.get("write_errors") or 0)
+        out.append(f"The alarm engine rejected OTLP data in the last {_OTLP_ERROR_WINDOW_S // 60} min "
+                   f"({errs} error{'' if errs == 1 else 's'} since it started) — see the alarm engine log")
+    return out
+
+
 @app.route("/api/admin/system-health", methods=["GET"])
 def admin_system_health():
     """One-shot health snapshot for the admin tab's System Health card.
@@ -5089,6 +5118,8 @@ def admin_system_health():
     # real outage for long (next 20s frontend poll catches it).
     ae_url = _alarm_engine_url or ""
     ae_flow: dict = {"ae_ingest_points_per_s": None, "influx_writes_per_s": None}
+    ae_otlp: dict | None = None
+    ae_uptime_s: float | None = None
     if ae_url:
         try:
             t0 = time.perf_counter()
@@ -5126,6 +5157,7 @@ def admin_system_health():
                 "rule_eval_ms": _comps.get("rule_eval_last_cycle_ms"),
                 "ingest_points_per_s": info.get("ingest_points_per_s"),
                 "active_alerts": info.get("active_alerts"),
+                "otlp": _comps.get("otlp") if isinstance(_comps.get("otlp"), dict) else None,
                 "auth": _auth_status,
                 "auth_detail": _auth_raw,
                 "bearer_configured": _bearer_sent,
@@ -5148,6 +5180,9 @@ def admin_system_health():
                     "alarm engine auth: the engine rejects the manager's token — the two hosts' "
                     "[alarm_engine].management_token values differ; set the same value on both "
                     "and restart the manager " + _remedy)
+            if ae_ok and isinstance(_comps.get("otlp"), dict):
+                ae_otlp = _comps["otlp"]
+                ae_uptime_s = info.get("uptime_s")
             ae_flow.update({
                 "ae_ingest_points_per_s": info.get("ingest_points_per_s"),
                 "influx_writes_per_s": info.get("influx_writes_per_s"),
@@ -5214,6 +5249,7 @@ def admin_system_health():
     has_llama_agent = any(c.get("llama") for c in _approved_caps)
     has_lms_agent   = any(c.get("lms")   for c in _approved_caps)
     has_vllm_agent  = any(c.get("vllm")  for c in _approved_caps)
+    has_openclaw = any(c.get("openclaw") for c in _approved_caps)
     for aid, agent in data.get("agents", {}).items():
         liveness = agent_registry.agent_liveness(agent)
         last_hb = agent.get("last_heartbeat")
@@ -5315,6 +5351,13 @@ def admin_system_health():
     down_agents = [a for a in health["agents"] if a["status"] == "approved" and a["liveness"] == "down"]
     if down_agents:
         health["warnings"].append(f"{len(down_agents)} approved agent(s) down: " + ", ".join(a["hostname"] or a["id"] for a in down_agents))
+
+    if ae_otlp is not None and not has_openclaw:
+        with best_effort("system health: openclaw proxy lookup"):
+            has_openclaw = proxies.resolve_proxy_target("openclaw") is not None
+    health["advisories"] = []
+    with best_effort("system health: OTLP advisories"):
+        health["advisories"] = _otlp_advisories(ae_otlp, ae_uptime_s, has_openclaw)
 
     _cert_warn_within_days = 14
     _now = datetime.now(timezone.utc)

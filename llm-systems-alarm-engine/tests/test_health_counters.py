@@ -108,3 +108,25 @@ def test_single_and_raw_routes_count_points():
         metric_repo=_FakeRepo(), _auth=None))
     assert out["points_written"] >= 1
     assert ae.INGEST_POINTS.total() == 1 + out["points_written"]
+
+
+def test_health_reports_otlp_receiver_counters(monkeypatch):
+    """#1071: components.otlp carries batch/error counters and timestamps."""
+    from backend.receivers import otlp_receiver as orx
+    monkeypatch.setattr(ae.settings.influxdb, "host", "", raising=False)
+    monkeypatch.setattr(orx, "_otlp_metric_batches", 0)
+    monkeypatch.setattr(orx, "_otlp_parse_errors", 0)
+    monkeypatch.setattr(orx, "_otlp_last_batch_at", None)
+    monkeypatch.setattr(orx, "_otlp_last_error_at", None)
+    otlp = asyncio.run(ae.health_check())["components"]["otlp"]
+    assert otlp["metric_batches"] == 0 and otlp["last_batch_at"] is None
+    monkeypatch.setattr(orx, "_otlp_metric_batches", 3)
+    orx._note_batch()
+    orx._note_error()
+    otlp = asyncio.run(ae.health_check())["components"]["otlp"]
+    assert otlp["metric_batches"] == 3
+    assert otlp["last_batch_at"] and otlp["last_error_at"]
+    assert 0 <= otlp["last_batch_age_s"] < 5 and 0 <= otlp["last_error_age_s"] < 5
+    assert set(otlp) == {"metric_batches", "trace_batches", "log_batches", "parse_errors",
+                         "write_errors", "last_batch_at", "last_error_at",
+                         "last_batch_age_s", "last_error_age_s"}

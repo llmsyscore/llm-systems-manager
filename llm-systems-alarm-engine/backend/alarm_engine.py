@@ -71,7 +71,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-1"
+__version__ = "v2026.09.22-2"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -899,6 +899,7 @@ async def health_check(authorization: Optional[str] = Header(default=None)) -> d
             # where tls_enabled is on but the cert wasn't found).
             "tls": _tls_status,
             "auth": auth,
+            "otlp": otlp_receiver.stats(),
         },
     }
 

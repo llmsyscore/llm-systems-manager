@@ -219,6 +219,14 @@ describe('warnings column', () => {
     expect(win.__called).toBe(1);
   });
 
+  test('advisories render as info rows and keep the pill Healthy (#1071)', () => {
+    const doc = card({ ...HEALTHY, advisories: ['No OTLP data <b>yet</b>'] });
+    const rows = [...doc.querySelectorAll('#adminHealthWarnings .w')];
+    expect(rows.map(r => r.className)).toEqual(['w info']);
+    expect(rows[0].innerHTML).toContain('&lt;b&gt;');
+    expect(doc.getElementById('adminHealthOverall').textContent).toBe('Healthy');
+  });
+
   test('server warning text is escaped, never parsed as markup', () => {
     const doc = card({ ...HEALTHY, warnings: ['<img src=x onerror=1>'] });
     const html = doc.getElementById('adminHealthWarnings').innerHTML;
@@ -238,6 +246,19 @@ describe('node detail strip', () => {
     expect(det.textContent).toContain('42 points/s');
     expect(det.textContent).toContain('42 ms');
     expect(sel.getElementById('hcnAe').getAttribute('class')).toContain('sel');
+  });
+
+  test('the engine strip shows OTLP receipt only when the engine reports it (#1071)', () => {
+    const withOtlp = { ...HEALTHY, services: [
+      { ...HEALTHY.services[0], otlp: { metric_batches: 10, trace_batches: 2, log_batches: 0, last_batch_age_s: 180 } },
+      HEALTHY.services[1]] };
+    const det = card(withOtlp, null, "HealthView.select('ae');").getElementById('adminHealthDetail');
+    expect(det.textContent).toContain('OTLP received');
+    expect(det.textContent).toContain('12 batches · 3m ago');
+    const none = { ...HEALTHY, services: [{ ...HEALTHY.services[0], otlp: { metric_batches: 0 } }, HEALTHY.services[1]] };
+    expect(card(none, null, "HealthView.select('ae');").getElementById('adminHealthDetail').textContent).toContain('none yet');
+    expect(card(HEALTHY, null, "HealthView.select('ae');").getElementById('adminHealthDetail').textContent)
+      .not.toContain('OTLP');
   });
 
   test('clicking a node swaps the strip; clicking it again closes it', () => {
