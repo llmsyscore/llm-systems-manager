@@ -286,6 +286,26 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
              "latency_s": r["latency_s"], "accept_rate": r["accept_rate"], "wh_per_ktok": r["wh_per_ktok"],
              "llama_build": r.get("llama_build") or ""} for r in rows]})
 
+    @app.route("/api/benchmark/live/latest")
+    def bench_live_latest():
+        """Newest ok run per model for one agent (the selected llama agent by default)."""
+        agent_id = (flask_request.args.get("agent_id") or "").strip()
+        if not agent_id:
+            agent_id = ((request_agent("llama") or {}).get("agent_id") or "")
+        names = {h["agent_id"]: h.get("hostname") for h in (fleet_hosts() if fleet_hosts else [])}
+        with lock:
+            rows = conn_factory().execute(
+                f"SELECT {_COLS} FROM bench_live_runs WHERE agent_id = ? AND ok = 1 ORDER BY id DESC",
+                (agent_id,)).fetchall()
+        models: dict = {}
+        for r in rows:
+            row = _row(r)
+            models.setdefault(row["model_id"], {
+                "run_id": row["run_id"], "ts": row["ts"], "bench": (row.get("config") or {}).get("bench"),
+                "gen_tps": row["gen_tps"], "ppt_tps": row["ppt_tps"], "latency_s": row["latency_s"],
+                "wh_per_ktok": row["wh_per_ktok"], "hostname": names.get(agent_id) or agent_id[:8]})
+        return jsonify({"ok": True, "agent_id": agent_id, "models": models})
+
     @app.route("/api/benchmark/live/preflight")
     def bench_live_preflight():
         return proxy("llama", "GET", "/llama/bench/live/preflight", timeout=10)

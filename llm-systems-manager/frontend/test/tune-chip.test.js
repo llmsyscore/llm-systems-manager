@@ -14,7 +14,7 @@ function boot(status) {
     window.fetch = (u) => { window.__fetches.push(String(u)); return Promise.resolve({ json: () => Promise.resolve(${JSON.stringify(status)}) }); };
     window._llamaTuneStatus = {}; window._llamaTuneStatusTs = 0;
   `;
-  const fns = ['_llamaTuneFor', '_loadTuneStatus', '_llamaDescriptor'].map(n => {
+  const fns = ['_llamaTuneFor', '_loadTuneStatus', '_llamaDescriptor', '_llamaLiveFor'].map(n => {
     const s = fnSrc(SRC, n); if (!s) throw new Error(n + ' missing'); return s;
   }).join('\n');
   return runHarness({ sources: [pre, fns], bodyHtml: '<div></div>' });

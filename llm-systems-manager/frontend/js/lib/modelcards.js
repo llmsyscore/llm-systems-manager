@@ -62,28 +62,37 @@
     return `<span class="mc-tune${tune.stale ? ' stale' : ''}" title="${esc(tune.title || '')}"${act}>${esc(tune.label)}</span>`;
   }
 
-  // #887: badges (bench/re-bench/tuned) and stat cells live in separate zones
-  // so one group never interleaves with, or reflows because of, the other.
-  function statsHtml(stats, fresh, d) {
-    const cells = (stats || []).map(s =>
-      `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v${s.live ? ' live' : ''}"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
+  function cellsHtml(stats) {
+    return (stats || []).map(s =>
+      `<div class="mc-stat"><div class="l">${esc(s.l)}</div><div class="v"><b>${esc(s.v)}</b>${s.unit ? ' ' + esc(s.unit) : ''}</div></div>`
     ).join('');
-    if (!cells && !(fresh && fresh.stale) && !(d && d.tune)) return '';
-    const tag = cells
-      ? `<span class="mc-benchtag" title="${esc(((d && d.benchTitle) || 'Benchmark results — not live throughput') + _whSuffix(d && d.extraJson))}">bench</span>`
-      : '';
+  }
+
+  // Offline vs live benchmark sections; each ends with a "Last run" cell.
+  function benchHtml(d) {
+    const withAge = (stats, age) => (stats && stats.length && age) ? [...stats, { l: 'Last run', v: age }] : stats;
+    const off = cellsHtml(withAge(d && d.stats, d && d.benchAge));
+    const live = cellsHtml(withAge(d && d.live && d.live.stats, d && d.live && d.live.age));
+    if (!off && !live) return '';
+    const none = '<div class="mc-bnone">no run yet</div>';
+    return `<div class="mc-bench">
+      <div class="mc-bsect mc-bsect-off"${_clickAttrs(d, d && d.benchClick, off)}><div class="mc-bhdr">Offline bench</div>${off ? `<div class="mc-cells">${off}</div>` : none}</div>
+      <div class="mc-bsect mc-bsect-live"${_clickAttrs(d, d && d.liveClick, live)}><div class="mc-bhdr">Live bench</div>${live ? `<div class="mc-cells">${live}</div>` : none}</div>
+    </div>`;
+  }
+
+  // Badges (re-bench / tuned) share the profile row; stats live in benchHtml.
+  function badgesHtml(fresh, d) {
     const f = (fresh && fresh.stale)
       ? `<span class="mc-stale" title="${esc(fresh.staleTitle || 'Config changed since this benchmark — run a fresh one from the ⋯ menu')}">re-bench</span>`
       : '';
     const tune = tuneTag(d && d.tune, d);
-    const badges = (tag || f || tune) ? `<div class="mc-badges">${tag}${f}${tune}</div>` : '';
-    const cellsHtml = cells ? `<div class="mc-cells">${cells}</div>` : '';
-    return `<div class="mc-stats"${_benchClickAttrs(d, cells)}>${badges}${cellsHtml}</div>`;
+    return (f || tune) ? `<div class="mc-badges">${f}${tune}</div>` : '';
   }
 
-  function _benchClickAttrs(d, hasCells) {
-    if (!d || !d.benchClick || !hasCells) return '';
-    return ` ${d.actAttr}="${esc(d.benchClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Open the benchmark for this model"`;
+  function _clickAttrs(d, act, hasCells) {
+    if (!d || !act || !hasCells) return '';
+    return ` ${d.actAttr}="${esc(act)}" data-id="${esc(d.id)}" role="button" tabindex="0"`;
   }
 
   function _menuItems(items, d) {
@@ -134,12 +143,14 @@
   // badge/stat zones onto another line; missing zones just leave the space.
   function teleHtml(d) {
     const prof = d.profileHtml || '';
-    const stats = statsHtml(d.stats, d.fresh, d);
-    if (!prof && !stats) return '';
+    const badges = badgesHtml(d.fresh, d);
+    const bench = benchHtml(d);
+    if (!prof && !badges && !bench) return '';
     const profZone = prof
       ? `<div class="mc-tele-prof"${d.profileText ? ` title="${esc(d.profileText)}"` : ''}>${prof}</div>`
       : '';
-    return `<div class="mc-tele">${profZone}${stats}</div>`;
+    const tele = (profZone || badges) ? `<div class="mc-tele">${profZone}${badges}</div>` : '';
+    return tele + bench;
   }
 
   function compact(d) {
@@ -160,8 +171,12 @@
 
   function row(d) {
     const cfg = (d.specs || []).map(s => `${esc(String(s.k).toLowerCase())} ${esc(s.v)}`).join('<i>·</i>');
-    const met = (d.stats || []).slice(0, 3).map(s =>
+    const rstat = (stats, n) => (stats || []).slice(0, n).map(s =>
       `<span class="mc-rstat"><span class="rl">${esc(s.l)}</span><b>${esc(s.v)}</b></span>`).join('');
+    const met = rstat(d.stats, 3);
+    const live = rstat(d.live && d.live.stats, 2);
+    const offTitle = (d.benchTitle || 'Offline benchmark results — not live throughput') + _whSuffix(d.extraJson);
+    const liveTitle = (d.live && d.live.title) || '';
     const menuItems = [
       ...(d.buttons || []).map(b => ({ act: b.act, label: b.label, icon: b.icon })),
       ...((d.buttons || []).length && (d.menu || []).filter(i => i !== '-').length ? ['-'] : []),
@@ -172,14 +187,15 @@
       ${dot(d.pill && d.pill.state)}
       <div class="mc-rowname"><div class="n">${esc(d.name)}</div>${d.repo ? `<div class="r">${esc(d.repo)}</div>` : ''}</div>
       <div class="mc-rowcfg"${d.cfgClick ? ` ${d.actAttr}="${esc(d.cfgClick)}" data-id="${esc(d.id)}" role="button" tabindex="0" title="Edit configuration"` : ''}>${cfg}</div>
-      <div class="mc-rowmet"${_benchClickAttrs(d, met)}>${met}</div>
+      <div class="mc-rowmet"${met ? ` title="${esc(offTitle)}"` : ''}${_clickAttrs(d, d.benchClick, met)}>${met || '<span class="mc-bnone">—</span>'}</div>
+      <div class="mc-rowlive"${live ? ` title="${esc(liveTitle)}"` : ''}${_clickAttrs(d, d.liveClick, live)}>${live || '<span class="mc-bnone">—</span>'}</div>
       <div class="mc-rowprof">${d.profileHtml || ''}${d.fresh && d.fresh.stale ? ` <span class="mc-stale" title="${esc(d.fresh.staleTitle || 'Config changed since this benchmark')}">re-bench</span>` : ''}${tuneTag(d.tune, d)}</div>
       <div class="mc-rowact">${d.primary ? btnHtml(d, d.primary, 'mcbtn-pri') : ''}${menuHtml(d, menuItems)}</div>
     </div>`;
   }
 
-  function rowHeader(metLabel, profLabel, metTitle) {
-    return `<div class="mc-row mc-row-hdr"><span></span><span>Model</span><span>Configuration</span><div class="mc-rowmet mc-methdr"${metTitle ? ` title="${esc(metTitle)}"` : ''}><span>${esc(metLabel || '')}</span></div><span class="mc-profhdr">${esc(profLabel || '')}</span><span></span></div>`;
+  function rowHeader(metLabel, profLabel, metTitle, liveLabel, liveTitle) {
+    return `<div class="mc-row mc-row-hdr"><span></span><span>Model</span><span>Configuration</span><div class="mc-rowmet mc-methdr"${metTitle ? ` title="${esc(metTitle)}"` : ''}><span>${esc(metLabel || '')}</span></div><div class="mc-rowlive mc-methdr"${liveTitle ? ` title="${esc(liveTitle)}"` : ''}><span>${esc(liveLabel || '')}</span></div><span class="mc-profhdr">${esc(profLabel || '')}</span><span></span></div>`;
   }
 
   function groupRow(name, count, collapsed) {
@@ -346,7 +362,7 @@
   }
 
   const _MC_API = {
-    VIEWS, esc, validView, viewOf, age, pill, dot, specsHtml, statsHtml, tuneTag,
+    VIEWS, esc, validView, viewOf, age, pill, dot, specsHtml, benchHtml, badgesHtml, tuneTag,
     card, compact, row, rowHeader, groupRow, groupHeader, actionsHtml, menuHtml,
     filterOf, filterMatch, isCollapsed, toggleGroup, isOpen, toggleOpen,
     setBusy, clearBusy, busyOf, setView, syncSeg, initToolbar, bindContainer, closeMenus,

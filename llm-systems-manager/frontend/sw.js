@@ -4,19 +4,23 @@ const VERSION = '__MGR_VERSION__';
 const CACHE = `lsm-companion-${VERSION}`;
 const SHELL = [
   '/companion',
-  '/static/css/base.css',
-  '/static/css/companion.css',
-  '/static/js/lib/settingsdrawer.js',
-  '/static/js/lib/pushutil.js',
-  '/static/js/lib/energy.js',
-  '/static/js/lib/companion-spark.js',
-  '/static/js/lib/companion-view.js',
-  '/static/js/lib/sseguard.js',
-  '/static/js/lib/tower-view.js',
-  '/static/js/companion-tower.js',
-  '/static/js/companion.js',
+  '/static/css/base.css?v=__MGR_VERSION__',
+  '/static/css/companion.css?v=__MGR_VERSION__',
+  '/static/js/lib/settingsdrawer.js?v=__MGR_VERSION__',
+  '/static/js/lib/pushutil.js?v=__MGR_VERSION__',
+  '/static/js/lib/energy.js?v=__MGR_VERSION__',
+  '/static/js/lib/companion-spark.js?v=__MGR_VERSION__',
+  '/static/js/lib/companion-view.js?v=__MGR_VERSION__',
+  '/static/js/lib/sseguard.js?v=__MGR_VERSION__',
+  '/static/js/lib/tower-view.js?v=__MGR_VERSION__',
+  '/static/js/companion-tower.js?v=__MGR_VERSION__',
+  '/static/js/companion.js?v=__MGR_VERSION__',
   '/static/icons/icon-192.png',
 ];
+
+// SHELL paths without their ?v= query; the fetch handler matches on pathname
+// and caches the versioned request, so the precache and runtime keys agree.
+const SHELL_PATHS = new Set(SHELL.map((p) => new URL(p, self.location.origin).pathname));
 
 // Cacheable = 200, same-request URL (a /login redirect must never be stored
 // under an asset's cache key).
@@ -50,7 +54,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
   if (url.origin !== self.location.origin) return;
-  if (!SHELL.includes(url.pathname)) return;
+  if (!SHELL_PATHS.has(url.pathname)) return;
   e.respondWith((async () => {
     try {
       const resp = await fetch(e.request);
@@ -58,7 +62,8 @@ self.addEventListener('fetch', (e) => {
         (await caches.open(CACHE)).put(e.request, resp.clone());
       return resp;
     } catch (err) {
-      const hit = await caches.match(e.request);
+      // Offline: the exact versioned key first, then any cached version of the path.
+      const hit = await caches.match(e.request) || await caches.match(e.request, { ignoreSearch: true });
       if (hit) return hit;
       throw err;
     }

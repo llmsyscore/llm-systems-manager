@@ -123,3 +123,21 @@ def test_store_records_llama_build_from_doc_or_manager_fallback(tmp_path):
     stored = sqlite3.connect(tmp_path / "b.db").execute(
         "SELECT run_id, llama_build FROM bench_live_runs ORDER BY id").fetchall()
     assert stored == [("r1", "b6990-agent"), ("r2", "b7000-mgr")]
+
+
+def test_latest_is_newest_ok_run_per_model_for_the_selected_agent(app):
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json=_doc("r1", model="org/a", pred=50.0), headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("r2", model="org/a", pred=60.0), headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("r3", model="org/b", pred=70.0), headers=h)
+    bad = _doc("r4", model="org/b", pred=90.0); bad["ok"] = False
+    app.post("/api/benchmark/live/store", json=bad, headers=h)
+    r = app.get("/api/benchmark/live/latest")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] and d["agent_id"] == AGENT["agent_id"]
+    assert set(d["models"]) == {"org/a", "org/b"}
+    assert d["models"]["org/a"]["run_id"] == "r2" and d["models"]["org/a"]["gen_tps"] == 60.0
+    assert d["models"]["org/b"]["run_id"] == "r3" and d["models"]["org/b"]["bench"] == "qualitative"
+    assert d["models"]["org/a"]["ts"] and d["models"]["org/a"]["hostname"]
+    assert app.get("/api/benchmark/live/latest?agent_id=" + "f" * 32).get_json()["models"] == {}

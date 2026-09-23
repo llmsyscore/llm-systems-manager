@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { srcFile, loadSwitchSubTab } from './helpers/harness.js';
 
 const LIB_V = '2026.09.21-6';
-const CSS_V = '2026.09.21-7';
+const CSS_V = '2026.09.22-1';
 const V = '2026.09.21-7';
 const indexSrc = srcFile('index.html');
 const bootSrc = srcFile('js/boot.js');

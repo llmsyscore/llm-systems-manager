@@ -163,6 +163,23 @@
     /* Flow engine (#823): 8px row tracks, each card spans the rows its
        content needs (inline grid-row from JS); dense packing closes gaps. */
     .grid.flow { grid-auto-rows: 8px; row-gap: 8px; grid-auto-flow: dense; align-items: start; }
+    /* Phone width: one column; inline column templates and card spans give way. */
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr !important; gap: 12px; padding: 12px; }
+      .grid > .card, .grid > .ov-shell { grid-column: auto !important; }
+      /* Header: logo + controls on the first row, provider pills wrap beneath. */
+      h1 { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
+      .site-title { display: none; }
+      .header-right { order: 1; gap: 6px; }
+      .state-banner { order: 2; margin-left: 0 !important; min-width: 0; }
+      .state-pill { max-width: 100%; min-width: 0; }
+      .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* Tab bar scrolls sideways instead of wrapping or pushing the page wider. */
+      .tab-nav { overflow-x: auto; justify-content: flex-start; padding: 0 8px; scrollbar-width: none; }
+      .tab-nav::-webkit-scrollbar { display: none; }
+      .tab-btn { white-space: nowrap; padding: 10px 12px; flex: 0 0 auto; }
+      .tab-nav-right { flex: 0 0 auto; }
+    }
     .grid.flow .chart-wrap { flex: 0 0 140px; min-height: 140px; }
     .grid.flow .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
     .grid.flow > .ov-shell { min-height: 0; }

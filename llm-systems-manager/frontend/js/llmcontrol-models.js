@@ -223,6 +223,23 @@ function _llamaSwitchVal(switches, name) {
   return sw.value != null ? String(sw.value) : (sw.val != null ? String(sw.val) : null);
 }
 
+// Live-bench section (#893): newest live run for this model on the selected agent.
+function _llamaLiveFor(modelId) {
+  const r = (typeof _liveBenchData === 'object' && _liveBenchData) ? _liveBenchData[modelId] : null;
+  if (!r || r.gen_tps == null) return null;
+  const age = MC.age(r.ts);
+  const title = ['Live benchmark against the running server — not live throughput',
+    r.bench ? 'bench: ' + r.bench : null, r.hostname ? 'host: ' + r.hostname : null,
+    age ? 'last run ' + age : null,
+    r.wh_per_ktok != null ? Number(r.wh_per_ktok).toFixed(2) + ' Wh/1k' : null].filter(Boolean).join(' · ');
+  const stats = [
+    ...(r.ppt_tps != null ? [{ l: 'Prompt', v: Number(r.ppt_tps).toFixed(0), unit: 't/s' }] : []),
+    { l: 'Gen', v: Number(r.gen_tps).toFixed(1), unit: 't/s' },
+    ...(r.latency_s != null ? [{ l: 'Latency', v: Number(r.latency_s).toFixed(1), unit: 's' }] : []),
+  ];
+  return { stats, title, age, gen: Number(r.gen_tps).toFixed(1) };
+}
+
 // Benchmark freshness: age from the stored ts, stale when the configured
 // context size no longer matches the one the benchmark ran with.
 function _llamaFresh(modelId, cfg) {
@@ -366,10 +383,10 @@ function _llamaDescriptor(modelId, statusLookup) {
     </div>` : '';
 
   const prof = _llmProfiles[modelId] || { active: '', profiles: {} };
-  const ctxShort = cfg['ctx-size'] ? (Math.round(Number(cfg['ctx-size']) / 1024) + 'k') : null;
+  const live = _llamaLiveFor(modelId);
   const csub = [
-    b ? `gen <b>${MC.esc(Number(b.avg_gen_tps ?? 0).toFixed(1))} t/s</b>` : null,
-    ctxShort ? 'ctx ' + MC.esc(ctxShort) : null,
+    b ? `offline <b>${MC.esc(Number(b.avg_gen_tps ?? 0).toFixed(1))} t/s</b>` : null,
+    live ? `live <b>${MC.esc(live.gen)} t/s</b>` : null,
     prof.active ? MC.esc(prof.active) : null,
   ].filter(Boolean).join(' · ');
 
@@ -377,11 +394,11 @@ function _llamaDescriptor(modelId, statusLookup) {
   return {
     id: modelId, actAttr: 'data-act', renameAct: 'rename',
     name: aliasOrShort(modelId), repo: modelId,
-    pill, specs, stats, fresh: _llamaFresh(modelId, cfg), tune,
-    benchTitle: 'Benchmark results — not live throughput' + (benchAge ? ' (last run ' + benchAge + ')' : ''),
+    pill, specs, stats, benchAge, fresh: _llamaFresh(modelId, cfg), tune, live,
+    benchTitle: 'Offline benchmark (llama-bench) — not live throughput' + (b && b.bench_tool ? ' · tool: ' + b.bench_tool : '') + (benchAge ? ' · last run ' + benchAge : ''),
     extraJson: b && b.extra_json,
     cfgClick: 'edit',
-    benchClick: 'bench',
+    benchClick: 'bench', liveClick: 'benchlive',
     profileHtml: _llamaProfileHtml(modelId),
     profileText: prof.active || '',
     primary, buttons, menu, perfHtml,
@@ -436,7 +453,7 @@ function renderModelCards() {
       if (g.header && MC.isCollapsed('llama', g.header)) return head;
       return head + g.ids.map(id => MC.row(_llamaDescriptor(id, statusLookup))).join('');
     }).join('');
-    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Bench (t/s)', 'Profile', 'llama-bench results — not live throughput')}${rows}</div></div>`;
+    container.innerHTML = `<div class="mc-listwrap"><div class="mc-list">${MC.rowHeader('Offline bench (t/s)', 'Profile', 'llama-bench results — not live throughput', 'Live bench (t/s)', 'Newest live benchmark against the running server — not live throughput')}${rows}</div></div>`;
   } else {
     const compactView = view === 'compact';
     container.className = 'mc-grid' + (compactView ? ' mc-compactgrid' : '');
@@ -465,7 +482,8 @@ function renderModelCards() {
       else if (act === 'reload') confirmReload(id);
       else if (act === 'edit')   openEditModel(id);
       else if (act === 'delete') confirmDelete(id);
-      else if (act === 'bench')    { MC.closeMenus(); toolsDeepLink('benchmark', id); }
+      else if (act === 'bench')    { MC.closeMenus(); toolsDeepLink('benchmark', id, { mode: 'offline' }); }
+      else if (act === 'benchlive') { MC.closeMenus(); toolsDeepLink('benchmark', id, { mode: 'live' }); }
       else if (act === 'autotune') { MC.closeMenus(); toolsDeepLink('autotune', id); }
       else if (act === 'reverify') { MC.closeMenus(); toolsDeepLink('autotune', id, { verify: true }); }
       else if (act === 'rename') startCardRename(el, id);
