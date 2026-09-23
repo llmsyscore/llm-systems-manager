@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -317,10 +318,18 @@ def test_stick_samples_free_memory_through_the_traffic(env, monkeypatch, tmp_pat
     t = env.tools
     monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s"})
     readings = iter([2400, 1900, 2100, 2300])
-    monkeypatch.setattr(t, "_free_mb", lambda: next(readings, 2300))
+    sampled = threading.Event()
+
+    def free_mb():
+        v = next(readings, 2300)
+        if v == 2300:
+            sampled.set()                       # the bench "runs" until the sampler has seen every reading
+        return v
+    monkeypatch.setattr(t, "_free_mb", free_mb)
     monkeypatch.setattr(t._bl, "build_cmd", lambda *a, **k: ["x"])
 
     def fake_run(cmd, benv, put, mid, level, cancel, track, untrack):
+        sampled.wait(5)
         (tmp_path / "data" / "bench" / "runs" / "at-run1" / "stick-1-qwen3.5-9b_q6_k.json").write_text('{"ok": true}')
         return 0, False, 12.0
     monkeypatch.setattr(t._bl, "run_level_subprocess", fake_run)
