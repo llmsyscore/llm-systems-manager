@@ -23,6 +23,15 @@
   let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
   let _base = null, _baseTimer = null, _baseAutoAttached = null, _slot = null, _baselineFor = null;
+  // Chart metric (#906): the y-value drawn on whichever chart shape the run produced.
+  const METRICS = {
+    decode:  { label: 'decode t/s', all: 'pred_tps', row: 'avg_pred_t_s', agg: 'agg_pred_tps' },
+    prompt:  { label: 'prompt t/s', all: 'prompt_tps', row: 'avg_prompt_t_s' },
+    latency: { label: 'latency s', all: 'latency_s', row: 'avg_latency' },
+    accept:  { label: 'draft accept %', all: 'accept_rate', row: 'accept_rate', pct: true },
+  };
+  const SERIES = ['#4ea1ff', '#ff8a3d', '#3ad17f', '#b88aff'];
+  let _metric = 'decode', _matrixRun = false, _chartType = null;
   const _baseOpenDet = new Set();  // run ids with an expanded config-detail row
   const FLEET_POLL_MS = 3000;
 
@@ -245,7 +254,7 @@
     if (opts && opts.install && !running() && (!rt.python || !rt.script) && (_pre.server || {}).up) setup();
     await loadRuns();
     await loadBaselines();
-    if (!_chart && window.Chart && $('blChart')) mkChart();
+    renderMetricSeg();
     ['blOsl', 'blLimit', 'blSweep', 'blTimeout', 'blExtra'].forEach(id => { const el = $(id); if (el && !el._bl) { el._bl = 1; el.addEventListener('input', () => { markCustom(); updateEstimate(); }); } });
     const b = $('blBench'); if (b && !b._bl) { b._bl = 1; b.addEventListener('change', () => { markCustom(); renderCats((((_pre || {}).datasets || {})[b.value] || {}).categories || [], 'all'); updateEstimate(); }); }
     document.querySelectorAll('#blPresets .bl-chip').forEach(c => { if (!c._bl) { c._bl = 1; c.addEventListener('click', () => applyPreset(c.dataset.preset)); } });
@@ -270,15 +279,35 @@
     const savedJob = sessionStorage.getItem('bl.fleetJob');
     if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }
   }
-  function mkChart() {
-    const css = v => (window.cssVar ? cssVar(v) : '#888');
-    _chart = new Chart($('blChart').getContext('2d'), { type: 'line', data: { labels: [], datasets: [
-      { label: 'this run', data: [], borderColor: css('--accent'), fill: true, tension: 0, pointRadius: 4, spanGaps: true,
-        backgroundColor: 'color-mix(in srgb, ' + css('--accent') + ' 14%, transparent)' },
-      { label: 'baseline', data: [], borderColor: css('--fg-dim'), borderDash: [5, 4], fill: false, tension: 0, pointRadius: 3, spanGaps: true },
-      { label: 'pending', data: [], pointStyle: 'circle', pointRadius: 4, pointBorderColor: css('--accent'), pointBackgroundColor: 'transparent', showLine: false } ] },
+  // (Re)creates the Chart.js instance when the chart type changes.
+  function mkChart(type) {
+    if (_chart && _chartType === type) return;
+    if (_chart) { _chart.destroy(); _chart = null; }
+    const cv = $('blChart'); if (!cv || !window.Chart) return;
+    _chartType = type;
+    _chart = new Chart(cv.getContext('2d'), { type, data: { labels: [], datasets: [] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-                 scales: { x: { title: { display: true, text: 'concurrent requests' } }, y: { beginAtZero: true, title: { display: true, text: 'aggregate decode t/s' } } } } });
+                 scales: { x: { title: { display: false, text: '' } }, y: { beginAtZero: true, title: { display: true, text: '' } } } } });
+  }
+  function renderMetricSeg() {
+    const host = $('blMetricSeg'); if (!host || host._bl) return;
+    host._bl = 1;
+    host.innerHTML = Object.keys(METRICS).map(k => `<button type="button" data-metric="${k}" class="${k === _metric ? 'on' : ''}">${k}</button>`).join('');
+    host.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      _metric = b.dataset.metric; host.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); redraw();
+    }));
+  }
+  // Metric value of a level summary ('all') or a category row; accept rate as a percentage.
+  function mval(m, obj, row) {
+    const v = obj ? obj[row ? m.row : m.all] : null;
+    if (v == null) return null;
+    return m.pct ? Math.round(v * 1000) / 10 : v;
+  }
+  // Sweep: 2+ levels in the active cell. Matrix: 2+ prompt x output cells. Single: one level, one cell.
+  function chartShape(cur) {
+    if (cur.length >= 2 || (running() && _sweepLevels.length >= 2 && cur.length)) return 'sweep';
+    if (cells().length >= 2 || (running() && _matrixRun && cur.length)) return 'matrix';
+    return cur.length ? 'single' : 'none';
   }
   function baselineLevels() { return (_baseline && _baseline.levels) || []; }
   // Cell key ties a level to its matrix cell; untagged levels all share '|'.
@@ -292,8 +321,8 @@
     const all = cells();
     return (_cell != null && all.includes(_cell)) ? _cell : (all[0] != null ? all[0] : null);
   }
-  function baselineAt(conc) {
-    const active = activeCellKey();
+  function baselineAt(conc, key) {
+    const active = key != null ? key : activeCellKey();
     return baselineLevels().find(l => l.concurrency === conc && (l.bench == null || cellKey(l) === active)) || null;
   }
   function renderCellSeg(active) {
@@ -316,7 +345,7 @@
       const key = `${l.bench}|${l.osl}`;
       const cur = map.get(key);
       const v = l.all && l.all.pred_tps;
-      if (!cur || l.concurrency < cur.conc) map.set(key, { conc: l.concurrency, v: v == null ? null : v });
+      if (!cur || l.concurrency < cur.conc) map.set(key, { conc: l.concurrency, v: v == null ? null : v, l });
     });
     const benchSet = new Set(), oslSet = new Set();
     map.forEach((_v, key) => { const i = key.lastIndexOf('|'); benchSet.add(key.slice(0, i)); oslSet.add(Number(key.slice(i + 1))); });
@@ -324,7 +353,8 @@
     const osls = [...oslSet].sort((a, b) => a - b);
     let max = null;
     map.forEach(e => { if (e.v != null && (max == null || e.v > max)) max = e.v; });
-    return { benches, osls, get: (b, o) => { const e = map.get(`${b}|${o}`); return e && e.v != null ? e.v : null; }, max };
+    return { benches, osls, get: (b, o) => { const e = map.get(`${b}|${o}`); return e && e.v != null ? e.v : null; },
+             level: (b, o) => { const e = map.get(`${b}|${o}`); return e ? e.l : null; }, max };
   }
   function renderHeat() {
     const card = $('blHeatCard'); const host = $('blHeat'), cap = $('blHeatCaption');
@@ -363,18 +393,8 @@
     const active = activeCellKey();
     const cur = _levels.filter(l => cellKey(l) === active);
     const pend = (running() && cur.length && _curLevel != null && (_curCell == null || _curCell === active) && !cur.some(l => l.concurrency === _curLevel)) ? _curLevel : null;
-    const labels = [...new Set([...cur.map(l => l.concurrency), ...baselineLevels().map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
-    const empty = $('blChartEmpty'); if (empty) empty.style.display = cur.length ? 'none' : '';
-    if (_chart) {
-      const lastAgg = cur.length ? cur[cur.length - 1].all.agg_pred_tps : null;
-      _chart.data.labels = labels.map(String);
-      _chart.data.datasets[0].data = labels.map(c => { const l = cur.find(x => x.concurrency === c); return l ? l.all.agg_pred_tps : null; });
-      _chart.data.datasets[1].data = labels.map(c => { const l = baselineAt(c); return l ? l.all.agg_pred_tps : null; });
-      if (_chart.data.datasets[2]) _chart.data.datasets[2].data = labels.map(c => (pend != null && c === pend) ? lastAgg : null);
-      _chart.update('none');
-    }
-    const k = knee(cur);
-    $('blChartCaption').textContent = cur.length > 1 && k ? `Per-request decode stays within 70 % of single-request speed up to ${k} concurrent.` : '';
+    const shape = chartShape(cur);
+    drawChart(shape, cur, pend);
     const first = cur[0] && cur[0].all, b0 = baselineAt(1) && baselineAt(1).all;
     const tiles = first ? [
       ['decode · 1 request', fmt(first.pred_tps), 't/s', deltaText(first.pred_tps, b0 && b0.pred_tps), true],
@@ -391,6 +411,73 @@
     renderCellSeg(active);
     renderHeat();
     syncAttachBtn(); syncPinBtn();
+  }
+  // Draws the shape-picked chart: sweep line, matrix line per output length, or single-level bars.
+  function drawChart(shape, cur, pend) {
+    const css = v => (window.cssVar ? cssVar(v) : '#888');
+    const accent = css('--accent'), dim = css('--fg-dim');
+    const mix = (c, pct) => `color-mix(in srgb, ${c} ${pct}%, transparent)`;
+    const m = METRICS[_metric] || METRICS.decode;
+    const line = (label, data, color, extra) => ({ label, data, borderColor: color, backgroundColor: color, fill: false, tension: 0, pointRadius: 4, spanGaps: true, ...(extra || {}) });
+    const dashed = (label, data, color) => line(label, data, color, { borderDash: [5, 4], pointRadius: 3 });
+    const conc = cur[0] ? cur[0].concurrency : null;
+    let labels = [], datasets = [], legend = [], head = 'Throughput under load', xTitle = '', caption = '';
+    if (shape === 'sweep') {
+      labels = [...new Set([...cur.map(l => l.concurrency), ...(pend == null ? [] : [pend])])].sort((a, b) => a - b);
+      const at = c => cur.find(x => x.concurrency === c);
+      xTitle = 'concurrent requests';
+      datasets.push(line('per-request', labels.map(c => mval(m, (at(c) || {}).all)), accent, { fill: true, backgroundColor: mix(accent, 14) }));
+      if (m.agg) datasets.push(line('aggregate', labels.map(c => { const l = at(c); return l ? l.all[m.agg] : null; }), SERIES[1]));
+      datasets.push(dashed('baseline', labels.map(c => mval(m, (baselineAt(c) || {}).all)), dim));
+      if (pend != null) datasets.push({ label: 'pending', data: labels.map(c => c === pend ? mval(m, cur[cur.length - 1].all) : null), pointStyle: 'circle', pointRadius: 4, pointBorderColor: accent, pointBackgroundColor: 'transparent', showLine: false });
+      legend = [['per-request', accent], m.agg ? ['aggregate', SERIES[1]] : null, ['baseline', dim, 'b']];
+      const k = knee(cur);
+      caption = cur.length > 1 && k && m.agg ? `Per-request decode stays within 70 % of single-request speed up to ${k} concurrent.` : '';
+    } else if (shape === 'matrix') {
+      head = 'Across prompt lengths';
+      const h = heatCells(_levels);
+      labels = h.benches.map(b => BENCH_LABEL[b] || b);
+      xTitle = 'prompt set';
+      h.osls.forEach((osl, i) => {
+        const color = SERIES[i % SERIES.length];
+        datasets.push(line(`osl ${osl}`, h.benches.map(b => mval(m, (h.level(b, osl) || {}).all)), color));
+        datasets.push(dashed(`osl ${osl} baseline`, h.benches.map(b => { const l = h.level(b, osl); return mval(m, (l && baselineAt(l.concurrency, `${b}|${osl}`) || {}).all); }), color));
+        legend.push([`osl ${osl}`, color]);
+      });
+      legend.push(['baseline', dim, 'b']);
+    } else if (shape === 'single') {
+      head = 'Per category';
+      const lv = cur[0], rows = lv.rows || [];
+      const bl = baselineAt(lv.concurrency), brow = c => ((bl && bl.rows) || []).find(r => r.category === c);
+      labels = [...rows.map(r => r.category), 'all'];
+      datasets.push({ label: 'this run', data: [...rows.map(r => mval(m, r, true)), mval(m, lv.all)], backgroundColor: accent, borderRadius: 3 });
+      if (bl) datasets.push({ label: 'baseline', data: [...rows.map(r => mval(m, brow(r.category), true)), mval(m, bl.all)], backgroundColor: mix(dim, 55), borderRadius: 3 });
+      legend = [['this run', accent, 'sw'], ['baseline', mix(dim, 55), 'sw']];
+    }
+    const has = ds => ds.some(d => d.label !== 'pending' && d.data.some(v => v != null));
+    const baseDrawn = datasets.filter(d => /baseline/.test(d.label)).some(d => d.data.some(v => v != null));
+    if (_baseline && has(datasets) && !baseDrawn) caption = (caption ? caption + ' ' : '') + `The baseline did not measure these ${shape === 'matrix' ? 'cells' : 'levels'}, so it is not drawn.`;
+    if (!baseDrawn) legend = legend.filter(e => e && e[0] !== 'baseline');
+    datasets = datasets.filter(d => !/baseline/.test(d.label) || d.data.some(v => v != null));
+    let why = '';
+    if (shape === 'none') why = running() ? 'The chart plots here once the first level finishes.' : 'No results yet. Run a benchmark or pick a past run.';
+    else if (!has(datasets)) why = m.pct ? 'No draft model in this run, so there is no accept rate to draw.' : `This run reports no ${m.label}.`;
+    const fh = _fleetSel && _fleetJob && (_fleetJob.hosts || []).find(h => h.agent_id === _fleetSel);
+    const title = $('blChartTitle'); if (title) title.textContent = head;
+    const meta = $('blChartMeta'); if (meta) meta.textContent = m.label + (shape === 'sweep' || conc == null ? '' : ` · ${conc} request${conc === 1 ? '' : 's'}`) + (fh ? ' · ' + fh.hostname : '');
+    const leg = $('blLegend'); if (leg) leg.innerHTML = legend.filter(Boolean).map(([l, c, k]) =>
+      `<span><i class="${k || ''}" style="${k === 'sw' ? 'background' : 'border-top-color'}:${esc(c)}"></i>${esc(l)}</span>`).join('');
+    const empty = $('blChartEmpty'); if (empty) { empty.textContent = why; empty.style.display = why ? '' : 'none'; }
+    $('blChartCaption').textContent = caption;
+    if (shape === 'none') { if (_chart) { _chart.data.labels = []; _chart.data.datasets = []; _chart.update('none'); } return; }
+    mkChart(shape === 'single' ? 'bar' : 'line');
+    if (!_chart) return;
+    _chart.data.labels = labels.map(String);
+    _chart.data.datasets = datasets;
+    _chart.options.scales.x.title.display = !!xTitle; _chart.options.scales.x.title.text = xTitle;
+    _chart.options.scales.y.title.text = m.label;
+    _chart.options.scales.y.max = m.pct ? 100 : undefined;
+    _chart.update('none');
   }
   function renderTable(cur) {
     const conc = _activeLevel || (cur[0] && cur[0].concurrency);
@@ -512,8 +599,8 @@
       catch (_) { d = null; }
       if (d && d.ok && d.run) {
         _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: host.run_id, ok: true }; _cell = null;
+        _matrixRun = !!(d.run.config && d.run.config.matrix);
         redraw();
-        const meta = $('blChartMeta'); if (meta) meta.textContent = 'aggregate decode t/s · ' + host.hostname;
         log(`showing ${host.hostname} · run ${host.run_id}`, 'dim');
       }
     }
@@ -666,7 +753,7 @@
   }
   // Clears the run panes; the stream that follows replays the run from its first event.
   function resetRunView() {
-    _levels = []; _lastDoc = null; _baseline = null; _baselineFor = null; _activeLevel = null; _cell = null; _curLevel = null; _curCell = null; _sweepLevels = [];
+    _levels = []; _lastDoc = null; _baseline = null; _baselineFor = null; _activeLevel = null; _cell = null; _curLevel = null; _curCell = null; _sweepLevels = []; _matrixRun = false;
     const lg = $('blLog'); if (lg) lg.innerHTML = '';
     setProgress(0, 0); $('blStrip').textContent = '';
     redraw();
@@ -739,6 +826,7 @@
         if (msg.type === 'model_start') { if (_attached && msg.run_id) _runId = msg.run_id;
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
           if ((msg.levels || []).length) _sweepLevels = msg.levels.slice();
+          _matrixRun = !!msg.matrix;
           log(`run ${msg.run_id} · ${msg.bench} · levels ${(msg.levels || []).join(', ')}`); if (msg.cmd) log('$ ' + msg.cmd, 'dim');
           if (msg.matrix) log(`matrix · benches ${(msg.matrix.benches || []).join(', ')} · osls ${(msg.matrix.osls || []).join(', ')}`, 'dim'); }
         else if (msg.type === 'level_start') { _curLevel = msg.concurrency; _curCell = msg.bench ? cellKey(msg) : null; if (!_attached) setStatus('running', 'running'); setStrip(0, 0);
@@ -962,7 +1050,7 @@
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
     toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
     toggleBaseSchedule, toggleBasePromote, openBaseSettings, fmtTs,
-    _config: config, _debugLevels: (rows) => { _levels = rows; _cell = null; redraw(); },
+    _config: config, _debugLevels: (rows, opts) => { _levels = rows; _cell = null; _baseline = (opts && opts.baseline) || null; if (opts && opts.metric) _metric = opts.metric; renderMetricSeg(); redraw(); },
     _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
     _debugBaselines: (d) => { _base = d; renderBaselines(); },
     _debug: () => ({ baseTimer: _baseTimer, attached: _attached, baseAutoAttached: _baseAutoAttached }) };

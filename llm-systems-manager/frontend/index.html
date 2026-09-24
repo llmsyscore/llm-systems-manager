@@ -55,7 +55,7 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.22-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.23-1">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.22-1">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
@@ -2458,10 +2458,11 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             <div class="bl-tiles" id="blTiles"></div>
             <div class="bl-card" id="blFleetCard" style="display:none;"><div class="bl-card-h"><h3>Autopilot ranking</h3><span class="meta" id="blFleetMeta"></span><span class="gap"></span><span class="bl-hint" id="blFleetProgress"></span></div>
               <div class="bl-card-b flush" style="overflow-x:auto"><div id="blFleetTable"></div></div></div>
-            <div class="bl-card"><div class="bl-card-h"><h3>Throughput under load</h3><span class="meta" id="blChartMeta">aggregate decode t/s</span><span class="gap"></span>
+            <div class="bl-card"><div class="bl-card-h"><h3 id="blChartTitle">Throughput under load</h3><span class="meta" id="blChartMeta">decode t/s</span><span class="gap"></span>
               <div class="mc-seg" id="blCellSeg" style="display:none;"></div>
-              <div class="bl-legend"><span><i></i>this run</span><span><i class="b"></i>baseline</span></div></div>
-              <div class="bl-card-b"><div class="bl-chart-wrap"><canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty">Throughput plots here once the first level finishes.</div></div><div class="bl-hint" id="blChartCaption"></div></div></div>
+              <div class="mc-seg" id="blMetricSeg" title="Metric drawn on the chart"></div>
+              <div class="bl-legend" id="blLegend"></div></div>
+              <div class="bl-card-b"><div class="bl-chart-wrap"><canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty">No results yet. Run a benchmark or pick a past run.</div></div><div class="bl-hint" id="blChartCaption"></div></div></div>
             <div class="bl-card" id="blHeatCard" style="display:none;"><div class="bl-card-h"><h3>Prompt × output</h3><span class="meta" id="blHeatMeta">decode t/s · 1 request</span></div>
               <div class="bl-card-b"><div class="bl-heat" id="blHeat"></div><div class="bl-hint" id="blHeatCaption"></div></div></div>
             <div class="bl-card"><div class="bl-card-h"><h3>By category</h3><span class="meta">Δ vs baseline</span><span class="gap"></span><div class="mc-seg" id="blLevelSeg"></div></div>
@@ -2765,7 +2766,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol-models.js?v=2026.09.22-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.23-2"></script>
-<script src="/static/js/bench-live.js?v=2026.09.23-2"></script>
+<script src="/static/js/bench-live.js?v=2026.09.23-3"></script>
 <script src="/static/js/autotune.js?v=2026.09.23-2"></script>
 <script src="/static/js/quality.js?v=2026.09.23-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.23-1"></script>
