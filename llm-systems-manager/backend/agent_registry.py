@@ -1350,6 +1350,8 @@ def _agent_tarball():
         log.error("agent tarball signing failed: %s", e)
         return jsonify({"ok": False, "error": "tarball signing unavailable"}), 500
 
+    log.info("agent tarball → agent:%s host=%s bytes=%d",
+             str(agent.get("agent_id") or "")[:8], agent.get("hostname"), len(tgz))
     return Response(tgz, mimetype="application/gzip", headers={
         "Content-Disposition": "attachment; filename=agent.tar.gz",
         "Cache-Control": "no-store",

@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.23-2"
+VERSION = "v2026.09.23-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3159,6 +3159,55 @@ def agent_log_stream(authorization: Optional[str] = Header(default=None)) -> Str
     )
 
 
+class TarballFetchError(Exception):
+    """The agent tarball could not be downloaded; str() is the operator-facing reason."""
+    def __init__(self, reason: str, retryable: bool = True):
+        super().__init__(reason)
+        self.retryable = retryable
+
+
+def _fetch_tarball(url: str, headers: dict, dest: str, verify: Any, out: dict, attempts: int = 3,
+                   session_factory: Any = None, sleep: Any = None) -> Iterator[str]:
+    """Downloads `url` to `dest` on a fresh session per try, retrying short or broken bodies.
+    Yields one note per retry; sets out["headers"] and out["tries"]; raises TarballFetchError."""
+    session_factory = session_factory or requests.Session
+    sleep = sleep or time.sleep
+    reason = "no attempt made"
+    for n in range(1, attempts + 1):
+        got, expected, status = 0, None, None
+        sess = session_factory()
+        sess.verify = verify
+        try:
+            r = sess.get(url, headers=headers, stream=True, timeout=60)
+            if r.status_code >= 400:
+                status = f"HTTP {r.status_code} from the manager"
+                if r.status_code < 500 and r.status_code != 429:
+                    raise TarballFetchError(status, retryable=False)
+                raise requests.RequestException(status)
+            cl = r.headers.get("Content-Length")
+            expected = int(cl) if cl and cl.isdigit() and not r.headers.get("Content-Encoding") else None
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if chunk:
+                        f.write(chunk)
+                        got += len(chunk)
+            if expected is None or got >= expected:
+                out["headers"], out["tries"] = r.headers, n
+                return
+            reason = f"connection broken after {got} of {expected} bytes"
+        except TarballFetchError:
+            raise
+        except requests.RequestException as e:
+            reason = status or (f"connection broken after {got} of {expected} bytes" if expected
+                                else f"{type(e).__name__}: {str(e)[:160]}")
+        finally:
+            sess.close()
+        if n < attempts:
+            yield f"fetch retry {n + 1}/{attempts}: {reason}"
+            sleep(float(n))
+    raise TarballFetchError(f"{reason} ({attempts} tries)")
+
+
 def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
                                ca_path: Path, tmpdir: str) -> tuple[bool, str]:
     """Verify the tarball's X-Agent-Tarball-Sig against ca_path via openssl.
@@ -3433,28 +3482,47 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
         tarball_url = CONFIG.MANAGER_URL.rstrip("/") + "/api/agent-tarball"
         tarball_path = os.path.join(repo_dir, ".agent-update.tar.gz")
         yield _sse_event({"stage": "fetch", "msg": f"GET {tarball_url}"})
-        try:
-            # _post_session carries the CA bundle for https MANAGER_URL.
-            r = _post_session.get(
-                tarball_url, headers={"Authorization": f"Bearer {tok}"},
-                stream=True, timeout=60,
-            )
-            r.raise_for_status()
-            with open(tarball_path, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    if chunk:
-                        f.write(chunk)
-        except Exception as e:
-            logger.warning("self-update: tarball download failed: %s", e)
-            yield _sse_event({"stage": "done", "ok": False,
-                              "msg": "tarball download failed"})
-            return
+        import queue as _fq
+        fetched: dict = {}
+        fetch_q: "_fq.Queue[tuple[str, Any]]" = _fq.Queue()
+
+        def _fetch_worker() -> None:
+            try:
+                for n in _fetch_tarball(tarball_url, {"Authorization": f"Bearer {tok}"}, tarball_path,
+                                        _post_session.verify, fetched):
+                    fetch_q.put(("note", n))
+                fetch_q.put(("ok", None))
+            except Exception as e:  # noqa: BLE001 — reported in the done frame below
+                fetch_q.put(("err", e))
+
+        # Fresh session per try on a worker thread; keepalives stop the manager proxy reaping a stalled fetch.
+        threading.Thread(target=_fetch_worker, daemon=True).start()
+        while True:
+            try:
+                kind, val = fetch_q.get(timeout=10)
+            except _fq.Empty:
+                yield _sse_event({"keepalive": True})
+                continue
+            if kind == "note":
+                logger.warning("self-update: %s", val)
+                yield _sse_event({"line": val})
+                continue
+            if kind == "err":
+                logger.warning("self-update: tarball download failed: %s", val)
+                why = str(val) if isinstance(val, TarballFetchError) else f"could not save the tarball ({type(val).__name__})"
+                yield _sse_event({"stage": "done", "ok": False, "phase": "fetch",
+                                  "retryable": bool(getattr(val, "retryable", False)),
+                                  "msg": f"tarball download failed: {why}"})
+                return
+            break
+        if fetched.get("tries", 1) > 1:
+            logger.info("self-update: tarball fetched on try %d", fetched["tries"])
 
         import tempfile
         verify_dir = tempfile.mkdtemp(prefix=".agent-update-verify-", dir=repo_dir)
         try:
             ok, reason = _verify_tarball_signature(
-                tarball_path, r.headers.get("X-Agent-Tarball-Sig"),
+                tarball_path, fetched["headers"].get("X-Agent-Tarball-Sig"),
                 _ca_bundle_path(), verify_dir)
         finally:
             shutil.rmtree(verify_dir, ignore_errors=True)

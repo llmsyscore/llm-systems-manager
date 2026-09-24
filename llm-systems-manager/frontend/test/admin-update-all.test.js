@@ -1,6 +1,5 @@
-// #637: Admin → Agents "Update all" — sequential orchestration, verify
-// gate, stop-on-failure, summary. Co-loads the real admin.js in jsdom and
-// drives adminUpdateAll() with the stream/verify/confirm seams stubbed.
+// #637/#1108: Admin → Agents "Update all" — sequential runs, verify gate stops the run, other failures carry on, one download retry.
+// Co-loads the real admin.js in jsdom and drives adminUpdateAll() with the stream/verify/confirm seams stubbed.
 import { describe, test, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
@@ -36,10 +35,12 @@ function boot({ agents, streams, verify, confirm = true }) {
     _themedConfirm = async () => ${JSON.stringify(confirm)};
     _themedToast = (m) => { window.__calls.toasts.push(m); };
     adminLoadAgents = async () => { window.__calls.reloads++; };
+    const __streams = ${JSON.stringify(streams || {})};
     _adminStreamUpdate = async (aid) => {
       window.__calls.stream.push(aid);
-      return { transport: false, noRestart: false,
-               ...(${JSON.stringify(streams || {})})[aid] };
+      const s = __streams[aid];
+      const one = Array.isArray(s) ? s.shift() : s;
+      return { transport: false, noRestart: false, ...one };
     };
     _adminAwaitAgentVersion = async (aid, v) => {
       window.__calls.verify.push([aid, v]);
@@ -74,19 +75,52 @@ describe('#637 adminUpdateAll', () => {
     expect(win.__calls.reloads).toBe(1);
   });
 
-  test('stops on stream failure and marks the rest skipped', async () => {
+  test('a stream failure is reported and the rest still update (#1108)', async () => {
     const win = harness(boot({
       agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: { ok: false }, [A2]: { ok: true } },
+      streams: { [A1]: { ok: false, msg: 'install.sh failed' }, [A2]: { ok: true } },
+    }));
+    await win.__P;
+    expect(win.__calls.stream).toEqual([A1, A2]);
+    const text = panelText(win);
+    expect(text).toContain('Update all finished: 1 updated, failed: h1');
+    expect(text).not.toContain('retrying');
+  });
+
+  test('a failed download is retried once, then the host counts as updated (#1108)', async () => {
+    const win = harness(boot({
+      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
+      streams: { [A1]: [{ ok: false, retryable: true, msg: 'tarball download failed: connection broken after 131072 of 437120 bytes (3 tries)' }, { ok: true }],
+                 [A2]: { ok: true } },
+    }));
+    await win.__P;
+    expect(win.__calls.stream).toEqual([A1, A1, A2]);
+    const text = panelText(win);
+    expect(text).toContain('retrying h1 once — the download failed');
+    expect(text).toContain('Update all finished: 2 updated');
+  });
+
+  test('a download that fails twice is reported and not retried again', async () => {
+    const bad = { ok: false, retryable: true, msg: 'tarball download failed: connection broken after 1 of 9 bytes (3 tries)' };
+    const win = harness(boot({
+      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
+      streams: { [A1]: [bad, bad, { ok: true }], [A2]: { ok: true } },
+    }));
+    await win.__P;
+    expect(win.__calls.stream).toEqual([A1, A1, A2]);
+    expect(panelText(win)).toContain('failed: h1');
+  });
+
+  test('a non-retryable download failure is not retried', async () => {
+    const win = harness(boot({
+      agents: [agent(A1, 'h1')],
+      streams: { [A1]: [{ ok: false, retryable: false, msg: 'tarball download failed: HTTP 401 from the manager' }, { ok: true }] },
     }));
     await win.__P;
     expect(win.__calls.stream).toEqual([A1]);
-    const text = panelText(win);
-    expect(text).toContain('failed: h1');
-    expect(text).toContain('skipped: h2');
   });
 
-  test('verify timeout counts as failure and stops the sequence', async () => {
+  test('a verify timeout stops the run and skips the rest (bad build guard)', async () => {
     const win = harness(boot({
       agents: [agent(A1, 'h1'), agent(A2, 'h2')],
       streams: { [A1]: { ok: true }, [A2]: { ok: true } },
@@ -96,7 +130,8 @@ describe('#637 adminUpdateAll', () => {
     expect(win.__calls.stream).toEqual([A1]);
     const text = panelText(win);
     expect(text).toContain('✗ h1 did not report v2');
-    expect(text).toContain('skipped: h2');
+    expect(text).toContain('stopping: h1 did not come back on v2');
+    expect(text).toContain('0 updated, failed: h1, skipped: h2');
   });
 
   test('no-restart success skips the verify wait', async () => {
