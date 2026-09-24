@@ -37,12 +37,14 @@ def test_list_and_detail_need_a_session(env):
     assert env.get("/api/jobs").status_code == 401
     _as(env, "viewer")
     r = env.get("/api/jobs").get_json()
-    assert r == {"ok": True, "jobs": [], "summary": {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None}}
+    assert r == {"ok": True, "jobs": [], "summary": {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None}, "total": 0}
+    r = env.get("/api/jobs?facets=1").get_json()
+    assert r["kinds"] == [{"name": "open", "title": "Open kind"}, {"name": "closed", "title": "Closed kind"}] and r["users"] == []
     row = env.svc.submit("closed", {}, user="bob", label="B")
     r = env.get("/api/jobs?status=all&limit=5").get_json()
     assert [j["label"] for j in r["jobs"]] == ["B"] and r["jobs"][0]["can_cancel"] is False
     d = env.get(f"/api/jobs/{row['id']}").get_json()
-    assert d["ok"] and d["job"]["spec"] == {} and d["job"]["kind_title"] == "Closed kind"
+    assert d["ok"] and d["job"]["spec"] == {} and d["job"]["kind_title"] == "Closed kind" and d["job"]["audit"] is None
     assert env.get("/api/jobs/nope").status_code == 404
     assert env.get("/api/jobs?status=bogus").status_code == 400
 
@@ -130,3 +132,39 @@ def test_ack_writes_an_audit_row_and_survives_an_older_table():
     out = svc.ack(row["id"], actor="bob")
     assert out["acked_at"] == 1000.0 and svc.ack(row["id"], actor="bob") is None
     assert [a["action"] for a in audit] == ["jobs.submit", "jobs.ack"] and audit[-1]["actor"] == "bob"
+
+
+def test_list_pages_with_offset_and_total(env):
+    for i in range(3):
+        env.svc.submit("closed", {}, user="bob" if i else "carol", label=f"j{i}")
+    _as(env, "viewer")
+    r = env.get("/api/jobs?status=all&limit=2&offset=2&facets=1").get_json()
+    assert r["total"] == 3 and len(r["jobs"]) == 1 and r["users"] == ["bob", "carol"]
+    r = env.get("/api/jobs?status=all&user=bob&offset=junk").get_json()
+    assert r["total"] == 2 and len(r["jobs"]) == 2
+
+
+def test_detail_audit_rows_are_admin_only():
+    app = Flask(__name__)
+    app.secret_key = "t"
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                       now=lambda: 1000.0, inline=True)
+    svc.register(jobs.Kind("closed", "Closed kind", run=lambda j: jobs.ok()))
+
+    def boom(jid):
+        raise RuntimeError("audit db gone")
+    audit = {"fn": lambda jid: [{"action": "jobs.cancel", "detail": {"job_id": jid}}]}
+    jobs.register_routes(app, svc, role_of=lambda: session.get("role"), user_of=lambda: session.get("user") or "",
+                         audit_for=lambda jid: audit["fn"](jid))
+    c = app.test_client()
+    row = svc.submit("closed", {}, user="bob", label="B")
+    _as(c, "admin", "root")
+    assert c.get(f"/api/jobs/{row['id']}").get_json()["job"]["audit"] == [{"action": "jobs.cancel", "detail": {"job_id": row["id"]}}]
+    _as(c, "operator", "bob")
+    assert c.get(f"/api/jobs/{row['id']}").get_json()["job"]["audit"] is None
+    audit["fn"] = boom
+    _as(c, "admin", "root")
+    r = c.get(f"/api/jobs/{row['id']}")
+    assert r.status_code == 200 and r.get_json()["job"]["audit"] is None

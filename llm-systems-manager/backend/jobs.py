@@ -156,12 +156,21 @@ class Store:
                       tuple(self._enc(k, row.get(k)) for k in self.KEYS))
             c.commit()
 
-    def rows(self, where: str = "1=1", params: tuple = (), order: str = "created DESC", limit: Optional[int] = None) -> "list[dict]":
+    def rows(self, where: str = "1=1", params: tuple = (), order: str = "created DESC", limit: Optional[int] = None,
+             offset: int = 0) -> "list[dict]":
         sql = f"SELECT {', '.join(self.KEYS)} FROM jobs WHERE {where} ORDER BY {order}"
         if limit is not None:
-            sql += f" LIMIT {int(limit)}"
+            sql += f" LIMIT {int(limit)}" + (f" OFFSET {int(offset)}" if offset > 0 else "")
         with self._lock:
             return [self._row(r) for r in self._conn().execute(sql, params).fetchall()]
+
+    def count(self, where: str = "1=1", params: tuple = ()) -> int:
+        with self._lock:
+            return int(self._conn().execute(f"SELECT COUNT(*) FROM jobs WHERE {where}", params).fetchone()[0])
+
+    def users(self) -> "list[str]":
+        with self._lock:
+            return [r[0] for r in self._conn().execute("SELECT DISTINCT user FROM jobs WHERE user IS NOT NULL AND user != '' ORDER BY user")]
 
     def get(self, job_id: str) -> Optional[dict]:
         rows = self.rows("id=?", (job_id,))
@@ -267,7 +276,20 @@ class Service:
 
     def list(self, status: str = "live", kind: Optional[str] = None, user: Optional[str] = None,
              thread_id: Optional[str] = None, since: Optional[float] = None, limit: int = 50,
-             order: str = "created DESC") -> "list[dict]":
+             order: str = "created DESC", offset: int = 0) -> "list[dict]":
+        where, params = self._where(status, kind, user, thread_id, since)
+        return self._store.rows(where, params, order=f"{order}, id", limit=max(1, min(LIST_MAX, int(limit))),
+                                offset=max(0, int(offset)))
+
+    def count(self, status: str = "live", kind: Optional[str] = None, user: Optional[str] = None) -> int:
+        return self._store.count(*self._where(status, kind, user, None, None))
+
+    def users(self) -> "list[str]":
+        return self._store.users()
+
+    @staticmethod
+    def _where(status: str, kind: Optional[str], user: Optional[str], thread_id: Optional[str],
+               since: Optional[float]) -> "tuple[str, tuple]":
         where, params = [], []
         if status == "live":
             where.append("status IN ('queued','running')" + (" OR resolved >= ?" if since is not None else ""))
@@ -281,15 +303,12 @@ class Service:
             if val is not None:
                 where.append(f"{col}=?")
                 params.append(val)
-        return self._store.rows(" AND ".join(where) or "1=1", tuple(params), order=order,
-                                limit=max(1, min(LIST_MAX, int(limit))))
+        return " AND ".join(where) or "1=1", tuple(params)
 
-    def recent(self, limit: int = 8) -> "list[dict]":
-        """Live rows first (soonest next_run), then the newest resolved ones, `limit` in all."""
-        live = self._store.rows("status IN ('queued','running')", (),
+    def live(self, limit: int = 8) -> "list[dict]":
+        """Running rows first, then queued ones by soonest next_run, `limit` in all."""
+        return self._store.rows("status IN ('queued','running')", (),
                                 order="CASE status WHEN 'running' THEN 0 ELSE 1 END, next_run, created", limit=limit)
-        rest = self._store.rows("status NOT IN ('queued','running')", (), order="resolved DESC", limit=max(0, limit - len(live)))
-        return live + rest
 
     def summary(self) -> dict:
         return self._store.summary(self._now())
@@ -564,9 +583,10 @@ class Service:
             log.warning("jobs audit failed: %s: %s", type(e).__name__, e)
 
 
-def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str]], user_of: Callable[[], str]) -> None:
+def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str]], user_of: Callable[[], str],
+                    audit_for: Optional[Callable[[str], "list[dict]"]] = None) -> None:
     """GET /api/jobs, GET /api/jobs/<id>, POST /api/jobs (api kinds, operator+), POST /api/jobs/<id>/cancel and
-    /ack (owner or admin)."""
+    /ack (owner or admin); `audit_for(job_id)` fills the detail's audit rows for admins."""
     from flask import g, jsonify, request as flask_request
 
     def _who() -> "tuple[Optional[str], str]":
@@ -585,10 +605,18 @@ def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str
             limit = int(flask_request.args.get("limit") or 50)
         except ValueError:
             limit = 50
-        rows = service.list(status, kind=flask_request.args.get("kind") or None,
-                            user=flask_request.args.get("user") or None, limit=limit)
-        return jsonify({"ok": True, "jobs": [service.view(r, role=role, user=user) for r in rows],
-                        "summary": service.summary()})
+        try:
+            offset = int(flask_request.args.get("offset") or 0)
+        except ValueError:
+            offset = 0
+        kind, who = flask_request.args.get("kind") or None, flask_request.args.get("user") or None
+        rows = service.list(status, kind=kind, user=who, limit=limit, offset=offset)
+        out = {"ok": True, "jobs": [service.view(r, role=role, user=user) for r in rows], "summary": service.summary(),
+               "total": service.count(status, kind=kind, user=who)}
+        if flask_request.args.get("facets") == "1":
+            out["kinds"] = [{"name": k.name, "title": k.title} for k in service.kinds()]
+            out["users"] = service.users()
+        return jsonify(out)
 
     @app.route("/api/jobs/<job_id>")
     def jobs_get(job_id):
@@ -598,7 +626,14 @@ def register_routes(app, service: Service, *, role_of: Callable[[], Optional[str
         row = service.get(job_id[:32])
         if not row:
             return jsonify({"ok": False, "error": "not found"}), 404
-        return jsonify({"ok": True, "job": service.view(row, role=role, user=user, detail=True)})
+        out = service.view(row, role=role, user=user, detail=True)
+        out["audit"] = None
+        if audit_for is not None and role == "admin":
+            try:
+                out["audit"] = audit_for(row["id"])
+            except Exception as e:  # noqa: BLE001 — the detail still renders without its audit rows
+                log.warning("jobs audit lookup failed: %s: %s", type(e).__name__, e)
+        return jsonify({"ok": True, "job": out})
 
     @app.route("/api/jobs", methods=["POST"])
     def jobs_submit():

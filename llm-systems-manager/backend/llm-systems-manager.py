@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.23-4"
+__version__ = "v2026.09.23-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5534,16 +5534,16 @@ def admin_system_health():
 
     try:
         summ = _jobs_service.summary()
-        rows = [_jobs_service.view(r, role="admin", user="") for r in _jobs_service.recent(8)]
+        rows = [_jobs_service.view(r, role="admin", user="") for r in _jobs_service.live(8)]
         failed = _jobs_service.failed_recent(20)
-        health["jobs"] = {**summ, "rows": rows,
+        health["jobs"] = {**summ, "rows": rows, "more": max(0, summ["queued"] + summ["running"] - len(rows)),
                           "failed": [{"id": r["id"], "label": r["label"], "message": r.get("message") or "failed",
                                       "resolved": r.get("resolved")} for r in failed]}
         for r in failed:
             health["warnings"].append(f"job failed: {r['label']} — {r.get('message') or 'failed'}")
     except Exception as _e:  # noqa: BLE001 — health never fails because the ledger is unreadable
         log.debug("system-health jobs block failed: %s", type(_e).__name__)
-        health["jobs"] = {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None, "rows": [], "failed": []}
+        health["jobs"] = {"queued": 0, "running": 0, "failed_24h": 0, "next_due": None, "rows": [], "more": 0, "failed": []}
 
     health["flow"] = {
         "agent_pushes_per_s": round(_AGENT_PUSH_RATE.per_s(now), 2),
@@ -6125,8 +6125,16 @@ def _jobs_conn():
 jobs.init_table(_jobs_conn())
 _jobs_service = jobs.Service(jobs.Store(_jobs_conn), cfg=lambda: settings.manager.jobs,
                              alert=_ae_ingest_alert, audit=_jobs_audit_auto)
+def _jobs_audit_rows(job_id: str) -> "list[dict]":
+    """Audit rows whose detail names this job, newest first (#1038)."""
+    rows = get_audit_db().execute(
+        "SELECT id, ts, actor, role, ip, auth, method, path, action, target, status, outcome, detail, event FROM audit_log"
+        " WHERE json_valid(detail) AND json_extract(detail, '$.job_id') = ? ORDER BY id DESC LIMIT 50", (job_id,)).fetchall()
+    return [_audit_row_out(r) for r in rows]
+
+
 jobs.register_routes(app, _jobs_service, role_of=auth.effective_role,
-                     user_of=lambda: tower.session_user(_flask_session))
+                     user_of=lambda: tower.session_user(_flask_session), audit_for=_jobs_audit_rows)
 
 
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891

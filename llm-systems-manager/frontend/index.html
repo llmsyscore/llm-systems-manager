@@ -573,10 +573,10 @@ Backend API endpoints consumed:
 
 <!-- Admin tab -->
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
-<link rel="stylesheet" href="/static/css/audit.css?v=2026.09.13-1">
+<link rel="stylesheet" href="/static/css/audit.css?v=2026.09.23-6">
 <link rel="stylesheet" href="/static/css/agents.css?v=2026.09.17-1">
 <link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.22-4">
-<link rel="stylesheet" href="/static/css/health.css?v=2026.09.17-1">
+<link rel="stylesheet" href="/static/css/health.css?v=2026.09.23-5">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
   <div class="adm-wrap">
 
@@ -628,7 +628,7 @@ Backend API endpoints consumed:
         </section>
       </div>
       <div class="hc-jobs" id="adminHealthJobs">
-        <span class="microlbl">Jobs <em id="adminHealthJobsSum">—</em></span>
+        <span class="microlbl">Jobs <em id="adminHealthJobsSum">—</em><a class="hc-jobs-all" href="#" onclick="if (window.JobsView) JobsView.open(); return false;">View all</a></span>
         <div class="hc-jl" id="adminHealthJobsList"><div class="w-none">None</div></div>
       </div>
     </div>
@@ -642,6 +642,7 @@ Backend API endpoints consumed:
         <button class="sub-tab-btn"        id="subTabBtnAdminAudit"   onclick="switchSubTab('admin','audit')">Audit Log</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminBackup"  onclick="switchSubTab('admin','backup')">Backups</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminRouting" onclick="switchSubTab('admin','routing')">Gateway</button>
+        <button class="sub-tab-btn"        id="subTabBtnAdminJobs"    onclick="switchSubTab('admin','jobs')">Jobs</button>
         <button class="sub-tab-btn"        id="subTabBtnAdminSettings" onclick="switchSubTab('admin','settings')">Settings</button>
       </div>
 
@@ -985,6 +986,45 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <div class="au-card-h" id="auCfgHead"><span class="au-chev">▾</span><h3>Audit settings</h3><span class="au-gap"></span></div>
           <div class="au-cfg-body" id="auCfgBody"><div class="au-empty">Loading…</div></div>
           <div class="au-cfg-foot" id="auCfgFoot"></div>
+        </div>
+      </div>
+
+      <!-- Jobs sub-tab (#1038): job ledger in the Audit Log table styles -->
+      <div id="admin-jobs" class="sub-tab-panel">
+        <div class="au-hdr">
+          <h2 class="au-title">Jobs</h2>
+          <div class="au-sum"><span><b id="jbTotal">—</b> jobs</span></div>
+        </div>
+        <div class="au-toolbar">
+          <select class="au-sel" id="jbStatus" aria-label="Status">
+            <option value="all">All statuses</option><option value="live">Live</option><option value="queued">Queued</option><option value="running">Running</option><option value="done">Done</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option>
+          </select>
+          <select class="au-sel" id="jbKind" aria-label="Kind"><option value="">All kinds</option></select>
+          <select class="au-sel" id="jbUser" aria-label="User"><option value="">All users</option></select>
+          <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm idle" id="jbReset" title="Clear the filters">✕ Reset</button>
+        </div>
+        <div class="au-split" id="jbSplit">
+          <div class="au-ledger">
+            <div class="au-lwrap">
+              <table class="au-table" id="adminJobsTable">
+                <thead><tr>
+                  <th class="c-jl">Job</th><th class="c-jk">Kind</th><th class="c-js">Status</th><th class="c-jb">Submitted by</th>
+                  <th class="c-jc">Created</th><th class="c-jw">Next run / started / ended</th><th class="c-from">Message</th>
+                </tr></thead>
+                <tbody id="jbTbody"><tr><td colspan="7"><div class="au-empty">Loading…</div></td></tr></tbody>
+              </table>
+            </div>
+            <div class="au-pager">
+              <div class="au-rpp">Rows per page
+                <select class="au-sel au-sel-sm" id="jbPer" aria-label="Rows per page"><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
+              </div>
+              <div class="au-gap"></div>
+              <span class="au-pg" id="jbPageInfo"></span>
+              <div class="au-pnums" id="jbPnums"></div>
+              <input class="au-jump" id="jbJump" placeholder="go to" aria-label="Go to page">
+            </div>
+          </div>
+          <aside class="au-det" id="jbDet"></aside>
         </div>
       </div>
 
@@ -2712,11 +2752,12 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.17-1"></script>
+<script src="/static/js/admin.js?v=2026.09.23-5"></script>
 <script src="/static/js/admin-agents.js?v=2026.09.14-1"></script>
-<script src="/static/js/admin-health.js?v=2026.09.22-1"></script>
+<script src="/static/js/admin-health.js?v=2026.09.23-5"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
+<script src="/static/js/admin-jobs.js?v=2026.09.23-6"></script>
 <script src="/static/js/admin-settings.js?v=2026.09.22-4"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.11-5"></script>
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
@@ -3004,6 +3045,6 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <div id="alarmToastContainer"></div>
 
 <script src="/static/js/events-toasts.js?v=2026.09.14-1"></script>
-<script src="/static/js/boot.js?v=2026.09.19-1"></script>
+<script src="/static/js/boot.js?v=2026.09.23-5"></script>
 </body>
 </html>

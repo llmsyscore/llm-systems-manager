@@ -391,15 +391,16 @@
     });
   }
   const DOT = { queued: 'ok', running: 'ok pulse', failed: 'crit', done: '', cancelled: '' };
-  function jobsHtml(rows) {
+  function jobsHtml(rows, more) {
     if (!rows.length) return '<div class="w-none">None</div>';
+    const tail = more > 0 ? `<button type="button" class="hj-more" data-more-jobs="1">+${more} more</button>` : '';
     return rows.map(r => `<div class="hj ${r.k}${r.live ? ' live' : ''}${r.acked ? ' acked' : ''}" data-job="${esc(r.id)}"><span class="dot ${r.acked ? '' : (DOT[r.k] || '')}"></span>`
       + `<span class="hj-l" title="${esc(r.label)}">${esc(r.label)}</span><span class="hj-k">${esc(r.kind)}</span>`
       + `<span class="hj-w" title="${esc(r.when)}">${esc(r.when)}</span><span class="hj-by">${esc(r.by)}</span>`
       + (r.cancel ? `<button type="button" class="ib" data-cancel-job="${esc(r.id)}" aria-label="Cancel job">✕</button>`
         : r.ack ? `<button type="button" class="ib" data-ack-job="${esc(r.id)}" aria-label="Dismiss failed job" title="Dismiss">✕</button>`
         : '<span class="ib none"></span>')
-      + '</div>').join('');
+      + '</div>').join('') + tail;
   }
   // Marks one failed job as seen; the next health poll drops it from the warnings and dims its row.
   async function ackJob(id) {
@@ -524,7 +525,7 @@
 
     const jobsEl = $('adminHealthJobsList');
     if (jobsEl) {
-      jobsEl.innerHTML = jobsHtml(jobsRows(_last));
+      jobsEl.innerHTML = jobsHtml(jobsRows(_last), ((_last && _last.jobs) || {}).more || 0);
       const sum = $('adminHealthJobsSum');
       if (sum) sum.textContent = jobsSummary(_last);
       if (!jobsEl._hcBound) {
@@ -532,6 +533,7 @@
         jobsEl.addEventListener('click', async e => {
           const ack = e.target.closest('[data-ack-job]');
           if (ack) { ack.disabled = true; ackJob(ack.getAttribute('data-ack-job')); return; }
+          if (e.target.closest('[data-more-jobs]')) { if (window.JobsView) JobsView.open('live'); return; }
           const btn = e.target.closest('[data-cancel-job]');
           if (!btn) return;
           btn.disabled = true;

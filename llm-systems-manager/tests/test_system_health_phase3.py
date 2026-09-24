@@ -334,7 +334,7 @@ def test_older_engine_without_auth_field_is_quiet(admin, monkeypatch):
     assert _auth_warnings(h) == []
 
 
-def test_jobs_block_lists_recent_rows_and_warns_on_failures(admin, monkeypatch):
+def test_jobs_block_lists_live_rows_and_warns_on_failures(admin, monkeypatch):
     import sqlite3
     import types
 
@@ -363,4 +363,9 @@ def test_jobs_block_lists_recent_rows_and_warns_on_failures(admin, monkeypatch):
     h = _health(admin)
     assert [w for w in h["warnings"] if w.startswith("job failed: ")] == ["job failed: newer but long broken — bang"]
     assert [f["id"] for f in h["jobs"]["failed"]] == [newer["id"]] and h["jobs"]["failed_24h"] == 1
-    assert any(r["id"] == older["id"] and r["acked"] and not r["can_ack"] for r in h["jobs"]["rows"])
+    # #1038: the strip lists only live rows; finished ones live in the Jobs ledger.
+    assert [r["id"] for r in h["jobs"]["rows"]] == [q["id"]] and h["jobs"]["more"] == 0
+    for i in range(9):
+        svc.submit("t_health", {}, label=f"extra {i}")
+    h = _health(admin)
+    assert len(h["jobs"]["rows"]) == 8 and h["jobs"]["more"] == 2

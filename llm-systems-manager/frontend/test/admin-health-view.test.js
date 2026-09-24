@@ -438,6 +438,18 @@ describe('jobs strip (#915)', () => {
     expect(doc.defaultView.__posts).toEqual([['/api/jobs/j7/ack', 'POST'], ['/api/jobs/j7/ack', 'POST']]);
   });
 
+  test('the strip links to the Jobs ledger and adds a +N more row past the cap (#1038)', () => {
+    const live = JOBS.rows.filter(r => r.status === 'queued' || r.status === 'running');
+    const doc = card({ ...HEALTHY, jobs: { ...JOBS, rows: live, more: 4 } }, null,
+      "window.__opened = []; window.JobsView = { open: s => window.__opened.push(s == null ? null : s) };"
+      + "document.querySelector('#adminHealthJobsList [data-more-jobs]').click();"
+      + "document.querySelector('#adminHealthJobs .hc-jobs-all').click();");
+    expect(doc.querySelector('#adminHealthJobsList .hj-more').textContent).toBe('+4 more');
+    expect(doc.defaultView.__opened).toEqual(['live', null]);
+    const none = card({ ...HEALTHY, jobs: { ...JOBS, rows: live, more: 0 } });
+    expect(none.querySelector('#adminHealthJobsList .hj-more')).toBeNull();
+  });
+
   test('cancel click posts to /api/jobs/<id>/cancel', () => {
     const doc = card({ ...HEALTHY, jobs: JOBS }, null,
       'window.__posts = []; window.fetch = (u, o) => { window.__posts.push([u, (o||{}).method]); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };');
