@@ -907,6 +907,7 @@
     .bl-legend { display:flex; gap:16px; font-size:11.5px; color:var(--fg-muted); }
     .bl-legend i { display:inline-block; width:14px; height:0; border-top:2px solid var(--accent); vertical-align:middle; margin-right:6px; }
     .bl-legend i.b { border-top-style:dashed; border-top-color:var(--fg-dim); }
+    .bl-legend i.sw { width:10px; height:10px; border:0; border-radius:2px; background:var(--accent); }
     table.bl-rt { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:12.5px; }
     table.bl-rt th { text-align:left; font-size:9.5px; font-weight:600; letter-spacing:.11em; text-transform:uppercase; color:var(--fg-faint); padding:8px 12px; border-bottom:1px solid var(--border-soft); white-space:nowrap; }
     table.bl-rt td { padding:8px 12px; border-bottom:1px solid var(--border-soft); }

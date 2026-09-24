@@ -26,6 +26,7 @@ const BODY = `
     <button id="blPinBtn" onclick="BL.pinBaseline()">Set as baseline</button>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
     <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
+    <h3 id="blChartTitle"></h3><span id="blChartMeta"></span><div class="mc-seg" id="blMetricSeg"></div><div class="bl-legend" id="blLegend"></div>
     <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
     <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
     <div class="bl-card" id="blHeatCard" style="display:none"><span id="blHeatMeta"></span><div id="blHeat"></div><div id="blHeatCaption"></div></div>
@@ -387,10 +388,83 @@ describe('BL final-review fixes', () => {
       { concurrency: 1, bench: 'throughput_1k', osl: 256, all: { pred_tps: 50, agg_pred_tps: 50 }, rows: [] },
       { concurrency: 1, bench: 'throughput_32k', osl: 256, all: { pred_tps: 30, agg_pred_tps: 30 }, rows: [] },
     ]);
+    const pend = () => win.__chart.data.datasets.find(d => d.label === 'pending');
     win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_32k', osl: 256 });
-    expect(win.__chart.data.datasets[2].data.every(v => v === null)).toBe(true);
+    expect(pend()).toBeUndefined();
     win.__sse.onEvent({ type: 'level_start', concurrency: 2, bench: 'throughput_1k', osl: 256 });
-    expect(win.__chart.data.datasets[2].data.some(v => v !== null)).toBe(true);
+    expect(pend().data.some(v => v !== null)).toBe(true);
+  });
+});
+
+describe('BL chart by run shape (#906)', () => {
+  const lvl = (c, bench, osl, d, agg, p, l, a) => ({ concurrency: c, bench, osl,
+    all: { pred_tps: d, agg_pred_tps: agg, prompt_tps: p, latency_s: l, accept_rate: a },
+    rows: [{ category: 'coding', avg_pred_t_s: d + 1, avg_prompt_t_s: p, avg_latency: l, accept_rate: a }] });
+  const labels = win => win.__chart.data.datasets.map(d => d.label);
+  it('a concurrency sweep draws per-request + aggregate lines and the baseline only at measured levels', async () => {
+    const win = boot(); await flush();
+    win.BL._debugLevels([lvl(1, 'qualitative', 1024, 64, 60, 900, 4, .7), lvl(4, 'qualitative', 1024, 48, 170, 850, 6, .7)],
+      { baseline: { bench: 'qualitative', levels: [lvl(1, 'qualitative', 1024, 60, 57, 850, 4.4, .7), lvl(16, 'qualitative', 1024, 20, 250, 700, 14, .6)] } });
+    expect(win.document.getElementById('blChartTitle').textContent).toBe('Throughput under load');
+    expect(win.__chart.data.labels).toEqual(['1', '4']);
+    expect(labels(win)).toEqual(['per-request', 'aggregate', 'baseline']);
+    expect(win.__chart.data.datasets[0].data).toEqual([64, 48]);
+    expect(win.__chart.data.datasets[1].data).toEqual([60, 170]);
+    expect(win.__chart.data.datasets[2].data).toEqual([60, null]);
+    expect(win.__chart.options.scales.y.title.text).toBe('decode t/s');
+    expect(win.document.getElementById('blLegend').textContent).toContain('aggregate');
+    expect(win.document.getElementById('blChartEmpty').style.display).toBe('none');
+  });
+  it('a matrix run draws one line per output length with the baseline on matching cells only', async () => {
+    const win = boot(); await flush();
+    win.BL._debugLevels([lvl(1, 'throughput_1k', 256, 64, 21, 1200, 3, null), lvl(1, 'throughput_8k', 256, 55, 12, 1100, 8, null),
+                         lvl(1, 'throughput_1k', 1024, 62, 40, 1200, 9, null)],
+      { baseline: { bench: 'throughput_1k', levels: [lvl(1, 'throughput_1k', 256, 60, 20, 1150, 3.4, null)] }, metric: 'prompt' });
+    expect(win.document.getElementById('blChartTitle').textContent).toBe('Across prompt lengths');
+    expect(win.document.getElementById('blChartMeta').textContent).toBe('prompt t/s · 1 request');
+    expect(win.__chart.data.labels).toEqual(['1k', '8k']);
+    expect(labels(win)).toEqual(['osl 256', 'osl 256 baseline', 'osl 1024']);
+    expect(win.__chart.data.datasets[0].data).toEqual([1200, 1100]);
+    expect(win.__chart.data.datasets[1].data).toEqual([1150, null]);
+    expect(win.document.getElementById('blCellSeg').querySelectorAll('button').length).toBe(3);
+  });
+  it('a single level draws grouped bars per category; a missing baseline is named, not drawn', async () => {
+    const win = boot(); await flush();
+    win.BL._debugLevels([lvl(1, 'qualitative', 1024, 64, 60, 900, 4, .72)],
+      { baseline: { bench: 'qualitative', levels: [lvl(1, 'qualitative', 1024, 60, 57, 850, 4.4, .7)] }, metric: 'accept' });
+    expect(win.document.getElementById('blChartTitle').textContent).toBe('Per category');
+    expect(win.__chart.data.labels).toEqual(['coding', 'all']);
+    expect(labels(win)).toEqual(['this run', 'baseline']);
+    expect(win.__chart.data.datasets[0].data).toEqual([72, 72]);
+    expect(win.__chart.data.datasets[1].data).toEqual([70, 70]);
+    expect(win.__chart.options.scales.y.max).toBe(100);
+    win.BL._debugLevels([lvl(1, 'qualitative', 1024, 64, 60, 900, 4, .72)],
+      { baseline: { bench: 'qualitative', levels: [lvl(4, 'qualitative', 1024, 45, 160, 800, 6, .7)] }, metric: 'decode' });
+    expect(labels(win)).toEqual(['this run']);
+    expect(win.document.getElementById('blLegend').textContent).not.toContain('baseline');
+    expect(win.document.getElementById('blChartCaption').textContent).toMatch(/baseline did not measure/);
+  });
+  it('the empty state names why nothing is drawn', async () => {
+    const win = boot(); await flush();
+    win.BL._debugLevels([lvl(1, 'throughput_1k', 256, 64, 21, 1200, 3, null), lvl(1, 'throughput_8k', 256, 55, 12, 1100, 8, null)], { metric: 'accept' });
+    const empty = win.document.getElementById('blChartEmpty');
+    expect(empty.style.display).toBe('');
+    expect(empty.textContent).toMatch(/no draft model/i);
+    expect(win.document.getElementById('blChartCaption').textContent).toBe('');
+    win.BL._debugLevels([], {});
+    expect(empty.textContent).toMatch(/No results yet/);
+    expect(win.__chart.data.datasets).toEqual([]);
+  });
+  it('the metric selector switches the drawn metric', async () => {
+    const win = boot(); await flush();
+    win.BL._debugLevels([lvl(1, 'qualitative', 1024, 64, 60, 900, 4, .7), lvl(4, 'qualitative', 1024, 48, 170, 850, 6, .7)], {});
+    const btn = win.document.querySelector('#blMetricSeg button[data-metric="latency"]');
+    btn.click();
+    expect(btn.classList.contains('on')).toBe(true);
+    expect(labels(win)).toEqual(['per-request']);
+    expect(win.__chart.data.datasets[0].data).toEqual([4, 6]);
+    expect(win.__chart.options.scales.y.title.text).toBe('latency s');
+    expect(win.document.getElementById('blChartCaption').textContent).toBe('');
   });
 });
 
