@@ -300,6 +300,9 @@ def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch
         s["role"] = "admin"
     assert client.put("/api/tower/model", json={"model": "qwen3-14b"}).status_code == 200
     assert written == {"manager.tower.model": "qwen3-14b"}
+    # an LM Studio id keeps its @quant suffix (#1119)
+    assert client.put("/api/tower/model", json={"model": "qwen3.5-9b@q6_k"}).get_json()["model"] == "qwen3.5-9b@q6_k"
+    assert written == {"manager.tower.model": "qwen3.5-9b@q6_k"}
 
 
 def test_model_pin_rejects_invalid_model_with_400(client, monkeypatch):

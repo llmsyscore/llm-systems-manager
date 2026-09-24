@@ -472,6 +472,8 @@ Instructs LM Studio to load a specific model. Load options LM Studio's native AP
 
 **Body:** `{"model": "<model_id>", "reload": false, "context_length": 32768}`
 
+The target agent is resolved as for `/api/lmstudio/unload` below: `?agent=`, else the pin, else an agent that serves or lists the model, else the primary.
+
 ---
 
 ### `GET /api/lmstudio/load-prefs`
@@ -488,7 +490,9 @@ Forgets the saved load preferences for that model on the selected agent.
 ---
 
 ### `POST /api/lmstudio/unload`
-Unloads the currently active model from LM Studio.
+Unloads a model from LM Studio. Load and unload go to the agent selected with `?agent=`, else the model's pinned agent, else an approved agent that serves or lists the model, else the primary.
+
+**Body:** `{"model": "<model_id>"}`
 
 ---
 
@@ -1302,7 +1306,7 @@ One stored result with the per-question prompts and answers: `{ok, result}`. `?e
 ---
 
 ### `GET /api/tower/models`
-The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok, models[{key, name, tier_gb, repo, file, quant, size_gb, params_b, expected, small, notes, model_id, present, loaded, eval}], hosts, host, live, last, admin}`. `model_id` is the id the llama.cpp host uses (`repo:quant`; LM Studio derives its own key from the repo name); `present` means a host lists it, `loaded` that it is resident; `eval` is its newest eval result or `null`. `hosts` lists the download targets, `[{provider: llama|lms, label, host, agent_id, primary}]`, every approved llama.cpp / LM Studio host with the primaries first (`host` is the first one, blank when none); `live` is the running `tower_get_model` job view and `last` the newest one in any state (its `result` carries `{model, host, check, eval, pin_offer}` once done).
+The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok, models[{key, name, tier_gb, repo, file, quant, size_gb, params_b, expected, measured, small, notes, model_id, present, loaded, eval}], hosts, host, live, last, admin}`. `model_id` is the id the llama.cpp host uses (`repo:quant`; LM Studio derives its own key from the repo name); `present` means a host lists it, `loaded` that it is resident; `eval` is its newest eval result or `null`. `hosts` lists the download targets, `[{provider: llama|lms, label, host, agent_id, primary}]`, every approved llama.cpp / LM Studio host with the primaries first (`host` is the first one, blank when none); `live` is the running `tower_get_model` job view and `last` the newest one in any state (its `result` carries `{model, host, check, eval, pin_offer}` once done).
 
 ---
 

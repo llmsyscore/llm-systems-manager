@@ -217,3 +217,33 @@ def test_fleet_hosts_lists_lm_studio_loaded_ids(monkeypatch):
     assert len(rows) == 1 and rows[0]["models"] == ["qwen3.5-9b@q6_k", "gemma-3-4b"] and rows[0]["state"] == "awake"
     both = manager_mod._fleet_hosts(None)
     assert [r["provider"] for r in both] == ["llama", "lms"]
+
+
+def test_lms_load_and_unload_follow_the_agent_that_holds_the_model(monkeypatch, tmp_path):
+    """#1118: an unpinned model goes to the agent serving it, then one listing it, else the primary."""
+    monkeypatch.setattr(lms_load_prefs, "STORE", lms_load_prefs.PrefStore(tmp_path / "prefs.json"))
+    monkeypatch.setattr(manager_mod.agent_registry, "default_agent_id_for", lambda p: "lms-agent-1")
+    monkeypatch.setattr(manager_mod.agent_registry, "pinned_agent", lambda p, m: {"agent_id": "lms-pin"} if m == "pinned-model" else None)
+    monkeypatch.setattr(manager_mod.agent_registry, "load_agents", lambda: {"agents": {
+        "lms-agent-1": {"status": "approved"}, "lms-agent-2": {"status": "approved"}, "lms-gone": {"status": "disabled"}}})
+    serving = {"lms:qwen3-8b": {"lms-agent-2"}, "lms:stale": {"lms-gone"}}
+    catalog = {"lms:qwen3-8b": {"lms-agent-1", "lms-agent-2"}, "lms:listed-only": {"lms-agent-2"}, "lms:stale": {"lms-gone"}}
+    monkeypatch.setattr(manager_mod.gateway, "_serving_agent_ids", lambda p, m: set(serving.get(f"{p}:{m}") or ()))
+    monkeypatch.setattr(manager_mod.gateway, "_catalog_agent_ids", lambda p, m: set(catalog.get(f"{p}:{m}") or ()))
+    calls = []
+
+    def fake_proxy(kind, method, path, **kw):
+        calls.append((path, kw.get("agent_id")))
+        return manager_mod.jsonify({"ok": True})
+    monkeypatch.setattr(manager_mod.proxies, "proxy_to_primary", fake_proxy)
+    c = _client(monkeypatch)
+    c.post("/api/lmstudio/unload", json={"model": "qwen3-8b"})
+    c.post("/api/lmstudio/load", json={"model": "qwen3-8b"})
+    c.post("/api/lmstudio/load", json={"model": "listed-only"})
+    c.post("/api/lmstudio/unload", json={"model": "stale"})
+    c.post("/api/lmstudio/unload", json={"model": "unknown"})
+    c.post("/api/lmstudio/unload", json={"model": "pinned-model"})
+    c.post("/api/lmstudio/unload?agent=lms-agent-1", json={"model": "qwen3-8b"})
+    assert calls == [("/lms/unload", "lms-agent-2"), ("/lms/load", "lms-agent-2"), ("/lms/load", "lms-agent-2"),
+                     ("/lms/unload", "lms-agent-1"), ("/lms/unload", "lms-agent-1"), ("/lms/unload", "lms-pin"),
+                     ("/lms/unload", "lms-agent-1")]
