@@ -2577,6 +2577,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
         env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
         _bench_put({"type": "model_start", "model_id": model_id, "run_id": run_id,
                     "bench": req["bench"], "levels": req["concurrency"], "matrix": req.get("matrix"),
+                    "baseline_run_id": req.get("baseline_run_id"),
                     "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
         energy.start()
 

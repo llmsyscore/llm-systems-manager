@@ -486,3 +486,79 @@ def test_unpinning_a_running_check_settles_its_row(tmp_path):
     assert e.w.history(PIN)[0]["error"] == "baseline unpinned"
     w2 = _restart(e)
     assert w2._active == {}
+
+
+# #913: a build-change re-check can replace the pinned baseline.
+def _promote_env(tmp_path):
+    e = Env(tmp_path)
+    e.cfg["promote_on_build_change"] = True
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()      # nightly settles first
+    e.build = "b101-bbb"
+    e.w.tick()
+    assert e.w.snapshot()["baselines"][0]["pending"] == "build"
+    return e
+
+
+def _pins(db):
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT run_id, baseline FROM bench_live_runs ORDER BY id").fetchall()
+    conn.close()
+    return {r[0]: r[1] for r in rows}
+
+
+def test_build_recheck_promotes_the_new_run(tmp_path):
+    e = _promote_env(tmp_path)
+    e.store("run-2", 52.0); e.w.tick()
+    assert _pins(e.db) == {PIN: 0, "run-1": 0, "run-2": 1}
+    row = e.w.snapshot()["baselines"][0]
+    assert row["run_id"] == "run-2" and row["gen_tps"] == 52.0
+    assert row["promoted_from"]["baseline_run_id"] == PIN and row["promoted_from"]["build_from"] == "b100-aaa"
+    assert row["promoted_from"]["llama_build"] == "b101-bbb"
+    # The promoting check is the new pin's last check, so the card never says "never".
+    assert row["last_check"]["run_id"] == "run-2" and row["last_check"]["promoted"] is True
+    assert row["last_check"]["trigger"] == "build" and row["last_check"]["status"] == "ok"
+    assert e.alerts == []
+
+
+def test_regressed_build_recheck_alerts_then_promotes(tmp_path):
+    e = _promote_env(tmp_path)
+    e.store("run-2", 20.0); e.w.tick()
+    assert _pins(e.db)["run-2"] == 1 and _pins(e.db)[PIN] == 0
+    assert len(e.alerts) == 1 and e.alerts[0]["severity"] == "critical"
+    assert "now the baseline" in e.alerts[0]["message"]
+    last = e.w.snapshot()["baselines"][0]["last_check"]
+    assert last["status"] == "regressed" and last["promoted"] is True
+
+
+def test_failed_build_recheck_keeps_the_old_pin(tmp_path):
+    e = _promote_env(tmp_path)
+    e.store("run-2", 0.0, ok=False); e.w.tick()
+    assert _pins(e.db)[PIN] == 1 and _pins(e.db)["run-2"] == 0
+    assert e.w.snapshot()["baselines"][0]["promoted_from"] is None
+
+
+def test_nightly_and_manual_rechecks_never_promote(tmp_path):
+    e = Env(tmp_path)
+    e.cfg["promote_on_build_change"] = True
+    e.w.tick(); e.store("run-1", 60.0); e.w.tick()      # nightly
+    assert _pins(e.db)[PIN] == 1 and _pins(e.db)["run-1"] == 0
+    e.w.recheck(PIN); e.w.tick(); e.store("run-2", 61.0); e.w.tick()   # manual
+    assert _pins(e.db)[PIN] == 1 and _pins(e.db)["run-2"] == 0
+    assert e.w.snapshot()["baselines"][0]["last_check"]["promoted"] is False
+
+
+def test_promotion_off_by_default_keeps_the_pin(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()
+    e.build = "b101-bbb"; e.w.tick(); e.store("run-2", 52.0); e.w.tick()
+    assert _pins(e.db)[PIN] == 1 and _pins(e.db)["run-2"] == 0
+    assert e.w.snapshot()["schedule"]["promote_on_build_change"] is False
+
+
+def test_promoted_pin_counts_the_build_check_as_its_last_auto_check(tmp_path):
+    e = _promote_env(tmp_path)
+    e.store("run-2", 52.0); e.w.tick()
+    # Same day, nightly slot already served by the promoting check: nothing new starts.
+    e.w.tick()
+    assert len(e.started) == 2
+    assert e.w.snapshot()["baselines"][0]["pending"] is None

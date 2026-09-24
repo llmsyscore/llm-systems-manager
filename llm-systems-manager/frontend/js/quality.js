@@ -217,7 +217,7 @@
   function closeStream() { if (_es) { try { _es.close(); } catch (_) {} _es = null; } }
   function openStream() {
     closeStream();
-    _es = SG.open({ url: '/api/llm/autotune/stream', onEvent: onEvent, onDrop: () => log('stream dropped — reconnecting'), onGiveUp: () => finish({ ok: false, error: 'stream lost' }) });
+    _es = SG.open({ url: '/api/llm/autotune/stream', bypassPause: true, onEvent: onEvent, onDrop: () => log('stream dropped — reconnecting'), onGiveUp: () => finish({ ok: false, error: 'stream lost' }) });
   }
   // Shared gate (#888): another tool on this host turns Run into Queue.
   function slot() {

@@ -161,7 +161,7 @@ async function runVllmAutotune() {
     return;
   }
   _vatEventSrc = SG.open({
-    url: window._withAgentParam('/api/vllm/autotune/stream'),
+    url: window._withAgentParam('/api/vllm/autotune/stream'), bypassPause: true,
     onReconnecting: () => _wizReconnecting('vllmAtStatus'),
     onRestored: () => _wizRestore('vllmAtStatus'),
     onLost: () => {
@@ -437,7 +437,7 @@ async function runVllmBench() {
     return;
   }
   _vbenchEventSrc = SG.open({
-    url: window._withAgentParam('/api/vllm/bench/stream'),
+    url: window._withAgentParam('/api/vllm/bench/stream'), bypassPause: true,
     onReconnecting: () => _wizReconnecting('vllmBenchStatus'),
     onRestored: () => _wizRestore('vllmBenchStatus'),
     onLost: () => {

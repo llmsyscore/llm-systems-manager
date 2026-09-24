@@ -823,7 +823,7 @@
   function openStream(agentId) {
     if (_es) { try { _es.close(); } catch (_) {} }
     _es = SG.open({
-      url: agentId ? '/api/llm/autotune/stream?agent=' + encodeURIComponent(agentId) : tq('/api/llm/autotune/stream'), maxDrops: 20,
+      url: agentId ? '/api/llm/autotune/stream?agent=' + encodeURIComponent(agentId) : tq('/api/llm/autotune/stream'), maxDrops: 20, bypassPause: true,
       onReconnecting: () => { const p = $('atRunPill'); if (p) p.textContent = 'reconnecting…'; },
       onRestored: () => { const p = $('atRunPill'); if (p) p.textContent = 'running'; },
       onLost: (rs) => { log(`stream lost (readyState=${rs})`, 'crit'); _es = null; _attached = false; stopElapsed(); busy(false); },

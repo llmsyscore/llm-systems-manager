@@ -324,7 +324,7 @@ function _rcCloseStream() {
 function rcStream(jobId) {
   _rcCloseStream();
   _rcEventSrc = SG.open({
-    url: '/api/reportcard/stream/' + encodeURIComponent(jobId), maxDrops: _RC_MAX_DROPS,
+    url: '/api/reportcard/stream/' + encodeURIComponent(jobId), maxDrops: _RC_MAX_DROPS, bypassPause: true,
     onReconnecting: (n) => { if (n === 1) _rcLog('stream dropped — reconnecting…'); },
     onLost: () => {
       _rcLog('connection lost');

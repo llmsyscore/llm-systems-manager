@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.23-6"
+__version__ = "v2026.09.23-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6159,6 +6159,7 @@ def _bench_baseline_cfg() -> dict:
     return {"enabled": bool(getattr(b, "enabled", False)),
             "nightly_at": str(getattr(b, "nightly_at", "") if b is not None else ""),
             "on_build_change": bool(getattr(b, "on_build_change", True)),
+            "promote_on_build_change": bool(getattr(b, "promote_on_build_change", False)),
             "regression_pct": float(getattr(b, "regression_pct", 15.0) or 15.0)}
 
 
@@ -7418,7 +7419,7 @@ def _validate_backup_mirror_dir(value: str) -> "str | None":
 _SETTINGS_VALIDATORS["manager.backup.mirror_dir"] = _validate_backup_mirror_dir
 
 
-_BENCH_BASELINE_KEYS = ("enabled", "nightly_at", "on_build_change", "regression_pct")
+_BENCH_BASELINE_KEYS = ("enabled", "nightly_at", "on_build_change", "promote_on_build_change", "regression_pct")
 
 
 def _bench_baseline_reload_config() -> None:

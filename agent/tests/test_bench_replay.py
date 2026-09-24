@@ -70,3 +70,42 @@ def test_seq_for_and_records_after_seq():
     assert b.seq_for("run1:2") == 2
     assert b.seq_for("other:2") == 0
     assert _ids(b.records_after_seq(2)) == ["run1:3"]
+
+
+# #912: a long run must not push its shape out of the buffer.
+def test_run_shape_events_survive_a_full_line_buffer():
+    b = BenchReplayBuffer(maxlen=3)
+    b.start_run("r")
+    b.append({"type": "model_start"})
+    b.append({"type": "level_result", "level": 1})
+    for n in range(10):
+        b.append({"type": "line", "text": str(n)})
+    b.append({"type": "level_result", "level": 2})
+    kinds = [r["event"]["type"] for r in b.replay_after(None)]
+    assert kinds[:2] == ["model_start", "level_result"]
+    assert kinds.count("line") == 3 and kinds[-1] == "level_result"
+    seqs = [r["seq"] for r in b.replay_after(None)]
+    assert seqs == sorted(seqs)
+
+
+def test_only_the_latest_progress_frame_is_replayed():
+    b = BenchReplayBuffer(maxlen=3)
+    b.start_run("r")
+    b.append({"type": "progress", "done": 1, "total": 9})
+    b.append({"type": "line", "text": "a"})
+    b.append({"type": "progress", "done": 5, "total": 9})
+    recs = b.replay_after(None)
+    prog = [r for r in recs if r["event"]["type"] == "progress"]
+    assert len(prog) == 1 and prog[0]["event"]["done"] == 5 and prog[0]["id"] == "r:3"
+    assert [r["id"] for r in recs] == ["r:2", "r:3"]
+    # A client past the progress frame does not get it again.
+    assert b.replay_after("r:3") == []
+
+
+def test_start_run_clears_kept_and_progress_records():
+    b = BenchReplayBuffer()
+    b.start_run("r1")
+    b.append({"type": "model_start"})
+    b.append({"type": "progress", "done": 1, "total": 2})
+    b.start_run("r2")
+    assert b.replay_after(None) == []

@@ -1004,7 +1004,7 @@ async function _benchRunNow(sel, fromQueue) {
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
     _benchStatus('running…');
     _benchEventSrc = SG.open({
-      url: '/api/benchmark/stream', maxDrops: _BENCH_MAX_DROPS,
+      url: '/api/benchmark/stream', maxDrops: _BENCH_MAX_DROPS, bypassPause: true,
       onReconnecting: () => {
         _benchReconnecting = true;
         document.getElementById('benchStatus').textContent = 'reconnecting…';

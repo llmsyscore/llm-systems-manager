@@ -312,6 +312,7 @@ mirror_dir = ""
 enabled = false
 nightly_at = "03:00"                                     # local time; blank = no nightly leg
 on_build_change = true                                   # also re-check when the host's llama.cpp build changes
+promote_on_build_change = false                          # a build-change re-check becomes the new pinned baseline
 regression_pct = 15.0                                    # alert when decode t/s drops this much vs the pin
 
 [manager.jobs]
