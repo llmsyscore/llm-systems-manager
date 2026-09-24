@@ -86,9 +86,10 @@
       if (!sel) return;
       const cur = state[id === 'jbKind' ? 'kind' : 'user'];
       if (cur && !opts.some(([v]) => v === cur)) opts = [...opts, [cur, cur]];
-      const html = `<option value="">${first}</option>` + opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
-      if (sel._html === html) return;
-      sel.innerHTML = html; sel._html = html;
+      const sig = JSON.stringify(opts);
+      if (sel._sig === sig) return;
+      sel.replaceChildren(new Option(first, ''), ...opts.map(([v, t]) => new Option(t, v)));
+      sel._sig = sig;
       sel.value = cur;
     };
     fill('jbKind', 'All kinds', kinds.map(k => [k.name, k.title || k.name]));
