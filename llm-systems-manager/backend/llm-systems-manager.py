@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.23-2"
+__version__ = "v2026.09.23-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2269,6 +2269,22 @@ _TOOL_RUNS_CAP = 200
 _TOOL_RUN_TOOLS = ("benchmark", "autotune", "quality", "tower_eval")
 
 
+def _tool_run_switches(raw) -> dict:
+    """A run's switches as a capped {str: str} map; anything else reads empty."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        if len(out) >= 48:
+            break
+        if isinstance(v, (dict, list)) or v is None or not str(k).strip():
+            continue
+        if isinstance(v, float) and _finite_or_none(v) is None:
+            continue
+        out[str(k).strip()[:80]] = str(v)[:200]
+    return out
+
+
 @app.route("/api/tools/runs", methods=["POST"])
 def tool_runs_record():
     try:
@@ -2297,6 +2313,9 @@ def tool_runs_record():
                 f = _finite_or_none(v)
                 if f is not None:
                     summary[k] = f
+        switches = _tool_run_switches(data.get("switches"))
+        if switches:
+            summary["switches"] = switches
         # Only a machine token may name its own agent; a browser request is
         # always attributed to the agent it routes to.
         caller = agent_registry.agent_by_token(
@@ -2315,6 +2334,12 @@ def tool_runs_record():
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (tool, model_id, agent_id, provider,
              1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id))
+        if switches and run_id:
+            # A collapsed duplicate still backfills switches the first writer lacked.
+            conn.execute(
+                "UPDATE tool_runs SET summary = json_set(COALESCE(summary, '{}'), '$.switches', json(?)) "
+                "WHERE tool = ? AND run_id = ? AND model_id = ? AND json_extract(summary, '$.switches') IS NULL",
+                (json.dumps(switches), tool, run_id, model_id))
         conn.execute(
             "DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
             "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)",

@@ -84,4 +84,22 @@ describe('shared autotune stream handoff', () => {
     expect(win.__cancels).toBe(0);
     expect(win.document.getElementById('toolsHome').style.display).toBe('block');
   });
+
+  it('switching tools mid-run keeps the context chip off (#920)', async () => {
+    const win = boot();
+    await flush();
+    win.toolsOpenTool('autotune', null);
+    win.AT.live = true;
+    win.toolsOpenTool('quality', 'org/m:Q4');
+    expect(win.AT.detaches).toBe(1);
+    expect(win.document.getElementById('toolsChipQuality').style.display).toBe('none');
+  });
+
+  it('an idle switch still shows the pre-filled model chip', async () => {
+    const win = boot();
+    await flush();
+    win.toolsOpenTool('autotune', null);
+    win.toolsOpenTool('quality', 'org/m:Q4');
+    expect(win.document.getElementById('toolsChipQuality').style.display).toBe('');
+  });
 });

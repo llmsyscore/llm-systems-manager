@@ -644,7 +644,9 @@ def ledger_summary(done: dict) -> dict:
             "n_expert": (done.get("facts") or {}).get("n_expert"),
             "mtp_layers": (done.get("facts") or {}).get("mtp_layers"),
             "kl": guard.get("kl"), "kl_pass": guard.get("pass"), "regressed": done.get("regressed"),
-            "avg_w": after.get("avg_w"), "power_cap_w": done.get("power_cap_w")}
+            "avg_w": after.get("avg_w"), "power_cap_w": done.get("power_cap_w"),
+            "switches": {str(c["key"]): str(c.get("recommended")) for c in done.get("changes") or []
+                         if isinstance(c, dict) and c.get("key") and c.get("recommended") is not None}}
 
 
 _KL_SAFE_VALUE = {"--cache-type-k", "--cache-type-v", "-ctk", "-ctv", "--threads", "-t", "--threads-batch", "-tb",

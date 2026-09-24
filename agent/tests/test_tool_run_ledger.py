@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 _SHARED_PY = Path(__file__).resolve().parent.parent / "providers" / "_shared.py"
-_WANTED = ("bench_row_series", "bench_maxes", "post_tool_run")
+_WANTED = ("bench_row_series", "bench_maxes", "switch_map", "post_tool_run")
 
 
 def _extract():
@@ -111,3 +111,10 @@ def test_a_failing_post_never_reaches_the_caller():
 
     ctx.post_session = _Boom()
     S.post_tool_run(ctx, "autotune", "llama", "r", "m", True, {"ctx_size": 4096})
+
+
+def test_switch_map_flattens_bench_switches():
+    sw = [{"flag": "-p", "value": "512"}, {"flag": "-fa", "value": ""}, {"flag": "-p", "value": "1024"},
+          {"flag": " ", "value": "x"}, "junk", {"flag": "-ngl", "value": 99}]
+    assert S.switch_map(sw) == {"-p": "512, 1024", "-fa": "on", "-ngl": "99"}
+    assert S.switch_map(None) == {}

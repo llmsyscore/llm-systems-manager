@@ -482,7 +482,13 @@ def test_ledger_summary(at):
                  "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
                  "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
                  "wh_per_ktok": 0.24, "n_expert": 128, "mtp_layers": 1, "kl": None, "kl_pass": None, "regressed": None,
-                 "avg_w": None, "power_cap_w": None}
+                 "avg_w": None, "power_cap_w": None, "switches": {}}
+
+
+def test_ledger_summary_records_the_recommended_switches(at):
+    done = {"objective": "fit", "stages": [], "changes": [{"key": "ctx-size", "current": "4096", "recommended": 32768},
+                                                           {"key": "cache-type-k", "current": None, "recommended": "q8_0"}]}
+    assert at.ledger_summary(done)["switches"] == {"ctx-size": "32768", "cache-type-k": "q8_0"}
 
 
 def test_kl_args_keeps_only_perplexity_safe_flags(at):

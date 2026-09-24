@@ -239,3 +239,33 @@ def test_a_browser_cannot_attribute_a_run_to_another_agent(monkeypatch):
     c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
                                     "agent_id": "e" * 32})
     assert c.get("/api/tools/runs").get_json()["runs"][0]["agent_id"] == "d" * 32
+
+
+def test_switches_stored_as_a_capped_string_map(monkeypatch):
+    """#892: switches are the one nested summary field."""
+    _setup(monkeypatch)
+    c = _client()
+    sw = {"-ngl": 99, "-fa": "on", "bad": {"x": 1}, "nan": float("nan"), " ": "v", "long": "y" * 500}
+    assert c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
+                                            "switches": sw}).get_json()["ok"] is True
+    got = c.get("/api/tools/runs").get_json()["runs"][0]["summary"]["switches"]
+    assert got["-ngl"] == "99" and got["-fa"] == "on" and len(got["long"]) == 200
+    assert "bad" not in got and "nan" not in got and " " not in got
+    c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "m",
+                                    "switches": {f"k{i}": i for i in range(60)}})
+    assert len(c.get("/api/tools/runs").get_json()["runs"][0]["summary"]["switches"]) == 48
+
+
+def test_duplicate_writer_backfills_missing_switches(monkeypatch):
+    """#892: a dashboard row that won the race still gains the agent's switches."""
+    _setup(monkeypatch)
+    c = _client()
+    c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "org/m", "run_id": "r1", "decode_tps": 40.0})
+    c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "org/m", "run_id": "r1", "decode_tps": 41.0,
+                                    "switches": {"ctx-size": "32768"}})
+    c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "org/m", "run_id": "r1",
+                                    "switches": {"ctx-size": "1"}})
+    runs = c.get("/api/tools/runs").get_json()["runs"]
+    assert len(runs) == 1
+    assert runs[0]["summary"]["decode_tps"] == 40.0
+    assert runs[0]["summary"]["switches"] == {"ctx-size": "32768"}

@@ -95,6 +95,21 @@ def _int(v: Any, name: str) -> int:
         raise ValueError(f"{name} must be an integer")
 
 
+def ledger_switches(req: dict, server: dict) -> dict:
+    """The settings a speed-bench run used, flattened for the tool ledger."""
+    cats = req.get("categories")
+    out = {"bench": req.get("bench"), "categories": "all" if cats == "all" else ", ".join(cats or []),
+           "osl": req.get("osl"), "limit": req.get("limit"),
+           "concurrency": ", ".join(str(c) for c in req.get("concurrency") or []),
+           "timeout_s": req.get("timeout_s"),
+           "extra_inputs": json.dumps(req.get("extra_inputs") or {}, sort_keys=True),
+           "spec": server.get("spec")}
+    m = req.get("matrix")
+    if m:
+        out["matrix"] = f"{', '.join(m.get('benches') or [])} × {', '.join(str(o) for o in m.get('osls') or [])}"
+    return {k: str(v) for k, v in out.items() if v not in (None, "")}
+
+
 def validate_run_request(body: dict) -> dict:
     model_id = str(body.get("model_id") or "").strip()
     if not model_id or not _MODEL_RE.match(model_id):
