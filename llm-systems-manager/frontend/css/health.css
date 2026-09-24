@@ -118,6 +118,10 @@
 #adminHealthCard .hc-jobs > .microlbl { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 #adminHealthCard .hc-jobs > .microlbl em { font-style: normal; font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 10.5px; color: var(--fg-faint); }
 #adminHealthCard .hc-jl { display: flex; flex-direction: column; gap: 6px; }
+#adminHealthCard .hc-jobs-all { margin-left: auto; font-size: 10.5px; letter-spacing: 0; text-transform: none; font-weight: 500; color: var(--accent); text-decoration: none; }
+#adminHealthCard .hc-jobs-all:hover { text-decoration: underline; }
+#adminHealthCard .hj-more { align-self: flex-start; background: none; border: 0; padding: 0 0 0 18px; font: inherit; font-size: 11.5px; color: var(--accent); cursor: pointer; }
+#adminHealthCard .hj-more:hover { text-decoration: underline; }
 #adminHealthCard .hj { display: grid; grid-template-columns: 8px minmax(0, 1.4fr) auto minmax(0, 1fr) auto 26px; column-gap: 10px; align-items: center; font-size: 12.5px; color: var(--fg); }
 #adminHealthCard .hj .dot { grid-column: 1; }
 #adminHealthCard .hj .hj-l { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }

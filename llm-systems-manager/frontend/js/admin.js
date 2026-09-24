@@ -24,6 +24,8 @@ function adminRefreshNow() {
   adminLoadAgents(); adminLoadHealth();
   if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'audit'
       && typeof adminAuditLoad === 'function') adminAuditLoad();
+  if (typeof _subTabState !== 'undefined' && _subTabState.admin === 'jobs'
+      && typeof adminJobsLoad === 'function') adminJobsLoad();
 }
 function adminStopAutoRefresh() {
   if (window.GatewayView) GatewayView.stop();

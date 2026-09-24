@@ -566,3 +566,17 @@ def test_audit_hook_failure_is_logged_at_warning(monkeypatch, caplog):
     assert len(dropped) == 1
     assert "backup.export" in dropped[0].getMessage()
     assert dropped[0].exc_info
+
+
+def test_jobs_audit_rows_match_on_the_detail_job_id(monkeypatch):
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
+    for i, jid in enumerate(("j1", "j2", "j1")):
+        manager_mod._audit_record((f"2026-09-23T20:0{i}:00+00:00", "adriel", "admin", "", "session", "POST", "jobs",
+                                   "jobs.cancel", "Job", 200, "ok", json.dumps({"job_id": jid}), "jobs"))
+    manager_mod._audit_record(("2026-09-23T20:09:00+00:00", "adriel", "admin", "", "session", "POST", "/x",
+                               "user.create", "bob", 200, "ok", None, "user.manage"))
+    rows = manager_mod._jobs_audit_rows("j1")
+    assert [r["ts"] for r in rows] == ["2026-09-23T20:02:00+00:00", "2026-09-23T20:00:00+00:00"]
+    assert rows[0]["detail"] == {"job_id": "j1"} and rows[0]["action"] == "jobs.cancel"
+    assert manager_mod._jobs_audit_rows("nope") == []

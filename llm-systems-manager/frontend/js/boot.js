@@ -46,7 +46,7 @@ const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents', 
 const _SUB_TAB_MAP = {
   dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager','forecast'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
-  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','routing','settings'] },
+  admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','jobs','routing','settings'] },
   tools:     { tabId: 'toolsTab',     prefix: 'tools', subs: ['openclaw','llmchat','imggen'] },
 };
 
@@ -157,6 +157,9 @@ function switchSubTab(parent, sub) {
   }
   if (parent === 'admin' && sub === 'audit') {
     if (typeof adminAuditLoad === 'function') adminAuditLoad(0);
+  }
+  if (parent === 'admin' && sub === 'jobs') {
+    if (typeof adminJobsLoad === 'function') adminJobsLoad(0);
   }
   if (parent === 'admin' && sub === 'backup') {
     if (typeof adminLoadBackupStatus === 'function') adminLoadBackupStatus();

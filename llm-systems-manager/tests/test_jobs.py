@@ -245,7 +245,7 @@ def test_recover_requeues_or_fails_running_rows_by_kind_policy():
     assert len(alerts) == 2
 
 
-def test_summary_recent_and_sweep():
+def test_summary_live_and_sweep():
     clock = Clock(1000.0)
     svc, store = _service(clock=clock, cfg=_cfg(history_days=2))
     svc.register(jobs.Kind("k", "K", run=lambda j: jobs.ok()))
@@ -258,7 +258,7 @@ def test_summary_recent_and_sweep():
     store.update(d["id"], status="done", resolved=1000.0 - 3 * 86400.0)
     s = svc.summary()
     assert s == {"queued": 1, "running": 1, "failed_24h": 1, "next_due": 1500.0} and svc.get(q["id"])["next_run"] == 1500.0
-    assert [x["label"] for x in svc.recent(3)] == ["now", "later", "old fail"]
+    assert [x["label"] for x in svc.live(3)] == ["now", "later"]
     clock.t = 1000.0 + jobs.SWEEP_EVERY_S
     svc.tick()
     assert svc.get(d["id"]) is None and svc.get(f["id"]) is not None
@@ -368,3 +368,17 @@ def test_list_orders_failed_rows_by_resolution_on_request():
     store.update(new["id"], status="failed", resolved=1100.0)
     assert [r["label"] for r in svc.list("failed")] == ["newer created", "older created"]
     assert [r["label"] for r in svc.list("failed", order="resolved DESC")] == ["older created", "newer created"]
+
+
+def test_list_pages_counts_and_names_users():
+    clock = Clock(1000.0)
+    svc, store = _service(clock=clock)
+    svc.register(jobs.Kind("k", "K", run=lambda j: jobs.ok()))
+    svc.register(jobs.Kind("m", "M", run=lambda j: jobs.ok()))
+    for i in range(5):
+        clock.t = 1000.0 + i
+        svc.submit("k" if i % 2 == 0 else "m", {}, label=f"j{i}", user="bob" if i < 2 else "")
+    assert [r["label"] for r in svc.list("all", limit=2, offset=1)] == ["j3", "j2"]
+    assert [r["label"] for r in svc.list("all", limit=2, offset=4)] == ["j0"]
+    assert svc.count("all") == 5 and svc.count("all", kind="k") == 3 and svc.count("live", user="bob") == 2
+    assert svc.count("done") == 0 and svc.users() == ["bob"]
