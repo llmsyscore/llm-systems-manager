@@ -36,7 +36,7 @@ const BODY = `
       <div class="bl-hint" id="blFleetNote" style="display:none"></div>
     </div>
     <div class="bl-card" id="blFleetCard" style="display:none"><span id="blFleetMeta"></span><span id="blFleetProgress"></span><div id="blFleetTable"></div></div>
-    <div class="bl-card" id="blBaseCard" style="display:none"><label><input type="checkbox" id="blBaseEnabled"></label><span id="blBaseMeta"></span><a href="#" id="blBaseSettings">Schedule settings</a><button id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button><div id="blBaseTable"></div></div>
+    <div class="bl-card" id="blBaseCard" style="display:none"><label><input type="checkbox" id="blBaseEnabled"></label><label><input type="checkbox" id="blBasePromote"></label><span id="blBaseMeta"></span><a href="#" id="blBaseSettings">Schedule settings</a><button id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button><div id="blBaseTable"></div></div>
   </div>
 `;
 
@@ -60,6 +60,8 @@ const STUBS = `
       ? { ok: true, server: { up: true, url: 'http://h:9931', models: [{ id: 'org/m:Q4', status: 'loaded' }], loaded_id: 'org/m:Q4', slots_idle: 2, slots_total: 2 },
           runtime: window.__noRt ? { python: '', source: '', script: '', script_status: 'ok' } : { python: '/p', source: 'venv', script: '/s', script_status: 'ok' },
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
+      : url.indexOf('/api/benchmark/live/runs/') === 0
+      ? { ok: true, run: window.__baseDoc || null }
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
       : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
@@ -861,5 +863,121 @@ describe('queueing behind another tool (#888)', () => {
     // Attached to the run it lost the race to, with this config still queued.
     expect(win.document.getElementById('blNotice').style.display).not.toBe('none');
     expect(win.document.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
+  });
+});
+
+describe('run state survives leaving and re-attaching (#912)', () => {
+  const LV = (c, p) => ({ type: 'level_result', concurrency: c, level: c, rows: [], all: { pred_tps: p, agg_pred_tps: p * c, prompt_tps: 400, latency_s: 2, accept_rate: null } });
+  it('the run stream ignores the Live-updates pause', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run(); await flush(); await flush();
+    expect(win.__sse.bypassPause).toBe(true);
+  });
+  it('attaching rebuilds the panes from the replay instead of stacking on stale state', async () => {
+    const win = boot('BL._debugLevels([{ concurrency: 4, rows: [], all: { pred_tps: 9, agg_pred_tps: 30, prompt_tps: 1, latency_s: 1 } }]); window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    expect(win.BL._debug().attached).toBe(true);
+    expect(d.querySelectorAll('#blLevelSeg button').length).toBe(0);
+    expect(d.getElementById('blLog').children.length).toBe(0);
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r9', bench: 'qualitative', levels: [1, 2] });
+    win.__sse.onEvent(LV(1, 50)); win.__sse.onEvent(LV(2, 40));
+    expect([...d.querySelectorAll('#blLevelSeg button')].map(b => b.textContent)).toEqual(['1', '2']);
+    expect(d.getElementById('blLog').children.length).toBe(3);
+    win.BL.cancel();
+  });
+  it('a second attach to the same run does not duplicate levels', async () => {
+    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r9', bench: 'qualitative', levels: [1, 2] });
+    win.__sse.onEvent(LV(1, 50));
+    win.__sse.onLost(2);                                   // stream gave up
+    expect(win.BL.running()).toBe(false);
+    win.BL.onOpen('org/m:Q4'); await flush();               // module re-opened mid-run
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r9', bench: 'qualitative', levels: [1, 2] });
+    win.__sse.onEvent(LV(1, 50)); win.__sse.onEvent(LV(2, 40));
+    expect([...win.document.querySelectorAll('#blLevelSeg button')].map(b => b.textContent)).toEqual(['1', '2']);
+    win.BL.cancel();
+  });
+});
+
+describe('attached runs compare against their baseline (#914)', () => {
+  const BASE = { levels: [{ concurrency: 1, rows: [], all: { pred_tps: 100, agg_pred_tps: 100, prompt_tps: 500, latency_s: 4, accept_rate: 0.5 } }] };
+  const LV = { type: 'level_result', concurrency: 1, level: 1, rows: [], all: { pred_tps: 110, agg_pred_tps: 110, prompt_tps: 500, latency_s: 4, accept_rate: 0.6 } };
+  it('model_start names the baseline and the tiles show deltas', async () => {
+    const win = boot('window.__baseDoc = ' + JSON.stringify(BASE) + '; window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r9', bench: 'qualitative', levels: [1], baseline_run_id: 'pin-1' });
+    await flush(); await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/runs/pin-1')).toBe(true);
+    win.__sse.onEvent(LV);
+    const tiles = win.document.getElementById('blTiles').textContent;
+    expect(tiles).toContain('+10 % vs baseline');
+    expect(tiles).not.toContain('no baseline');
+    expect(tiles).not.toContain('baseline had no draft');
+    win.BL.cancel();
+  });
+  it('an older agent names the baseline only at model_done; the tiles still update', async () => {
+    const win = boot('window.__baseDoc = ' + JSON.stringify(BASE) + '; window.__busy = true; BL.onOpen("org/m:Q4");');
+    await flush();
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r9', bench: 'qualitative', levels: [1] });
+    win.__sse.onEvent(LV);
+    expect(win.document.getElementById('blTiles').textContent).toContain('no baseline');
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r9', ok: true, levels: [LV], baseline_run_id: 'pin-1' });
+    await flush(); await flush();
+    expect(win.document.getElementById('blTiles').textContent).toContain('+10 % vs baseline');
+    win.BL.cancel();
+  });
+  it('a scheduled re-check attaches with the pin it is checking', async () => {
+    const win = boot('window.__baseDoc = ' + JSON.stringify(BASE) + ';');
+    await flush();
+    win.BL._debugBaselines({ schedule: { enabled: true }, primary_agent_id: 'a',
+      baselines: [{ run_id: 'pin-7', model_id: 'org/m:Q4', agent_id: 'a', hostname: 'alpha', gen_tps: 100, config: {}, running: true, active_run_id: 'run-99', last_check: null }] });
+    await flush(); await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/runs/pin-7')).toBe(true);
+    win.__sse.onEvent({ type: 'model_start', run_id: 'run-99', bench: 'qualitative', levels: [1] });
+    win.__sse.onEvent(LV);
+    expect(win.document.getElementById('blTiles').textContent).toContain('+10 % vs baseline');
+    win.BL.cancel();
+  });
+});
+
+describe('build-change re-check can become the baseline (#913)', () => {
+  const sched = { enabled: true, nightly_at: '03:00', on_build_change: true, promote_on_build_change: true, regression_pct: 15, nightly_valid: true };
+  const pin = { run_id: 'p9', model_id: 'org/m:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-20T10:00:00+00:00', gen_tps: 55,
+    config: { bench: 'qualitative' }, online: true, loaded: true, llama_build: 'b200-new', build_changed: false, running: false, pending: null,
+    promoted_from: { baseline_run_id: 'p1', build_from: 'b100-old', llama_build: 'b200-new', ts: '2026-09-22T00:06:00+00:00' },
+    last_check: { ts: '2026-09-22T00:06:00+00:00', trigger: 'build', status: 'ok', gen_tps: 55, base_tps: 52, delta_pct: 5.8, severity: null, error: null, llama_build: 'b200-new', promoted: true } };
+  it('the card switch follows the setting and the meta says so', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: sched, baselines: [pin] });
+    expect(win.document.getElementById('blBasePromote').checked).toBe(true);
+    expect(win.document.getElementById('blBaseMeta').textContent).toBe('nightly at 03:00 · after llama.cpp upgrades (new build becomes baseline) · alert past −15 %');
+    expect(win.BL.baselineMeta({ ...sched, promote_on_build_change: false })).toBe('nightly at 03:00 · after llama.cpp upgrades · alert past −15 %');
+  });
+  it('a promoted pin shows the build it replaced and the check that promoted it', () => {
+    const win = boot();
+    win.BL._debugBaselines({ schedule: sched, baselines: [pin] });
+    const row = win.document.querySelector('#blBaseTable tbody tr');
+    expect(row.textContent).toContain('b200-new');
+    expect(row.textContent).toContain('was b100-old');
+    expect(row.textContent).toContain('build · now the baseline');
+  });
+  it('flipping the switch saves the setting and reverts when the save fails', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const puts = [];
+    win.fetch = async (url, opts) => {
+      if (url === '/api/admin/settings') { puts.push(JSON.parse(opts.body)); return { ok: !win.__fail, json: async () => ({ ok: !win.__fail, error: win.__fail ? 'nope' : undefined }) }; }
+      return { ok: true, json: async () => ({ ok: true, baselines: [], schedule: sched }) };
+    };
+    const cb = win.document.getElementById('blBasePromote');
+    cb.checked = true; cb.dispatchEvent(new win.Event('change')); await flush(); await flush();
+    expect(puts[0]).toEqual({ changes: { 'manager.bench_baselines.promote_on_build_change': true } });
+    win.__fail = true;
+    cb.checked = false; cb.dispatchEvent(new win.Event('change')); await flush(); await flush();
+    expect(cb.checked).toBe(true);
+    expect(win.document.getElementById('blBaseMeta').textContent).toBe('nope');
   });
 });

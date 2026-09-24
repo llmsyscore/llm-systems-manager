@@ -128,6 +128,7 @@ CATALOG: list[dict] = [
     _e("manager.bench_baselines.enabled", "bool", "Scheduled re-check", "Re-run pinned Live benchmark baselines automatically and alert on a decode-t/s regression.", "benchmark", MANAGER, hot=True, common=True),
     _e("manager.bench_baselines.nightly_at", "str", "Nightly at (HH:MM)", "Local time of the nightly re-check; clear the field for build-change re-checks only.", "benchmark", MANAGER, hot=True),
     _e("manager.bench_baselines.on_build_change", "bool", "After llama.cpp upgrades", "Re-check a host's baselines when its llama.cpp build changes.", "benchmark", MANAGER, hot=True),
+    _e("manager.bench_baselines.promote_on_build_change", "bool", "New build becomes the baseline", "After a llama.cpp upgrade, the build-change re-check replaces the pinned baseline; a regression still alerts first.", "benchmark", MANAGER, hot=True),
     _e("manager.bench_baselines.regression_pct", "float", "Regression threshold (%)", "Decode t/s drop vs the pinned baseline that raises a warning; twice it raises critical.", "benchmark", MANAGER, min=1, max=90, hot=True),
     # backup
     # backup — hot: the scheduler re-reads these before every run

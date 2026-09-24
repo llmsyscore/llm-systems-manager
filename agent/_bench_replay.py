@@ -3,10 +3,17 @@
 """
 from collections import deque
 
+# Run-shape events survive a full buffer; only log lines are evicted.
+KEEP_TYPES = frozenset(("model_start", "level_start", "level_result", "result", "model_done",
+                        "setup_step", "setup_done", "done"))
+KEEP_MAX = 2000
+
 
 class BenchReplayBuffer:
     def __init__(self, maxlen=5000):
         self._buf = deque(maxlen=maxlen)
+        self._keep = deque(maxlen=KEEP_MAX)
+        self._progress = None
         self._run_id = ""
         self._seq = 0
 
@@ -19,13 +26,21 @@ class BenchReplayBuffer:
         self._run_id = str(run_id)
         self._seq = 0
         self._buf.clear()
+        self._keep.clear()
+        self._progress = None
 
     def append(self, event):
-        """Tag event with the next id, store it, and return the record
-        {id, seq, event}. Buffer is bounded; oldest records evict."""
+        """Tag event with the next id and store it: lines are bounded, the latest
+        progress frame replaces the previous one, run-shape events are kept."""
         self._seq += 1
         rec = {"id": f"{self._run_id}:{self._seq}", "seq": self._seq, "event": event}
-        self._buf.append(rec)
+        kind = event.get("type") if isinstance(event, dict) else None
+        if kind == "progress":
+            self._progress = rec
+        elif kind in KEEP_TYPES:
+            self._keep.append(rec)
+        else:
+            self._buf.append(rec)
         return rec
 
     def seq_for(self, last_event_id):
@@ -43,8 +58,13 @@ class BenchReplayBuffer:
             return 0
 
     def records_after_seq(self, seq):
-        """Records in the current buffer with seq greater than the given seq."""
-        return [r for r in self._buf if r["seq"] > seq]
+        """Records in the current buffer with seq greater than the given seq, in seq order."""
+        out = [r for r in self._buf if r["seq"] > seq]
+        out.extend(r for r in self._keep if r["seq"] > seq)
+        if self._progress is not None and self._progress["seq"] > seq:
+            out.append(self._progress)
+        out.sort(key=lambda r: r["seq"])
+        return out
 
     def replay_after(self, last_event_id):
         """Records to (re)send to a connecting client, resolved from its

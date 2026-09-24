@@ -315,6 +315,7 @@ class ManagerBenchBaselines(BaseModel):
     enabled: bool = False
     nightly_at: str = ""
     on_build_change: bool = True
+    promote_on_build_change: bool = False
     regression_pct: float = 15.0
 
 

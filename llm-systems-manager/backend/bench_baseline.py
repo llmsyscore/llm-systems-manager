@@ -40,6 +40,8 @@ def init_tables(conn) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(bench_baseline_checks)").fetchall()}
     if "build_from" not in cols:
         conn.execute("ALTER TABLE bench_baseline_checks ADD COLUMN build_from TEXT NOT NULL DEFAULT ''")
+    if "promoted" not in cols:
+        conn.execute("ALTER TABLE bench_baseline_checks ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bench_baseline_agents (
             agent_id    TEXT PRIMARY KEY,
@@ -119,13 +121,13 @@ def _parse_iso(s: Any) -> Optional[float]:
 
 
 _CHECK_COLS = ("id, baseline_run_id, run_id, model_id, agent_id, ts, trigger, status, gen_tps, base_tps, delta_pct,"
-               " severity, error, llama_build, build_from")
+               " severity, error, llama_build, build_from, promoted")
 
 
 def _check_row(r) -> dict:
     return {"id": r[0], "baseline_run_id": r[1], "run_id": r[2], "model_id": r[3], "agent_id": r[4], "ts": r[5],
             "trigger": r[6], "status": r[7], "gen_tps": r[8], "base_tps": r[9], "delta_pct": r[10],
-            "severity": r[11], "error": r[12], "llama_build": r[13], "build_from": r[14]}
+            "severity": r[11], "error": r[12], "llama_build": r[13], "build_from": r[14], "promoted": bool(r[15])}
 
 
 class Watcher:
@@ -160,8 +162,9 @@ class Watcher:
         return [bench_live._row(r) for r in rows]
 
     def _last_check(self, baseline_run_id: str, auto_only: bool = False, settled_only: bool = False) -> Optional[dict]:
-        q = f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE baseline_run_id = ? AND status != 'running'"
-        args: list = [baseline_run_id]
+        q = (f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE (baseline_run_id = ? OR (run_id = ? AND promoted = 1))"
+             " AND status != 'running'")
+        args: list = [baseline_run_id, baseline_run_id]
         if auto_only:
             q += " AND trigger IN (?, ?)"
             args += list(AUTO_TRIGGERS)
@@ -181,26 +184,41 @@ class Watcher:
                 (run_id, max(1, min(limit, 200)))).fetchall()
         return [_check_row(r) for r in rows]
 
+    def _promoted_by(self, run_id: str) -> Optional[dict]:
+        """The build-change check that made this run the pinned baseline, if any."""
+        r = self._conn().execute(
+            f"SELECT {_CHECK_COLS} FROM bench_baseline_checks WHERE run_id = ? AND promoted = 1 ORDER BY id DESC LIMIT 1",
+            (run_id,)).fetchone()
+        return _check_row(r) if r else None
+
+    def _promote(self, b: dict, run_id: str) -> None:
+        """Pin run_id as the model/host baseline in place of b."""
+        conn = self._conn()
+        conn.execute("UPDATE bench_live_runs SET baseline = 0 WHERE model_id = ? AND agent_id = ?", (b["model_id"], b["agent_id"]))
+        conn.execute("UPDATE bench_live_runs SET baseline = 1 WHERE run_id = ?", (run_id,))
+        conn.commit()
+
     def _record(self, b: dict, trigger: str, status: str, *, run_id=None, gen_tps=None, delta=None, sev=None,
-                error=None, build="", build_from="", check_id=None) -> dict:
+                error=None, build="", build_from="", check_id=None, promoted=False) -> dict:
         """Insert a check row, or with check_id settle the `running` row written at launch."""
         row = {"baseline_run_id": b["run_id"], "run_id": run_id, "model_id": b["model_id"], "agent_id": b["agent_id"],
                "ts": _iso(self._now()), "trigger": trigger, "status": status, "gen_tps": gen_tps,
                "base_tps": b.get("gen_tps"), "delta_pct": delta, "severity": sev, "error": error, "llama_build": build,
-               "build_from": build_from or ""}
+               "build_from": build_from or "", "promoted": bool(promoted)}
         conn = self._conn()
         if check_id is not None:
             conn.execute(
-                "UPDATE bench_baseline_checks SET ts = ?, status = ?, gen_tps = ?, delta_pct = ?, severity = ?, error = ?"
-                " WHERE id = ?", (row["ts"], status, gen_tps, delta, sev, error, check_id))
+                "UPDATE bench_baseline_checks SET ts = ?, status = ?, gen_tps = ?, delta_pct = ?, severity = ?, error = ?,"
+                " promoted = ? WHERE id = ?", (row["ts"], status, gen_tps, delta, sev, error, int(promoted), check_id))
             row["id"] = check_id
         else:
             cur = conn.execute(
                 "INSERT INTO bench_baseline_checks (baseline_run_id, run_id, model_id, agent_id, ts, trigger, status,"
-                " gen_tps, base_tps, delta_pct, severity, error, llama_build, build_from) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " gen_tps, base_tps, delta_pct, severity, error, llama_build, build_from, promoted)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (row["baseline_run_id"], row["run_id"], row["model_id"], row["agent_id"], row["ts"], row["trigger"],
                  row["status"], row["gen_tps"], row["base_tps"], row["delta_pct"], row["severity"], row["error"],
-                 row["llama_build"], row["build_from"]))
+                 row["llama_build"], row["build_from"], int(promoted)))
             row["id"] = cur.lastrowid
         conn.execute(
             "DELETE FROM bench_baseline_checks WHERE baseline_run_id = ? AND id NOT IN"
@@ -257,6 +275,7 @@ class Watcher:
                 settled = self._last_check(b["run_id"], settled_only=True)
                 pend = self._pending.get(b["run_id"]) or {}
                 act = self._active.get(b["run_id"])
+                promo = self._promoted_by(b["run_id"])
                 out.append({"run_id": b["run_id"], "model_id": b["model_id"], "agent_id": b["agent_id"],
                             "hostname": h.get("hostname") or b["agent_id"][:8], "ts": b["ts"], "gen_tps": b["gen_tps"],
                             "config": dict(b.get("config") or {}),
@@ -267,10 +286,13 @@ class Watcher:
                             "running": act is not None,
                             "active_run_id": act["run_id"] if act else None,
                             "pending": (act or pend).get("trigger") if (act or pend) else None,
-                            "last_check": last})
+                            "last_check": last,
+                            "promoted_from": ({"baseline_run_id": promo["baseline_run_id"], "build_from": promo["build_from"],
+                                               "llama_build": promo["llama_build"], "ts": promo["ts"]} if promo else None)})
             hhmm = str(cfg.get("nightly_at") or "")
             sched = {"enabled": bool(cfg.get("enabled")), "nightly_at": hhmm,
                      "on_build_change": bool(cfg.get("on_build_change")),
+                     "promote_on_build_change": bool(cfg.get("promote_on_build_change")),
                      "regression_pct": float(cfg.get("regression_pct") or 0),
                      "nightly_valid": parse_hhmm(hhmm) is not None,
                      "next_nightly_ts": next_slot_ts(now, hhmm, self._tz) if cfg.get("enabled") else None}
@@ -436,9 +458,12 @@ class Watcher:
         sev = severity(d, pct)
         status = "regressed" if sev else ("ok" if cur is not None else "failed")
         hostname = ({x["agent_id"]: x for x in self._hosts()}.get(b["agent_id"]) or {}).get("hostname") or b["agent_id"][:8]
+        promote = bool(act["trigger"] == "build" and cfg.get("promote_on_build_change") and cur is not None)
         row = self._record(b, act["trigger"], status, run_id=act["run_id"], gen_tps=cur, delta=d, sev=sev,
                            error=None if cur is not None else "run failed on the agent", build=act["build"],
-                           check_id=act.get("check_id"))
+                           check_id=act.get("check_id"), promoted=promote)
+        if promote:
+            self._promote(b, act["run_id"])
         tag = _metric_tag(b["model_id"])
         metric = f"decode_tps:{tag}"
         if cur is not None:
@@ -457,6 +482,8 @@ class Watcher:
             msg = f"{b['model_id']} on {hostname}: decode {cur:.1f} t/s, {d:+.0f} % vs baseline {base:.1f} t/s"
             if act.get("build_from") and act.get("build"):
                 msg += f" (llama.cpp {act['build_from']} → {act['build']})"
+            if promote:
+                msg += " · this run is now the baseline"
             payload = {"name": "Benchmark regression", "source": "benchmark", "metric": metric,
                        "host": hostname, "severity": sev, "value": round(float(cur), 2),
                        "threshold": round(base * (1 - pct / 100.0), 2), "message": msg}
@@ -464,8 +491,8 @@ class Watcher:
                 self._alert(payload)
             except Exception as e:  # noqa: BLE001
                 self._log.warning("bench baseline alert failed: %s", e)
-        self._log.info("bench baseline %s: %s on %s %s (%s)", act["trigger"], b["model_id"], hostname, status,
-                       row.get("delta_pct"))
+        self._log.info("bench baseline %s: %s on %s %s (%s)%s", act["trigger"], b["model_id"], hostname, status,
+                       row.get("delta_pct"), " promoted" if promote else "")
 
 
 def register_routes(app, watcher, primary_agent: Optional[Callable[[str], Optional[dict]]] = None) -> None:
