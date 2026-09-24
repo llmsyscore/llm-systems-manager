@@ -13,7 +13,8 @@ import tower_eval as te
 import tower_tools as tt
 
 ENTRIES = [{"id": "qwen3-14b", "provider": "llama", "status": {"value": "loaded"}, "hosts": ["box"], "agent_ids": ["a1"]},
-           {"id": "gemma-3-12b", "provider": "llama", "status": {"value": "unloaded"}, "hosts": [], "agent_ids": []}]
+           {"id": "gemma-3-12b", "provider": "llama", "status": {"value": "unloaded"}, "hosts": [], "agent_ids": []},
+           {"id": "lab-model-4b@q8_0", "provider": "lms", "status": {"value": "loaded"}, "hosts": ["mac"], "agent_ids": ["a2"]}]
 MODEL = {"model": "qwen3-14b", "provider": "llama", "hosts": ["box"], "agent_ids": ["a1"]}
 
 
@@ -269,12 +270,16 @@ def test_curated_list_ships_valid_entries():
     assert len({m["key"] for m in models}) == len(models)
     assert [m["tier_gb"] for m in models] == sorted(m["tier_gb"] for m in models)
     # the shipped keys are pinned: an entry leaves or joins the list here, never silently (#1079)
-    assert [m["key"] for m in models] == ["qwen35-4b-q4", "qwen35-9b-q4", "gemma4-e4b-q4", "gemma4-12b-qat", "qwen35-9b-q6",
-                                          "gemma4-12b-q6", "gemma4-26b-a4b-q4"]
+    assert [m["key"] for m in models] == ["qwen35-4b-q4", "nemotron3-nano-4b-q4", "qwen35-9b-q4", "gemma4-e4b-q4", "qwen3-8b-q4",
+                                          "gemma4-12b-qat", "qwen35-9b-q6", "gemma4-12b-q6", "gemma4-26b-a4b-q4"]
     assert "llama31-8b-q4" not in {m["key"] for m in models}
+    # every grade is a measured median (#1082): 8 of 8 = high, 6 or 7 = good
+    for m in models:
+        n = int(m["measured"].split(" of ")[0])
+        assert m["expected"] == ("high" if n == 8 else "good") and 6 <= n <= 8, m["key"]
     with open(te.CURATED_PATH, encoding="utf-8") as f:
         doc = json.load(f)
-    assert doc["version"] >= 3 and "thinking mode" in doc["note"]
+    assert doc["version"] >= 4 and "thinking mode" in doc["note"] and "median of three" in doc["note"]
 
 
 class _Resp:
@@ -758,6 +763,10 @@ def test_routes_list_start_export_and_models(client):
     assert [x["model"] for x in client.get("/api/tower/eval").get_json()["results"]] == ["qwen3-14b"]
     assert client.get("/api/tower/eval?model=deleted-model").get_json()["results"][0]["model"] == "deleted-model"
     assert client.get("/api/tower/eval?model=qwen3-14b").get_json()["results"][0]["id"] == eid
+    # an LM Studio @quant id starts its eval intact (#1119)
+    r = client.post("/api/tower/eval", json={"model": "lab-model-4b@q8_0"})
+    assert r.status_code == 200 and r.get_json()["job"]["spec"]["model"] == "lab-model-4b@q8_0", r.get_json()
+    M._tower_evals._svc.tick()
     full = client.get(f"/api/tower/eval/{eid}").get_json()["result"]
     assert full["cases"] and "prompt" in full["cases"][0]
     exp = client.get(f"/api/tower/eval/{eid}?export=1")

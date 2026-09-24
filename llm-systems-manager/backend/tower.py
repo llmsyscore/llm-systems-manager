@@ -104,7 +104,7 @@ _APPROVAL_TTL_S = 600.0
 FORECAST_ACTOR = "tower:forecast"   # owner of the conversations a Forecast run holds
 QUESTION_ANSWER_MAX = 500
 QUESTION_PICKS_MAX = 12
-_MODEL_NAME_SAFE = re.compile(r"[^A-Za-z0-9._:/ -]")
+_MODEL_NAME_SAFE = re.compile(r"[^A-Za-z0-9._:/@ -]")
 
 
 # ── model resolution ────────────────────────────────────────────────

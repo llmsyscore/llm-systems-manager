@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.23-8"
+__version__ = "v2026.09.24-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3257,25 +3257,34 @@ def lmstudio_load():
     # model_id lets lms_model_pins steer the target agent (llama parity).
     forecast_wiring.count("model_loads")
     model_id = data.get("model")
-    saved = lms_load_prefs.STORE.get(_lms_prefs_agent_id(model_id), model_id) if model_id else None
+    agent_id = _lms_agent_for(model_id)
+    saved = lms_load_prefs.STORE.get(agent_id, model_id) if model_id else None
     if saved:
         # Saved load preferences fill in every key the caller left unset.
         data = dict(saved.get("config") or {}, **data)
-    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200, model_id=model_id)
+    return proxies.proxy_to_primary("lms", "POST", "/lms/load", json=data, timeout=200, model_id=model_id,
+                                    agent_id=agent_id or None)
 
 
 # LM Studio model keys carry an @quant suffix (qwen3.5-9b@q6_k).
 _LMS_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@/:\-]{0,199}$")
 
 
-def _lms_prefs_agent_id(model_id: "str | None") -> str:
-    """The agent an LM Studio load resolves to: the picker, else the pin, else the primary."""
+def _lms_agent_for(model_id: "str | None") -> str:
+    """The LM Studio agent a model call resolves to: the picker, else the pin, else an approved agent
+    that serves or lists the model, else the primary (#1118)."""
     aid = flask_request.args.get("agent")
     if aid:
         return str(aid)
     pinned = agent_registry.pinned_agent("lms", model_id) if model_id else None
     if pinned:
         return str(pinned.get("agent_id") or "")
+    if model_id:
+        agents = agent_registry.load_agents().get("agents") or {}
+        for ids in (gateway._serving_agent_ids("lms", model_id), gateway._catalog_agent_ids("lms", model_id)):
+            live = [a for a in sorted(ids) if (agents.get(a) or {}).get("status") == "approved"]
+            if live:
+                return live[0]
     return str(agent_registry.default_agent_id_for("lms") or "")
 
 
@@ -3283,7 +3292,7 @@ def _lms_prefs_agent_id(model_id: "str | None") -> str:
 def lmstudio_load_prefs_get():
     """Saved load preferences (tuned load options) for one model on the picked LM Studio agent, or every model."""
     model_id = (flask_request.args.get("model") or "").strip()
-    agent_id = _lms_prefs_agent_id(model_id or None)
+    agent_id = _lms_agent_for(model_id or None)
     if model_id:
         return jsonify({"ok": True, "agent_id": agent_id, "model": model_id,
                         "prefs": lms_load_prefs.STORE.get(agent_id, model_id)})
@@ -3302,7 +3311,7 @@ def lmstudio_load_prefs_put():
     clean, err = lms_load_prefs.clean_config(cfg)
     if err:
         return jsonify({"ok": False, "error": err}), 400
-    agent_id = _lms_prefs_agent_id(model_id)
+    agent_id = _lms_agent_for(model_id)
     if not agent_id:
         return jsonify({"ok": False, "error": "no LM Studio agent"}), 503
     rec = lms_load_prefs.STORE.put(agent_id, model_id, clean, note=str(body.get("note") or "")[:120])
@@ -3314,7 +3323,7 @@ def lmstudio_load_prefs_delete():
     model_id = (flask_request.args.get("model") or "").strip()
     if not model_id:
         return jsonify({"ok": False, "error": "model required"}), 400
-    agent_id = _lms_prefs_agent_id(model_id)
+    agent_id = _lms_agent_for(model_id)
     return jsonify({"ok": True, "deleted": lms_load_prefs.STORE.delete(agent_id, model_id)})
 def _valid_model_id(s) -> bool:
     return isinstance(s, str) and bool(_MODEL_ID_RE.match(s))
@@ -3331,8 +3340,9 @@ def _valid_hf_repo(s) -> bool:
 def lmstudio_unload():
     data     = flask_request.get_json(force=True)
     forecast_wiring.count("model_unloads")
+    model_id = (data or {}).get("model")
     return proxies.proxy_to_primary("lms", "POST", "/lms/unload", json=data, timeout=120,
-                                    model_id=(data or {}).get("model"))
+                                    model_id=model_id, agent_id=_lms_agent_for(model_id) or None)
 
 
 @app.route("/api/lmstudio/download", methods=["POST"])
