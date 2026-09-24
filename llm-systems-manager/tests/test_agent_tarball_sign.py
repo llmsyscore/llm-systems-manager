@@ -61,10 +61,12 @@ def test_agent_tarball_401_without_valid_token(client, monkeypatch):
     assert r.status_code == 401
 
 
-def test_agent_tarball_200_signed_and_verifies(client, monkeypatch, tmp_path):
+def test_agent_tarball_200_signed_and_verifies(client, monkeypatch, tmp_path, caplog):
     _fake_approved_agent(monkeypatch)
-    r = client.get("/api/agent-tarball", headers={"Authorization": "Bearer good"})
+    with caplog.at_level("INFO"):
+        r = client.get("/api/agent-tarball", headers={"Authorization": "Bearer good"})
     assert r.status_code == 200
+    assert f"agent tarball → agent:ag1 host=None bytes={len(r.data)}" in caplog.text
     assert r.data.startswith(b"\x1f\x8b")
     assert r.headers.get("X-Agent-Tarball-Sig-Alg") == "rsa-pkcs1-sha256"
     sig_b64 = r.headers.get("X-Agent-Tarball-Sig")

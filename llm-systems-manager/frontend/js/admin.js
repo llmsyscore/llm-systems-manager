@@ -1778,8 +1778,7 @@ async function adminUpdate(aid) {
 }
 
 // One self-update stream into the open panel (#637 refactor). Returns
-// {ok: true|false|null, noRestart, transport} — transport = failed
-// before any SSE frame (already logged); ok null = no `done` frame.
+// {ok, noRestart, transport, msg, retryable} — transport = failed before any SSE frame; msg = done text.
 async function _adminStreamUpdate(aid) {
   let r;
   try {
@@ -1805,6 +1804,8 @@ async function _adminStreamUpdate(aid) {
   let buf = '';
   let doneOk = null;
   let doneNoRestart = false;
+  let doneMsg = '';
+  let doneRetry = false;
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -1829,6 +1830,8 @@ async function _adminStreamUpdate(aid) {
         _adminUpdateLog('', 'blank');
       } else if (msg.stage === 'done') {
         doneOk = msg.ok;
+        doneMsg = msg.msg || '';
+        doneRetry = msg.retryable === true || (msg.retryable == null && doneMsg === 'tarball download failed');
         // Frozen agents report an ok no-op ("already up to date") with no
         // restart_eta_s — don't announce a restart that isn't coming.
         doneNoRestart = msg.ok === true && msg.restart_eta_s == null
@@ -1843,7 +1846,7 @@ async function _adminStreamUpdate(aid) {
       }
     }
   }
-  return { ok: doneOk, noRestart: doneNoRestart, transport: false };
+  return { ok: doneOk, noRestart: doneNoRestart, transport: false, msg: doneMsg, retryable: doneRetry };
 }
 
 // Poll /api/agents until the agent reports targetV; true on success (#637).
@@ -1862,8 +1865,8 @@ async function _adminAwaitAgentVersion(aid, targetV, timeoutMs = 120000) {
   return false;
 }
 
-// #637: sequential fleet-wide update — one agent at a time, each verified
-// back on the new version before the next starts; stops on first failure.
+// #637: sequential fleet-wide update — one agent at a time, each verified back on the new version;
+// a failed download is retried once; failures carry on except a missed version check, which stops the run (#1108).
 let _adminUpdateAllRunning = false;
 async function adminUpdateAll() {
   if (_adminUpdateAllRunning) {
@@ -1887,7 +1890,8 @@ async function adminUpdateAll() {
       `<div style="font-family:monospace;background:var(--bg);border:1px solid var(--border);` +
       `border-radius:6px;padding:10px 12px;margin-bottom:12px;max-height:200px;overflow-y:auto;">${listHtml}</div>` +
       `<div>Agents update one at a time; each must come back on the new version ` +
-      `before the next starts. The sequence stops on the first failure.</div>` +
+      `before the next starts. A failed agent is reported at the end and the rest carry on, ` +
+      `but an agent that doesn't come back on the new version stops the run.</div>` +
       (off.length ? `<div style="margin-top:8px;">Skipping ${off.length} disabled agent${off.length > 1 ? 's' : ''}: ` +
         `${adminEsc(off.map(a => a.hostname || a.agent_id.slice(0, 8)).join(', '))}</div>` : ''),
     confirmLabel: 'Update all',
@@ -1905,11 +1909,17 @@ async function adminUpdateAll() {
       const name = a.hostname || a.agent_id.slice(0, 8);
       if (i) _adminUpdateLog('', 'blank');
       _adminUpdateLog(`── [${i + 1}/${todo.length}] ${name}: ${a.version || '?'} → ${newV}`, 'stage');
-      const res = await _adminStreamUpdate(a.agent_id);
+      let res = await _adminStreamUpdate(a.agent_id);
+      if (res.ok === false && res.retryable) {
+        _adminUpdateLog(`retrying ${name} once — the download failed`, 'stage');
+        res = await _adminStreamUpdate(a.agent_id);
+      }
       let okAgent = res.ok === true;
+      let badBuild = false;
       if (okAgent && !res.noRestart) {
         _adminUpdateLog(`waiting for ${name} to come back on ${newV}…`);
         okAgent = await _adminAwaitAgentVersion(a.agent_id, newV);
+        badBuild = !okAgent;
         _adminUpdateLog(okAgent
           ? `✓ ${name} is back on ${newV}`
           : `✗ ${name} did not report ${newV} within 2 minutes`,
@@ -1918,10 +1928,10 @@ async function adminUpdateAll() {
         _adminUpdateLog(`✓ ${name} already up to date; no restart needed`, 'ok');
       }
       results.push({ name, state: okAgent ? 'updated' : 'failed' });
-      if (!okAgent) {
+      if (badBuild) {
+        _adminUpdateLog(`stopping: ${name} did not come back on ${newV}, so the rest are left as they are`, 'err');
         for (const rest of todo.slice(i + 1)) {
-          results.push({ name: rest.hostname || rest.agent_id.slice(0, 8),
-                         state: 'skipped' });
+          results.push({ name: rest.hostname || rest.agent_id.slice(0, 8), state: 'skipped' });
         }
         break;
       }
