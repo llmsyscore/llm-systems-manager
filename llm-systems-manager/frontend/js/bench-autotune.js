@@ -551,9 +551,10 @@ async function openBench(modelId) {
     if (m === modelId || prevChecked.has(m)) cb.checked = true;
     cb.addEventListener('change', _updateBenchModelLabel);
     const lbl = document.createElement('label');
-    lbl.htmlFor = cb.id;
-    lbl.textContent = m;
-    item.appendChild(cb);
+    lbl.className = 'mc-pick';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    lbl.append(cb, dot, document.createTextNode(m));
     item.appendChild(lbl);
     panel.appendChild(item);
   });
@@ -699,7 +700,13 @@ function _renderBenchSwitches() {
 
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.setAttribute('role', 'switch');
     cb.checked = !!entry;
+    const tog = document.createElement('label');
+    tog.className = 'mc-toggle mc-ckt';
+    const track = document.createElement('span');
+    track.className = 'track';
+    tog.append(cb, track);
 
     const lbl = document.createElement('label');
     lbl.className = 'bench-opt-label';
@@ -764,7 +771,7 @@ function _renderBenchSwitches() {
       refresh();
     });
 
-    row.appendChild(cb);
+    row.appendChild(tog);
     row.appendChild(lbl);
     row.appendChild(input);
     if (def.flag === '-ctv') {
@@ -881,7 +888,7 @@ async function runBenchmark() {
                      .map(cb => cb.value);
   const tool     = 'llama-bench';
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
-  if (!modelIds.length) { alert('Select at least one model.'); return; }
+  if (!modelIds.length) { _toastErr('Select at least one model.'); return; }
 
   const slot = _benchQueue();
   const gateBusy = slot && !_benchEventSrc && slot.busy();
@@ -998,7 +1005,7 @@ async function _benchRunNow(sel, fromQueue) {
         slot.queue(sel, 'the run in progress');
         return;
       }
-      alert(d.error || 'Failed to start benchmark');
+      _toastErr(d.error || 'Failed to start benchmark');
       return;
     }
     if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
@@ -1067,7 +1074,7 @@ async function _benchRunNow(sel, fromQueue) {
     });
     if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
   }).catch(e => {
-    alert('Benchmark request failed: ' + e);
+    _toastErr('Benchmark request failed: ' + e);
     _benchRunEnable();
     document.getElementById('benchCancelBtn').style.display = 'none';
     document.getElementById('benchStatus').textContent = 'idle';
@@ -1270,12 +1277,12 @@ function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, sav
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify(body)
   }).then(r => r.json()).then(d => {
-    if (!d.ok) { alert(d.error || 'Save failed'); return; }
+    if (!d.ok) { _toastErr(d.error || 'Save failed'); return; }
     _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool,
                             switches: _benchSwitches, ts: new Date().toISOString(), extra_json: extra || null};
     if (saveBtn) saveBtn.textContent = '✓ Saved';
     if (typeof renderModelCards === 'function') renderModelCards();
-  }).catch(e => alert('Save failed: ' + e));
+  }).catch(e => _toastErr('Save failed: ' + e));
 }
 
 // Clear stored benchmark data for a model on the backend, then update local state and UI. Called when user clicks "✕" on a model's benchmark result row.

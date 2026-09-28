@@ -25,7 +25,7 @@ const STUBS = `
   window.toolsSyncRunDot = function () {};
   window.openAgentSse = async () => { const s = { close() { s.closed = true; } }; window.__dl = s; return s; };
   window.__alerts = [];
-  window.alert = function (m) { window.__alerts.push(String(m)); };
+  window._toastErr = function (m) { window.__alerts.push(String(m)); };
   window.__fetches = [];
   window.__syncCalls = [];
   window._syncActiveProfile = function (mid, values) { window.__syncCalls.push([mid, values, window.__fetches.length]); return Promise.resolve(); };

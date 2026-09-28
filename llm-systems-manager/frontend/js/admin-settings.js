@@ -41,7 +41,8 @@
   const $ = id => document.getElementById(id);
 
   async function load() {
-    if (_dirty.size && !window.confirm('Discard unsaved settings changes?')) return;
+    if (_dirty.size && !(await _themedConfirm({ title: 'Discard unsaved settings changes?',
+      bodyHtml: 'Your unsaved changes will be lost.', confirmLabel: 'Discard', danger: true }))) return;
     _dirty.clear();
     _invalid.clear();
     _towerAt = 0; _towerExtrasAt = 0;   // the Tower rows re-read on every entry too
@@ -1303,15 +1304,13 @@
 
   async function restartService(svc) {
     const label = _LABEL[svc] || svc;
-    const okGo = typeof _themedConfirm === 'function'
-      ? await _themedConfirm({
-          title: `Restart ${label}?`,
-          bodyHtml: svc === 'manager'
-            ? 'The manager will restart and the dashboard will be briefly unavailable.'
-            : 'The alarm engine will restart. Agents buffer and retry, so no data is lost.',
-          confirmLabel: 'Restart', cancelLabel: 'Cancel', danger: true,
-        })
-      : window.confirm(`Restart ${label}?`);
+    const okGo = await _themedConfirm({
+      title: `Restart ${label}?`,
+      bodyHtml: svc === 'manager'
+        ? 'The manager will restart and the dashboard will be briefly unavailable.'
+        : 'The alarm engine will restart. Agents buffer and retry, so no data is lost.',
+      confirmLabel: 'Restart', cancelLabel: 'Cancel', danger: true,
+    });
     if (!okGo) return;
     bannerMsg(`restarting ${label}…`);
     try {

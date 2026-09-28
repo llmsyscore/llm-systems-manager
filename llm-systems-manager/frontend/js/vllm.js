@@ -397,7 +397,7 @@ function popOutVllmLog() {
   const box = document.getElementById('vllmLogBox');
   const content = box ? box.textContent : '';
   const win = window.open('', 'vllmlog', 'width=900,height=600,resizable=yes,scrollbars=yes,toolbar=no,menubar=no');
-  if (!win) { alert('Pop-out blocked — allow pop-ups for this page.'); return; }
+  if (!win) { _toastErr('Pop-out blocked — allow pop-ups for this page.'); return; }
   win.document.write(`<!DOCTYPE html><html><head><title>vLLM Server Log</title>
   <style>*{box-sizing:border-box;margin:0;padding:0;}body{background:#0a0a0a;color:#8a8;font-family:monospace;font-size:0.88em;display:flex;flex-direction:column;height:100vh;}
   #toolbar{background:var(--bg);border-bottom:1px solid var(--bg-card-alt);display:flex;align-items:center;gap:10px;padding:8px 12px;flex-shrink:0;}

@@ -1212,10 +1212,10 @@ function _adminBackupConfirmImport({label, ep, payload}) {
         const isIdentity = (c === 'identity');
         const accent = isIdentity ? 'var(--warn)' : 'var(--fg)';
         return `
-          <label style="display:flex;gap:10px;padding:8px 10px;border:1px solid var(--border);
+          <label class="mc-toggle mc-ckt" style="display:flex;height:auto;gap:10px;padding:8px 10px;border:1px solid var(--border);
             border-radius:5px;margin-bottom:8px;cursor:pointer;align-items:flex-start;">
-            <input type="checkbox" data-import-cat="${adminEsc(c)}" ${checked}
-              style="margin-top:3px;flex-shrink:0;">
+            <input type="checkbox" role="switch" data-import-cat="${adminEsc(c)}" ${checked}>
+            <span class="track" style="margin-top:1px;"></span>
             <div style="flex:1;">
               <div style="font-weight:600;font-size:0.88em;color:${accent};">
                 ${adminEsc(labels[c] || c)}
@@ -1405,8 +1405,8 @@ function _adminBackupPasswordPrompt({title, intro, minLen, confirm, allowBlank})
         placeholder="password (≥ ${minLen} chars)" style="width:100%;padding:8px 10px;
         background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:5px;
         font-family:monospace;font-size:0.95em;box-sizing:border-box;">
-      <label style="display:block;margin-top:8px;font-size:0.82em;color:var(--fg-muted);">
-        <input type="checkbox" id="bpwShow" style="margin-right:4px;"> show password
+      <label class="mc-toggle mc-ckt" style="margin-top:8px;font-size:0.82em;color:var(--fg-muted);">
+        <input type="checkbox" role="switch" id="bpwShow"><span class="track"></span><span class="tlbl">show password</span>
       </label>
       <div id="bpwHint" style="font-size:0.80em;color:var(--warn);min-height:1.2em;margin-top:6px;"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
@@ -1467,8 +1467,8 @@ function _adminBackupFilePrompt({title, intro}) {
         placeholder="password (if encrypted)" style="width:100%;margin-top:10px;padding:8px 10px;
         background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:5px;
         font-family:monospace;font-size:0.95em;box-sizing:border-box;">
-      <label style="display:block;margin-top:8px;font-size:0.82em;color:var(--fg-muted);">
-        <input type="checkbox" id="bfpShow" style="margin-right:4px;"> show password
+      <label class="mc-toggle mc-ckt" style="margin-top:8px;font-size:0.82em;color:var(--fg-muted);">
+        <input type="checkbox" role="switch" id="bfpShow"><span class="track"></span><span class="tlbl">show password</span>
       </label>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
         <button id="bfpCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
@@ -1735,6 +1735,9 @@ function _themedToast(message, { kind = 'ok', ms = 2600, sticky = false } = {}) 
   requestAnimationFrame(() => { t.style.opacity = '1'; });
   if (!sticky) setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 200); }, ms);
 }
+
+// Themed error toast; stands in for the native alert().
+function _toastErr(message) { _themedToast(String(message), { kind: 'err', ms: 6000 }); }
 
 // Self-update — opens a floating panel, streams the install.sh output
 // via SSE, and refreshes the agent list when the agent comes back from
