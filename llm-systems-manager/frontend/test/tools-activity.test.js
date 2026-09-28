@@ -47,6 +47,10 @@ function run(activity, { local = '', after = '' } = {}) {
 
 const launcher = (win) => win.document.getElementById('toolsLauncher').innerHTML;
 const dotOn = (win) => win.document.getElementById('toolsRunDot').classList.contains('on');
+const tile = (win, id) => {
+  const el = win.document.querySelector('#toolsLauncher [data-tool="' + id + '"]');
+  return el ? el.outerHTML : '';
+};
 
 describe('fleet-wide tool activity', () => {
   it('lights the run dot for a run this browser did not start', async () => {
@@ -100,12 +104,28 @@ describe('launcher tiles under a remote run', () => {
     expect(dotOn(win)).toBe(true);
   });
 
-  // #888: Autotune and the Quality guard share /api/llm/autotune/stream.
-  it('counts a live Quality-guard stream as the Autotune tool running', async () => {
+  // #921: Autotune and the Quality guard share one agent lock and stream,
+  // but each tile reports only its own run.
+  it('lights only the Quality-guard tile for a local quality stream', async () => {
     const win = await run({ reportcard: false, benchmark: false, autotune: false },
       { local: 'window.QG = { running: () => true };' });
     expect(dotOn(win)).toBe(true);
-    expect(launcher(win)).toContain('View run');
+    expect(tile(win, 'quality')).toContain('View run');
+    expect(tile(win, 'autotune')).not.toContain('Running');
+    expect(tile(win, 'autotune')).not.toContain('View run');
+  });
+
+  it('lights only the Quality-guard tile for a remote quality run', async () => {
+    const win = await run({ reportcard: false, benchmark: false, autotune: false, quality: true });
+    expect(dotOn(win)).toBe(true);
+    expect(tile(win, 'quality')).toContain('Running');
+    expect(tile(win, 'autotune')).not.toContain('Running');
+  });
+
+  it('lights only the Autotune tile for a remote autotune run', async () => {
+    const win = await run({ reportcard: false, benchmark: false, autotune: true, quality: false });
+    expect(tile(win, 'autotune')).toContain('Running');
+    expect(tile(win, 'quality')).not.toContain('Running');
   });
 });
 

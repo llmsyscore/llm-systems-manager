@@ -43,19 +43,21 @@
       || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
       || (window.BL && BL.running());
     const at = (window.AT && AT.running())
-      || (window.QG && QG.running())
       || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
-    return { rc: !!rc, bench: !!bench, at: !!at };
+    const qg = window.QG && QG.running();
+    return { rc: !!rc, bench: !!bench, at: !!at, qg: !!qg };
   }
 
   // Local streams OR the fleet-wide snapshot, so every dashboard shows the
-  // same run indicators (#775).
+  // same run indicators (#775). Autotune and the Quality guard share one
+  // agent lock but each tile reports only its own run (#921).
   function _toolsRunning() {
     const l = _toolsRunningLocal();
     const rc = l.rc || !!_toolsActivity.reportcard;
     const bench = l.bench || !!_toolsActivity.benchmark;
     const at = l.at || !!_toolsActivity.autotune;
-    return { rc, bench, at, any: !!(rc || bench || at), local: l };
+    const qg = l.qg || !!_toolsActivity.quality;
+    return { rc, bench, at, qg, any: !!(rc || bench || at || qg), local: l };
   }
 
   // Fleet-wide run state from GET /api/tools/activity; polled from boot.js.
@@ -64,10 +66,9 @@
     return f('/api/tools/activity')
       .then(r => (r.ok ? r.json() : Promise.reject(new Error('http ' + r.status))))
       .then(d => {
-        // The quality guard shares the Autotune tile's run indicator (#887).
         _toolsActivity = {
           reportcard: !!d.reportcard, benchmark: !!d.benchmark,
-          autotune: !!d.autotune || !!d.quality,
+          autotune: !!d.autotune, quality: !!d.quality,
         };
         _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
         toolsSyncRunDot();
@@ -169,8 +170,8 @@
     const tgt = _toolsTarget.agent || _toolsDefaultAgent[_toolsTarget.provider] || _toolsDefaultAgent.llama;
     if (l.rc) add((rcTarget && rcTarget.agent) || _toolsDefaultAgent.llama, 'reportcard');
     if (l.bench) add(vb ? _toolsDefaultAgent.vllm : ((window.BL && BL.running()) ? tgt : _toolsDefaultAgent.llama), 'benchmark');
-    if (l.at) add(va ? _toolsDefaultAgent.vllm : ((window.AT && AT.running()) ? tgt : _toolsDefaultAgent.llama),
-                  (window.QG && QG.running()) ? 'quality' : 'autotune');
+    if (l.at) add(va ? _toolsDefaultAgent.vllm : ((window.AT && AT.running()) ? tgt : _toolsDefaultAgent.llama), 'autotune');
+    if (l.qg) add(_toolsDefaultAgent.llama, 'quality');
     return out;
   }
 
@@ -374,7 +375,7 @@
             { v: histTool('quality'), u: 'runs', l: 'History' },
           ];
         },
-      }, _toolsRunLatest.quality || _toolsRunsFor('quality')[0] || null, run.at, run.local.at),
+      }, _toolsRunLatest.quality || _toolsRunsFor('quality')[0] || null, run.qg, run.local.qg),
     ];
     return tools;
   }
@@ -553,7 +554,7 @@
     const local = _toolsRunningLocal();
     // A local stream that just ended re-polls, so the pill can't stay busy
     // on a stale snapshot for a whole poll interval.
-    ['rc', 'bench', 'at'].forEach(k => {
+    ['rc', 'bench', 'at', 'qg'].forEach(k => {
       if (_toolsLocalWas[k] && !local[k]) toolsPollActivity();
       _toolsLocalWas[k] = local[k];
     });
@@ -609,9 +610,11 @@
     if (!modId) return;
     // Read before _toolsHideModules detaches the outgoing module's stream (#920).
     const run = _toolsRunningLocal();
+    // Autotune and the Quality guard share one stream, so either holds both modules.
+    const atHeld = run.at || run.qg;
     // A deep link names its host; the picker keeps the last target otherwise (#916).
     if (opts && opts.provider && (id === 'benchmark' || id === 'autotune')) {
-      if (!(id === 'benchmark' ? run.bench : run.at)) toolsSetTarget(opts.provider, opts.agent);
+      if (!(id === 'benchmark' ? run.bench : atHeld)) toolsSetTarget(opts.provider, opts.agent);
     }
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
@@ -622,8 +625,8 @@
     const willInit =
       (id === 'reportcard' && !run.rc && typeof initReportCard === 'function')
       || (id === 'benchmark' && !run.bench && typeof openBench === 'function')
-      || (id === 'autotune' && !run.at && window.AT)
-      || (id === 'quality' && !run.at && window.QG);
+      || (id === 'autotune' && !atHeld && window.AT)
+      || (id === 'quality' && !atHeld && window.QG);
     _toolsSetChip(id, willInit && modelId ? modelId : null);
     // A live run keeps its pickers and progress; re-init only when idle.
     if (id === 'reportcard') {
