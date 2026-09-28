@@ -1055,3 +1055,57 @@ describe('build-change re-check can become the baseline (#913)', () => {
     expect(win.document.getElementById('blBaseMeta').textContent).toBe('nope');
   });
 });
+
+describe('BL reopen and failed samples (#1126, #1127)', () => {
+  it('reopening the tool without a model adopts the model the host has loaded now', async () => {
+    const win = boot('BL.onOpen("org/old:Q4");');
+    await flush();
+    win.BL.onOpen();
+    for (let i = 0; i < 3; i++) await flush();
+    win.BL.run();
+    await flush();
+    const call = win.__fetches.find(([u]) => u === '/api/benchmark/live/run');
+    expect(JSON.parse(call[1].body).model_id).toBe('org/m:Q4');
+  });
+  it('an explicit model still wins over the loaded one', async () => {
+    const win = boot('BL.onOpen("org/other:Q8");');
+    for (let i = 0; i < 3; i++) await flush();
+    win.BL.run();
+    await flush();
+    const call = win.__fetches.find(([u]) => u === '/api/benchmark/live/run');
+    expect(JSON.parse(call[1].body).model_id).toBe('org/other:Q8');
+  });
+  it('a complete run with failed samples shows a warning pill, log line and strip count', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'level_result', run_id: 'r1', concurrency: 1, rows: [],
+      all: { pred_tps: 50, agg_pred_tps: 50, requests: 2, failed: 2, first_error: 'Read timed out. (read timeout=60.0)' } });
+    expect(d.getElementById('blLog').textContent).toContain('2 samples failed');
+    expect(d.getElementById('blLog').textContent).toContain('Read timed out');
+    win.__sse.onEvent({ type: 'model_done', run_id: 'r1', ok: true, levels: [{}], elapsed_s: 12, failed_samples: 2, first_error: 'Read timed out. (read timeout=60.0)' });
+    expect(d.getElementById('blStrip').textContent).toContain('2 samples failed');
+    win.__sse.onEvent({ type: 'done', ok: true, failed_samples: 2 });
+    await flush();
+    const pill = d.getElementById('blStatus');
+    expect(pill.textContent).toBe('complete · 2 samples failed');
+    expect(pill.classList.contains('warn')).toBe(true);
+    expect(pill.classList.contains('ok')).toBe(false);
+  });
+  it('a clean run keeps the green complete pill', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'level_result', run_id: 'r1', concurrency: 1, rows: [], all: { pred_tps: 50, agg_pred_tps: 50, requests: 2, failed: 0 } });
+    win.__sse.onEvent({ type: 'done', ok: true, failed_samples: 0 });
+    await flush();
+    const pill = d.getElementById('blStatus');
+    expect(pill.textContent).toBe('complete');
+    expect(pill.classList.contains('ok')).toBe(true);
+    expect(pill.classList.contains('warn')).toBe(false);
+  });
+});

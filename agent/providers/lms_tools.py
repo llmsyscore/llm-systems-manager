@@ -445,10 +445,10 @@ class _LmsBackend:
         except (OSError, ValueError):
             return {"ok": False, "error": f"speed-bench produced no output (rc={rc})"}
         s = _bl.level_summary(payload, wall)["all"]
-        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")), "decode_tps": s.get("pred_tps"),
+        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")) and not s.get("failed"), "decode_tps": s.get("pred_tps"),
                 "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
                 "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"), "free_mb": free,
-                "seconds": round(wall, 1), "error": None if rc in (0, 1) else f"speed-bench rc={rc}"}
+                "seconds": round(wall, 1), "failed": s.get("failed"), "error": _bl.stick_error(rc, s)}
 
 
 def _snapshot() -> list[tuple[str, dict]]:

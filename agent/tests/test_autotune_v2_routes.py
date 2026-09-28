@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -950,3 +951,26 @@ def test_build_check_current_skipped_when_in_place_is_off(llama, tmp_path, monke
     out = llama._llama_build_check_current(None, "source", {"install_in_place": False},
                                            str(bin_dir / "llama-server"))
     assert out["up_to_date"] is False and "in-place install is off" in out["reason"]
+
+
+def test_stick_with_failed_samples_is_not_a_measurement(llama, tmp_path, monkeypatch):
+    # #1127: a timed-out sample skews decode t/s, so the stick reports the failure instead.
+    _wire(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "py", "script": "sc", "source": "x",
+                                 "script_status": "ok", "commit": "c"})
+    monkeypatch.setattr(llama, "_autotune_port", lambda: 8080)
+
+    def fake_run(cmd, benv, put, mid, level, cancel, track, untrack):
+        out = cmd[cmd.index("--output") + 1]
+        Path(out).write_text(json.dumps({
+            "summary": [{"category": "overall", "requests": 3, "failed": 1, "avg_pred_t_s": 40.0}],
+            "results": [{"ok": True, "completion_tokens": 50, "error": None}] * 3
+                       + [{"ok": False, "completion_tokens": 0, "error": "Read timed out. (read timeout=300.0)"}]}))
+        return 1, False, 5.0
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", fake_run)
+    be = llama._AutotuneBackend("org/m:Q4", {}, "r1")
+    monkeypatch.setattr(be, "_server_ready", lambda url: "org/m:Q4")
+    st = be._stick({"concurrency": 1, "limit": 4})
+    assert st["ok"] is False and st["decode_tps"] == 40.0 and st["failed"] == 1
+    assert "1 sample" in st["error"] and "Read timed out" in st["error"]

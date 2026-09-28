@@ -212,14 +212,27 @@ def level_summary(payload: dict, wall_s: float) -> dict:
     ok = [r for r in results if r.get("ok")]
     tokens = sum(int(r.get("completion_tokens") or 0) for r in ok)
     agg = (tokens / wall_s) if wall_s > 0 and tokens > 0 else None
+    first_error = next((str(r.get("error"))[:300] for r in results if not r.get("ok") and r.get("error")), None)
     return {"rows": rows, "all": {
         "requests": _int0(overall.get("requests") or len(ok), len(ok)),
         "failed": _int0(overall.get("failed") or (len(results) - len(ok)), len(results) - len(ok)),
+        "first_error": first_error,
         "prompt_tps": _num(overall.get("avg_prompt_t_s")),
         "pred_tps": _num(overall.get("avg_pred_t_s")),
         "latency_s": _num(overall.get("avg_latency")),
         "accept_rate": _num(overall.get("accept_rate")),
         "agg_pred_tps": agg, "completion_tokens": tokens}}
+
+
+def stick_error(rc: Optional[int], all_: dict) -> Optional[str]:
+    """Why a stick measurement is not usable: a bad exit code or failed samples."""
+    if rc not in (0, 1):
+        return f"speed-bench rc={rc}"
+    failed = int(all_.get("failed") or 0)
+    if failed:
+        n = f"{failed} sample{'s' if failed != 1 else ''} failed"
+        return f"{n}: {all_['first_error']}" if all_.get("first_error") else n
+    return None
 
 
 class PowerIntegrator:

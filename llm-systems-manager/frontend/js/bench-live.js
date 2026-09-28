@@ -249,6 +249,9 @@
     setMode(wantFleet || isLms() ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
+    // Reopened without a model: the host's loaded model replaces a stale earlier target (#1126).
+    const loaded = ((_pre && _pre.server) || {}).loaded_id;
+    if (!modelId && !running() && loaded && _model && loaded !== _model) { _model = loaded; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn(); }
     renderPreflight();
     const rt = (_pre && _pre.runtime) || {};
     if (opts && opts.install && !running() && (!rt.python || !rt.script) && (_pre.server || {}).up) setup();
@@ -651,7 +654,13 @@
       await loadRuns();
   }
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
-  function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err'); if (state) el.classList.add(state); }
+  function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err', 'warn'); if (state) el.classList.add(state); }
+  function failedText(n) { return `${n} sample${n === 1 ? '' : 's'} failed`; }
+  // Failed-sample count of a run: the event's own field, else summed from the levels seen (older agents).
+  function failedSamples(msg) {
+    if (msg && msg.failed_samples != null) return Number(msg.failed_samples) || 0;
+    return _levels.reduce((n, l) => n + (Number((l.all || {}).failed) || 0), 0);
+  }
   function running() { return !!_es || _attached || !!_fleetPoll; }
   // Cancel is for runs this tab started; while attached it only drops a queued config.
   function syncCancelBtn() {
@@ -834,7 +843,11 @@
           log(`level ${msg.concurrency} started${tag}`); redraw(); }
         else if (msg.type === 'progress') { const pct = msg.total ? Math.round(msg.done / msg.total * 100) : 0; $('blProgress').querySelector('i').style.width = pct + '%'; _curLevel = msg.level; setStrip(msg.done, msg.total); }
         else if (msg.type === 'line') { log(msg.text || '', 'dim'); }
-        else if (msg.type === 'level_result') { _levels.push(msg); _lastTps = _levels[0].all.pred_tps || _lastTps; log(`level ${msg.concurrency} done · decode ${fmt(msg.all.pred_tps)} t/s · aggregate ${fmt(msg.all.agg_pred_tps)} t/s`, 'ok'); redraw(); }
+        else if (msg.type === 'level_result') { _levels.push(msg); _lastTps = _levels[0].all.pred_tps || _lastTps;
+          const nf = Number(msg.all.failed) || 0;
+          log(`level ${msg.concurrency} done · decode ${fmt(msg.all.pred_tps)} t/s · aggregate ${fmt(msg.all.agg_pred_tps)} t/s${nf ? ` · ${failedText(nf)}` : ''}`, nf ? 'warn' : 'ok');
+          if (nf && msg.all.first_error) log(`first error: ${msg.all.first_error}`, 'warn');
+          redraw(); }
         else if (msg.type === 'setup_step') { log(`${msg.step}: ${msg.text || ''}`); }
         else if (msg.type === 'setup_done') { log(msg.ok ? 'runtime ready' : `setup failed: ${msg.error || ''}`, msg.ok ? 'ok' : 'warn');
           if (msg.runtime) { _pre = Object.assign(_pre || {}, { runtime: msg.runtime }); renderPreflight(); }
@@ -845,7 +858,8 @@
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
           const sp = (msg.spec && msg.spec.n_max != null) ? ` · draft window ${msg.spec.n_min}–${msg.spec.n_max}` : '';
           const prefix = (msg.config && msg.config.matrix) ? `${cells().length} cells · ` : `${(msg.levels || []).length} levels · `;
-          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}`;
+          const nf = failedSamples(msg);
+          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}${nf ? ` · ${failedText(nf)}` : ''}`;
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
@@ -854,7 +868,9 @@
           busy(false);
           if (_attached) { const q = _queued; _queued = null; leaveAttached();
             if (q) { setStatus('starting…', 'running'); run(q, { now: true }); return; } }
-          setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
+          const nf = msg.ok ? failedSamples(msg) : 0;
+          if (nf) setStatus(`complete · ${failedText(nf)}`, 'warn');
+          else setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
       } });
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }
