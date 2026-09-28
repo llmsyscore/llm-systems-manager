@@ -510,7 +510,6 @@ def test_extract_models_per_provider():
 
 
 def test_model_rows_persist_and_prune_with_host_rows():
-    import sqlite3
     conn = sqlite3.connect(":memory:")
     en.init_table(conn)
     base = {"agent_id": A1, "hostname": "box", "observed_s": 10.0, "active_s": 0.0,
