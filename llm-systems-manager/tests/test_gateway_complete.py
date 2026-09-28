@@ -87,7 +87,7 @@ def test_complete_stream_injects_the_usage_probe_for_counted_providers(monkeypat
         sent.update(body); return _Resp(200, lines=_sse_lines(), ctype="text/event-stream")
     monkeypatch.setattr(gateway, "_dial_stream", dial)
     recorded = []
-    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g: recorded.append((aid, p, g)))
+    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g, model=None: recorded.append((aid, p, g)))
     monkeypatch.setattr(gateway_usage, "record_latency", lambda ms: recorded.append(("latency", ms)))
     list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
     assert sent["stream"] is True
@@ -103,7 +103,7 @@ def test_complete_stream_probes_usage_but_no_per_agent_record_for_llama(monkeypa
         sent.update(body); return _Resp(200, lines=_sse_lines(), ctype="text/event-stream")
     monkeypatch.setattr(gateway, "_dial_stream", dial)
     recorded = []
-    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g: recorded.append((aid, p, g)))
+    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g, model=None: recorded.append((aid, p, g)))
     list(gateway.complete_stream({"model": "m", "messages": []}, label="tower"))
     assert sent["stream_options"] == {"include_usage": True}
     assert recorded == []
@@ -351,7 +351,7 @@ def test_native_chat_stream_dials_the_native_route_and_stops_at_chat_end(monkeyp
         seen.update(path=path, body=body); return _Resp(200, lines=_native_lines(), ctype="text/event-stream")
     monkeypatch.setattr(gateway, "_dial_stream", dial)
     recorded = []
-    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g: recorded.append((aid, p, g)))
+    monkeypatch.setattr(gateway_usage, "record", lambda aid, p, g, model=None: recorded.append((aid, p, g)))
     events = list(gateway.native_chat_stream({"model": "m", "input": "hi", "reasoning": "off"}, label="forecast"))
     assert seen["path"] == "/lms/native/chat" and seen["body"]["stream"] is True and "stream_options" not in seen["body"]
     assert [e["type"] for e in events] == ["chat.start", "reasoning.delta", "message.delta", "chat.end"]

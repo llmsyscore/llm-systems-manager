@@ -623,7 +623,7 @@ def test_usage_not_recorded_for_non_completion_2xx(monkeypatch):
                         lambda a, p, b: (FakeResp(200, body), None))
     recorded = []
     monkeypatch.setattr(gateway.gateway_usage, "record",
-                        lambda aid, p, g: recorded.append((aid, p, g)))
+                        lambda aid, p, g, model=None: recorded.append((aid, p, g)))
     r = _client().post("/api/gateway/lms/v1/chat/completions", json={"model": "m"})
     assert r.status_code == 200 and recorded == []
 
@@ -638,7 +638,7 @@ def test_usage_recorded_for_completion_body(monkeypatch):
                         lambda a, p, b: (FakeResp(200, body), None))
     recorded = []
     monkeypatch.setattr(gateway.gateway_usage, "record",
-                        lambda aid, p, g: recorded.append((aid, p, g)))
+                        lambda aid, p, g, model=None: recorded.append((aid, p, g)))
     r = _client().post("/api/gateway/lms/v1/chat/completions", json={"model": "m"})
     assert r.status_code == 200 and recorded == [(agent["agent_id"], 5, 7)]
 

@@ -722,6 +722,8 @@ SNAPSHOT_POINTS = 40
 ENERGY_SPANS = {"today": "today", "24h": 86400, "7d": 7 * 86400, "month": 30 * 86400}
 ENERGY_BUCKET_CAP = {"day": 62, "hour": 72}
 _ENERGY_KEYS = ("kwh", "cost_usd", "avg_watts", "tokens_gen", "tokens_prompt", "active_pct")
+_ENERGY_MODEL_KEYS = ("model", "hosts", "kwh", "energy_share_pct", "cost_usd", "tokens_gen", "tokens_prompt",
+                      "usd_per_mtok", "resident_pct", "active_pct")
 
 
 def energy_range(window: Optional[str], since=None, until=None, now: Optional[float] = None) -> "tuple[float, float, str, Optional[str]]":
@@ -1148,11 +1150,12 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              _obj({}), "read", "read",
              lambda a: forecast_view((deps.get("forecast") or (lambda: dict(_FORECAST_OFF)))())),
         Tool("energy_summary", "Energy and cost for a window or a since/until range: fleet totals plus one row per host "
-             "(kWh, cost, average watts, tokens). group_by adds a per-day or per-hour breakdown; host narrows to one host.",
+             "(kWh, cost, average watts, tokens). group_by adds a per-day or per-hour breakdown, or per-model "
+             "attribution (energy, cost, tokens and $/Mtok for each model served); host narrows to one host.",
              _obj({"window": {"type": "string", "enum": ["today", "24h", "7d", "month"], "default": "today"},
                    "since": {"type": "string", "description": "Range start: 3d, 2h, a date or ISO-8601 (overrides window)"},
                    "until": {"type": "string", "description": "Range end, same forms as since (default now)"},
-                   "group_by": {"type": "string", "enum": ["day", "hour"]},
+                   "group_by": {"type": "string", "enum": ["day", "hour", "model"]},
                    "host": {"type": "string"}}), "read", "read",
              lambda a: deps["energy"](a.get("window") or "today", a),
              summary=lambda a, r: " · ".join(x for x in ((r.get("window") if isinstance(r, dict) else None) or a.get("window") or "today",
@@ -1816,6 +1819,12 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             if not rows:
                 out["note"] = f"no energy rows for {host} in this range"
         gb = a.get("group_by")
+        if gb == "model":
+            mrows = energy.query_model_rows(factory(), qs, qe)
+            if host:
+                mrows = [r for r in mrows if str(r.get("hostname") or "").lower() == host.lower()]
+            out["models"] = [{k: m.get(k) for k in _ENERGY_MODEL_KEYS}
+                             for m in energy.summarize_models(mrows, max(0.0, min(qe, now) - qs), *prices)]
         if gb in ENERGY_BUCKET_CAP:
             buckets = energy_buckets(rows, gb)
             cap = ENERGY_BUCKET_CAP[gb]

@@ -27,6 +27,17 @@ def test_record_and_counters_accumulate():
     assert gu.counters() == {AID: {"gen": 15, "prompt": 10}}
 
 
+def test_record_with_model_keeps_per_model_counters():
+    gu.record(AID, 7, 5, model="m1")
+    gu.record(AID, 3, 10, model="m2")
+    gu.record(AID, 1, 1)
+    assert gu.counters() == {AID: {"gen": 16, "prompt": 11}}
+    assert gu.model_counters() == {AID: {"m1": {"gen": 5, "prompt": 7}, "m2": {"gen": 10, "prompt": 3},
+                                         "": {"gen": 1, "prompt": 1}}}
+    gu.model_counters()[AID]["m1"]["gen"] = 0
+    assert gu.model_counters()[AID]["m1"]["gen"] == 5
+
+
 def test_record_ignores_empty():
     gu.record("", 7, 5)
     gu.record(AID, 0, 0)

@@ -334,3 +334,42 @@ def test_host_peak_route_defaults_to_the_primary_agent(monkeypatch, tmp_path):
 def test_host_peak_route_without_an_agent_is_a_400(client):
     c, _ = client
     assert c.get("/api/energy/host-peak").status_code == 400
+
+
+def test_summary_carries_per_model_rows(client):
+    c, conn = client
+    hour = int(time.time() // 3600) * 3600
+    en.upsert_increment(conn, {
+        "hour_ts": hour, "agent_id": A1, "hostname": "box",
+        "observed_s": 3600.0, "active_s": 1200.0, "power_s": 3600.0,
+        "energy_wh": 100.0, "active_energy_wh": 60.0,
+        "tokens_gen": 1000, "tokens_prompt": 0, "power_source": "psu",
+        "models": [{"model": "m1", "resident_s": 3600.0, "observed_s": 2400.0, "active_s": 1200.0, "power_s": 2400.0,
+                    "energy_wh": 70.0, "active_energy_wh": 60.0, "tokens_gen": 1000, "tokens_prompt": 0},
+                   {"model": "m2", "resident_s": 3600.0, "observed_s": 1200.0, "active_s": 0.0, "power_s": 1200.0,
+                    "energy_wh": 30.0, "active_energy_wh": 0.0, "tokens_gen": 0, "tokens_prompt": 0}]})
+    body = c.get("/api/energy/summary?days=1").get_json()
+    assert [m["model"] for m in body["models"]] == ["m1", "m2"]
+    assert body["models"][0]["hosts"] == ["box"] and body["models"][0]["energy_share_pct"] == 70.0
+    assert body["models"][0]["tokens_gen"] == 1000
+    assert body["totals"]["kwh"] == 0.1
+
+
+def test_summary_models_empty_without_rows(client):
+    c, _conn = client
+    assert c.get("/api/energy/summary?days=1").get_json()["models"] == []
+
+
+def test_summary_model_residency_is_measured_over_the_window(client):
+    c, conn = client
+    now = time.time()
+    hour = int(now // 3600) * 3600
+    mrow = {"model": "m1", "resident_s": 3600.0, "observed_s": 3600.0, "active_s": 0.0, "power_s": 3600.0,
+            "energy_wh": 10.0, "active_energy_wh": 0.0, "tokens_gen": 0, "tokens_prompt": 0}
+    en.upsert_increment(conn, {
+        "hour_ts": hour - 3600, "agent_id": A1, "hostname": "box", "observed_s": 3600.0, "active_s": 0.0,
+        "power_s": 3600.0, "energy_wh": 10.0, "active_energy_wh": 0.0, "tokens_gen": 0, "tokens_prompt": 0,
+        "power_source": "psu", "models": [mrow]})
+    body = c.get("/api/energy/summary?days=1").get_json()
+    elapsed = body["window"]["elapsed_s"]
+    assert body["models"][0]["resident_pct"] == pytest.approx(round(100.0 * 3600.0 / elapsed, 1), abs=0.2)
