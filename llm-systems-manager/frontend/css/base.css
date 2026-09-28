@@ -94,7 +94,7 @@
     /* Global hidden guard: outranks any class display value */
     [hidden] { display: none !important; }
     body { font-family: var(--font-sans); background: var(--bg); color: var(--fg); }
-    h1 { padding: 10px 20px; font-size: 1em; border-bottom: none; display: flex; align-items: center; gap: 10px; }
+    h1 { padding: 10px 20px; font-size: 1em; border-bottom: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; row-gap: 6px; }
     .site-logo-link { display: flex; align-items: center; gap: 9px; text-decoration: none; color: inherit; flex-shrink: 0; }
     .site-logo-link:hover .site-title { color: var(--fg); }
     .site-title { font-family: 'SF Pro Display', 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 0.95em; font-weight: 300; letter-spacing: 0.06em; color: var(--fg-muted); white-space: nowrap; }
@@ -163,22 +163,37 @@
     /* Flow engine (#823): 8px row tracks, each card spans the rows its
        content needs (inline grid-row from JS); dense packing closes gaps. */
     .grid.flow { grid-auto-rows: 8px; row-gap: 8px; grid-auto-flow: dense; align-items: start; }
+    /* Tablet and phone header: logo + controls on the first row, provider pills wrap beneath. */
+    @media (max-width: 1200px) {
+      h1 { row-gap: 0; }
+      h1::after { content: ''; order: 1; flex-basis: 100%; }
+      .header-right { order: 1; }
+      .state-banner { order: 2; margin: 6px 0 0 !important; min-width: 0; }
+      .state-pill { max-width: 100%; min-width: 0; }
+      .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    }
+    /* Tablet portrait: at most two columns; multi-column cards take the full row. */
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)) !important; }
+      .grid > [style*="grid-column: span"] { grid-column: 1 / -1 !important; }
+    }
     /* Phone width: one column; inline column templates and card spans give way. */
     @media (max-width: 640px) {
       .grid { grid-template-columns: 1fr !important; gap: 12px; padding: 12px; }
       .grid > .card, .grid > .ov-shell { grid-column: auto !important; }
-      /* Header: logo + controls on the first row, provider pills wrap beneath. */
-      h1 { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
+      h1 { padding: 8px 12px; }
       .site-title { display: none; }
-      .header-right { order: 1; gap: 6px; }
-      .state-banner { order: 2; margin-left: 0 !important; min-width: 0; }
-      .state-pill { max-width: 100%; min-width: 0; }
-      .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-      /* Tab bar scrolls sideways instead of wrapping or pushing the page wider. */
-      .tab-nav { overflow-x: auto; justify-content: flex-start; padding: 0 8px; scrollbar-width: none; }
-      .tab-nav::-webkit-scrollbar { display: none; }
-      .tab-btn { white-space: nowrap; padding: 10px 12px; flex: 0 0 auto; }
+      .header-right { gap: 6px; }
+      /* Tab and sub-tab bars scroll sideways instead of wrapping or pushing the page wider. */
+      .tab-nav, .sub-tab-nav { overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+      .tab-nav { padding: 0 8px; }
+      .tab-nav::-webkit-scrollbar, .sub-tab-nav::-webkit-scrollbar { display: none; }
+      .tab-btn, .sub-tab-btn { white-space: nowrap; flex: 0 0 auto; }
+      .tab-btn { padding: 10px 12px; }
       .tab-nav-right { flex: 0 0 auto; }
+      /* Section titles wrap their status pills onto a second line. */
+      .llm-section-title { flex-wrap: wrap; row-gap: 6px; }
+      .llm-sec-pill { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
     }
     .grid.flow .chart-wrap { flex: 0 0 140px; min-height: 140px; }
     .grid.flow .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
