@@ -15,7 +15,7 @@ const resp = (body) => ({ ok: true, status: 200, json: async () => body,
 
 beforeEach(() => {
   window._fetchT = vi.fn();
-  window.alert = vi.fn();
+  window._toastErr = vi.fn();
   window.refreshLLMTab = vi.fn(async () => {});
   window._actionClaim = () => true;
   window._actionRelease = () => {};
@@ -32,13 +32,13 @@ describe('unloadModel (#730)', () => {
   it('alerts on a 200 {ok:false} reply', async () => {
     window._fetchT.mockResolvedValue(resp({ ok: false, error: 'model instance did not unload in time' }));
     await window.unloadModel('m1');
-    expect(window.alert).toHaveBeenCalledWith('Unload failed: model instance did not unload in time');
+    expect(window._toastErr).toHaveBeenCalledWith('Unload failed: model instance did not unload in time');
     expect(window.refreshLLMTab).toHaveBeenCalled();
   });
   it('stays quiet on {ok:true}', async () => {
     window._fetchT.mockResolvedValue(resp({ ok: true }));
     await window.unloadModel('m1');
-    expect(window.alert).not.toHaveBeenCalled();
+    expect(window._toastErr).not.toHaveBeenCalled();
   });
 });
 
@@ -46,7 +46,7 @@ describe('loadModel (#730)', () => {
   it('alerts on a 200 {ok:false} reply', async () => {
     window._fetchT.mockResolvedValue(resp({ ok: false, error: 'previous model instance did not unload in time' }));
     await window.loadModel('m1');
-    expect(window.alert).toHaveBeenCalledWith('Load failed: previous model instance did not unload in time');
+    expect(window._toastErr).toHaveBeenCalledWith('Load failed: previous model instance did not unload in time');
   });
 });
 
@@ -55,7 +55,7 @@ describe('reloadModel (#730)', () => {
     window._fetchT.mockResolvedValue(resp({ ok: false, error: 'llama-server returned HTTP 400' }));
     await window.reloadModel('m1');
     expect(window._fetchT).toHaveBeenCalledTimes(1);
-    expect(window.alert).toHaveBeenCalledWith('Reload error: unload refused: llama-server returned HTTP 400');
+    expect(window._toastErr).toHaveBeenCalledWith('Reload error: unload refused: llama-server returned HTTP 400');
     expect(window.refreshLLMTab).toHaveBeenCalled();
   });
 });

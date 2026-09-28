@@ -57,12 +57,12 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
   <link rel="stylesheet" href="/static/css/base.css?v=2026.09.23-1">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
-  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.22-1">
+  <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.28-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.23-3">
   <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.23-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
-  <link rel="stylesheet" href="/static/css/overall.css?v=2026.08.30-1">
+  <link rel="stylesheet" href="/static/css/overall.css?v=2026.09.28-4">
   <link rel="stylesheet" href="/static/css/forecast.css?v=2026.09.22-1">
   <link rel="stylesheet" href="/static/css/tower.css?v=2026.09.21-1">
 </head>
@@ -488,10 +488,10 @@ Backend API endpoints consumed:
       <button class="btn btn-red-muted-gradient" id="dlCancelBtn" onclick="cancelDownload()" style="display:none;">✕ Cancel</button>
     </div>
     <div style="display:flex;gap:18px;margin-bottom:10px;flex-wrap:wrap;">
-      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkConfig" checked><span class="track"></span><span class="tlbl">config.json</span></label>
-      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkTemplate" checked><span class="track"></span><span class="tlbl">chat template</span></label>
-      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkMmproj" checked><span class="track"></span><span class="tlbl">mmproj files</span></label>
-      <label class="mc-toggle mc-ckt"><input type="checkbox" id="dlChkDryRun" checked><span class="track"></span><span class="tlbl">dry run (preview only)</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="dlChkConfig" checked><span class="track"></span><span class="tlbl">config.json</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="dlChkTemplate" checked><span class="track"></span><span class="tlbl">chat template</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="dlChkMmproj" checked><span class="track"></span><span class="tlbl">mmproj files</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="dlChkDryRun" checked><span class="track"></span><span class="tlbl">dry run (preview only)</span></label>
     </div>
     <div class="log-toolbar"><button class="btn-log" onclick="popoutLog('dlLog','Download output')">⛶ Pop out</button></div>
     <div class="log-wrap">
@@ -1940,8 +1940,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <div class="legend-row ov-hero-legend">
           <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
           <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-          <label class="ov-ovl"><input type="checkbox" id="ovShowPower" onchange="ovToggleOverlay()"><span class="legend-dot" style="background:var(--accent-2)"></span>Power W</label>
-          <label class="ov-ovl"><input type="checkbox" id="ovShowEnergy" onchange="ovToggleOverlay()"><span class="legend-dot" style="background:var(--note)"></span>Energy Wh/h</label>
+          <label class="ov-ovl mc-toggle mc-ckt"><input type="checkbox" role="switch" id="ovShowPower" onchange="ovToggleOverlay()"><span class="track"></span><span class="tlbl"><span class="legend-dot" style="background:var(--accent-2)"></span>Power W</span></label>
+          <label class="ov-ovl mc-toggle mc-ckt"><input type="checkbox" role="switch" id="ovShowEnergy" onchange="ovToggleOverlay()"><span class="track"></span><span class="tlbl"><span class="legend-dot" style="background:var(--note)"></span>Energy Wh/h</span></label>
         </div>
         <span class="ov-updated" id="overallLastUpdate">—</span>
       </div>
@@ -2482,8 +2482,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             <div class="bl-card bl-collapsed"><div class="bl-card-h tog" onclick="this.parentElement.classList.toggle('bl-collapsed')"><h3>Run log</h3><span class="bl-chev">▾</span></div>
               <div class="bl-card-b"><div class="bl-log" id="blLog"></div></div></div>
             <div class="bl-card" id="blBaseCard" style="display:none;"><div class="bl-card-h"><h3>Baselines</h3>
-              <label class="mc-toggle mc-ckt"><input type="checkbox" id="blBaseEnabled"><span class="track"></span><span class="tlbl">Scheduled re-check</span></label>
-              <label class="mc-toggle mc-ckt" title="After a llama.cpp upgrade, the build-change re-check replaces the pinned baseline"><input type="checkbox" id="blBasePromote"><span class="track"></span><span class="tlbl">New build becomes baseline</span></label>
+              <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="blBaseEnabled"><span class="track"></span><span class="tlbl">Scheduled re-check</span></label>
+              <label class="mc-toggle mc-ckt" title="After a llama.cpp upgrade, the build-change re-check replaces the pinned baseline"><input type="checkbox" role="switch" id="blBasePromote"><span class="track"></span><span class="tlbl">New build becomes baseline</span></label>
               <span class="meta" id="blBaseMeta"></span>
               <a href="#" id="blBaseSettings">Schedule settings</a><span class="gap"></span>
               <button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blBaseAllBtn" onclick="BL.recheckBaseline(null)">Re-check all</button></div>
@@ -2747,7 +2747,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.09.22-1"></script>
-<script src="/static/js/foundation.js?v=2026.09.21-1"></script>
+<script src="/static/js/foundation.js?v=2026.09.28-4"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/dbstats.js?v=2026.09.18-1"></script>
@@ -2762,30 +2762,30 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/forecast.js?v=2026.09.21-6"></script>
 <script src="/static/js/lib/overall-view.js?v=2026.09.01-1"></script>
 <script src="/static/js/charts.js?v=2026.09.14-4"></script>
-<script src="/static/js/terminal.js?v=2026.09.04-1"></script>
+<script src="/static/js/terminal.js?v=2026.09.28-4"></script>
 <script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.09.23-7"></script>
+<script src="/static/js/admin.js?v=2026.09.28-4"></script>
 <script src="/static/js/admin-agents.js?v=2026.09.14-1"></script>
 <script src="/static/js/admin-health.js?v=2026.09.23-5"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>
 <script src="/static/js/admin-jobs.js?v=2026.09.23-7"></script>
-<script src="/static/js/admin-settings.js?v=2026.09.22-4"></script>
+<script src="/static/js/admin-settings.js?v=2026.09.28-4"></script>
 <script src="/static/js/admin-access-settings.js?v=2026.09.11-5"></script>
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
-<script src="/static/js/llmcontrol-models.js?v=2026.09.22-1"></script>
+<script src="/static/js/llmcontrol-models.js?v=2026.09.28-4"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.23-2"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.28-4"></script>
 <script src="/static/js/bench-live.js?v=2026.09.23-3"></script>
-<script src="/static/js/autotune.js?v=2026.09.23-2"></script>
+<script src="/static/js/autotune.js?v=2026.09.28-4"></script>
 <script src="/static/js/quality.js?v=2026.09.23-2"></script>
-<script src="/static/js/lmstudio.js?v=2026.09.23-1"></script>
-<script src="/static/js/vllm.js?v=2026.09.22-1"></script>
+<script src="/static/js/lmstudio.js?v=2026.09.28-4"></script>
+<script src="/static/js/vllm.js?v=2026.09.28-4"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.23-2"></script>
 <script src="/static/js/report-card.js?v=2026.09.23-2"></script>
-<script src="/static/js/tools.js?v=2026.09.23-3"></script>
+<script src="/static/js/tools.js?v=2026.09.28-4"></script>
 <script src="/static/js/energy.js?v=2026.09.28-2"></script>
 <script src="/static/js/forecast.js?v=2026.09.21-7"></script>
 <script src="/static/js/overall.js?v=2026.09.19-1"></script>
@@ -2926,7 +2926,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     <div class="svcarg-add-row">
       <input type="text" class="svcarg-add-flag" id="svcAddFlag" placeholder="--flag" />
       <input type="text" class="svcarg-add-val"  id="svcAddVal"  placeholder="value (blank = flag only)" />
-      <label class="mc-toggle mc-ckt"><input type="checkbox" id="svcAddBool"><span class="track"></span><span class="tlbl">flag only</span></label>
+      <label class="mc-toggle mc-ckt"><input type="checkbox" role="switch" id="svcAddBool"><span class="track"></span><span class="tlbl">flag only</span></label>
       <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="svcAddArg()" style="white-space:nowrap;">+ Add</button>
     </div>
     <div class="svcconfig-actions">
@@ -2966,9 +2966,9 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <label>KV budget (%)</label>
               <input id="vllmAtFrac" type="number" min="10" max="100" step="5" value="100" />
             </div>
-            <label style="margin-left:auto;font-size:0.85em;display:flex;align-items:center;gap:6px;">
-              <input id="vllmAtReportOnly" type="checkbox" />
-              Report only (restore original config, apply manually)
+            <label class="mc-toggle mc-ckt" style="margin-left:auto;font-size:0.85em;">
+              <input id="vllmAtReportOnly" type="checkbox" role="switch" /><span class="track"></span>
+              <span class="tlbl">Report only (restore original config, apply manually)</span>
             </label>
           </div>
         </div>

@@ -442,7 +442,7 @@ async function lmsForgetTuned(modelId) {
   if (!ok) return;
   try {
     await _fetchT('/api/lmstudio/load-prefs?model=' + encodeURIComponent(modelId), { method: 'DELETE' }, 8000);
-  } catch (e) { alert('Error: ' + e); return; }
+  } catch (e) { _toastErr('Error: ' + e); return; }
   await lmsLoadTuned();
   renderLMSModelCards(_lmsLastPs || [], _lmsLastModels || []);
 }
@@ -757,7 +757,7 @@ function popOutLmsLog() {
   const box = document.getElementById('lmsLogBox');
   const content = box ? box.textContent : '';
   const win = window.open('', 'lmslog', 'width=900,height=600,resizable=yes,scrollbars=yes,toolbar=no,menubar=no');
-  if (!win) { alert('Pop-out blocked — allow pop-ups for this page.'); return; }
+  if (!win) { _toastErr('Pop-out blocked — allow pop-ups for this page.'); return; }
   win.document.write(`<!DOCTYPE html><html><head><title>LM Studio Server Log</title>
   <style>*{box-sizing:border-box;margin:0;padding:0;}body{background:#0a0a0a;color:#8a8;font-family:monospace;font-size:0.88em;display:flex;flex-direction:column;height:100vh;}
   #toolbar{background:var(--bg);border-bottom:1px solid var(--bg-card-alt);display:flex;align-items:center;gap:10px;padding:8px 12px;flex-shrink:0;}
@@ -812,10 +812,10 @@ async function lmsLoad(modelId) {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({model: modelId})
     }, 60000).then(r => r.json());
-    if (!r.ok) alert('Load failed: ' + (r.error || JSON.stringify(r.response)));
+    if (!r.ok) _toastErr('Load failed: ' + (r.error || JSON.stringify(r.response)));
     setTimeout(fetchLMStudioMetrics, 2000);
   } catch(e) {
-    alert('Error: ' + e);
+    _toastErr('Error: ' + e);
   } finally {
     _actionRelease('lmsLoad:' + modelId);
     MC.clearBusy('lms', modelId);
@@ -841,10 +841,10 @@ async function lmsUnload(modelId) {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({model: modelId})
     }, 30000).then(r => r.json());
-    if (!r.ok) alert('Unload failed: ' + (r.error || JSON.stringify(r.response)));
+    if (!r.ok) _toastErr('Unload failed: ' + (r.error || JSON.stringify(r.response)));
     setTimeout(fetchLMStudioMetrics, 2000);
   } catch(e) {
-    alert('Error: ' + e);
+    _toastErr('Error: ' + e);
   } finally {
     _actionRelease('lmsUnload:' + modelId);
     MC.clearBusy('lms', modelId);
@@ -871,7 +871,7 @@ async function lmsReload(modelId) {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({model: modelId})
     }, 30000).then(r => r.json());
-    if (!ur.ok) { alert('Reload failed on unload: ' + (ur.error || JSON.stringify(ur))); return; }
+    if (!ur.ok) { _toastErr('Reload failed on unload: ' + (ur.error || JSON.stringify(ur))); return; }
 
     // Poll until unloaded (up to 20s). Network errors don't count as "still loaded".
     let unloaded = false;
@@ -887,20 +887,20 @@ async function lmsReload(modelId) {
         }
       } catch(e) {
         netErrors++;
-        if (netErrors > 5) { alert('Reload: lost connection to backend — aborting.'); return; }
+        if (netErrors > 5) { _toastErr('Reload: lost connection to backend — aborting.'); return; }
       }
     }
-    if (!unloaded) { alert('Reload: model did not unload within 20 seconds.'); return; }
+    if (!unloaded) { _toastErr('Reload: model did not unload within 20 seconds.'); return; }
 
     // Reload
     const lr = await _fetchT('/api/lmstudio/load', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({model: modelId})
     }, 60000).then(r => r.json());
-    if (!lr.ok) alert('Reload failed on load: ' + (lr.error || JSON.stringify(lr.response)));
+    if (!lr.ok) _toastErr('Reload failed on load: ' + (lr.error || JSON.stringify(lr.response)));
     setTimeout(fetchLMStudioMetrics, 2000);
   } catch(e) {
-    alert('Reload error: ' + e);
+    _toastErr('Reload error: ' + e);
   } finally {
     _actionRelease('lmsReload:' + modelId);
     MC.clearBusy('lms', modelId);

@@ -1720,8 +1720,8 @@ function _accountPasswordDialog() {
       <label for="apNew" style="${labelCss}">New password</label>
       <input id="apNew" type="password" autocomplete="new-password" maxlength="64" placeholder="${_ACCOUNT_PW_MIN}+ characters" style="${inputCss}">
       <div id="apHint" style="${hintCss}color:var(--warn);"></div>
-      <label style="display:block;font-size:0.82em;color:var(--fg-muted,#9aa);margin-bottom:14px;">
-        <input type="checkbox" id="apShow" style="margin-right:4px;"> show passwords
+      <label class="mc-toggle mc-ckt" style="font-size:0.82em;color:var(--fg-muted,#9aa);margin-bottom:14px;">
+        <input type="checkbox" role="switch" id="apShow"><span class="track"></span><span class="tlbl">show passwords</span>
       </label>
       <div style="display:flex;justify-content:flex-end;gap:8px;">
         <button id="apCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">Cancel</button>

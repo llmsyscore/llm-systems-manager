@@ -25,7 +25,7 @@ const STUBS = `
   window.TC = { esc: (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])) };
   window.SG = { open: (opts) => { window.__sse = opts; return { close() { window.__closed = true; } }; } };
   window.toolsSyncRunDot = function () {};
-  window.__alerts = []; window.alert = function (m) { window.__alerts.push(String(m)); };
+  window.__alerts = []; window._toastErr = function (m) { window.__alerts.push(String(m)); };
   window.__fetches = [];
   window.__pre = ${JSON.stringify(PRE)};
   window.__hosts = ${JSON.stringify(HOSTS)};

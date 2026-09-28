@@ -509,7 +509,7 @@ function popOutLog() {
     ? ('?agent=' + encodeURIComponent(_selectedAgent('llama'))) : '';
   const win = window.open('/llm/log' + ag, 'llamalog',
     'width=900,height=600,resizable=yes,scrollbars=yes,toolbar=no,menubar=no');
-  if (!win) alert('Pop-out blocked — allow pop-ups for this page.');
+  if (!win) _toastErr('Pop-out blocked — allow pop-ups for this page.');
 }
 
 function fullscreenLog() {

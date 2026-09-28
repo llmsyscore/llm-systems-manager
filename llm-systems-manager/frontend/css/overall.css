@@ -26,7 +26,9 @@
 .ov-topline .stat { font-size: 1.45em; margin-bottom: 1px; }
 .ov-hero-chart { position: relative; height: 250px; }
 .ov-ovl { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.ov-ovl input { margin: 0 2px 0 0; accent-color: var(--accent); }
+.ov-ovl.mc-toggle { height: auto; gap: 6px; }
+.ov-ovl .track { transform: scale(.8); }
+.ov-ovl .tlbl { display: inline-flex; align-items: center; gap: 4px; font-size: inherit; }
 .ov-bucket { display: inline-flex; flex-direction: column; gap: 3px; }
 .ov-bucket-sel {
   font-size: 0.72em; padding: 1px 4px; border-radius: 5px;

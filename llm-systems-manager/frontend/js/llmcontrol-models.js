@@ -530,9 +530,9 @@ async function loadModel(modelId) {
     }, 60000);
     if (typeof _notePinOverride === 'function') _notePinOverride(resp, modelId);
     const r = await resp.json();
-    if (!r.ok) alert('Load failed: ' + (r.error || JSON.stringify(r)));
+    if (!r.ok) _toastErr('Load failed: ' + (r.error || JSON.stringify(r)));
   } catch(e) {
-    alert('Load error: ' + e);
+    _toastErr('Load error: ' + e);
   } finally {
     _actionRelease('load:' + modelId);
     MC.clearBusy('llama', modelId);
@@ -552,9 +552,9 @@ async function wakeModel(modelId) {
     }, 330000);
     if (typeof _notePinOverride === 'function') _notePinOverride(resp, modelId);
     const r = await resp.json();
-    if (!r.ok) alert('Wake failed: ' + (r.error || JSON.stringify(r)));
+    if (!r.ok) _toastErr('Wake failed: ' + (r.error || JSON.stringify(r)));
   } catch(e) {
-    alert('Wake error: ' + e);
+    _toastErr('Wake error: ' + e);
   } finally {
     _actionRelease('wake:' + modelId);
     MC.clearBusy('llama', modelId);
@@ -607,11 +607,11 @@ async function reloadModel(modelId) {
         const m = (mr.data || []).find(m => m.id === modelId);
         if (!m || !['loaded','loading'].includes(m.status?.value)) { verified = true; break; }
       } catch(_) {
-        if (++netErrors > 5) { alert('Reload: lost connection to backend — aborting.'); return; }
+        if (++netErrors > 5) { _toastErr('Reload: lost connection to backend — aborting.'); return; }
       }
     }
     if (!verified) {
-      alert('Reload failed: model did not unload within 15 seconds.');
+      _toastErr('Reload failed: model did not unload within 15 seconds.');
     } else {
       const lresp = await _fetchT('/api/llm/load', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -619,10 +619,10 @@ async function reloadModel(modelId) {
       }, 60000);
       if (typeof _notePinOverride === 'function') _notePinOverride(lresp, modelId);
       const lr = await lresp.json();
-      if (!lr.ok) alert('Reload error on load: ' + (lr.error || 'unknown'));
+      if (!lr.ok) _toastErr('Reload error on load: ' + (lr.error || 'unknown'));
     }
   } catch(e) {
-    alert('Reload error: ' + (e.message || e));
+    _toastErr('Reload error: ' + (e.message || e));
   } finally {
     _actionRelease('reload:' + modelId);
     MC.clearBusy('llama', modelId);
@@ -744,9 +744,9 @@ async function unloadModel(modelId) {
     }, 30000);
     if (typeof _notePinOverride === 'function') _notePinOverride(ur, modelId);
     const r = await ur.json();
-    if (!r.ok) alert('Unload failed: ' + (r.error || JSON.stringify(r)));
+    if (!r.ok) _toastErr('Unload failed: ' + (r.error || JSON.stringify(r)));
   } catch(e) {
-    alert('Unload error: ' + e);
+    _toastErr('Unload error: ' + e);
   } finally {
     _actionRelease('unload:' + modelId);
     MC.clearBusy('llama', modelId);
@@ -789,10 +789,11 @@ function openDeleteModelModal(modelId) {
       <div style="font-size:0.88em;color:var(--fg);margin-bottom:16px;line-height:1.4;">
         Remove <span style="color:var(--fg);font-family:monospace;">${escName}</span> from the llama.cpp config.
       </div>
-      <label style="display:flex;align-items:flex-start;gap:8px;font-size:0.88em;color:var(--fg);
+      <label class="mc-toggle mc-ckt" style="display:flex;height:auto;align-items:flex-start;gap:8px;font-size:0.88em;color:var(--fg);
                     cursor:pointer;padding:10px 12px;background:var(--bg);border:1px solid var(--border);
                     border-radius:6px;margin-bottom:18px;">
-        <input type="checkbox" id="delModalCacheCb" style="margin-top:2px;flex-shrink:0;">
+        <input type="checkbox" role="switch" id="delModalCacheCb">
+        <span class="track"></span>
         <span>
           <span style="color:var(--fg);">Also delete the model file from the HuggingFace cache</span>
           <span style="display:block;color:var(--fg-muted);font-size:0.82em;margin-top:3px;line-height:1.35;">
@@ -1172,7 +1173,7 @@ function copyFromProfile() {
   const src = sel ? sel.value : '';
   if (!src) return;
   const cfg = (_llmConfig || {})[src];
-  if (!cfg) { alert('Profile not found — refresh and try again.'); return; }
+  if (!cfg) { _toastErr('Profile not found — refresh and try again.'); return; }
 
   // Mirror openEditModel's population logic, but never touch ef-id so the
   // operator's new Model ID stays put.
@@ -1209,7 +1210,7 @@ function closeEditor() {
 function collectEditorValues() {
   const rawId   = document.getElementById('ef-id').value;
   const modelId = _sanitizeModelId(rawId);
-  if (!modelId) { alert('Model ID is required (letters, digits, . _ / : -).'); return null; }
+  if (!modelId) { _toastErr('Model ID is required (letters, digits, . _ / : -).'); return null; }
   if (modelId !== rawId.trim()) {
     document.getElementById('ef-id').value = modelId;
   }
@@ -1264,7 +1265,7 @@ async function saveModel() {
     if (typeof EFL !== 'undefined') EFL.markClean();
     closeEditor();
   } else {
-    alert('Save failed: ' + (r.error || 'unknown error'));
+    _toastErr('Save failed: ' + (r.error || 'unknown error'));
   }
 }
 
@@ -1293,7 +1294,7 @@ async function saveAndLoad() {
       body: JSON.stringify(cfg)
     }).then(r => r.json());
 
-    if (!sr.ok) { alert('Save failed: ' + (sr.error || 'unknown')); return; }
+    if (!sr.ok) { _toastErr('Save failed: ' + (sr.error || 'unknown')); return; }
 
     await _syncActiveProfile(modelId, values);
     if (typeof EFL !== 'undefined') EFL.markClean();
@@ -1303,7 +1304,7 @@ async function saveAndLoad() {
     if (rr.ok) {
       setTimeout(() => refreshLLMTab(), 3000);
     } else {
-      alert('Restart failed: ' + (rr.error || 'unknown'));
+      _toastErr('Restart failed: ' + (rr.error || 'unknown'));
     }
 
   } else {
@@ -1326,7 +1327,7 @@ async function saveAndLoad() {
       body: JSON.stringify(cfg)
     }).then(r => r.json());
 
-    if (!sr.ok) { alert('Save failed: ' + (sr.error || 'unknown')); return; }
+    if (!sr.ok) { _toastErr('Save failed: ' + (sr.error || 'unknown')); return; }
 
     await _syncActiveProfile(modelId, values);
     if (typeof EFL !== 'undefined') EFL.markClean();
@@ -1340,7 +1341,7 @@ async function saveAndLoad() {
 async function startDownload() {
   const repo    = document.getElementById('dlRepo').value.trim();
   const include = document.getElementById('dlInclude').value.trim();
-  if (!repo) { alert('Repo ID is required.'); return; }
+  if (!repo) { _toastErr('Repo ID is required.'); return; }
 
   // Build include patterns from quant filter + checkboxes. The quant field
   // accepts a comma-separated list ("Q4,Q5") — each entry becomes its own
@@ -1627,7 +1628,7 @@ async function startLlamaBuild(force) {
     if (log) log.textContent = 'Error: ' + err + '\n';
     if (stat) { stat.textContent = 'failed'; stat.style.color = 'var(--crit)'; }
     if (btn) btn.disabled = false;
-    if (r.status === 409) alert('A build is already running.');
+    if (r.status === 409) _toastErr('A build is already running.');
     return;
   }
 
@@ -1663,7 +1664,7 @@ async function startLlamaBuild(force) {
       try { src.close(); } catch(_){}
       if (_llamaBuildEventSrc === src) _llamaBuildEventSrc = null;
       if (btn) btn.disabled = false;
-      if (!ok) { try { alert('llama.cpp build failed (exit ' + rc + '). See output panel.'); } catch(_){} }
+      if (!ok) { try { _toastErr('llama.cpp build failed (exit ' + rc + '). See output panel.'); } catch(_){} }
     }
   };
   src.onerror = () => {

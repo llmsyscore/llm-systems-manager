@@ -653,8 +653,10 @@
     toolsOpenTool(id, modelId || null, opts);
   }
 
-  function toolsClearHistory() {
-    if (!confirm('Clear the run history for all tools? Saved per-model benchmark badges are kept. This cannot be undone.')) return;
+  async function toolsClearHistory() {
+    if (!(await _themedConfirm({ title: 'Clear the run history for all tools?',
+      bodyHtml: 'Saved per-model benchmark badges are kept. This cannot be undone.',
+      confirmLabel: 'Clear history', danger: true }))) return;
     const f = typeof _fetchT === 'function' ? _fetchT : (u, o) => fetch(u, o);
     Promise.allSettled([
       f('/api/reportcard/history', { method: 'DELETE' }),

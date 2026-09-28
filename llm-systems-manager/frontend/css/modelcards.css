@@ -283,10 +283,17 @@
 /* menu icon column: labels flush-left regardless of glyph width */
 .mc-menu button .mi { width: 20px; flex-shrink: 0; color: var(--fg-dim); text-align: center; margin-right: 4px; }
 /* native-checkbox toggles (HF download options) */
-.mc-ckt input { display: none; }
+.mc-ckt, .mc-pick { position: relative; }
+.mc-ckt input, .mc-pick input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.mc-ckt:has(input:focus-visible) .track, .mc-pick:has(input:focus-visible) .dot { outline: 2px solid var(--accent); outline-offset: 2px; }
 .mc-ckt:has(input:checked) .track { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
 .mc-ckt:has(input:checked) .track::after { left: 17px; background: var(--accent); }
 .mc-ckt:has(input:checked) .tlbl { color: var(--fg); }
+/* selection circle for list pickers */
+.mc-pick { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.mc-pick .dot { width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%; border: 1.5px solid var(--border-strong); transition: border-color .15s, box-shadow .15s; }
+.mc-pick:hover .dot { border-color: var(--accent); }
+.mc-pick:has(input:checked) .dot { border-color: var(--accent); box-shadow: inset 0 0 0 2.5px var(--bg-card), inset 0 0 0 7px var(--accent); }
 /* small labeled controls (trending filter bar) */
 .mc-flabel { display: block; font-family: var(--font-sans); font-size: 11px; font-weight: 500; color: var(--fg-muted); margin-bottom: 4px; }
 .mc-fin { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 9px; height: 30px; }

@@ -715,14 +715,14 @@
   }
   async function run() {
     const ids = selected();
-    if (!ids.length) { alert('Select at least one model.'); return; }
+    if (!ids.length) { _toastErr('Select at least one model.'); return; }
     const dims = dimsState();
-    if (!Number.isFinite(dims.context.target_mb) || dims.context.target_mb < 0) { alert('Target free VRAM must be a non-negative number.'); return; }
+    if (!Number.isFinite(dims.context.target_mb) || dims.context.target_mb < 0) { _toastErr('Target free VRAM must be a non-negative number.'); return; }
     const problem = dimsProblem(dims);
-    if (problem) { alert(problem); return; }
+    if (problem) { _toastErr(problem); return; }
     fillDimDefaults(dims);
     const quiet = !isLms() && objective() === 'quiet', cap = capValue();
-    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
     return startRun(body, ids);
   }
@@ -734,7 +734,7 @@
     try {
       const resp = await fetch(tq('/api/llm/autotune/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await resp.json();
-    } catch (e) { alert('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
+    } catch (e) { _toastErr('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
     if (!r || !r.ok) {
       // Lost the race with another browser — attach, and hold this run behind it.
       if (r && /in progress/i.test(r.error || r.detail || '')) {
@@ -742,7 +742,7 @@
         if (s) s.queue({ body, ids }, 'the run in progress');
         return;
       }
-      alert((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
+      _toastErr((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
     }
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     if (!isLms()) fetchMeta(ids);
@@ -754,7 +754,7 @@
   }
   async function verify() {
     const mid = primaryModel();
-    if (!mid) { alert('Select a model.'); return; }
+    if (!mid) { _toastErr('Select a model.'); return; }
     const dims = dimsState();
     fillDimDefaults(dims);
     const sm = (_status[mid] || {}).summary || {};
@@ -763,7 +763,7 @@
     [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
       .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
     const quiet = !isLms() && objective() === 'quiet', cap = capValue();
-    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
                    baseline_tps: sm.decode_tps ?? null, baseline, dims, ...(quiet ? { power_cap_w: cap } : {}) };
     await startRun(body, [mid]);
@@ -1253,7 +1253,7 @@
   async function copyArgs() {
     const text = argsText(selectedRows());
     try { await navigator.clipboard.writeText(text); setMsg('Copied: ' + text, 'ok'); }
-    catch (_) { window.prompt('llama-server args', text); }
+    catch (_) { _themedPrompt({ title: 'Copy the llama-server args', value: text, maxLength: 20000, confirmLabel: 'Close' }); }
   }
   function exportReport() {
     const doc = _done[_doneModel]; if (!doc) return;
@@ -1315,19 +1315,19 @@
   }
   async function startBatch() {
     const items = batchItems();
-    if (!items.length) { alert('Queue at least one host · model.'); return; }
+    if (!items.length) { _toastErr('Queue at least one host · model.'); return; }
     const dims = dimsState();
     const problem = dimsProblem(dims);
-    if (problem) { alert(problem); return; }
+    if (problem) { _toastErr(problem); return; }
     fillDimDefaults(dims);
     const quiet = objective() === 'quiet', cap = capValue();
-    if (quiet && (cap == null || cap < 20 || cap > 5000)) { alert('Quiet needs a power cap between 20 and 5000 W.'); return; }
+    if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { items, objective: objective(), dims, budget_min: Math.round(num('atBatchBudget', 480)),
                    start_at: batchStartAt(($('atBatchAt') || {}).value), restart: restartOn(), ...(quiet ? { power_cap_w: cap } : {}) };
     let r;
     try { r = await fetch('/api/llm/autotune/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(x => x.json()); }
-    catch (e) { alert('Batch request failed: ' + (e && e.message ? e.message : e)); return; }
-    if (!r || !r.ok || !r.batch) { alert((r && r.error) || 'Failed to start the batch'); return; }
+    catch (e) { _toastErr('Batch request failed: ' + (e && e.message ? e.message : e)); return; }
+    if (!r || !r.ok || !r.batch) { _toastErr((r && r.error) || 'Failed to start the batch'); return; }
     adoptBatch(r.batch);
     log(`batch ${r.batch.id} · ${items.length} item${items.length === 1 ? '' : 's'} · ${body.budget_min} min`, 'dim');
   }
@@ -1433,10 +1433,10 @@
     if (!_batch) return;
     try {
       const r = await fetch('/api/llm/autotune/batch/' + encodeURIComponent(_batch.id) + '/cancel', { method: 'POST' }).then(x => x.json());
-      if (!r || !r.ok) { alert((r && r.error) || 'Cancel failed'); return; }
+      if (!r || !r.ok) { _toastErr((r && r.error) || 'Cancel failed'); return; }
       log(r.status === 'cancelled' ? 'batch cancelled' : 'batch stops after the current item', 'warn');
       batchTick();
-    } catch (e) { alert('Cancel failed: ' + (e && e.message ? e.message : e)); }
+    } catch (e) { _toastErr('Cancel failed: ' + (e && e.message ? e.message : e)); }
   }
 
   window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, installRuntime, showModel, running, downloadDraft, startBatch, cancelBatch, batchWatch, batchActive, batchStartAt, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
