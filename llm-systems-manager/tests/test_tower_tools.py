@@ -1069,7 +1069,6 @@ def test_snapshot_from_points_keeps_finite_points_in_order_with_unit_threshold_a
 
 
 def test_prod_deps_energy_group_by_model_filters_by_host(monkeypatch, tmp_path):
-    import sqlite3
     import discord_bot
     import energy
 
