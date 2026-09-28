@@ -1068,6 +1068,34 @@ def test_snapshot_from_points_keeps_finite_points_in_order_with_unit_threshold_a
     assert tt.snapshot_from_points(pts, {"metric": "llama/state", "threshold": "n/a"})["threshold"] is None
 
 
+def test_prod_deps_energy_group_by_model_filters_by_host(monkeypatch, tmp_path):
+    import sqlite3
+    import discord_bot
+    import energy
+
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"fleet": lambda: [], "host": lambda n: None,
+                                                               "models": lambda host=None: [],
+                                                               "ack": lambda a: (True, None), "close": lambda a: (True, None)})
+    conn = sqlite3.connect(tmp_path / "e.db", check_same_thread=False)
+    energy.init_table(conn)
+    monkeypatch.setattr(energy, "_conn_factory", lambda: conn)
+    hour = int(time.time() // 3600) * 3600
+    base = {"hour_ts": hour, "observed_s": 3600.0, "active_s": 0.0, "power_s": 3600.0, "energy_wh": 100.0,
+            "active_energy_wh": 0.0, "tokens_gen": 10, "tokens_prompt": 0, "power_source": "gpu"}
+    mrow = {"resident_s": 3600.0, "observed_s": 3600.0, "active_s": 0.0, "power_s": 3600.0, "energy_wh": 100.0,
+            "active_energy_wh": 0.0, "tokens_gen": 10, "tokens_prompt": 0}
+    energy.upsert_increments(conn, [dict(base, agent_id="a" * 32, hostname="box", models=[dict(mrow, model="m1")]),
+                                    dict(base, agent_id="b" * 32, hostname="mac", models=[dict(mrow, model="m2")])])
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None, settings=None)
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
+    out = deps["energy"]("24h", {"group_by": "model"})
+    assert [m["model"] for m in out["models"]] == ["m1", "m2"]
+    assert set(out["models"][0]) == set(tt._ENERGY_MODEL_KEYS) and out["models"][0]["hosts"] == ["box"]
+    only = deps["energy"]("24h", {"group_by": "model", "host": "MAC"})
+    assert [m["model"] for m in only["models"]] == ["m2"]
+
+
 def test_energy_range_windows_and_bounds():
     now = time.mktime((2026, 9, 15, 10, 30, 0, 0, 0, -1))
     start, end, label, err = tt.energy_range("today", now=now)
@@ -1097,7 +1125,7 @@ def test_energy_tool_schema_takes_ranges_breakdown_and_host():
     reg = tt.build_registry({**_deps(), "energy": lambda w, a=None: seen.append((w, a)) or {"window": w}})
     t = reg["energy_summary"]
     assert set(t.params["properties"]) >= {"window", "since", "until", "group_by", "host"}
-    assert t.params["properties"]["group_by"]["enum"] == ["day", "hour"]
+    assert t.params["properties"]["group_by"]["enum"] == ["day", "hour", "model"]
     clean, err = tt.validate_args(t, {"since": "3d", "group_by": "day", "host": "box"})
     assert err is None
     tt.run_tool(t, clean)

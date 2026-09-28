@@ -16,6 +16,8 @@ log = logging.getLogger("llm-systems-manager.gateway-usage")
 
 _lock = threading.Lock()
 _counters: dict = {}
+# Same counters keyed by the request's model id (#991): {agent_id: {model: {"gen", "prompt"}}}.
+_model_counters: dict = {}
 
 # Previous pusher snapshot per agent: (epoch_s, gen_cum, prompt_cum).
 # Touched only by the pusher thread (and tests), so no lock needed.
@@ -26,8 +28,8 @@ _prev_push: dict = {}
 _last_rates: dict = {}
 
 
-def record(agent_id: str, prompt_tokens, completion_tokens) -> None:
-    """Add one response's usage to the agent's cumulative counters."""
+def record(agent_id: str, prompt_tokens, completion_tokens, model=None) -> None:
+    """Add one response's usage to the agent's cumulative counters, and to the model's when known."""
     try:
         p = int(prompt_tokens or 0)
         g = int(completion_tokens or 0)
@@ -39,12 +41,22 @@ def record(agent_id: str, prompt_tokens, completion_tokens) -> None:
         c = _counters.setdefault(agent_id, {"gen": 0, "prompt": 0})
         c["gen"] += max(0, g)
         c["prompt"] += max(0, p)
+        # Untagged requests count under "" so per-model sums always equal the host total.
+        m = _model_counters.setdefault(agent_id, {}).setdefault(str(model or ""), {"gen": 0, "prompt": 0})
+        m["gen"] += max(0, g)
+        m["prompt"] += max(0, p)
 
 
 def counters() -> dict:
     """Snapshot: {agent_id: {"gen": N, "prompt": N}}, cumulative since start."""
     with _lock:
         return {aid: dict(c) for aid, c in _counters.items()}
+
+
+def model_counters() -> dict:
+    """Snapshot: {agent_id: {model: {"gen": N, "prompt": N}}}, cumulative since start."""
+    with _lock:
+        return {aid: {m: dict(c) for m, c in ms.items()} for aid, ms in _model_counters.items()}
 
 
 # In-flight gateway requests per agent. LM Studio publishes no request or

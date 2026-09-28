@@ -134,6 +134,23 @@ function hostRows(hosts) {
   });
 }
 
+// Display rows for the per-model table (#991).
+function modelRows(models) {
+  return (models || []).map(m => {
+    const name = m.model === '(no model)' ? 'No model loaded' : (m.model || '?');
+    return {
+      model: name,
+      hosts: (m.hosts || []).join(', '),
+      kwh: fmtKwh(m.kwh),
+      share: m.energy_share_pct == null ? null : Math.round(m.energy_share_pct),
+      resident: fmtPct(m.resident_pct),
+      tokens: fmtTokens(m.tokens_gen),
+      cost: fmtUsd(m.cost_usd),
+      mtok: fmtMtokRate(m.usd_per_mtok),
+    };
+  });
+}
+
 // Chart series from /api/energy/hourly rows.
 function hourlySeries(rows) {
   const r = rows || [];
@@ -195,6 +212,6 @@ function windowQuery(value, custom) {
 }
 
 return { fmtUsd, fmtKwh, fmtTokens, fmtWatts, fmtPct, fmtMtokRate,
-         sourceLabel, savingsView, totalTiles, hostRows, hourlySeries,
+         sourceLabel, savingsView, totalTiles, hostRows, modelRows, hourlySeries,
          coverageNote, windowOptions, windowQuery, SOURCE_LABEL };
 });

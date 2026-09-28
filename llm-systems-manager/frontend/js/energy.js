@@ -116,6 +116,7 @@ function _enRenderSummary(d) {
   }
 
   _enRenderHosts(EN.hostRows(d.hosts));
+  _enRenderModels(EN.modelRows(d.models));
   const foot = _enEl('enCoverage');
   if (foot) foot.textContent = EN.coverageNote(d);
 }
@@ -167,6 +168,51 @@ function _enRenderHosts(rows) {
     notes.className = 'en-notes';
     notes.textContent = r.notes;
     tr.appendChild(notes);
+    body.appendChild(tr);
+  });
+}
+
+function _enRenderModels(rows) {
+  const body = _enEl('enModelRows');
+  if (!body) return;
+  body.replaceChildren();
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 7;
+    td.className = 'en-empty';
+    td.textContent = 'No per-model data in this window yet.';
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    const model = document.createElement('td');
+    model.textContent = r.model;
+    tr.appendChild(model);
+    const hosts = document.createElement('td');
+    hosts.className = 'en-notes';
+    hosts.textContent = r.hosts;
+    tr.appendChild(hosts);
+    const kwh = document.createElement('td');
+    kwh.textContent = r.kwh;
+    if (r.share != null) {
+      const bar = document.createElement('span');
+      bar.className = 'en-split';
+      bar.title = r.share + '% of measured energy';
+      const fill = document.createElement('span');
+      fill.className = 'en-split-fill';
+      fill.style.width = r.share + '%';
+      bar.appendChild(fill);
+      kwh.appendChild(bar);
+    }
+    tr.appendChild(kwh);
+    [r.resident, r.tokens, r.cost, r.mtok].forEach(v => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      tr.appendChild(td);
+    });
     body.appendChild(tr);
   });
 }

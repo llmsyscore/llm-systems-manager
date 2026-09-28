@@ -305,3 +305,44 @@ def test_host_peak_reports_the_draw_under_load_separately():
     got = en.host_peak(rows, "a")
     assert got["peak_w"] == 150.0 and got["hours"] == 3
     assert got["peak_active_w"] == 300.0 and got["active_hours"] == 2
+
+
+# ── #991: per-model summary ──────────────────────────────────────────
+
+def test_summarize_models_rolls_up_across_hosts():
+    rows = [
+        {"hour_ts": 0, "agent_id": "a", "model": "m1", "hostname": "box", "resident_s": 3600.0, "observed_s": 3600.0,
+         "active_s": 1800.0, "power_s": 3600.0, "energy_wh": 300.0, "active_energy_wh": 200.0,
+         "tokens_gen": 1_000_000, "tokens_prompt": 100},
+        {"hour_ts": 0, "agent_id": "b", "model": "m1", "hostname": "mac", "resident_s": 3600.0, "observed_s": 3600.0,
+         "active_s": 0.0, "power_s": 3600.0, "energy_wh": 100.0, "active_energy_wh": 0.0,
+         "tokens_gen": 0, "tokens_prompt": 0},
+        {"hour_ts": 0, "agent_id": "a", "model": en.NO_MODEL, "hostname": "box", "resident_s": 1800.0, "observed_s": 3600.0,
+         "active_s": 0.0, "power_s": 3600.0, "energy_wh": 100.0, "active_energy_wh": 0.0,
+         "tokens_gen": 0, "tokens_prompt": 0},
+    ]
+    out = en.summarize_models(rows, 7200.0, 0.20, 0.15, 0.60)
+    assert [m["model"] for m in out] == ["m1", en.NO_MODEL]
+    m1 = out[0]
+    assert m1["hosts"] == ["box", "mac"]
+    assert m1["kwh"] == 0.4 and m1["cost_usd"] == 0.08
+    assert m1["energy_share_pct"] == 80.0
+    # m1 sits on two hosts for 3600 s each over a 7200 s window: 7200 / (7200 × 2).
+    assert m1["resident_pct"] == 50.0 and m1["active_pct"] == 25.0
+    assert out[1]["resident_pct"] == 25.0
+    assert m1["usd_per_mtok"] == 0.08
+    assert "coverage_pct" not in m1 and "power_source" not in m1
+    assert out[1]["usd_per_mtok"] is None and out[1]["energy_share_pct"] == 20.0
+
+
+def test_summarize_models_coloaded_models_each_read_full_residency():
+    rows = [{"hour_ts": 0, "agent_id": "a", "model": m, "hostname": "mac", "resident_s": 3600.0,
+             "observed_s": 1800.0, "active_s": 0.0, "power_s": 1800.0, "energy_wh": 10.0,
+             "active_energy_wh": 0.0, "tokens_gen": 0, "tokens_prompt": 0} for m in ("x", "y")]
+    out = en.summarize_models(rows, 3600.0, 0.2, 0.15, 0.6)
+    assert [m["resident_pct"] for m in out] == [100.0, 100.0]
+    assert [m["energy_share_pct"] for m in out] == [50.0, 50.0]
+
+
+def test_summarize_models_empty():
+    assert en.summarize_models([], 3600.0, 0.2, 0.15, 0.6) == []

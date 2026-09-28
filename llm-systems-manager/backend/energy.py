@@ -109,6 +109,48 @@ def counter_delta(last: "int | None", cur: "int | None") -> "tuple[int, int | No
     return cur, cur
 
 
+NO_MODEL = "(no model)"
+
+
+def _llama_models(sample: dict) -> "list[str]":
+    """Resident llama models: residency block first, legacy state+model pair second."""
+    llama = (sample or {}).get("llama") or {}
+    res = llama.get("residency")
+    if isinstance(res, dict) and res.get("aggregate"):
+        return [str(m["model_id"]) for m in res.get("models") or []
+                if isinstance(m, dict) and m.get("model_id") and m.get("provider") == "llama"
+                and m.get("status") in ("loaded", "sleeping", "loading")]
+    if llama.get("state") not in ("awake", "sleeping"):
+        return []
+    raw = llama.get("model")
+    if not isinstance(raw, str) or raw.endswith(" (unloaded)"):
+        return []
+    m = raw.replace(" (sleeping)", "").strip()
+    return [m] if m else []
+
+
+def extract_models(sample: dict) -> dict:
+    """{provider: [model ids]} resident in one sample; STOPPED LMS rows are unloaded."""
+    s = sample or {}
+    out: dict = {}
+    llama = _llama_models(s)
+    if llama:
+        out["llama"] = llama
+    v = s.get("vllm") or {}
+    if v.get("state") == "running" and v.get("model"):
+        out["vllm"] = [str(v["model"])]
+    lms = [str(p.get("model")) for p in (s.get("ps") or []) if isinstance(p, dict)
+           and p.get("model") and str(p.get("status") or "").upper() != "STOPPED"]
+    if lms:
+        out["lms"] = lms
+    return out
+
+
+def model_key(model_id) -> str:
+    """Case-folded id without an LM Studio @quant suffix, for matching only."""
+    return str(model_id or "").split("@", 1)[0].strip().lower()
+
+
 def extract_hostname(sample: dict) -> "str | None":
     s = sample or {}
     host = s.get("host") or _sys_block(s).get("host")
@@ -145,6 +187,25 @@ def init_table(conn) -> None:
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_energy_hourly_ts "
                  "ON energy_hourly(hour_ts)")
+    # Per-model split of each host row (#991); sums per (hour, agent) equal the host row.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS energy_model_hourly (
+            hour_ts INTEGER NOT NULL,
+            agent_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            hostname TEXT,
+            resident_s REAL NOT NULL DEFAULT 0,
+            observed_s REAL NOT NULL DEFAULT 0,
+            active_s REAL NOT NULL DEFAULT 0,
+            power_s REAL NOT NULL DEFAULT 0,
+            energy_wh REAL NOT NULL DEFAULT 0,
+            active_energy_wh REAL NOT NULL DEFAULT 0,
+            tokens_gen INTEGER NOT NULL DEFAULT 0,
+            tokens_prompt INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (hour_ts, agent_id, model)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_energy_model_hourly_ts "
+                 "ON energy_model_hourly(hour_ts)")
     conn.commit()
 
 
@@ -169,23 +230,54 @@ _UPSERT_SQL = """
         """
 
 
-def upsert_increment(conn, inc: dict) -> None:
+_MODEL_COLS = ("hour_ts, agent_id, model, hostname, resident_s, observed_s, active_s, power_s, "
+               "energy_wh, active_energy_wh, tokens_gen, tokens_prompt")
+
+_MODEL_UPSERT_SQL = """
+        INSERT INTO energy_model_hourly (hour_ts, agent_id, model, hostname,
+            resident_s, observed_s, active_s, power_s, energy_wh, active_energy_wh,
+            tokens_gen, tokens_prompt)
+        VALUES (:hour_ts, :agent_id, :model, :hostname, :resident_s, :observed_s, :active_s,
+                :power_s, :energy_wh, :active_energy_wh, :tokens_gen, :tokens_prompt)
+        ON CONFLICT(hour_ts, agent_id, model) DO UPDATE SET
+            hostname = COALESCE(excluded.hostname, hostname),
+            resident_s = resident_s + excluded.resident_s,
+            observed_s = observed_s + excluded.observed_s,
+            active_s = active_s + excluded.active_s,
+            power_s = power_s + excluded.power_s,
+            energy_wh = energy_wh + excluded.energy_wh,
+            active_energy_wh = active_energy_wh + excluded.active_energy_wh,
+            tokens_gen = tokens_gen + excluded.tokens_gen,
+            tokens_prompt = tokens_prompt + excluded.tokens_prompt
+        """
+
+
+def _write_increment(conn, inc: dict) -> None:
     conn.execute(_UPSERT_SQL, inc)
+    for m in inc.get("models") or []:
+        conn.execute(_MODEL_UPSERT_SQL, {
+            "hour_ts": inc["hour_ts"], "agent_id": inc["agent_id"],
+            "hostname": inc.get("hostname"), **m})
+
+
+def upsert_increment(conn, inc: dict) -> None:
+    _write_increment(conn, inc)
     conn.commit()
 
 
 def upsert_increments(conn, incs: "list[dict]") -> None:
     """All of one tick's rows under a single commit (#621)."""
     for inc in incs:
-        conn.execute(_UPSERT_SQL, inc)
+        _write_increment(conn, inc)
     conn.commit()
 
 
 def prune(conn, retention_days: float, now: "float | None" = None) -> int:
-    """Delete hourly rows older than retention_days; returns rows deleted (#620)."""
+    """Delete hourly rows older than retention_days; returns host rows deleted (#620)."""
     now = _time.time() if now is None else now
     cutoff = int(now - retention_days * 86400)
     cur = conn.execute("DELETE FROM energy_hourly WHERE hour_ts < ?", (cutoff,))
+    conn.execute("DELETE FROM energy_model_hourly WHERE hour_ts < ?", (cutoff,))
     conn.commit()
     return cur.rowcount
 
@@ -198,9 +290,18 @@ def query_rows(conn, start_ts: int, end_ts: int) -> "list[dict]":
     return [dict(zip(cols, r)) for r in rows]
 
 
+def query_model_rows(conn, start_ts: int, end_ts: int) -> "list[dict]":
+    cols = [c.strip() for c in _MODEL_COLS.split(",")]
+    rows = conn.execute(
+        f"SELECT {_MODEL_COLS} FROM energy_model_hourly WHERE hour_ts >= ? AND hour_ts < ?"
+        " ORDER BY hour_ts ASC", (int(start_ts), int(end_ts))).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
 def first_ts(conn) -> "int | None":
     row = conn.execute("SELECT MIN(hour_ts) FROM energy_hourly").fetchone()
     return int(row[0]) if row and row[0] is not None else None
+
 
 
 HOST_PEAK_DAYS = 30
@@ -239,10 +340,12 @@ class Accumulator:
     sink(incs) call per tick. usage_view() optionally supplies gateway
     cumulative token counters ({agent_id: {"gen": N, "prompt": N}})."""
 
-    def __init__(self, store_view, sink, usage_view=None):
+    def __init__(self, store_view, sink, usage_view=None, usage_models_view=None):
         self._store_view = store_view
         self._sink = sink
         self._usage_view = usage_view
+        # {agent_id: {model: {"gen": N, "prompt": N}}}; when given it also supplies the gateway host total.
+        self._usage_models_view = usage_models_view
         self._agents: dict = {}
 
     def tick(self, now: "float | None" = None) -> "list[dict]":
@@ -310,7 +413,12 @@ class Accumulator:
                     v = cur[f]
                     if v is not None and (m[f] is None or v > m[f]):
                         m[f] = v
-        if self._usage_view is not None:
+        # Gateway counters per model (#991) replace the per-agent total when present.
+        gw_models = self._gateway_models(agent_id)
+        if gw_models is not None:
+            for model, cur in gw_models.items():
+                merged[f"gateway:{model}"] = {"gen": cur.get("gen"), "prompt": cur.get("prompt")}
+        elif self._usage_view is not None:
             try:
                 u = (self._usage_view() or {}).get(agent_id)
             except Exception as e:
@@ -321,17 +429,19 @@ class Accumulator:
                                      "prompt": u.get("prompt")}
 
         tokens_gen = tokens_prompt = 0
+        deltas: dict = {}
         for key, cur in merged.items():
             cst = st["counters"].setdefault(key, {"gen": None, "prompt": None})
             d_gen, cst["gen"] = counter_delta(cst["gen"], cur["gen"])
             d_prompt, cst["prompt"] = counter_delta(cst["prompt"], cur["prompt"])
+            deltas[key] = (d_gen, d_prompt)
             tokens_gen += d_gen
             tokens_prompt += d_prompt
 
         if dt <= 0 and not tokens_gen and not tokens_prompt:
             return None
         wh = (watts * dt / 3600.0) if watts is not None else 0.0
-        return {
+        inc = {
             "hour_ts": int(now // 3600) * 3600,
             "agent_id": agent_id,
             "hostname": hostname,
@@ -344,6 +454,82 @@ class Accumulator:
             "tokens_prompt": tokens_prompt,
             "power_source": source,
         }
+        resident: dict = {}
+        for sample, _ls in ordered:
+            for prov, models in extract_models(sample).items():
+                resident.setdefault(prov, [])
+                resident[prov] += [m for m in models if m not in resident[prov]]
+        inc["models"] = split_models(inc, resident, deltas)
+        return inc
+
+    def _gateway_models(self, agent_id: str) -> "dict | None":
+        if self._usage_models_view is None:
+            return None
+        try:
+            u = (self._usage_models_view() or {}).get(agent_id)
+        except Exception as e:
+            log.debug("energy: usage models view failed: %s", e)
+            return None
+        return u if isinstance(u, dict) else {}
+
+
+def _match_model(model_id: str, resident: "list[str]") -> str:
+    key = model_key(model_id)
+    return next((m for m in resident if model_key(m) == key), model_id)
+
+
+def split_models(inc: dict, resident: dict, deltas: dict) -> "list[dict]":
+    """Per-model share of one host increment: token deltas go to the block's
+    resident model(s); time and energy follow tokens, or split evenly when idle.
+    resident_s is the whole tick for every model that was resident or served."""
+    tokens: dict = {}
+
+    def _add(model, gen, prompt):
+        t = tokens.setdefault(model, [0, 0])
+        t[0] += gen
+        t[1] += prompt
+
+    lms = resident.get("lms") or []
+    for key, (d_gen, d_prompt) in deltas.items():
+        if not d_gen and not d_prompt:
+            continue
+        if key.startswith("gateway:") and key[8:]:
+            targets = [_match_model(key[8:], lms)]
+        elif key in ("gateway", "gateway:"):
+            targets = lms or [NO_MODEL]
+        else:
+            targets = resident.get(key) or [NO_MODEL]
+        n = len(targets)
+        for i, m in enumerate(targets):
+            # Integer split; the first target takes the remainder.
+            g, p = d_gen // n, d_prompt // n
+            if i == 0:
+                g, p = g + d_gen % n, p + d_prompt % n
+            _add(m, g, p)
+    models = [m for ms in resident.values() for m in ms]
+    for m in tokens:
+        if m not in models:
+            models.append(m)
+    if not models:
+        models = [NO_MODEL]
+    total = sum(g + p for g, p in tokens.values())
+    if total > 0:
+        weights = {m: (sum(tokens.get(m, (0, 0))) / total) for m in models}
+    else:
+        weights = {m: 1.0 / len(models) for m in models}
+    out = []
+    for m in models:
+        w = weights[m]
+        g, p = tokens.get(m, (0, 0))
+        out.append({"model": m,
+                    "resident_s": inc["observed_s"],
+                    "observed_s": inc["observed_s"] * w,
+                    "active_s": inc["active_s"] * w,
+                    "power_s": inc["power_s"] * w,
+                    "energy_wh": inc["energy_wh"] * w,
+                    "active_energy_wh": inc["active_energy_wh"] * w,
+                    "tokens_gen": g, "tokens_prompt": p})
+    return out
 
 
 # ── Summary math (pure) ──────────────────────────────────────────────
@@ -460,6 +646,40 @@ def summarize(rows: "list[dict]", window_s: float, price_kwh: float,
         savings = round(m_cloud - local_cost, 2)
     return {"totals": totals, "hosts": hosts,
             "savings_usd": savings}
+
+
+def summarize_models(rows: "list[dict]", window_s: float, price_kwh: float,
+                     cloud_in: float, cloud_out: float) -> "list[dict]":
+    """Per-model rollup of energy_model_hourly rows (#991), largest energy first."""
+    per_model: dict = {}
+    hosts: dict = {}
+    resident: dict = {}
+    total_wh = 0.0
+    for row in rows:
+        m = str(row.get("model") or NO_MODEL)
+        _fold(per_model.setdefault(m, _agg_zero()), row)
+        resident[m] = resident.get(m, 0.0) + float(row.get("resident_s") or 0)
+        total_wh += float(row.get("energy_wh") or 0)
+        name = row.get("hostname") or str(row.get("agent_id") or "")[:8]
+        if name and name not in hosts.setdefault(m, []):
+            hosts[m].append(name)
+    out = []
+    for m, agg in per_model.items():
+        d = _derive(agg, window_s, price_kwh, cloud_in, cloud_out)
+        d.pop("power_source", None)
+        d.pop("coverage_pct", None)
+        d.pop("power_coverage_pct", None)
+        # Whole-tick residency over the elapsed window per host, like fleet coverage.
+        span = window_s * max(1, len(hosts.get(m, [])))
+        d["resident_pct"] = (round(100.0 * min(resident[m] / span, 1.0), 1)
+                             if span > 0 else None)
+        d["model"] = m
+        d["hosts"] = hosts.get(m, [])
+        d["energy_share_pct"] = (round(100.0 * agg["energy_wh"] / total_wh, 1)
+                                 if total_wh > 0 else None)
+        out.append(d)
+    out.sort(key=lambda d: (d["kwh"] or 0.0, d["tokens_gen"]), reverse=True)
+    return out
 
 
 def month_bounds(month: str, now: "float | None" = None) -> "tuple[int, int]":
@@ -652,6 +872,8 @@ def register_routes(app, ctx=None, db_path: "str | None" = None, primary_agent=N
         conn = _conn_factory()
         rows = query_rows(conn, start, end)
         summary = summarize(rows, window_s, price, cloud_in, cloud_out)
+        summary["models"] = summarize_models(query_model_rows(conn, start, end),
+                                             window_s, price, cloud_in, cloud_out)
         return jsonify({"ok": True,
                         "window": {"label": label, "start_ts": start,
                                    "end_ts": end,
@@ -740,7 +962,8 @@ def start_thread(ctx=None) -> None:
     import gateway_usage
     _ACCUM = Accumulator(lambda: store_view_from_provider_state(PROVIDERS),
                          lambda incs: upsert_increments(_conn_factory(), incs),
-                         usage_view=gateway_usage.counters)
+                         usage_view=gateway_usage.counters,
+                         usage_models_view=gateway_usage.model_counters)
 
     def _loop():
         last_prune = 0.0

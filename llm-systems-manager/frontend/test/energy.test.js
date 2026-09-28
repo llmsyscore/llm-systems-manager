@@ -130,6 +130,22 @@ describe('hostRows', () => {
   });
 });
 
+describe('modelRows', () => {
+  it('formats per-model rows and names the empty bucket', () => {
+    const rows = EN.modelRows([
+      { model: 'qwen3-8b', hosts: ['box', 'mac'], kwh: 0.4, energy_share_pct: 80.4,
+        resident_pct: 100, tokens_gen: 1e6, cost_usd: 0.08, usd_per_mtok: 0.08 },
+      { model: '(no model)', hosts: ['box'], kwh: 0.1, energy_share_pct: 19.6,
+        resident_pct: 50, tokens_gen: 0, cost_usd: 0.02, usd_per_mtok: null },
+    ]);
+    expect(rows[0]).toEqual({ model: 'qwen3-8b', hosts: 'box, mac', kwh: '400 Wh', share: 80,
+      resident: '100%', tokens: '1.00M', cost: '$0.08', mtok: '$0.0800/Mtok' });
+    expect(rows[1].model).toBe('No model loaded');
+    expect(rows[1].mtok).toBe('—');
+    expect(EN.modelRows(null)).toEqual([]);
+  });
+});
+
 describe('hourlySeries', () => {
   it('splits idle from total and carries tokens', () => {
     const s = EN.hourlySeries([

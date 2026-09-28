@@ -298,7 +298,7 @@ def complete_json(body: dict, *, label: str, provider=None) -> dict:
             if u:
                 gateway_usage.client_record(client, *u)
                 if provider in _USAGE_COUNTED_PROVIDERS:
-                    gateway_usage.record(aid, *u)
+                    gateway_usage.record(aid, *u, model=model_id)
             out = r.json()
             if _dbg:
                 log.debug("gateway completion end label=%s host=%s total_ms=%d prompt_tokens=%s completion_tokens=%s "
@@ -444,7 +444,7 @@ def _stream_chunks(model_id, provider: str, path: str, stream_body: dict, *, lab
                         p_tok, g_tok = u
                         gateway_usage.client_record(client, p_tok, g_tok)
                         if counted:
-                            gateway_usage.record(aid, p_tok, g_tok)
+                            gateway_usage.record(aid, p_tok, g_tok, model=model_id)
                     if _dbg and (f := _finish_of(chunk)) != "-":
                         finish = f
                     yield chunk
@@ -512,7 +512,8 @@ def _handle_completion(sub: str, provider=None) -> Response:
         for agent in cands:
             if wants_stream:
                 resp = _stream_from(agent, path, stream_body, errors, provider,
-                                    injected=injected, client=client, t0=t0, label=caller)
+                                    injected=injected, client=client, t0=t0, label=caller,
+                                    model_id=model_id)
                 if resp is not None:
                     stream_owns_client = getattr(resp, "gw_client_owned", False)
                     return resp
@@ -545,7 +546,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                 if u:
                     gateway_usage.client_record(client, *u)
                     if provider in _USAGE_COUNTED_PROVIDERS:
-                        gateway_usage.record(aid, *u)
+                        gateway_usage.record(aid, *u, model=model_id)
             else:
                 gateway_usage.record_error()
                 forecast_wiring.count_gateway(model_id, "errors")
@@ -578,7 +579,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
 
 def _stream_from(agent: dict, path: str, body: dict, errors: list,
                  provider: str = "llama", injected: bool = False,
-                 client=None, t0=None, label: str = "-"):
+                 client=None, t0=None, label: str = "-", model_id=None):
     """One streaming attempt; None means try the next candidate."""
     _dbg = log.isEnabledFor(logging.DEBUG)
     upstream = _dial_stream(agent, path, body)
@@ -630,10 +631,10 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         aid = agent.get("agent_id")
         counted = provider in _USAGE_COUNTED_PROVIDERS
 
-        def _on_usage(p, g, a=aid, k=client, c=counted):
+        def _on_usage(p, g, a=aid, k=client, c=counted, m=model_id):
             tally["p"], tally["g"] = p, g
             if c:
-                gateway_usage.record(a, p, g)
+                gateway_usage.record(a, p, g, model=m)
             gateway_usage.client_record(k, p, g)
 
         pumped = gateway_usage.tap_sse(
