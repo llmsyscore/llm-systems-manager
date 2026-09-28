@@ -212,6 +212,57 @@ def test_agent_restart_first_tick_establishes_state_without_fabrication(llama, m
         fake.stop()
 
 
+SSE = _load("llama_sse_s", _AGENT_ROOT / "providers" / "llama_sse.py")
+
+
+def test_sse_stream_silent_past_read_timeout_keeps_residency(llama, monkeypatch, real_requests):
+    """A /models/sse stream silent past the read timeout (300 s, scaled down) drops and redials without touching residency."""
+    import inspect
+    import urllib.request
+    assert inspect.signature(SSE.requests_sse_lines).parameters["read_timeout"].default == 300.0
+    fake = FakeLlama({"a": "loaded"})
+    ctx = _Ctx(fake.url)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "llama_sse", SSE)
+    monkeypatch.setattr(llama, "reconcile_now", lambda: None)
+    connects, drops = [], []
+
+    def _connect():
+        connects.append(time.monotonic())
+        resp = urllib.request.urlopen(f"{fake.url}/models/sse", timeout=0.4)
+        return (raw.decode() for raw in resp)
+
+    def _on_disconnect():
+        drops.append((time.monotonic(), ctx.state.get("residency")))
+        llama._llama_sse_on_disconnect()
+
+    listener = SSE.LlamaSseListener(
+        connect=_connect, on_event=llama._llama_sse_on_event, should_stop=lambda: len(connects) >= 2,
+        sleep=lambda s: None, on_disconnect=_on_disconnect)
+    try:
+        _, res = _tick(llama, ctx)
+        assert res["aggregate"] == "active"
+        t = threading.Thread(target=listener.run, daemon=True)
+        t.start()
+        deadline = time.monotonic() + 5
+        while not fake._sse and time.monotonic() < deadline:
+            time.sleep(0.01)
+        fake.sse_push("a", "loaded")
+        deadline = time.monotonic() + 5
+        while (ctx.state.get("residency") or {}).get("source") != "sse" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pushed = ctx.state["residency"]
+        assert pushed["aggregate"] == "active" and ctx.state["llama_sse"]["connected"] is True
+        t.join(timeout=5)
+        assert not t.is_alive() and len(connects) == 2 and len(drops) == 2
+        assert drops[0][0] - connects[0] >= 0.4               # dropped by the read timeout, not before
+        assert drops[0][1] is pushed and ctx.state["residency"] is pushed
+        assert R.desired_profile(pushed) == "performance" and R.legacy_state(pushed) == "awake"
+        assert ctx.state["llama_sse"]["connected"] is False
+    finally:
+        fake.stop()
+
+
 # ── the arbiter is the only systemctl reload-or-restart caller ───────
 
 def test_only_the_arbiter_runs_reload_or_restart():
