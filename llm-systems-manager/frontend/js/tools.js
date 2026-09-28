@@ -428,6 +428,7 @@
         if (s.ppt_tps != null) bits.push(TC.esc(_tNum(s.ppt_tps, 0)) + ' pp/s');
         if (s.bench_tool) bits.push(TC.esc(s.bench_tool));
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
+        else if (s.failed_samples) bits.push('<span style="color:var(--warn)">' + TC.esc(String(s.failed_samples)) + ' sample' + (s.failed_samples === 1 ? '' : 's') + ' failed</span>');
         rows.push({ icon: '◷', tool: 'Benchmark', run: r,
           toolId: clickable ? 'benchmark' : null, target,
           title: clickable ? 'Open Benchmark' : null, model: r.model_id || '',

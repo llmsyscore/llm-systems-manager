@@ -265,3 +265,77 @@ def test_setup_cancel_between_steps_emits_terminal_event(llama, tmp_path, monkey
         llama._bench_cancel_event.clear()
     ev = _events(llama)
     assert ev and ev[-1] == {"type": "setup_done", "ok": False, "error": "cancelled"}
+
+
+def _failed_payload(ok_n: int, failed_n: int):
+    tps = 100.0 if ok_n else None
+    results = [{"ok": True, "completion_tokens": 200, "latency_s": 4.0, "error": None}] * ok_n \
+        + [{"ok": False, "completion_tokens": 0, "latency_s": 60.0, "error": "Read timed out. (read timeout=60.0)"}] * failed_n
+    return {"summary": [{"category": "overall", "requests": ok_n, "turns": ok_n, "failed": failed_n,
+                         "avg_prompt_t_s": 2000.0 if ok_n else None, "avg_pred_t_s": tps,
+                         "avg_latency": 4.0 if ok_n else None, "draft_n": 0, "accepted": 0, "accept_rate": None}],
+            "results": results}
+
+
+def _run_with_payload(llama, tmp_path, monkeypatch, payload, rc):
+    ctx = _Ctx(tmp_path)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_bench_live_server",
+                        lambda: {"up": True, "url": "http://127.0.0.1:9931", "models": [{"id": "org/m:Q4", "status": "loaded"}],
+                                 "loaded_id": "org/m:Q4", "slots_idle": 2, "slots_total": 2, "spec": None})
+    monkeypatch.setattr(llama._bl, "runtime_python", lambda inst, ov: ("/fake/python", "venv"))
+    monkeypatch.setattr(llama._bl, "script_path", lambda inst, root: (Path("/fake/speed_bench.py"), "ok"))
+
+    def fake_level(cmd, env, put, model_id, level, cancel, track, untrack):
+        out = cmd[cmd.index("--output") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(payload))
+        return rc, False, 7.0
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", fake_level)
+    monkeypatch.setattr(llama, "_live_power_w", lambda: (None, None))
+    posted = []
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append((a, k)))
+    monkeypatch.setattr(llama, "_bench_live_store", lambda doc: None)
+    done = threading.Event()
+    orig = llama._bench_live_run_all
+
+    def wrapped(*a, **k):
+        try:
+            orig(*a, **k)
+        finally:
+            done.set()
+    monkeypatch.setattr(llama, "_bench_live_run_all", wrapped)
+    out = llama.llama_bench_live_run({"model_id": "org/m:Q4", "bench": "qualitative", "concurrency": [1, 2], "limit": 2})
+    assert out["ok"] is True
+    assert done.wait(10)
+    return _events(llama), posted
+
+
+def test_failed_samples_flag_the_run_and_ledger(llama, tmp_path, monkeypatch):
+    # #1127: speed-bench exits 1 when a sample failed; the run still completes but carries the count.
+    events, posted = _run_with_payload(llama, tmp_path, monkeypatch, _failed_payload(1, 2), rc=1)
+    lv = [e for e in events if e["type"] == "level_result"]
+    assert len(lv) == 2 and lv[0]["all"]["failed"] == 2
+    assert lv[0]["all"]["first_error"].startswith("Read timed out")
+    md = next(e for e in events if e["type"] == "model_done")
+    assert md["ok"] is True and md["failed_samples"] == 4
+    assert md["first_error"].startswith("Read timed out")
+    dn = events[-1]
+    assert dn["type"] == "done" and dn["ok"] is True and dn["failed_samples"] == 4
+    summary = posted[0][0][6]
+    assert posted[0][0][5] is True
+    assert summary["failed_samples"] == 4 and summary["first_error"].startswith("Read timed out")
+
+
+def test_level_with_every_sample_failed_fails_the_run(llama, tmp_path, monkeypatch):
+    # #1127: no sample answered, so there is no measurement; the run stops and is recorded as failed.
+    events, posted = _run_with_payload(llama, tmp_path, monkeypatch, _failed_payload(0, 2), rc=1)
+    lv = [e for e in events if e["type"] == "level_result"]
+    assert len(lv) == 1
+    md = next(e for e in events if e["type"] == "model_done")
+    assert md["ok"] is False and md["failed_samples"] == 2 and md["cancelled"] is False
+    assert md["first_error"].startswith("Read timed out")
+    assert events[-1]["type"] == "done" and events[-1]["ok"] is False
+    assert posted[0][0][5] is False and posted[0][0][6]["failed_samples"] == 2

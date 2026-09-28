@@ -2625,7 +2625,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                 if req["categories"] == "all":
                     _bl.write_marker(cfg.AGENT_INSTALL_DIR, cell["bench"], [r.get("category") for r in summ["rows"] if r.get("category")])
                 _bench_put({"type": "level_result", "model_id": model_id, **row})
-                if rc not in (0, 1):
+                # rc 1 = some samples failed; a level with no answered sample has no measurement.
+                if rc not in (0, 1) or (summ["all"]["failed"] and not summ["all"]["requests"]):
                     ok = False; stop = True
                     break
             if stop:
@@ -2640,8 +2641,12 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
         wh_per_ktok = (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None
         cancelled = _bench_cancel_event.is_set()
         first = (levels[0]["all"] if levels else {})
+        failed_samples = sum(int((lv.get("all") or {}).get("failed") or 0) for lv in levels)
+        first_error = next(((lv.get("all") or {}).get("first_error") for lv in levels
+                            if (lv.get("all") or {}).get("first_error")), None)
         doc = {"type": "model_done", "model_id": model_id, "run_id": run_id, "ok": ok and not cancelled,
                "cancelled": cancelled, "bench": req["bench"], "config": req, "levels": levels,
+               "failed_samples": failed_samples, "first_error": first_error,
                "energy_wh": wh, "energy_source": src, "wh_per_ktok": wh_per_ktok,
                "spec": server.get("spec"), "server_url": server.get("url"), "provider": provider,
                "llama_build": (_llama_build_last or "") if provider == "llama" else str(server.get("build") or ""),
@@ -2656,8 +2661,10 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                                    "wh_per_ktok": wh_per_ktok, "bench": req["bench"], "osl": req.get("osl"),
                                    "limit": req.get("limit"),
                                    "concurrency": ",".join(str(r.get("concurrency")) for r in levels),
+                                   "failed_samples": failed_samples, "first_error": first_error,
                                    "switches": _bl.ledger_switches(req, server)})
-        _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1})
+        _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1,
+                    "failed_samples": failed_samples, "first_error": first_error})
         _bench_proc = None
         _bench_pgid = None
         with _bench_lock:
@@ -3507,11 +3514,11 @@ class _AutotuneBackend:
         except (OSError, ValueError):
             return {"ok": False, "error": f"speed-bench produced no output (rc={rc})"}
         s = _bl.level_summary(payload, wall)["all"]
-        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")), "decode_tps": s.get("pred_tps"),
+        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")) and not s.get("failed"), "decode_tps": s.get("pred_tps"),
                 "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
                 "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"),
-                "seconds": round(wall, 1), "energy_wh": wh, "energy_source": esrc,
-                "error": None if rc in (0, 1) else f"speed-bench rc={rc}"}
+                "seconds": round(wall, 1), "energy_wh": wh, "energy_source": esrc, "failed": s.get("failed"),
+                "error": _bl.stick_error(rc, s)}
 
     def kl(self, args, write_base):
         """Writes the f16 KL base, or scores the current args against it."""

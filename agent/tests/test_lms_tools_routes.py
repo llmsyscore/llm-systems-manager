@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -420,3 +421,24 @@ def test_run_all_restores_and_posts_ledger(env, monkeypatch):
     last_load = [c for c in env.sess.calls if c[0] == "POST" and c[1].endswith("/load")][-1]
     assert last_load[2]["parallel"] == 2 and last_load[2]["context_length"] == 32768
     assert env.llama._autotune_active is False
+
+
+def test_lms_stick_with_failed_samples_is_not_a_measurement(env, monkeypatch, tmp_path):
+    # #1127: mirrors the llama stick — a timed-out sample fails the measurement.
+    t = env.tools
+    monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s"})
+    monkeypatch.setattr(t, "_free_mb", lambda: 2000)
+    monkeypatch.setattr(t._bl, "build_cmd", lambda *a, **k: ["x"])
+    monkeypatch.setattr(env.llama, "_url", lambda: "http://127.0.0.1:1234", raising=False)
+
+    def fake_run(cmd, benv, put, mid, level, cancel, track, untrack):
+        (tmp_path / "data" / "bench" / "runs" / "at-run1" / "stick-1-qwen3.5-9b_q6_k.json").write_text(json.dumps({
+            "summary": [{"category": "overall", "requests": 3, "failed": 1, "avg_pred_t_s": 20.0}],
+            "results": [{"ok": True, "completion_tokens": 50, "error": None}] * 3
+                       + [{"ok": False, "completion_tokens": 0, "error": "Read timed out. (read timeout=300.0)"}]}))
+        return 1, False, 5.0
+    monkeypatch.setattr(t._bl, "run_level_subprocess", fake_run)
+    be = t._LmsBackend("qwen3.5-9b@q6_k", "run1")
+    st = be._stick("qwen3.5-9b@q6_k", {"concurrency": 1, "limit": 4})
+    assert st["ok"] is False and st["decode_tps"] == 20.0 and st["failed"] == 1
+    assert "1 sample" in st["error"] and "Read timed out" in st["error"]

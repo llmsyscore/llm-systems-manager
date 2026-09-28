@@ -225,3 +225,13 @@ def test_ledger_switches_flatten_the_run_settings(bl):
     assert sw == {"bench": "qualitative", "categories": "all", "osl": "1024", "limit": "8",
                   "concurrency": "1, 4", "timeout_s": "600", "extra_inputs": '{"temperature": 0}'}
     assert bl.ledger_switches({**req, "categories": ["a", "b"]}, {"spec": "draft-mtp"})["spec"] == "draft-mtp"
+
+
+def test_level_summary_reports_first_error(bl):
+    payload = {"summary": [{"category": "overall", "requests": 1, "failed": 2, "avg_pred_t_s": 50.0}],
+               "results": [{"ok": True, "completion_tokens": 10, "error": None},
+                           {"ok": False, "completion_tokens": 0, "error": "Read timed out. (read timeout=60.0)"},
+                           {"ok": False, "completion_tokens": 0, "error": "second"}]}
+    a = bl.level_summary(payload, 2.0)["all"]
+    assert a["failed"] == 2 and a["first_error"] == "Read timed out. (read timeout=60.0)"
+    assert bl.level_summary({"summary": [], "results": [{"ok": True}]}, 1.0)["all"]["first_error"] is None
