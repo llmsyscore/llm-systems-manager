@@ -233,6 +233,10 @@
   .fc-brow-head .fc-when, .fc-brow-head .fc-vchip { display: none; }
   .fc-brow-body { grid-template-columns: minmax(0, 1fr); padding-left: 16px; }
 }
+/* Phone: the findings table drops its Host column (shown in the detail pane). */
+@media (max-width: 640px) {
+  .fc-table:not(.fc-table-plain) th:nth-child(3), .fc-table:not(.fc-table-plain) td:nth-child(3) { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .fc-brief > summary::before, .fc-checks-box > summary::before, .fc-caret { transition: none; }
 }
