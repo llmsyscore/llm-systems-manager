@@ -5,7 +5,8 @@ from pathlib import Path
 _AGENT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENT_ROOT))
 
-class _Timeout(Exception): ...
+class _Timeout(Exception):
+    pass
 class _HTTPException(Exception):
     def __init__(self, status_code=500, detail=""):
         self.status_code, self.detail = status_code, detail

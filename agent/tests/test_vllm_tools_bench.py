@@ -171,7 +171,9 @@ def test_bench_serve_and_live_share_the_busy_lock(mods, ctx, monkeypatch):
     class R:  # /v1/models up
         ok = True
         def json(self): return {"data": [{"id": "org/m"}]}
-    monkeypatch.setattr(vllm, "_get_session", lambda: type("S", (), {"get": lambda *a, **k: R()})())
+    class _S:
+        def get(self, *a, **k): return R()
+    monkeypatch.setattr(vllm, "_get_session", _S)
     monkeypatch.setattr(tools, "_bench_resolve_bin", lambda: ("/bin/true", None))
     release = threading.Event()
     monkeypatch.setattr(tools, "_bench_run_one", lambda *a: release.wait())
@@ -372,8 +374,8 @@ class _Sess:
         if not self.up: raise Exception("refused")
         class R:
             ok = True
-            def __init__(s, body, text=""): s._b, s.text = body, text
-            def json(s): return s._b
+            def __init__(self, body, text=""): self._b, self.text = body, text
+            def json(self): return self._b
         if url.endswith("/v1/models"): return R({"data": [{"id": "Qwen/Qwen3-0.6B", "max_model_len": 4096}]})
         if url.endswith("/version"): return R({"version": "0.30.0"})
         if url.endswith("/metrics"): return R({}, f"vllm:num_requests_running{{model=\"m\"}} {self.running}\n")
@@ -414,7 +416,7 @@ def test_bench_server_down(mods, ctx, monkeypatch):
 
 def test_preflight_shape(mods, ctx, monkeypatch):
     llama, vllm, tools = mods
-    monkeypatch.setattr(vllm, "_get_session", lambda: _Sess())
+    monkeypatch.setattr(vllm, "_get_session", _Sess)
     monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s", "script_status": "ok"})
     p = tools.vllm_bench_live_preflight()
     assert p["ok"] and p["provider"] == "vllm" and p["server"]["up"] and p["busy"] is False
@@ -424,14 +426,14 @@ def test_preflight_shape(mods, ctx, monkeypatch):
 
 def test_run_refuses_unserved_model(mods, ctx, monkeypatch):
     llama, vllm, tools = mods
-    monkeypatch.setattr(vllm, "_get_session", lambda: _Sess())
+    monkeypatch.setattr(vllm, "_get_session", _Sess)
     monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s", "script_status": "ok"})
     r = tools.vllm_bench_live_run({"model_id": "org/other", "bench": "throughput_1k"})
     assert r["ok"] is False and "does not serve org/other" in r["error"] and llama._bench_active is False
 
 def test_run_starts_through_the_streaming_shim(mods, ctx, monkeypatch):
     llama, vllm, tools = mods
-    monkeypatch.setattr(vllm, "_get_session", lambda: _Sess())
+    monkeypatch.setattr(vllm, "_get_session", _Sess)
     monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s", "script_status": "ok"})
     seen = {}
     class FakeShim:
@@ -456,7 +458,7 @@ def test_run_starts_through_the_streaming_shim(mods, ctx, monkeypatch):
 
 def test_shim_start_failure_frees_the_slot_and_ends_the_run(mods, ctx, monkeypatch):
     llama, vllm, tools = mods
-    monkeypatch.setattr(vllm, "_get_session", lambda: _Sess())
+    monkeypatch.setattr(vllm, "_get_session", _Sess)
     monkeypatch.setattr(llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s", "script_status": "ok"})
     class FailShim:
         def __init__(self, *a, **k): self.url = "http://127.0.0.1:1"

@@ -107,7 +107,7 @@ def _killpg(proc) -> None:
     try:
         os.killpg(_ll._bench_pgid or proc.pid, signal.SIGKILL)
     except ProcessLookupError:
-        pass
+        pass  # group already gone
     except Exception as e:
         log.warning("vllm bench: killpg failed: %s", e)
 
