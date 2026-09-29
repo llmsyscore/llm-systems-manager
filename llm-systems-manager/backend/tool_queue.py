@@ -137,9 +137,9 @@ class Queue:
             self.d.sleep(SLICE_S)
             waited += SLICE_S
 
-    def on_cancel(self, row: dict) -> None:
-        state = row.get("state") or {}
-        spec = row.get("spec") or {}
+    def on_cancel(self, job: jobs.Job) -> None:
+        state = getattr(job, "state", None) or {}
+        spec = getattr(job, "spec", None) or {}
         if not state.get("run_id") or not spec.get("cancel"):
             return
         agent = self.d.agent_for(spec.get("agent_id") or "")
@@ -158,7 +158,7 @@ class Queue:
 
     def _batch_holds(self, agent_id: str) -> bool:
         key = f"perf:{agent_id}"
-        return any(key in (r.get("exclusive") or []) for r in self.s.list("live", kind="autotune_batch", limit=jobs.LIST_MAX))
+        return any(key in (r.get("exclusive") or []) for r in self.s.list("running", kind="autotune_batch", limit=jobs.LIST_MAX))
 
     def held(self, agent_id: str) -> bool:
         return agent_id in set(self.d.held_agents() or ()) or bool(self.rows_for(agent_id)) or self._batch_holds(agent_id)

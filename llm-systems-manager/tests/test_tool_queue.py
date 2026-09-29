@@ -158,16 +158,19 @@ def test_cancel_running_job_posts_the_tool_cancel_path():
     q, svc, _ = _env(agent)
     row = svc.submit(tq.KIND, _spec(), user="alice")
     svc.set_state(row["id"], {"run_id": "r1", "started": 1000.0, "seen": True})
-    q.on_cancel({**row, "status": "cancelled", "state": {"run_id": "r1"}})
+    svc._store.update(row["id"], status="running", started=1000.0, lease=1030.0)
+    svc.cancel(row["id"], actor="alice")
     assert ("POST", A1, "/llama/bench/cancel", None) in agent.calls
+    assert svc.get(row["id"])["status"] == "cancelled"
 
 
 def test_cancel_queued_job_never_touches_the_agent():
     agent = FakeAgent()
     q, svc, _ = _env(agent)
     row = svc.submit(tq.KIND, _spec(), user="alice")
-    q.on_cancel({**row, "status": "cancelled"})
+    svc.cancel(row["id"], actor="alice")
     assert agent.calls == []
+    assert svc.get(row["id"])["status"] == "cancelled"
 
 
 def test_kind_metadata():
