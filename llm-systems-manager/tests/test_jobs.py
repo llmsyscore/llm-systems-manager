@@ -298,7 +298,7 @@ def test_start_thread_is_off_under_pytest():
 def test_manager_jobs_settings_and_catalog():
     import settings_catalog as sc
     from config.unified_config import settings
-    assert settings.manager.jobs.workers == 4 and settings.manager.jobs.history_days == 30
+    assert settings.manager.jobs.workers == 8 and settings.manager.jobs.history_days == 30
     w, h = sc._BY_PATH["manager.jobs.workers"], sc._BY_PATH["manager.jobs.history_days"]
     assert w["group"] == "jobs" and w["hot"] is True and w["min"] == 1 and w["max"] == 16
     assert h["group"] == "jobs" and h["hot"] is True and h["min"] == 1 and h["max"] == 365

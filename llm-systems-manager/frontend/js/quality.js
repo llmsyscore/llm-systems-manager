@@ -234,7 +234,7 @@
   function syncQueue(st) {
     if (running() || _busyOn) return;
     const r = $('qgRunBtn'), c = $('qgCancelBtn'), n = $('qgQueueNote');
-    if (r) r.textContent = st.queued ? `⏸ Queued${st.ahead ? ` · ${st.ahead} ahead` : ' · waiting'}` : st.busy ? '▶ Queue check' : '▶ Run check';
+    if (r) r.textContent = st.queued ? `⏸ Queued${st.ahead ? ` · ${st.ahead} ahead` : ' · waiting'}` : st.busy && st.canQueue !== false ? '▶ Queue check' : '▶ Run check';
     if (c) {
       c.style.display = st.queued ? '' : 'none';
       c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';

@@ -317,8 +317,10 @@ regression_pct = 15.0                                    # alert when decode t/s
 
 [manager.jobs]
 # Job service (#915): one ledger + dispatcher for scheduled and queued work
-# (Tower timers, autotune batches). Both keys are hot.
-workers = 4                                              # jobs the dispatcher runs at once (1-16)
+# (Tower timers, autotune batches, queued Tools runs). All keys are hot.
+# A queued Tools run holds one worker for its whole run (hours), so keep
+# workers above the number of Tools runs you expect to queue at once.
+workers = 8                                              # jobs the dispatcher runs at once (1-16)
 history_days = 30                                        # done/failed/cancelled jobs older than this are deleted daily (1-365)
 tool_queue_max = 5                                       # Tools runs that may wait per host (1-20)
 

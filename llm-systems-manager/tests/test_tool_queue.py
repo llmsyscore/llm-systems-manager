@@ -156,6 +156,63 @@ def test_restart_reentry_skips_the_start_and_only_waits():
     done = svc.get(row["id"])
     assert done["status"] == "done" and done["result"] == {"run_id": "r9"}
     assert not [c for c in agent.calls if c[0] == "POST"]
+    # The tiles and the gate read the host busy again after the restart (#1132).
+    assert ("note", A1, "llama", "benchmark") in agent.calls
+
+
+def test_flag_never_seen_records_the_failure_without_paging():
+    clock = Clock()
+    agent = FakeAgent(states=[IDLE], clock=clock)
+    q, svc, _ = _env(agent, clock=clock)
+    alerts = []
+    svc._alert = alerts.append
+    row = svc.submit(tq.KIND, _spec(), user="alice")
+    svc.tick()
+    assert svc.get(row["id"])["status"] == "failed" and alerts == []
+
+
+def test_start_errors_still_page():
+    agent = FakeAgent(starts={"ok": False, "error": "model not found"})
+    q, svc, _ = _env(agent)
+    alerts = []
+    svc._alert = alerts.append
+    svc.submit(tq.KIND, _spec(), user="alice")
+    svc.tick()
+    assert len(alerts) == 1 and "model not found" in alerts[0]["message"]
+
+
+def test_cancel_landing_during_the_start_stops_the_run_it_began():
+    agent = FakeAgent(states=[IDLE, BUSY])
+    q, svc, _ = _env(agent)
+    row = svc.submit(tq.KIND, _spec(), user="alice")
+    inner = agent.__call__
+
+    def racing(method, a, path, **kw):
+        resp = inner(method, a, path, **kw)
+        if method == "POST" and path.endswith("/bench/run"):
+            svc.cancel(row["id"], actor="alice")   # lands while the start is in flight
+        return resp
+    q.d.agent_call = racing
+    svc.tick()
+    assert ("POST", A1, "/llama/bench/cancel", None) in agent.calls
+    assert svc.get(row["id"])["status"] == "cancelled"
+
+
+def test_pre_step_failure_is_logged_as_a_warning(caplog):
+    agent = FakeAgent(states=[IDLE, BUSY, IDLE])
+    q, svc, _ = _env(agent)
+    inner = agent.__call__
+
+    def flaky(method, a, path, **kw):
+        if path.endswith("/stop"):
+            raise RuntimeError("boom")
+        return inner(method, a, path, **kw)
+    q.d.agent_call = flaky
+    row = svc.submit(tq.KIND, {**_spec(), "pre": "/llama/server/stop"}, user="alice")
+    with caplog.at_level("WARNING", logger="tool_queue"):
+        svc.tick()
+    assert svc.get(row["id"])["status"] == "done"
+    assert any("pre-step /llama/server/stop failed: RuntimeError: boom" in r.getMessage() for r in caplog.records)
 
 
 def test_cancel_running_job_posts_the_tool_cancel_path():

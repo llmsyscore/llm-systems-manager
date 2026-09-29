@@ -160,7 +160,15 @@ def snapshot(now: "float | None" = None, sync: bool = False) -> dict:
     out = dict(tools)
     out["reportcard"] = bool(rc_agents)
     out["agents"] = {k: sorted(set(v)) for k, v in agents.items()}
+    out["unqueueable"] = sorted(a for a in agents if _cannot_answer(a))
     return out
+
+
+def _cannot_answer(agent_id: str) -> bool:
+    """True when every cached probe of this agent says its tools/state cannot be read."""
+    with _LOCK:
+        states = [h["state"] for (aid, _p), h in _PROBE.items() if aid == agent_id]
+    return bool(states) and all(st is False for st in states)
 
 
 def busy_agents(now: "float | None" = None) -> "set[str]":

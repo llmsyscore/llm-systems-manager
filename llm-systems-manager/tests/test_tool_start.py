@@ -122,3 +122,21 @@ def test_activity_stamps_rows_the_session_owns(env):
     with manager_mod.app.test_request_context():
         rows = manager_mod.tool_activity_get().get_json()["queue"][A1]
     assert [r["mine"] for r in rows] == [True, False]
+
+
+def test_tool_refused_reads_only_a_200_refusal_body():
+    with manager_mod.app.test_request_context():
+        refused = manager_mod.jsonify({"ok": False, "error": "a benchmark is already in progress"})
+        assert manager_mod._tool_refused((refused, 200)) is True
+        assert manager_mod._tool_refused((refused, 502)) is False
+        assert manager_mod._tool_refused(_ok_response({"ok": False, "error": "model not found"})) is False
+        assert manager_mod._tool_refused(_ok_response({"ok": True})) is False
+
+
+def test_index_mints_one_bypass_session_id_before_the_first_api_call():
+    """#1132: parallel first requests must share the id the queue rows are stamped with."""
+    with manager_mod.app.test_request_context("/"):
+        manager_mod._flask_session.clear()
+        manager_mod.index()
+        uid = manager_mod._flask_session.get("tower_uid")
+        assert uid and manager_mod.tower.session_user(manager_mod._flask_session) == f"bypass:{uid}"
