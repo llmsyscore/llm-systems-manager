@@ -2108,11 +2108,19 @@ def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, ti
         return proxies.proxy_to_primary(provider, "POST", path, json=body, timeout=timeout,
                                         on_target=_note_tool_start(provider, tool))
     aid = agent.get("agent_id") or ""
-    if _tool_queue.held(aid) and _tool_queue.can_wait(agent, provider):
+    probable = None   # memoised can_wait() so a held-but-unprobeable host isn't probed twice
+
+    def _can_wait() -> bool:
+        nonlocal probable
+        if probable is None:
+            probable = _tool_queue.can_wait(agent, provider)
+        return probable
+
+    if _tool_queue.held(aid) and _can_wait():
         return _tool_queue_answer(provider, agent, tool, path, cancel, body)
     resp = proxies.proxy_to_primary(provider, "POST", path, json=body, timeout=timeout, agent_id=aid,
                                     on_target=_note_tool_start(provider, tool))
-    if _tool_refused(resp) and _tool_queue.can_wait(agent, provider):
+    if _tool_refused(resp) and _can_wait():
         return _tool_queue_answer(provider, agent, tool, path, cancel, body)
     return resp
 
@@ -2120,7 +2128,8 @@ def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, ti
 def _tool_refused(resp) -> bool:
     """True when a proxied start came back as the agent's busy-lock refusal."""
     r = resp[0] if isinstance(resp, tuple) else resp
-    if getattr(r, "status_code", 0) != 200:
+    status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 0)
+    if status != 200:
         return False
     with best_effort("tool start refusal"):
         data = r.get_json(silent=True) or {}
