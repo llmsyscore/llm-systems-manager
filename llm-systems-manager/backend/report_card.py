@@ -923,6 +923,40 @@ class _Cancelled(Exception):
     """Raised in the worker when the operator cancels a run."""
 
 
+# Queue hook (#1136): fn(agent_id, provider, req) -> a Flask response when the run was queued, else None.
+_queue_start = None
+
+
+def configure_queue(fn) -> None:
+    global _queue_start
+    _queue_start = fn
+
+
+def start_card(req: dict) -> "str | None":
+    """Starts the runner for a queued job; None when that agent already has a run."""
+    job_id = _new_job(req, exclusive=True)
+    if job_id is not None:
+        _threading.Thread(target=_run_job, args=(job_id, req),
+                          name=f"reportcard-{job_id[:8]}", daemon=True).start()
+    return job_id
+
+
+def card_status(job_id: str) -> "dict | None":
+    """None while the run is in progress, its terminal event once done, {"event": "lost"} when unknown."""
+    job = _JOBS.get(job_id)
+    if job is None:
+        return {"event": "lost"}
+    if not job.get("done"):
+        return None
+    return job.get("terminal") or {"event": "error", "error": "run ended without a result"}
+
+
+def cancel_card(job_id: str) -> None:
+    job = _JOBS.get(job_id)
+    if job is not None:
+        job["cancel"].set()
+
+
 def _run_job(job_id: str, req: dict) -> None:
     job = _JOBS[job_id]
     q, cancel = job["queue"], job["cancel"]
@@ -1104,7 +1138,7 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
         if mode == "custom" and not model:
             return jsonify({"ok": False,
                             "error": "model required in custom mode"}), 400
-        if agent_busy(agent_id):
+        if agent_busy(agent_id) and _queue_start is None:
             return jsonify({"ok": False, "error": _BUSY_ERROR}), 409
         model_key = (body.get("model_key") or "small").strip()
         if mode == "standard" and not preset_source(model_key, provider):
@@ -1146,11 +1180,13 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                "model": model, "model_key": model_key, "price_kwh": price,
                "confirm_vllm": bool(body.get("confirm_vllm")),
                "confirm_download": bool(body.get("confirm_download"))}
-        job_id = _new_job(req, exclusive=True)
+        if _queue_start is not None:
+            queued = _queue_start(agent_id, provider, req)
+            if queued is not None:
+                return queued
+        job_id = start_card(req)
         if job_id is None:
             return jsonify({"ok": False, "error": _BUSY_ERROR}), 409
-        _threading.Thread(target=_run_job, args=(job_id, req),
-                          name=f"reportcard-{job_id[:8]}", daemon=True).start()
         return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/api/reportcard/models")

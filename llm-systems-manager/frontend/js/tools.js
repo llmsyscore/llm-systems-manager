@@ -242,6 +242,7 @@
 
   // One slot per tool: follows the tool_run job this tab holds (or the current user's
   // queued row on the target host) and fires attach when it starts running (#897).
+  // opts.started(row) may defer attach until the running row carries what the module needs (#1136).
   function toolsQueueSlot(toolId, opts) {
     const tool = String(toolId).split(':')[0];
     let held = null, heldAgent = null, info = null, seenRow = false, absent = 0;
@@ -319,9 +320,10 @@
       if (held) {
         const r = rowOf(held);
         if (r) seenRow = true;
-        if (r && r.status === 'running') {
+        if (r && r.status === 'running' && (!opts.started || opts.started(r))) {
+          const row = Object.assign({ agent_id: agentId() }, r);
           release(); paint();
-          if (opts.attach) { try { opts.attach(r); } catch (_) {} }
+          if (opts.attach) { try { opts.attach(row); } catch (_) {} }
           return;
         }
         if (!r && seenRow) {

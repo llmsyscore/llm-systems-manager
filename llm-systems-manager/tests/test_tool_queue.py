@@ -301,7 +301,7 @@ def test_snapshot_groups_by_host_running_first():
     assert [r["job_id"] for r in snap[A1]] == [b["id"], a["id"]]
     assert snap[A1][0]["status"] == "running" and snap[A1][1]["user"] == "alice"
     assert snap[A2] == [{"job_id": c["id"], "tool": "quality", "provider": "llama", "model_id": "org/m", "user": "alice",
-                         "status": "queued", "created": c["created"], "path": "/llama/bench/run"}]
+                         "status": "queued", "created": c["created"], "path": "/llama/bench/run", "run_id": ""}]
 
 
 def test_can_wait_needs_a_readable_tools_state():
@@ -405,3 +405,180 @@ def test_max_run_ignores_malformed_budget_fields():
     k = svc.kind(tq.KIND)
     assert k.limit_s({"body": {"budget_min": "abc", "model_ids": "x"}}) == tq.MAX_RUN_S
     assert k.limit_s({"body": "nope"}) == tq.MAX_RUN_S
+
+
+# ── report_card kind (#1136) ─────────────────────────────────────────────
+
+class FakeCards:
+    """Scripted in-manager Report Card runner: `script` is the status answers per run (last repeats)."""
+    def __init__(self, script=None, start_ok=True, on_status=None):
+        self.script = list(script or [None, {"event": "done", "card": {"result": {"model": "m", "gen_tps": 40.0}}}])
+        self.start_ok, self.on_status = start_ok, on_status
+        self.runs, self.started, self.cancelled = {}, [], []
+
+    def start(self, req):
+        if not self.start_ok:
+            return None
+        rid = f"rc{len(self.started) + 1}"
+        self.started.append(req)
+        self.runs[rid] = list(self.script)
+        return rid
+
+    def status(self, rid):
+        if self.on_status:
+            self.on_status(rid)
+        if rid not in self.runs:
+            return {"event": "lost"}
+        seq = self.runs[rid]
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    def cancel(self, rid):
+        self.cancelled.append(rid)
+        self.runs[rid] = [{"event": "cancelled"}]
+
+
+def _card_env(cards, agent=None, clock=None, held=None, max_queued=5):
+    agent = agent or FakeAgent()
+    clock = clock or Clock()
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                       now=clock, inline=True)
+    deps = tq.Deps(agent_for=lambda aid: AGENTS.get(aid), agent_call=agent,
+                   held_agents=lambda: set(held or ()), holder_tool=lambda aid: None,
+                   hostname=lambda aid: AGENTS.get(aid, {}).get("hostname", ""),
+                   note_start=lambda aid, p, t: None, max_queued=lambda: max_queued,
+                   sleep=lambda s: None, now=clock,
+                   card_start=cards.start, card_status=cards.status, card_cancel=cards.cancel)
+    return tq.Queue(svc, deps), svc, clock
+
+
+REQ = {"agent": A1, "provider": "llama", "mode": "standard", "model": "", "model_key": "small",
+       "price_kwh": 0.15, "confirm_vllm": False, "confirm_download": False}
+
+
+def _card_spec(agent_id=A1, provider="llama", req=None):
+    return {"provider": provider, "agent_id": agent_id, "req": req or dict(REQ, agent=agent_id)}
+
+
+def test_card_kind_is_registered_only_with_runner_deps():
+    q, svc, _ = _env(FakeAgent())
+    assert svc.kind(tq.CARD_KIND) is None
+    q, svc, _ = _card_env(FakeCards())
+    assert svc.kind(tq.CARD_KIND).exclusive(_card_spec()) == [f"perf:{A1}"]
+
+
+def test_card_validate_requires_agent_provider_and_req():
+    q, svc, _ = _card_env(FakeCards())
+    with pytest.raises(jobs.JobError):
+        svc.submit(tq.CARD_KIND, {"provider": "llama", "agent_id": A1}, user="alice")
+    row = svc.submit(tq.CARD_KIND, _card_spec(req=dict(REQ, mode="custom", model="org/big:q4")), user="alice")
+    assert row["spec"]["tool"] == tq.CARD_TOOL and row["spec"]["model_id"] == "org/big:q4"
+    assert row["label"] == "Report Card · big · gpu-01"
+
+
+def test_card_job_waits_for_a_held_host_then_runs_to_done():
+    cards = FakeCards()
+    held = {A1}
+    q, svc, clock = _card_env(cards, held=held)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice", role="operator", source="ui")
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "queued" and after["message"] == "waiting for the host"
+    assert cards.started == []
+    held.clear()
+    clock.t += tq.POLL_S + 1
+    svc.tick()
+    done = svc.get(row["id"])
+    assert done["status"] == "done"
+    assert done["result"] == {"run_id": "rc1", "model": "m", "gen_tps": 40.0}
+    assert done["state"]["run_id"] == "rc1"
+    assert cards.started == [dict(REQ)]
+
+
+def test_card_job_waits_while_the_agent_reports_a_tool_running():
+    cards = FakeCards()
+    q, svc, clock = _card_env(cards, agent=FakeAgent(states=[BUSY, IDLE]))
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    svc.tick()
+    assert svc.get(row["id"])["status"] == "queued" and cards.started == []
+    clock.t += tq.POLL_S + 1
+    svc.tick()
+    assert svc.get(row["id"])["status"] == "done"
+
+
+def test_card_job_waits_when_the_runner_refuses_the_start():
+    cards = FakeCards(start_ok=False)
+    q, svc, _ = _card_env(cards)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "queued" and after["message"] == "waiting for the host"
+
+
+def test_card_job_reports_the_runner_error():
+    cards = FakeCards(script=[{"event": "error", "error": "reference model is not installed"}])
+    q, svc, _ = _card_env(cards)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "failed" and after["message"] == "reference model is not installed"
+
+
+def test_card_job_cancelled_by_the_runner_fails_quietly():
+    cards = FakeCards(script=[{"event": "cancelled"}])
+    q, svc, _ = _card_env(cards)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    svc.tick()
+    assert svc.get(row["id"])["status"] == "failed" and svc.get(row["id"])["message"] == "cancelled"
+
+
+def test_card_cancel_hook_stops_the_runner():
+    box = {}
+    cards = FakeCards(script=[None, None, {"event": "done", "card": {}}],
+                      on_status=lambda rid: box["svc"].cancel(box["id"], actor="alice"))
+    q, svc, _ = _card_env(cards)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    box.update(svc=svc, id=row["id"])
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "cancelled"
+    assert cards.cancelled == ["rc1"]
+
+
+def test_card_job_restarts_from_scratch_after_a_manager_restart():
+    cards = FakeCards()
+    q, svc, _ = _card_env(cards)
+    row = svc.submit(tq.CARD_KIND, _card_spec(), user="alice")
+    svc.set_state(row["id"], {"run_id": "gone", "started": 1.0})
+    svc.tick()
+    done = svc.get(row["id"])
+    assert done["status"] == "done" and done["state"]["run_id"] == "rc1"
+    assert cards.started == [dict(REQ)]
+
+
+def test_card_rows_hold_the_host_and_show_in_the_snapshot():
+    q, svc, _ = _card_env(FakeCards())
+    assert q.held(A1) is False
+    info = q.submit_card(provider="llama", agent=AGENTS[A1], req=dict(REQ), user="alice", role="operator")
+    assert info["position"] == 1 and q.held(A1) is True
+    rows = q.snapshot()[A1]
+    assert rows[0]["tool"] == tq.CARD_TOOL and rows[0]["run_id"] == "" and rows[0]["job_id"] == info["job_id"]
+    svc._store.update(info["job_id"], status="running", state={"run_id": "rc7"})
+    assert q.snapshot()[A1][0]["run_id"] == "rc7"
+    assert q.wait_for(A1) == "Report Card on gpu-01"
+    second = q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+                      cancel="/llama/bench/cancel", body={"model_ids": ["org/m"]}, user="bob", role="operator")
+    assert second["position"] == 1 and second["wait_for"] == "Report Card on gpu-01"
+
+
+def test_card_and_tool_rows_share_the_queue_cap():
+    q, svc, _ = _card_env(FakeCards(), max_queued=2)
+    q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+             cancel="/llama/bench/cancel", body={}, user="alice", role="operator")
+    q.submit_card(provider="llama", agent=AGENTS[A1], req=dict(REQ), user="alice", role="operator")
+    with pytest.raises(tq.QueueFull):
+        q.submit_card(provider="llama", agent=AGENTS[A1], req=dict(REQ), user="alice", role="operator")
+    with pytest.raises(tq.QueueFull):
+        q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+                 cancel="/llama/bench/cancel", body={}, user="alice", role="operator")

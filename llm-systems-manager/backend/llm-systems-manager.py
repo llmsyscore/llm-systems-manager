@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.29-2"
+__version__ = "v2026.09.29-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6231,7 +6231,26 @@ _tool_queue = tool_queue.Queue(_jobs_service, tool_queue.Deps(
     hostname=lambda aid: str((agent_registry.resolve_agent_by_id(aid) or {}).get("hostname") or ""),
     note_start=tool_activity.note_start,
     max_queued=lambda: int(getattr(settings.manager.jobs, "tool_queue_max", 5) or 5),
+    card_start=report_card.start_card, card_status=report_card.card_status, card_cancel=report_card.cancel_card,
 ))
+
+
+def _reportcard_queue_start(agent_id: str, provider: str, req: dict):
+    """202 with the queued report_card job when the host is held and can be waited on, else None (#1136)."""
+    agent = agent_registry.resolve_agent_by_id(agent_id)
+    if not agent or not _tool_queue.held(agent_id) or not _tool_queue.can_wait(agent, provider):
+        return None
+    try:
+        info = _tool_queue.submit_card(provider=provider, agent=agent, req=req,
+                                       user=tower.session_user(_flask_session), role=auth.effective_role() or "operator")
+    except tool_queue.QueueFull as e:
+        return jsonify({"ok": False, "error": e.message}), 409
+    except jobs.JobError as e:
+        return jsonify({"ok": False, "error": e.message}), 400
+    return jsonify({"ok": True, "queued": True, **info, "agent_id": agent_id}), 202
+
+
+report_card.configure_queue(_reportcard_queue_start)
 
 
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891

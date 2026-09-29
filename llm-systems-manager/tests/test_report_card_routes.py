@@ -16,8 +16,10 @@ AGENT = {"agent_id": "a" * 32, "registered_from": "203.0.113.7",
 def _clear_jobs():
     """Job registry is module state; a leaked active job would refuse the next run."""
     rc._JOBS.clear()
+    rc.configure_queue(None)
     yield
     rc._JOBS.clear()
+    rc.configure_queue(None)
 
 
 @pytest.fixture
@@ -694,3 +696,76 @@ def test_two_simultaneous_starts_leave_one_job(client, stalled):
         t.join()
     assert sorted(codes) == [200, 409, 409, 409]
     assert len([j for j in rc._JOBS.values() if not j["done"]]) == 1
+
+
+# ── queued behind a busy host (#1136) ────────────────────────────────
+
+RUN = {"agent": "a" * 32, "provider": "llama", "mode": "standard", "model_key": "small"}
+
+
+def _queued_hook(seen):
+    from flask import jsonify
+
+    def hook(agent_id, provider, req):
+        seen.append((agent_id, provider, req))
+        return jsonify({"ok": True, "queued": True, "job_id": "q1", "position": 1,
+                        "wait_for": "Benchmark on h"}), 202
+    return hook
+
+
+def test_queue_hook_answers_the_run_without_starting_the_runner(client):
+    seen = []
+    rc.configure_queue(_queued_hook(seen))
+    r = client.post("/api/reportcard/run", json=dict(RUN, price_kwh=0.2))
+    assert r.status_code == 202
+    assert r.get_json()["queued"] is True and r.get_json()["job_id"] == "q1"
+    assert rc._JOBS == {}
+    assert seen[0][0] == "a" * 32 and seen[0][1] == "llama"
+    assert seen[0][2] == {"agent": "a" * 32, "provider": "llama", "mode": "standard", "model": "",
+                          "model_key": "small", "price_kwh": 0.2, "confirm_vllm": False,
+                          "confirm_download": False}
+
+
+def test_queue_hook_declining_runs_inline(client):
+    rc.configure_queue(lambda aid, prov, req: None)
+    r = client.post("/api/reportcard/run", json=RUN)
+    assert r.status_code == 200 and r.get_json()["job_id"]
+    assert [e for e in _drain(client, r.get_json()["job_id"]) if e.get("event") == "done"]
+
+
+def test_busy_runner_is_queued_when_a_hook_is_set(client, stalled):
+    assert client.post("/api/reportcard/run", json=RUN).status_code == 200
+    seen = []
+    rc.configure_queue(_queued_hook(seen))
+    r = client.post("/api/reportcard/run", json=RUN)
+    assert r.status_code == 202 and len(seen) == 1
+
+
+def test_busy_runner_still_refuses_when_the_hook_declines(client, stalled):
+    assert client.post("/api/reportcard/run", json=RUN).status_code == 200
+    rc.configure_queue(lambda aid, prov, req: None)
+    r = client.post("/api/reportcard/run", json=RUN)
+    assert r.status_code == 409 and "in progress" in r.get_json()["error"].lower()
+
+
+def test_precheck_answers_win_over_the_queue(client, monkeypatch):
+    monkeypatch.setattr(rc, "ensure_ready",
+                        lambda *a, **k: {"status": "needs_confirm", "model": "m", "reference": "ref"})
+    seen = []
+    rc.configure_queue(_queued_hook(seen))
+    r = client.post("/api/reportcard/run", json=dict(RUN, provider="vllm"))
+    assert r.status_code == 200 and r.get_json()["status"] == "needs_confirm"
+    assert seen == []
+
+
+def test_runner_helpers_start_report_and_cancel(client, stalled):
+    assert rc.card_status("nope") == {"event": "lost"}
+    job_id = rc.start_card(dict(RUN, model="", price_kwh=0.15, confirm_vllm=False, confirm_download=False))
+    assert job_id and rc.card_status(job_id) is None
+    assert rc.start_card(dict(RUN, model="", price_kwh=0.15, confirm_vllm=False, confirm_download=False)) is None
+    rc.cancel_card(job_id)
+    assert rc._JOBS[job_id]["cancel"].is_set()
+    rc._JOBS[job_id]["done"] = True
+    assert rc.card_status(job_id) == {"event": "error", "error": "run ended without a result"}
+    rc._JOBS[job_id]["terminal"] = {"event": "cancelled"}
+    assert rc.card_status(job_id) == {"event": "cancelled"}
