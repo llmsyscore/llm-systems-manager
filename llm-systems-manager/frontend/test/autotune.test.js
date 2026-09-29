@@ -939,7 +939,7 @@ describe('Autotune on the server queue (#897)', () => {
     expect(win.AT.running()).toBe(false);
     expect(win.document.getElementById('atQueueNote').textContent).toContain('Queued behind Benchmark on gpu-01');
     win.__activity = { reportcard: false, benchmark: false, autotune: true, quality: false, agents: { a1: ['autotune'] },
-      queue: { a1: [{ job_id: 'j1', tool: 'autotune', provider: 'llama', model_id: 'org/m', user: 'alice', status: 'running', created: 1 }] } };
+      queue: { a1: [{ job_id: 'j1', tool: 'autotune', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status: 'running', created: 1 }] } };
     await win.toolsPollActivity(); await flush(); await flush();
     expect(win.AT.running()).toBe(true);
     expect(win.document.getElementById('atCancelBtn').style.display).toBe('');

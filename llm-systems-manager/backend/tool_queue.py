@@ -19,11 +19,21 @@ PROBE_TIMEOUT_S = 2.0
 START_GRACE_S = 10.0
 UNREACHABLE_MAX_S = 60.0
 MAX_RUN_S = 3 * 3600.0
+MAX_RUN_CEIL_S = 12 * 3600.0
+PRE_TIMEOUT_S = 30
 REFUSAL = re.compile(r"in progress|already running", re.IGNORECASE)
 
 
 class QueueFull(ValueError):
     pass
+
+
+def max_run_s(spec: dict) -> float:
+    """Run ceiling: 3 h, or the autotune budget across its models plus 30 min, capped at 12 h."""
+    body = (spec or {}).get("body") or {}
+    models = body.get("model_ids") or []
+    budget = 60.0 * float(body.get("budget_min") or 0) * max(1, len(models) if isinstance(models, list) else 1)
+    return min(MAX_RUN_CEIL_S, max(MAX_RUN_S, budget + 1800.0))
 
 
 @dataclass
@@ -66,7 +76,7 @@ class Queue:
         service.register(jobs.Kind(
             KIND, TITLE, run=self.run, validate=self._validate, label=self._label,
             exclusive=lambda spec: [f"perf:{spec.get('agent_id', '')}"],
-            on_cancel=self.on_cancel, resume="requeue", max_run_s=MAX_RUN_S))
+            on_cancel=self.on_cancel, resume="requeue", max_run_s=max_run_s))
 
     # ── kind hooks ──
     @staticmethod
@@ -80,6 +90,8 @@ class Queue:
         if tool == "quality" and provider != "llama":
             return None, "the quality guard runs on llama hosts only"
         out = {k: spec.get(k) for k in ("provider", "agent_id", "tool", "path", "cancel", "model_id")}
+        if spec.get("pre"):
+            out["pre"] = str(spec["pre"])
         out["body"] = spec.get("body") if isinstance(spec.get("body"), dict) else {}
         out["model_id"] = str(out.get("model_id") or model_of(out["body"]))
         return out, None
@@ -94,6 +106,14 @@ class Queue:
         if not agent:
             return jobs.fail("unknown agent")
         if not state.get("run_id"):
+            if aid in set(self.d.held_agents() or ()):
+                return jobs.again(POLL_S, message="waiting for the host")
+            if spec.get("pre"):
+                try:
+                    self.d.agent_call("POST", agent, spec["pre"], timeout=PRE_TIMEOUT_S)
+                except Exception:  # noqa: BLE001 — best effort
+                    pass
+                self._nap(job)
             resp = self.d.agent_call("POST", agent, spec["path"], json=spec["body"], timeout=20)
             if resp is None:
                 return jobs.fail("agent unreachable")
@@ -183,7 +203,7 @@ class Queue:
         return f"{name} on {host}" if host else name
 
     def submit(self, *, provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict,
-               user: str, role: str) -> dict:
+               user: str, role: str, pre: Optional[str] = None) -> dict:
         aid = agent["agent_id"]
         queued = [r for r in self.rows_for(aid) if r["status"] == "queued"]
         cap = int(self.d.max_queued() or 5)
@@ -191,6 +211,8 @@ class Queue:
             raise QueueFull(f"{cap} run{'s' if cap != 1 else ''} already queued on {self.d.hostname(aid) or 'this host'}")
         spec = {"provider": provider, "agent_id": aid, "tool": tool, "path": path, "cancel": cancel,
                 "body": body, "model_id": model_of(body)}
+        if pre:
+            spec["pre"] = pre
         row = self.s.submit(KIND, spec, user=user or "", role=role or "", source="ui")
         return {"job_id": row["id"], "position": len(queued) + 1, "wait_for": self.wait_for(aid)}
 

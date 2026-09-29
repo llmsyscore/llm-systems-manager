@@ -96,7 +96,7 @@ describe('launcher tiles with queued runs (#897)', () => {
   const launcher = (win) => win.document.getElementById('toolsLauncher').innerHTML;
 
   it('shows the queued count while the server holds runs for a tool', async () => {
-    const win = await boot({ ...BENCH_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'autotune', model_id: 'org/m', user: 'bob', status: 'queued', created: 1 }] } });
+    const win = await boot({ ...BENCH_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'autotune', model_id: 'org/m', user: 'bob', mine: false, status: 'queued', created: 1 }] } });
     expect(launcher(win)).toContain('1 queued');
   });
 
@@ -149,7 +149,7 @@ describe('a held job keeps its own target (#897)', () => {
   });
 
   const IDLE_Q = (q) => ({ reportcard: false, benchmark: false, autotune: false, agents: {}, queue: q });
-  const rcRow = (status) => ({ job_id: 'j1', tool: 'reportcard', provider: 'llama', model_id: 'org/m', user: 'alice', status, created: 1 });
+  const rcRow = (status) => ({ job_id: 'j1', tool: 'reportcard', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status, created: 1 });
   async function heldThenRepointed() {
     const win = await pickerBoot(IDLE_Q({}));
     win.__slot.hold('j1', { position: 1 });

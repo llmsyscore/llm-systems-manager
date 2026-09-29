@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.28-8"
+__version__ = "v2026.09.28-9"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2101,7 +2101,8 @@ def _note_tool_start(provider: str, tool: str):
 _tool_queue = None   # tool_queue.Queue, wired after the job service below (#897)
 
 
-def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, timeout: float = 15):
+def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, timeout: float = 15,
+                pre: "str | None" = None):
     """Proxy a Tools start to its host, or queue it as a tool_run job when the host is held (#897)."""
     agent = _request_agent(provider)
     if not agent or _tool_queue is None:
@@ -2117,11 +2118,11 @@ def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, ti
         return probable
 
     if _tool_queue.held(aid) and _can_wait():
-        return _tool_queue_answer(provider, agent, tool, path, cancel, body)
+        return _tool_queue_answer(provider, agent, tool, path, cancel, body, pre=pre)
     resp = proxies.proxy_to_primary(provider, "POST", path, json=body, timeout=timeout, agent_id=aid,
                                     on_target=_note_tool_start(provider, tool))
     if _tool_refused(resp) and _can_wait():
-        return _tool_queue_answer(provider, agent, tool, path, cancel, body)
+        return _tool_queue_answer(provider, agent, tool, path, cancel, body, pre=pre)
     return resp
 
 
@@ -2137,10 +2138,12 @@ def _tool_refused(resp) -> bool:
     return False
 
 
-def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict):
+def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict,
+                       pre: "str | None" = None):
     try:
         info = _tool_queue.submit(provider=provider, agent=agent, tool=tool, path=path, cancel=cancel, body=body,
-                                  user=tower.session_user(_flask_session), role=auth.effective_role() or "operator")
+                                  user=tower.session_user(_flask_session), role=auth.effective_role() or "operator",
+                                  pre=pre)
     except tool_queue.QueueFull as e:
         return jsonify({"ok": False, "error": str(e)}), 409
     except jobs.JobError as e:
@@ -2153,7 +2156,8 @@ def benchmark_run():
     # Proxy to the primary llama agent — llama-bench lives next to llama-server
     # on the inference host, never on the manager host.
     body = flask_request.get_json(force=True) or {}
-    return _tool_start("llama", "benchmark", "/llama/bench/run", "/llama/bench/cancel", body)
+    return _tool_start("llama", "benchmark", "/llama/bench/run", "/llama/bench/cancel", body,
+                       pre="/llama/server/stop")
 
 
 @app.route("/api/benchmark/stream")
@@ -2438,6 +2442,12 @@ def tool_activity_get():
     try:
         snap = tool_activity.snapshot()
         snap["queue"] = _tool_queue.snapshot() if _tool_queue is not None else {}
+        me = None
+        with best_effort("tool activity: session user"):
+            me = tower.session_user(_flask_session)
+        for rows in snap["queue"].values():
+            for row in rows:
+                row["mine"] = bool(me) and row.get("user") == me
         return jsonify(snap)
     except Exception as e:
         return _err_json("internal error", 500, exc=e)

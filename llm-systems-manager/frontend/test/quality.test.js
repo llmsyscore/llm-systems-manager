@@ -533,7 +533,7 @@ describe('Quality guard on the server queue (#897)', () => {
     expect(win.QG.running()).toBe(false);
     expect(win.document.getElementById('qgQueueNote').textContent).toContain('this check starts');
     win.__activity = { reportcard: false, benchmark: false, autotune: false, quality: true, agents: { a1: ['quality'] },
-      queue: { a1: [{ job_id: 'j1', tool: 'quality', provider: 'llama', model_id: 'org/m', user: 'alice', status: 'running', created: 1 }] } };
+      queue: { a1: [{ job_id: 'j1', tool: 'quality', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status: 'running', created: 1 }] } };
     await win.toolsPollActivity(); await flush(); await flush();
     expect(win.QG.running()).toBe(true);
     expect(win.document.getElementById('qgCancelBtn').style.display).toBe('');

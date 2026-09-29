@@ -19,7 +19,7 @@ const AGENTS = { llama: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true 
 const AT_ON_A1 = { reportcard: false, benchmark: false, autotune: true, quality: false,
                    agents: { a1: ['autotune'] }, queue: {} };
 const IDLE = { reportcard: false, benchmark: false, autotune: false, quality: false, agents: {}, queue: {} };
-const row = (id, tool, user, status = 'queued') => ({ job_id: id, tool, provider: 'llama', model_id: 'org/m', user, status, created: 1 });
+const row = (id, tool, user, status = 'queued') => ({ job_id: id, tool, provider: 'llama', model_id: 'org/m', user, mine: user === 'alice', status, created: 1 });
 
 function boot(activity, bootstrap = '') {
   const win = runHarness({

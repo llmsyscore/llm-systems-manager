@@ -201,8 +201,6 @@
 
   function toolsGateOn(fn) { if (typeof fn === 'function') _toolsGateSubs.add(fn); }
 
-  function _toolsMe() { return (window._me && window._me.username) || null; }
-
   // Queued rows of one tool across every host, for the tile badge.
   function toolsQueuedCount(tool) {
     let n = 0;
@@ -265,10 +263,9 @@
     };
     const adopt = () => {
       if (held) return;
-      const me = _toolsMe();
       const prov = pick().provider;
-      const m = me ? queuedRows().find(r => r.tool === tool && r.provider === prov && r.user === me
-                                       && !_toolsHeldIds.has(r.job_id) && (!opts.match || opts.match(r))) : null;
+      const m = queuedRows().find(r => r.tool === tool && r.provider === prov && r.mine === true
+                                  && !_toolsHeldIds.has(r.job_id) && (!opts.match || opts.match(r)));
       if (m) take(m.job_id, liveAgent(), null, true);
     };
     const state = () => {

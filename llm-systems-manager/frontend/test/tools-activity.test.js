@@ -130,7 +130,7 @@ describe('launcher tiles under a remote run', () => {
 
   it('shows a queued badge from the snapshot’s queue field (#897)', async () => {
     const win = await run({ reportcard: false, benchmark: false, autotune: false, quality: false,
-                            queue: { a1: [{ job_id: 'j1', tool: 'quality', model_id: 'org/m', user: 'bob', status: 'queued', created: 1 }] } });
+                            queue: { a1: [{ job_id: 'j1', tool: 'quality', model_id: 'org/m', user: 'bob', mine: false, status: 'queued', created: 1 }] } });
     expect(tile(win, 'quality')).toContain('1 queued');
     expect(tile(win, 'autotune')).not.toContain('queued');
   });

@@ -422,7 +422,7 @@ class Service:
         for row in self._store.due(now):
             clash = next((key for key in row["exclusive"] if key in held), None)
             if clash:
-                waiting = f"waiting for {clash}"
+                waiting = "waiting for another job on this host" if clash.startswith("perf:") else f"waiting for {clash}"
                 if row["message"] != waiting:
                     self._store.update(row["id"], only=("queued",), message=waiting)
                 continue

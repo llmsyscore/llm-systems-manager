@@ -256,3 +256,55 @@ def test_model_of_reads_every_body_shape():
     assert tq.model_of({"model_ids": ["x/y", "z"]}) == "x/y"
     assert tq.model_of({"model": "vllm/m"}) == "vllm/m"
     assert tq.model_of({}) == "" and tq.model_of(None) == ""
+
+
+def test_host_held_by_activity_waits_before_posting():
+    agent = FakeAgent(states=[BUSY, IDLE])
+    held = {A1}
+    q, svc, clock = _env(agent, held=held)
+    row = svc.submit(tq.KIND, _spec(), user="alice")
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "queued" and after["message"] == "waiting for the host"
+    assert not [c for c in agent.calls if c[0] == "POST"]
+    held.clear()
+    clock.t += tq.POLL_S + 1
+    svc.tick()
+    assert svc.get(row["id"])["status"] == "done"
+    assert agent.calls[0] == ("POST", A1, "/llama/bench/run", {"model_ids": ["org/m"]})
+
+
+def test_max_run_scales_with_the_autotune_budget():
+    q, svc, _ = _env(FakeAgent())
+    k = svc.kind(tq.KIND)
+    assert k.limit_s(_spec(tool="autotune", body={"model_ids": ["a", "b"], "budget_min": 240})) == 240 * 60 * 2 + 1800
+    assert k.limit_s(_spec()) == tq.MAX_RUN_S
+    assert k.limit_s(_spec(tool="autotune", body={"model_ids": ["a", "b", "c"], "budget_min": 600})) == tq.MAX_RUN_CEIL_S
+
+
+def test_pre_path_posts_before_the_start():
+    agent = FakeAgent(states=[BUSY, IDLE])
+    q, svc, _ = _env(agent)
+    spec = dict(_spec(), pre="/llama/server/stop")
+    row = svc.submit(tq.KIND, spec, user="alice")
+    assert svc.get(row["id"])["spec"]["pre"] == "/llama/server/stop"
+    svc.tick()
+    posts = [c[2] for c in agent.calls if c[0] == "POST"]
+    assert posts == ["/llama/server/stop", "/llama/bench/run"]
+    assert svc.get(row["id"])["status"] == "done"
+
+
+def test_no_pre_path_posts_only_the_start():
+    agent = FakeAgent(states=[BUSY, IDLE])
+    q, svc, _ = _env(agent)
+    q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+             cancel="/llama/bench/cancel", body={"model_ids": ["org/m"]}, user="alice", role="operator")
+    svc.tick()
+    assert [c[2] for c in agent.calls if c[0] == "POST"] == ["/llama/bench/run"]
+
+
+def test_submit_carries_pre_into_the_spec():
+    q, svc, _ = _env(FakeAgent())
+    info = q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+                    cancel="/llama/bench/cancel", body={}, user="alice", role="operator", pre="/llama/server/stop")
+    assert svc.get(info["job_id"])["spec"]["pre"] == "/llama/server/stop"
