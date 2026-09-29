@@ -1,12 +1,15 @@
 """tool_queue (#897): Tools runs that wait for a busy host, as `tool_run` jobs on the job service."""
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import jobs
+
+log = logging.getLogger(__name__)
 
 KIND = "tool_run"
 TITLE = "Tool run"
@@ -30,9 +33,14 @@ class QueueFull(ValueError):
 
 def max_run_s(spec: dict) -> float:
     """Run ceiling: 3 h, or the autotune budget across its models plus 30 min, capped at 12 h."""
-    body = (spec or {}).get("body") or {}
-    models = body.get("model_ids") or []
-    budget = 60.0 * float(body.get("budget_min") or 0) * max(1, len(models) if isinstance(models, list) else 1)
+    body = (spec or {}).get("body")
+    body = body if isinstance(body, dict) else {}
+    models = body.get("model_ids")
+    try:
+        minutes = float(body.get("budget_min") or 0)
+    except (TypeError, ValueError):
+        minutes = 0.0
+    budget = 60.0 * minutes * max(1, len(models) if isinstance(models, list) else 1)
     return min(MAX_RUN_CEIL_S, max(MAX_RUN_S, budget + 1800.0))
 
 
@@ -108,11 +116,15 @@ class Queue:
         if not state.get("run_id"):
             if aid in set(self.d.held_agents() or ()):
                 return jobs.again(POLL_S, message="waiting for the host")
-            if spec.get("pre"):
+            if self._agent_busy(agent, provider):
+                return jobs.again(POLL_S, state=state, message="waiting for the host")
+            if spec.get("pre") and not state.get("pre_done"):
                 try:
                     self.d.agent_call("POST", agent, spec["pre"], timeout=PRE_TIMEOUT_S)
                 except Exception:  # noqa: BLE001 — best effort
-                    pass
+                    log.debug("tool_run %s: pre-step %s failed", job.id, spec["pre"], exc_info=True)
+                state["pre_done"] = True
+                self.s.set_state(job.id, state)
                 self._nap(job)
             resp = self.d.agent_call("POST", agent, spec["path"], json=spec["body"], timeout=20)
             if resp is None:
@@ -121,7 +133,7 @@ class Queue:
             err = str(data.get("error") or data.get("detail") or "")
             if resp.status_code != 200 or data.get("ok") is False:
                 if REFUSAL.search(err):
-                    return jobs.again(POLL_S, message="waiting for the host")
+                    return jobs.again(POLL_S, state=state, message="waiting for the host")
                 return jobs.fail(err or f"HTTP {resp.status_code}")
             state = {"run_id": str(data.get("run_id") or "started"), "started": self.d.now(), "seen": False}
             self.s.set_state(job.id, state)
@@ -150,6 +162,17 @@ class Queue:
                 return jobs.fail("agent unreachable")
             self._nap(job)
         return jobs.fail("cancelled", alert=False)
+
+    def _agent_busy(self, agent: dict, provider: str) -> bool:
+        """True when the agent's tools/state reports any tool running; unreadable counts as not busy."""
+        try:
+            resp = self.d.agent_call("GET", agent, f"/{provider}/tools/state", timeout=PROBE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            return False
+        if resp is None or resp.status_code != 200:
+            return False
+        data = _json(resp)
+        return any(bool(data.get(f)) for f in FLAG.values())
 
     def _nap(self, job: jobs.Job) -> None:
         waited = 0.0

@@ -44,7 +44,12 @@ class FakeAgent:
         if method == "POST":
             if self.starts is None:
                 return None
-            body = self.starts
+            if path.endswith("/stop"):
+                return _Resp({"ok": True})
+            if isinstance(self.starts, list):
+                body = self.starts.pop(0) if len(self.starts) > 1 else self.starts[0]
+            else:
+                body = self.starts
             return _Resp(body, body.get("_status", 200))
         if self.clock is not None:
             self.clock.t += 3.0
@@ -88,13 +93,13 @@ def test_run_starts_waits_for_flag_and_finishes_when_it_drops():
     svc.tick()
     done = svc.get(row["id"])
     assert done["status"] == "done" and done["result"] == {"run_id": "r1"}
-    assert agent.calls[0] == ("POST", A1, "/llama/bench/run", {"model_ids": ["org/m"]})
+    assert [c for c in agent.calls if c[0] == "POST"][0] == ("POST", A1, "/llama/bench/run", {"model_ids": ["org/m"]})
     assert ("note", A1, "llama", "benchmark") in agent.calls
     assert done["state"]["run_id"] == "r1" and done["state"]["seen"] is True
 
 
 def test_run_without_run_id_waits_on_flag():
-    agent = FakeAgent(starts={"ok": True}, states=[BUSY, IDLE])
+    agent = FakeAgent(starts={"ok": True}, states=[IDLE, BUSY, IDLE])
     q, svc, _ = _env(agent)
     row = svc.submit(tq.KIND, _spec(), user="alice")
     svc.tick()
@@ -133,7 +138,7 @@ def test_flag_never_seen_fails_after_grace():
 
 def test_unreachable_agent_fails_after_window():
     clock = Clock()
-    agent = FakeAgent(states=[BUSY, None], clock=clock)
+    agent = FakeAgent(states=[IDLE, BUSY, None], clock=clock)
     q, svc, _ = _env(agent, clock=clock)
     row = svc.submit(tq.KIND, _spec(), user="alice")
     svc.tick()
@@ -259,7 +264,7 @@ def test_model_of_reads_every_body_shape():
 
 
 def test_host_held_by_activity_waits_before_posting():
-    agent = FakeAgent(states=[BUSY, IDLE])
+    agent = FakeAgent(states=[IDLE, BUSY, IDLE])
     held = {A1}
     q, svc, clock = _env(agent, held=held)
     row = svc.submit(tq.KIND, _spec(), user="alice")
@@ -271,7 +276,7 @@ def test_host_held_by_activity_waits_before_posting():
     clock.t += tq.POLL_S + 1
     svc.tick()
     assert svc.get(row["id"])["status"] == "done"
-    assert agent.calls[0] == ("POST", A1, "/llama/bench/run", {"model_ids": ["org/m"]})
+    assert [c for c in agent.calls if c[0] == "POST"][0] == ("POST", A1, "/llama/bench/run", {"model_ids": ["org/m"]})
 
 
 def test_max_run_scales_with_the_autotune_budget():
@@ -283,7 +288,7 @@ def test_max_run_scales_with_the_autotune_budget():
 
 
 def test_pre_path_posts_before_the_start():
-    agent = FakeAgent(states=[BUSY, IDLE])
+    agent = FakeAgent(states=[IDLE, BUSY, IDLE])
     q, svc, _ = _env(agent)
     spec = dict(_spec(), pre="/llama/server/stop")
     row = svc.submit(tq.KIND, spec, user="alice")
@@ -295,7 +300,7 @@ def test_pre_path_posts_before_the_start():
 
 
 def test_no_pre_path_posts_only_the_start():
-    agent = FakeAgent(states=[BUSY, IDLE])
+    agent = FakeAgent(states=[IDLE, BUSY, IDLE])
     q, svc, _ = _env(agent)
     q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
              cancel="/llama/bench/cancel", body={"model_ids": ["org/m"]}, user="alice", role="operator")
@@ -308,3 +313,38 @@ def test_submit_carries_pre_into_the_spec():
     info = q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
                     cancel="/llama/bench/cancel", body={}, user="alice", role="operator", pre="/llama/server/stop")
     assert svc.get(info["job_id"])["spec"]["pre"] == "/llama/server/stop"
+
+
+def test_busy_agent_state_holds_the_pre_step_and_the_start():
+    agent = FakeAgent(states=[{**IDLE, "autotune_active": True}, IDLE, BUSY, IDLE])
+    q, svc, clock = _env(agent)
+    row = svc.submit(tq.KIND, dict(_spec(), pre="/llama/server/stop"), user="alice")
+    svc.tick()
+    after = svc.get(row["id"])
+    assert after["status"] == "queued" and after["message"] == "waiting for the host"
+    assert not [c for c in agent.calls if c[0] == "POST"]
+    clock.t += tq.POLL_S + 1
+    svc.tick()
+    assert [c[2] for c in agent.calls if c[0] == "POST"] == ["/llama/server/stop", "/llama/bench/run"]
+    assert svc.get(row["id"])["status"] == "done"
+
+
+def test_pre_step_posts_once_across_refusals():
+    refuse = {"ok": False, "error": "a benchmark is already in progress"}
+    agent = FakeAgent(starts=[refuse, refuse, {"ok": True, "run_id": "r1"}], states=[IDLE, IDLE, IDLE, BUSY, IDLE])
+    q, svc, clock = _env(agent)
+    row = svc.submit(tq.KIND, dict(_spec(), pre="/llama/server/stop"), user="alice")
+    for _ in range(3):
+        svc.tick()
+        clock.t += tq.POLL_S + 1
+    posts = [c[2] for c in agent.calls if c[0] == "POST"]
+    assert posts == ["/llama/server/stop", "/llama/bench/run", "/llama/bench/run", "/llama/bench/run"]
+    done = svc.get(row["id"])
+    assert done["status"] == "done" and done["state"]["run_id"] == "r1"
+
+
+def test_max_run_ignores_malformed_budget_fields():
+    q, svc, _ = _env(FakeAgent())
+    k = svc.kind(tq.KIND)
+    assert k.limit_s({"body": {"budget_min": "abc", "model_ids": "x"}}) == tq.MAX_RUN_S
+    assert k.limit_s({"body": "nope"}) == tq.MAX_RUN_S
