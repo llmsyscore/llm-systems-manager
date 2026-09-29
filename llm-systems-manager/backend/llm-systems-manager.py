@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.28-10"
+__version__ = "v2026.09.28-11"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2132,10 +2132,11 @@ def _tool_refused(resp) -> bool:
     status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 0)
     if status != 200:
         return False
+    refused = False
     with best_effort("tool start refusal"):
         data = r.get_json(silent=True) or {}
-        return data.get("ok") is False and bool(tool_queue.REFUSAL.search(str(data.get("error") or data.get("detail") or "")))
-    return False
+        refused = data.get("ok") is False and bool(tool_queue.REFUSAL.search(str(data.get("error") or data.get("detail") or "")))
+    return refused
 
 
 def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict,
@@ -2145,9 +2146,9 @@ def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel:
                                   user=tower.session_user(_flask_session), role=auth.effective_role() or "operator",
                                   pre=pre)
     except tool_queue.QueueFull as e:
-        return jsonify({"ok": False, "error": str(e)}), 409
+        return jsonify({"ok": False, "error": e.message}), 409
     except jobs.JobError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+        return jsonify({"ok": False, "error": e.message}), 400
     return jsonify({"ok": True, "queued": True, **info, "agent_id": agent.get("agent_id")}), 202
 
 

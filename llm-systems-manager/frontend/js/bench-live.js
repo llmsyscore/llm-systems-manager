@@ -731,7 +731,7 @@
         agent: () => tagent(),
         match: (r) => /\/bench\/live\//.test(r.path || ''),
         render: (st) => syncQueue(st),
-        attach: (row) => { if (_attached || !running()) adoptOwn(row); },
+        attach: () => { if (_attached || !running()) adoptOwn(); },
         dropped: () => { setStatus('queued run dropped'); if (!running()) busy(false); },
       });
     }

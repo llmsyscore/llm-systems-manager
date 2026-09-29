@@ -28,7 +28,9 @@ REFUSAL = re.compile(r"in progress|already running", re.IGNORECASE)
 
 
 class QueueFull(ValueError):
-    pass
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = str(message)
 
 
 def max_run_s(spec: dict) -> float:
