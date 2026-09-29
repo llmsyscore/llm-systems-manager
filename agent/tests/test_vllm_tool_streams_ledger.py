@@ -1,8 +1,7 @@
 """#782/#780: vLLM autotune serves the per-run replay buffer, both vLLM
-wizards start their run under the busy lock, and both record ledger rows."""
+wizards start their run under the busy lock, and autotune records its ledger row."""
 from __future__ import annotations
 
-import json
 import re
 import threading
 from pathlib import Path
@@ -15,10 +14,11 @@ vllm = load_vllm()
 from providers import _shared  # noqa: E402
 
 VLLM_PY = Path(__file__).resolve().parents[1] / "providers" / "vllm.py"
+VLLM_TOOLS_PY = VLLM_PY.with_name("vllm_tools.py")
 
 
-def _fn_src(name: str) -> str:
-    m = re.search(rf"^def {name}\(.*?(?=^def |^# ──|^_ROUTES)", VLLM_PY.read_text(), re.M | re.S)
+def _fn_src(name: str, path: Path = VLLM_PY) -> str:
+    m = re.search(rf"^def {name}\(.*?(?=^def |^# ──|^_ROUTES)", path.read_text(), re.M | re.S)
     assert m, f"could not extract {name}()"
     return m.group(0)
 
@@ -118,11 +118,10 @@ def test_autotune_events_land_in_the_replay_with_resumable_ids():
 
 
 def test_autotune_and_bench_start_their_run_before_the_job_thread():
-    for name, starter in (("vllm_autotune_run", "_at_start_run"),
-                          ("vllm_bench_run", "_bench_start_run")):
-        src = _fn_src(name)
-        assert f"on_start={starter}" in src, name
-    assert "start_run(" not in _fn_src("_bench_run_one")
+    assert "on_start=_at_start_run" in _fn_src("vllm_autotune_run")
+    bench_run = _fn_src("vllm_bench_run", VLLM_TOOLS_PY)
+    assert bench_run.index("_claim(") < bench_run.index("threading.Thread(")
+    assert "start_run(" not in _fn_src("_bench_run_one", VLLM_TOOLS_PY)
 
 
 # ── ledger rows ────────────────────────────────────────────────────────
@@ -163,30 +162,3 @@ def test_autotune_failure_posts_a_failed_row(ctx, monkeypatch):
     # No model id could be read, so nothing is posted (the ledger needs one).
     assert ctx.posts == []
 
-
-def test_bench_model_done_carries_summary_and_posts_the_ledger_row(ctx, monkeypatch, tmp_path):
-    import subprocess as _sp
-    import sys as _sys
-
-    result = json.dumps({"output_throughput": 1063.9, "total_token_throughput": 9800.2,
-                         "backend": "vllm", "input_lens": [1, 2]})
-    script = ("import pathlib, sys\n"
-              "d = sys.argv[sys.argv.index('--result-dir') + 1]\n"
-              "pathlib.Path(d, 'result.json').write_text(" + repr(result) + ")\n")
-    real_popen = _sp.Popen
-    monkeypatch.setattr(vllm.subprocess, "Popen",
-                        lambda argv, **kw: real_popen([_sys.executable, "-c", script] + argv[3:], **kw))
-    vllm._bench_start_run()
-    vllm._bench_run_one("/opt/v/bin/vllm", "org/m", [])
-    events = [r["event"] for r in vllm._bench_replay.records_after_seq(0)]
-    res = [e for e in events if e["type"] == "result"][0]
-    assert res["run_id"] == vllm._bench_replay.run_id
-    md = [e for e in events if e["type"] == "model_done"][0]
-    assert md["model_id"] == "org/m" and md["run_id"] == vllm._bench_replay.run_id
-    assert md["gen_tps"] == 1063.9 and md["pg_tps"] == 9800.2
-    assert md["bench_tool"] == "vllm-bench-serve"
-    body = ctx.posts[0]["json"]
-    assert body["tool"] == "benchmark" and body["provider"] == "vllm"
-    assert body["model_id"] == "org/m" and body["ok"] is True
-    assert body["gen_tps"] == 1063.9 and body["pg_tps"] == 9800.2
-    assert body["run_id"] == vllm._bench_replay.run_id

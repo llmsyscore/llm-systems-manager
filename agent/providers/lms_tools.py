@@ -264,12 +264,28 @@ def lms_bench_live_run(body: dict, authorization: Optional[str] = Header(default
 
 def _bench_run_shimmed(req: dict, server: dict, python: str, script: str) -> None:
     """The live run behind the timings shim: LM Studio reports no prefill/decode timings itself."""
-    with _shim.Shim(server["url"]) as sh:
-        srv = dict(server, url=sh.url, lms_url=server["url"], timings="shim")
-        _ll._bench_put({"type": "line", "model_id": req["model_id"],
-                        "text": "[lms] timings: " + ("native /api/v1/chat stats for single-turn requests, streaming marks otherwise"
-                                                     if sh.native_available() else "OpenAI streaming marks (no native API)")})
-        _ll._bench_live_run_all(req, srv, python, script, provider="lms")
+    started = False
+    try:
+        with _shim.Shim(server["url"]) as sh:
+            srv = dict(server, url=sh.url, lms_url=server["url"], timings="shim")
+            _ll._bench_put({"type": "line", "model_id": req["model_id"],
+                            "text": "[lms] timings: " + ("native /api/v1/chat stats for single-turn requests, streaming marks otherwise"
+                                                         if sh.native_available() else "OpenAI streaming marks (no native API)")})
+            started = True
+            _ll._bench_live_run_all(req, srv, python, script, provider="lms")
+    except Exception as e:
+        if started:
+            raise
+        _bench_start_failed(req["model_id"], e)
+
+
+def _bench_start_failed(model_id: str, e: Exception) -> None:
+    """Close the run and free the bench slot when the shim fails before the run starts."""
+    _ll._bench_put({"type": "line", "model_id": model_id, "text": f"error: {e}"})
+    _ll._bench_put({"type": "done", "ok": False, "cancelled": False, "count": 0})
+    _ll._bench_proc = None; _ll._bench_pgid = None
+    with _ll._bench_lock:
+        _ll._bench_active = False
 
 
 def lms_bench_stream(

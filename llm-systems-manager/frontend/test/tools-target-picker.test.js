@@ -39,6 +39,9 @@ const MIXED = { llama: [{ agent_id: 'L1', hostname: 'gpu-01', is_default: true, 
                 lms: [{ agent_id: 'M1', hostname: 'mac-01', is_default: true, online: true },
                       { agent_id: 'M2', hostname: 'mac-02', is_default: false, online: true }], vllm: [] };
 
+const WITH_VLLM = { llama: [{ agent_id: 'L1', hostname: 'gpu-01', is_default: true, online: true }], lms: [],
+                    vllm: [{ agent_id: 'V1', hostname: 'vllm-01', is_default: true, online: true }] };
+
 describe('tool target picker (#916)', () => {
   it('defaults to llama with no query string and stays hidden without an LM Studio host', async () => {
     const win = boot(LLAMA_ONLY);
@@ -103,5 +106,40 @@ describe('tool target picker (#916)', () => {
     await flush();
     win.toolsSetTarget('lms', 'M1');
     expect(win.toolsGateBusy('lms', 'M1')).toBeNull();
+  });
+
+  it('lists vLLM hosts as agent-scoped targets on the benchmark picker only (#894)', async () => {
+    const win = boot(WITH_VLLM);
+    await flush();
+    const sel = win.document.getElementById('toolsTargetBench');
+    expect(sel.style.display).toBe('');
+    expect([...sel.options].map(o => o.value)).toEqual(['llama|', 'vllm|V1']);
+    expect([...sel.options].map(o => o.textContent)).toEqual(['llama.cpp · gpu-01', 'vLLM · vllm-01']);
+    const at = win.document.getElementById('toolsTargetAt');
+    expect([...at.options].map(o => o.value)).toEqual(['llama|']);
+    expect(at.style.display).toBe('none');
+    win.toolsSetTarget('vllm', null);
+    expect(win.toolsTarget()).toEqual({ provider: 'vllm', agent: 'V1' });
+    expect(win.toolsTargetQs()).toBe('?provider=vllm&agent=V1');
+    expect(win.toolsDefaultAgentFor('vllm')).toBe('V1');
+    win.toolsSetTarget('nope', 'X');
+    expect(win.toolsTarget()).toEqual({ provider: 'llama', agent: null });
+  });
+
+  it('opening Autotune while a vLLM target is set retargets to llama (#894)', async () => {
+    const win = boot(WITH_VLLM);
+    await flush();
+    win.toolsSetTarget('vllm', null);
+    win.toolsOpenTool('autotune', null);
+    expect(win.toolsTarget()).toEqual({ provider: 'llama', agent: null });
+  });
+
+  it('a live run keeps its vLLM target when Autotune opens (#894)', async () => {
+    const win = boot(WITH_VLLM);
+    await flush();
+    win.toolsSetTarget('vllm', null);
+    win.BL.live = true;
+    win.toolsOpenTool('autotune');
+    expect(win.toolsTarget()).toEqual({ provider: 'vllm', agent: 'V1' });
   });
 });

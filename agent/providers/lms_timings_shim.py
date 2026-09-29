@@ -1,5 +1,5 @@
-"""Timings shim for LM Studio benchmarks (#916): a loopback proxy in front of LM Studio that answers
-the unmodified speed-bench script with llama-server-style `timings`. Single-turn requests on LM Studio
+"""Timings shim (#916): a loopback proxy in front of an OpenAI-only server (LM Studio, vLLM) that
+answers the unmodified speed-bench script with llama-server-style `timings`. Single-turn requests on LM Studio
 0.4+ go to the native /api/v1/chat and carry its server-side stats; multi-turn requests and older
 LM Studio stream the OpenAI endpoint and take first-token / last-token wall-clock marks."""
 from __future__ import annotations
@@ -205,7 +205,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             resp = server.session.post(server.upstream + CHAT_PATH, json=payload, stream=True, timeout=(10, STREAM_TIMEOUT_S))
         except requests.RequestException as e:
-            self._send(502, {"error": {"message": f"LM Studio unreachable: {e}"[:300]}})
+            self._send(502, {"error": {"message": f"{server.label} unreachable: {e}"[:300]}})
             return
         if resp.status_code != 200:
             try:
@@ -217,7 +217,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             out = collect_stream(resp.iter_lines(), t_start)
         except requests.RequestException as e:
-            self._send(502, {"error": {"message": f"LM Studio stream failed: {e}"[:300]}})
+            self._send(502, {"error": {"message": f"{server.label} stream failed: {e}"[:300]}})
             return
         finally:
             resp.close()
@@ -231,7 +231,7 @@ class _Handler(BaseHTTPRequestHandler):
             resp = server.session.post(server.upstream + NATIVE_CHAT_PATH, json=native_request(payload, turn),
                                        timeout=(10, STREAM_TIMEOUT_S))
         except requests.RequestException as e:
-            self._send(502, {"error": {"message": f"LM Studio unreachable: {e}"[:300]}})
+            self._send(502, {"error": {"message": f"{server.label} unreachable: {e}"[:300]}})
             return
         try:
             data = resp.json()
@@ -248,8 +248,9 @@ class _Handler(BaseHTTPRequestHandler):
 class Shim:
     """Loopback proxy in front of one LM Studio server; `url` is what the bench script should target."""
 
-    def __init__(self, upstream: str, native: Optional[bool] = None):
+    def __init__(self, upstream: str, native: Optional[bool] = None, label: str = "LM Studio"):
         self.upstream = upstream.rstrip("/")
+        self.label = label
         self.session = requests.Session()
         self._srv: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -287,7 +288,7 @@ class Shim:
         srv.shim = self  # type: ignore[attr-defined]
         self._srv = srv
         self._thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True,
-                                        name="lms-timings-shim")
+                                        name=f"{self.label.lower().replace(' ', '-')}-timings-shim")
         self._thread.start()
         return self
 

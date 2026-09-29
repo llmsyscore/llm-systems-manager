@@ -5,8 +5,13 @@
   const tq = p => (typeof toolsUrl === 'function' ? toolsUrl(p) : p);
   const prov = () => (typeof toolsTarget === 'function' ? toolsTarget().provider : 'llama');
   const tagent = () => (typeof toolsTarget === 'function' ? toolsTarget().agent : null);
-  const isLms = () => prov() === 'lms';
-  const serverName = () => (isLms() ? 'LM Studio server' : 'llama-server');
+  const PROV = {
+    llama: { server: 'llama-server', start: '/api/llm/server/start', offline: true },
+    lms:   { server: 'LM Studio server', start: '/api/lmstudio/server/start', offline: false },
+    vllm:  { server: 'vLLM server', start: '/api/vllm/server/start', offline: false },
+  };
+  const pd = () => PROV[prov()] || PROV.llama;
+  const serverName = () => pd().server;
   const $ = id => document.getElementById(id);
   const esc = s => (window.TC && TC.esc ? TC.esc(String(s ?? '')) : String(s ?? ''));
   const PRESETS = {
@@ -243,10 +248,10 @@
     if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     const wantFleet = !!(opts && opts.fleet);
-    // LM Studio has no offline (llama-bench) mode.
+    // Only llama has an offline (llama-bench) mode.
     const off = document.querySelector('#benchModeSeg button[data-mode="offline"]');
-    if (off) off.style.display = isLms() ? 'none' : '';
-    setMode(wantFleet || isLms() ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
+    if (off) off.style.display = pd().offline ? '' : 'none';
+    setMode(wantFleet || !pd().offline ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     // Reopened without a model: the host's loaded model replaces a stale earlier target (#1126).
@@ -913,7 +918,7 @@
   }
   async function startServer() {
     const b = $('blStartBtn'); if (b) b.disabled = true;
-    try { await fetch(isLms() ? tq('/api/lmstudio/server/start') : '/api/llm/server/start', { method: 'POST' }); } catch (_) {}
+    try { await fetch(prov() === 'llama' ? PROV.llama.start : tq(pd().start), { method: 'POST' }); } catch (_) {}
     await new Promise(r => setTimeout(r, 3000));
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) {}
     if (b) b.disabled = false;

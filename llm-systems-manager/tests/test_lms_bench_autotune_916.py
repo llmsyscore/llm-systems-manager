@@ -68,8 +68,8 @@ def test_preflight_setup_run_proxy_to_the_picked_provider(app):
 
 def test_unknown_or_unbenchable_provider_is_refused(app):
     assert app.get("/api/benchmark/live/preflight?provider=nope").status_code == 400
-    assert app.get("/api/benchmark/live/preflight?provider=vllm").status_code == 400
-    assert app.get("/api/benchmark/live/hosts?model_id=x&provider=vllm").status_code == 400
+    assert app.get("/api/benchmark/live/preflight?provider=vllm").status_code == 200
+    assert app.get("/api/benchmark/live/hosts?model_id=x&provider=vllm").status_code == 200
 
 
 def test_hosts_and_fleet_follow_the_provider(app):

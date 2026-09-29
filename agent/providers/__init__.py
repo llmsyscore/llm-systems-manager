@@ -1,8 +1,8 @@
 """Provider modules — configure_all(ctx) + register_all_routes(app) wire every one."""
 
-from . import lms, llama, lms_tools, terminal, vllm
+from . import lms, llama, lms_tools, terminal, vllm, vllm_tools
 
-_MODULES = (lms, llama, lms_tools, terminal, vllm)
+_MODULES = (lms, llama, lms_tools, terminal, vllm, vllm_tools)
 
 
 def configure_all(ctx) -> None:

@@ -824,3 +824,12 @@ describe('agent forwards the system block for vLLM (#411)', () => {
     expect(body).toContain('"system": sample.get("system")');
   });
 });
+
+describe('index.html vLLM sub-tab', () => {
+  test('Benchmark menu entry deep-links to the vllm host', () => {
+    const html = src('index.html');
+    const m = html.match(/<button onclick="(toolsDeepLink\('benchmark'[^"]*)"/);
+    expect(m, 'vLLM Benchmark button not found').toBeTruthy();
+    expect(m[1]).toContain("provider: 'vllm'");
+  });
+});

@@ -57,7 +57,7 @@ def _row(r) -> dict:
 
 _COLS = ("id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, "
          "config_json, llama_build, provider")
-BENCH_PROVIDERS = ("llama", "lms")
+BENCH_PROVIDERS = ("llama", "lms", "vllm")
 
 
 def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":

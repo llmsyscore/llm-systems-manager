@@ -114,22 +114,31 @@
     return (sep == null ? '?' : sep) + parts.join('&');
   }
   function toolsUrl(path) { return path + toolsTargetQs(path.indexOf('?') >= 0 ? '&' : '?'); }
+  // Providers whose runs target one picked host; llama always drives its default host.
+  const _TOOLS_HOST_PROVIDERS = ['lms', 'vllm'];
+  const _TOOLS_AUTOTUNE_PROVIDERS = ['lms'];
+  const _TOOLS_PROVIDER_LABEL = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
   function toolsSetTarget(provider, agent) {
-    const p = provider === 'lms' ? 'lms' : 'llama';
-    _toolsTarget = { provider: p, agent: p === 'lms' ? (agent || _toolsDefaultAgent.lms || null) : null };
+    const p = _TOOLS_HOST_PROVIDERS.includes(provider) ? provider : 'llama';
+    _toolsTarget = { provider: p, agent: p === 'llama' ? null : (agent || _toolsDefaultAgent[p] || null) };
     document.querySelectorAll('select.tools-target').forEach(sel => { sel.value = _toolsTargetKey(); });
   }
+  function toolsDefaultAgentFor(provider) { return _toolsDefaultAgent[provider] || null; }
   function _toolsTargetKey() { return _toolsTarget.provider + '|' + (_toolsTarget.agent || ''); }
-  // One picker per module head; hidden until an LM Studio host is approved, since
-  // llama runs always target the default llama host.
+  // One picker per module head; hidden until an LM Studio or vLLM host is approved, since
+  // llama runs always target the default llama host. The Autotune picker omits vLLM.
   function toolsRenderTargetPickers() {
-    const rows = [];
     const llama = (_toolsByProvider.llama || []).find(a => a.is_default) || (_toolsByProvider.llama || [])[0];
-    if (llama) rows.push({ key: 'llama|', label: 'llama.cpp · ' + (llama.hostname || '') });
-    (_toolsByProvider.lms || []).forEach(a => rows.push({ key: 'lms|' + a.agent_id, label: 'LM Studio · ' + (a.hostname || a.agent_id.slice(0, 8)) }));
-    const show = (_toolsByProvider.lms || []).length > 0;
+    const rowsFor = provs => {
+      const rows = [];
+      if (llama) rows.push({ key: 'llama|', label: 'llama.cpp · ' + (llama.hostname || '') });
+      provs.forEach(p => (_toolsByProvider[p] || []).forEach(a =>
+        rows.push({ key: p + '|' + a.agent_id, label: _TOOLS_PROVIDER_LABEL[p] + ' · ' + (a.hostname || a.agent_id.slice(0, 8)) })));
+      return rows;
+    };
     document.querySelectorAll('select.tools-target').forEach(sel => {
-      sel.style.display = show ? '' : 'none';
+      const rows = rowsFor(sel.id === 'toolsTargetAt' ? _TOOLS_AUTOTUNE_PROVIDERS : _TOOLS_HOST_PROVIDERS);
+      sel.style.display = rows.some(r => r.key !== 'llama|') ? '' : 'none';
       const cur = _toolsTargetKey();
       sel.innerHTML = rows.map(r => `<option value="${TC.esc(r.key)}">${TC.esc(r.label)}</option>`).join('');
       sel.value = rows.some(r => r.key === cur) ? cur : (rows[0] ? rows[0].key : '');
@@ -142,7 +151,14 @@
         });
       }
     });
-    if (show && _toolsTarget.provider === 'lms' && !_toolsTarget.agent) toolsSetTarget('lms', null);
+    if (_TOOLS_HOST_PROVIDERS.includes(_toolsTarget.provider) && !_toolsTarget.agent) toolsSetTarget(_toolsTarget.provider, null);
+    if (_toolsOpenId === 'autotune') _toolsAutotuneTargetFix();
+  }
+  // Reset a target Autotune cannot drive to llama, unless a live run holds it.
+  function _toolsAutotuneTargetFix() {
+    const run = _toolsRunningLocal();
+    if (run.bench || run.at || run.qg) return;
+    if (_toolsTarget.provider !== 'llama' && !_TOOLS_AUTOTUNE_PROVIDERS.includes(_toolsTarget.provider)) toolsSetTarget('llama', null);
   }
   // Re-open the module that is showing so it reads the newly picked host; a live run keeps its target.
   function _toolsRetarget() {
@@ -495,10 +511,10 @@
     });
     _toolsRuns.forEach(r => {
       const s = r.summary || {};
-      // Rows open on the default llama host or any LM Studio host (#916); vLLM
-      // and other-host rows stay inert (#769 semantics).
-      const clickable = (r.provider === 'llama' && r.agent_id === _toolsDefaultLlama) || r.provider === 'lms';
-      const target = clickable ? { provider: r.provider, agent: r.provider === 'lms' ? r.agent_id : null } : null;
+      // Rows open on the default llama host or any LM Studio / vLLM host (#916);
+      // other-host rows stay inert (#769 semantics).
+      const clickable = (r.provider === 'llama' && r.agent_id === _toolsDefaultLlama) || _TOOLS_HOST_PROVIDERS.includes(r.provider);
+      const target = clickable ? { provider: r.provider, agent: r.provider === 'llama' ? null : r.agent_id } : null;
       if (r.tool === 'benchmark') {
         const bits = [];
         if (s.gen_tps != null) bits.push('<b>' + TC.esc(_tNum(s.gen_tps)) + ' t/s</b> gen');
@@ -692,6 +708,7 @@
     if (opts && opts.provider && (id === 'benchmark' || id === 'autotune')) {
       if (!(id === 'benchmark' ? run.bench : atHeld)) toolsSetTarget(opts.provider, opts.agent);
     }
+    if (id === 'autotune') _toolsAutotuneTargetFix();
     const home = _tEl('toolsHome');
     if (home) home.style.display = 'none';
     _toolsHideModules(id);
@@ -920,6 +937,7 @@
   window.toolsTargetQs = toolsTargetQs;
   window.toolsUrl = toolsUrl;
   window.toolsSetTarget = toolsSetTarget;
+  window.toolsDefaultAgentFor = toolsDefaultAgentFor;
   window.toolsQueueSlot = toolsQueueSlot;
   window.toolsQueueText = toolsQueueText;
   window.toolsQueuedCount = toolsQueuedCount;
