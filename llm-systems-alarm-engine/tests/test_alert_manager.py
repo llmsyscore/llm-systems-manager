@@ -16,7 +16,9 @@ from uuid import UUID, uuid4
 import pytest
 
 from backend.engine.alert_manager import AlertManager
-from backend.models.alert import Alert, AlertCreate, AlertStatus, AlertUpdate
+from backend.models.alert import (
+    ONGOING_STATUSES, Alert, AlertCreate, AlertStatus, AlertUpdate,
+)
 
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -45,8 +47,7 @@ class FakeAlertRepository:
         return alert
 
     def get_active(self) -> list[Alert]:
-        return [a for a in self._alerts.values()
-                if a.status in (AlertStatus.ACTIVE, AlertStatus.ACKNOWLEDGED)]
+        return [a for a in self._alerts.values() if a.status in ONGOING_STATUSES]
 
     def is_rule_ignored(self, rule_id) -> bool:
         return False
@@ -247,8 +248,8 @@ class TestIgnore:
         ignored = manager.ignore_alert(str(first.alert_id))
         assert ignored is not None
         assert ignored.status == AlertStatus.IGNORED
-        # Ignored should also drop out of active list
-        assert ignored.alert_id not in [a.alert_id for a in alert_repo.get_active()]
+        # Ignored alerts stay in the ongoing set (#938)
+        assert ignored.alert_id in [a.alert_id for a in alert_repo.get_active()]
 
     def test_invalid_uuid_returns_none(self, manager):
         assert manager.ignore_alert("xxx") is None
