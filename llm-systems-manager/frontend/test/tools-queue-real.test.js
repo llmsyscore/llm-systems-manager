@@ -89,7 +89,7 @@ const BL_STUBS = `
       ? { ok: true, server: { up: true, url: 'http://h:9931', models: [{ id: 'org/m', status: 'loaded' }],
           loaded_id: 'org/m', slots_idle: 2, slots_total: 2 },
           runtime: { python: '/p', source: 'venv', script: '/s', script_status: 'ok' },
-          datasets: { qualitative: { categories: ['coding'] } }, benches: ['qualitative'], busy: false }
+          datasets: { qualitative: { categories: ['coding'] } }, benches: ['qualitative'], busy: !!window.__preBusy }
       : (u.indexOf('/api/benchmark/live/fleet/') === 0 && u.indexOf('/cancel') < 0)
       ? { ok: true, job: window.__fleetJob }
       : u.indexOf('/api/benchmark/live/runs') === 0 ? { ok: true, runs: [] }
@@ -192,6 +192,54 @@ describe('Benchmark · Live on the server queue (#897)', () => {
     win.__fetches.length = 0;
     win.BL.cancel();
     expect(posted(win, '/api/benchmark/live/fleet/j1/cancel')).toHaveLength(1);
+  });
+
+  it('refuses a second Run while its own job is queued (#1132)', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    await win.BL.run();
+    await flush();
+    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(1);
+    expect(win.document.getElementById('blStatus').textContent).toBe('a run is already queued · drop it first');
+  });
+
+  const BENCH_ON_A1 = { reportcard: false, benchmark: true, autotune: false, agents: { a1: ['benchmark'] }, queue: {} };
+  const MINE = { job_id: 'j1', tool: 'benchmark', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true,
+                 status: 'queued', created: 1, path: '/llama/bench/live/run' };
+  async function attachedToForeign() {
+    const win = await bootLive(BENCH_ON_A1, 'window.__preBusy = true;');
+    await win.BL.onOpen('org/m');
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.document.getElementById('blStatus').textContent).toBe('running · started elsewhere');
+    win.__activity = { ...BENCH_ON_A1, queue: { a1: [MINE] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    return win;
+  }
+
+  it('adopts its queued row while attached to a foreign run and takes over when it runs (#1132)', async () => {
+    const win = await attachedToForeign();
+    expect(win.document.getElementById('blRunBtn').disabled).toBe(true);
+    expect(win.document.getElementById('blStatus').textContent).toBe('running · started elsewhere');
+    win.__activity = { ...BENCH_ON_A1, queue: { a1: [{ ...MINE, status: 'running' }] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.BL.running()).toBe(true);
+    expect(win.document.getElementById('blStatus').textContent).toBe('running');
+    expect(win.document.getElementById('blNotice').style.display).toBe('none');
+  });
+
+  it('Cancel while attached drops the adopted queued row, not the foreign run (#1132)', async () => {
+    const win = await attachedToForeign();
+    win.__fetches.length = 0;
+    win.BL.cancel();
+    await flush();
+    expect(win.__fetches.some(f => f[0] === '/api/jobs/j1/cancel')).toBe(true);
+    expect(posted(win, '/api/benchmark/cancel')).toHaveLength(0);
+    expect(win.document.getElementById('blStatus').textContent).toBe('queued run dropped');
+    expect(win.BL.running()).toBe(true);
   });
 
   it('shows a cap refusal as the status error', async () => {

@@ -20,6 +20,7 @@
   const _TOOL_LABEL = { reportcard: 'Report Card', benchmark: 'Benchmark',
                         autotune: 'Autotune', quality: 'Quality guard', tower_eval: 'Tower eval' };
   let _toolsActivityAgents = {};   // agent_id -> tools running on it
+  let _toolsUnqueueable = new Set(); // busy agents whose tools/state cannot be read (never queued against)
   let _toolsDefaultAgent = {};     // provider -> primary agent id
   let _toolsByProvider = {};       // provider -> [{agent_id, hostname, is_default}] (#916 target picker)
   let _toolsTarget = { provider: 'llama', agent: null };   // host the Benchmark/Autotune modules drive (#916)
@@ -76,6 +77,7 @@
           autotune: !!d.autotune, quality: !!d.quality,
         };
         _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
+        _toolsUnqueueable = new Set(Array.isArray(d.unqueueable) ? d.unqueueable : []);
         _toolsQueue = (d.queue && typeof d.queue === 'object') ? d.queue : {};
         toolsSyncRunDot();
         [..._toolsPollSubs].forEach(fn => { try { fn(); } catch (_) {} });
@@ -196,7 +198,7 @@
                                ...(_toolsActivityAgents[id] || [])])];
     if (!tools.length) return null;
     return { tool: tools[0], label: _TOOL_LABEL[tools[0]] || tools[0],
-             agent_id: id, host: _tHost(id) };
+             agent_id: id, host: _tHost(id), queueable: !_toolsUnqueueable.has(id) };
   }
 
   function toolsGateOn(fn) { if (typeof fn === 'function') _toolsGateSubs.add(fn); }
@@ -231,7 +233,7 @@
   }
 
   function _toolsGateNotify() {
-    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents(),
+    const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents(), [..._toolsUnqueueable],
                                 _toolsDefaultAgent, _toolsAgentsReady, _toolsQueue]);
     if (key === _toolsGateKey) return;
     _toolsGateKey = key;
@@ -279,7 +281,8 @@
       const ahead = mine ? (idx >= 0 ? idx : Math.max(0, ((info && info.position) || 1) - 1)) : q.length;
       const waitFor = (info && info.wait_for) || _toolsGateText(busy);
       return { queued: mine, mine, job_id: mine ? held : null, ahead, position: mine ? ahead + 1 : null,
-               others: q.length - (mine && idx >= 0 ? 1 : 0), waitFor, busy };
+               others: q.length - (mine && idx >= 0 ? 1 : 0), waitFor, busy,
+               canQueue: !(busy && busy.queueable === false) };
     };
     const paint = () => { if (opts.render) { try { opts.render(state()); } catch (_) {} } };
     const slot = {

@@ -190,3 +190,19 @@ def test_an_agent_without_the_quality_flag_still_confirms_the_run():
     _wire({A1: {"bench_active": False, "autotune_active": True}})
     ta.note_start(A1, "llama", "quality", now=1000.0)
     assert ta.snapshot(sync=True, now=1010.0)["quality"] is True
+
+
+def test_unqueueable_lists_busy_agents_whose_state_cannot_be_read():
+    """#1132: an old or unreachable agent shows busy but is never queued against."""
+    _wire({A1: None, A2: {"bench_active": True}})
+    ta.note_start(A1, "llama", "autotune", now=1000.0)
+    ta.note_start(A2, "llama", "benchmark", now=1000.0)
+    snap = ta.snapshot(sync=True, now=1010.0)
+    assert snap["agents"] == {A1: ["autotune"], A2: ["benchmark"]}
+    assert snap["unqueueable"] == [A1]
+
+
+def test_unqueueable_is_empty_before_any_probe():
+    _wire({A1: None})
+    ta.note_start(A1, "llama", "autotune", now=1000.0)
+    assert ta.snapshot(sync=True, now=1001.0)["unqueueable"] == []

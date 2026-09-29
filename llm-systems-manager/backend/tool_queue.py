@@ -123,8 +123,8 @@ class Queue:
             if spec.get("pre") and not state.get("pre_done"):
                 try:
                     self.d.agent_call("POST", agent, spec["pre"], timeout=PRE_TIMEOUT_S)
-                except Exception:  # noqa: BLE001 — best effort
-                    log.debug("tool_run %s: pre-step %s failed", job.id, spec["pre"], exc_info=True)
+                except Exception as e:  # noqa: BLE001 — best effort
+                    log.warning("tool_run %s: pre-step %s failed: %s: %s", job.id, spec["pre"], type(e).__name__, e)
                 state["pre_done"] = True
                 self.s.set_state(job.id, state)
                 self._nap(job)
@@ -139,10 +139,14 @@ class Queue:
                 return jobs.fail(err or f"HTTP {resp.status_code}")
             state = {"run_id": str(data.get("run_id") or "started"), "started": self.d.now(), "seen": False}
             self.s.set_state(job.id, state)
-            self.d.note_start(aid, provider, tool)
+            if job.cancelled():
+                # A cancel that landed while the start was in flight: stop the run it just began.
+                self._post_cancel(agent, spec)
+                return jobs.fail("cancelled", alert=False)
         else:
             # Re-entry after a restart: the run may have ended meanwhile; give the flag a fresh grace.
             state["started"] = self.d.now()
+        self.d.note_start(aid, provider, tool)
         flag, seen = FLAG[tool], bool(state.get("seen"))
         started = float(state["started"])
         last_ok = self.d.now()
@@ -159,7 +163,7 @@ class Queue:
                 elif not active and seen:
                     return jobs.finish({"run_id": state["run_id"]})
                 elif not active and now - started > START_GRACE_S:
-                    return jobs.fail("run did not start")
+                    return jobs.fail("run did not start", alert=False)
             elif now - last_ok > UNREACHABLE_MAX_S:
                 return jobs.fail("agent unreachable")
             self._nap(job)
@@ -189,10 +193,15 @@ class Queue:
             return
         agent = self.d.agent_for(spec.get("agent_id") or "")
         if agent:
-            try:
-                self.d.agent_call("POST", agent, spec["cancel"], timeout=10)
-            except Exception:  # noqa: BLE001 — best effort
-                pass
+            self._post_cancel(agent, spec)
+
+    def _post_cancel(self, agent: dict, spec: dict) -> None:
+        if not spec.get("cancel"):
+            return
+        try:
+            self.d.agent_call("POST", agent, spec["cancel"], timeout=10)
+        except Exception:  # noqa: BLE001 — best effort
+            pass
 
     # ── start-or-queue questions ──
     def rows_for(self, agent_id: str) -> "list[dict]":

@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.29-1"
+__version__ = "v2026.09.29-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -916,6 +916,8 @@ def index():
     continues to handle dynamic updates while the page is open. Avoids the
     visible-then-hidden flash on fresh installs with no approved agents."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    with best_effort("index: session user"):
+        tower.session_user(_flask_session)   # one id per bypass session before any parallel API call
     visible = agent_registry.approved_agent_caps()
     # Inject agent ids into the page so client code can scope alarm-engine
     # catalog/history reads by agent (resolved to a host server-side), never

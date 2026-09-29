@@ -190,6 +190,15 @@ describe('toolsQueueSlot on the server queue (#897)', () => {
     expect(win.__attached[0].job_id).toBe('j1');
   });
 
+  it('flags a busy host whose tools/state cannot be read so modules keep the plain Run label (#1132)', async () => {
+    const win = await boot({ ...AT_ON_A1, unqueueable: ['a1'] });
+    expect(last(win).busy && last(win).busy.queueable).toBe(false);
+    expect(last(win).canQueue).toBe(false);
+    await poll(win, AT_ON_A1);
+    expect(last(win).busy.queueable).toBe(true);
+    expect(last(win).canQueue).toBe(true);
+  });
+
   it('re-holds the job when the cancel is refused', async () => {
     const win = await boot(AT_ON_A1);
     win.__slot.hold('j2', { position: 1 });

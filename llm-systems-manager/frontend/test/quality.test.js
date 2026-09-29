@@ -199,6 +199,21 @@ describe('Quality guard module (#888)', () => {
     expect(win.__toasts.length).toBe(0);
   });
 
+  it('a vanished queued check goes back to idle, and a second Run while queued is refused (#1132)', async () => {
+    const win = await openedGated();
+    win.__runReply = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+    await win.QG.run(); await flush();
+    expect(win.document.getElementById('qgPill').textContent).toBe('queued');
+    const runs = () => win.__fetches.filter(f => f[0] === '/api/llm/autotune/run').length;
+    await win.QG.run(); await flush();
+    expect(runs()).toBe(1);
+    expect(win.__toasts.some(t => t.indexOf('already queued') >= 0)).toBe(true);
+    win.__slots[0].vanishHeld();
+    expect(win.document.getElementById('qgPill').textContent).toBe('idle');
+    expect(win.document.getElementById('qgStrip').textContent).toBe('');
+    expect(win.QG.running()).toBe(false);
+  });
+
   it('the post-Apply refresh calls the function the dashboard actually defines', async () => {
     const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
     win.__refreshed = 0;

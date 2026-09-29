@@ -875,7 +875,7 @@ function _benchSyncQueue(st) {
   const status = document.getElementById('benchStatus');
   if (!run || _benchEventSrc || run.dataset.benchRunning === '1') return;
   run.textContent = st.queued ? '⏸ Queued · waiting'
-    : st.busy ? '▶ Queue Benchmark' : '▶ Run Benchmark';
+    : st.busy && st.canQueue !== false ? '▶ Queue Benchmark' : '▶ Run Benchmark';
   run.disabled = !!st.queued;
   if (cancel) {
     cancel.style.display = st.queued ? '' : 'none';

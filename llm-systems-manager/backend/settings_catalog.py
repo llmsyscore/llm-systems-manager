@@ -138,7 +138,7 @@ CATALOG: list[dict] = [
     _e("manager.backup.passphrase", "str", "Backup passphrase", "12+ chars enables AES-256-GCM; blank = plaintext archives.", "backup", MANAGER, secret=True, hot=True),
     _e("manager.backup.mirror_dir", "str", "Mirror directory", "Absolute path of an existing, writable second copy destination (e.g. a NAS mount).", "backup", MANAGER, hot=True),
     # jobs (#915) — hot: the dispatcher reads both every tick
-    _e("manager.jobs.workers", "int", "Parallel jobs", "How many jobs the dispatcher runs at once.", "jobs", MANAGER, min=1, max=16, hot=True),
+    _e("manager.jobs.workers", "int", "Parallel jobs", "How many jobs the dispatcher runs at once. A queued Tools run holds one slot for its whole run.", "jobs", MANAGER, min=1, max=16, hot=True),
     _e("manager.jobs.history_days", "int", "Keep finished jobs (days)", "Done, failed and cancelled jobs older than this are deleted daily.", "jobs", MANAGER, min=1, max=365, hot=True),
     _e("manager.jobs.tool_queue_max", "int", "Runs waiting per host", "Benchmark, Autotune and Quality guard runs that may queue behind a busy host.", "jobs", MANAGER, min=1, max=20, hot=True),
     # audit (#794) — hot: the manager re-reads these after every save

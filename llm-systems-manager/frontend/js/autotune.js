@@ -804,7 +804,7 @@
     if (running() || _busyOn) return;
     const btn = $('atRunBtn'), c = $('atCancelBtn'), n = $('atQueueNote');
     if (btn) btn.textContent = st.queued ? `⏸ Queued${st.ahead ? ` · ${st.ahead} ahead` : ' · waiting'}`
-      : st.busy ? '▶ Queue autotune' : '▶ Run autotune';
+      : st.busy && st.canQueue !== false ? '▶ Queue autotune' : '▶ Run autotune';
     if (c) {
       c.style.display = st.queued ? '' : 'none';
       c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';

@@ -741,7 +741,7 @@
     if (_attached) { const rb = $('blRunBtn'); if (rb) rb.disabled = !!st.queued; }
     if (_attached || running() || _busyOn) { syncCancelBtn(); return; }
     const b = st.busy;
-    runLabel(st.queued || b ? 'Queue run' : null);
+    runLabel(st.queued || (b && st.canQueue !== false) ? 'Queue run' : null);
     const text = typeof toolsQueueText === 'function' ? toolsQueueText(st, 'run') : '';
     notice(!!text, text);
     const rb = $('blRunBtn'); if (rb) rb.disabled = !!st.queued;
