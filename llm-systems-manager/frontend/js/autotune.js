@@ -77,7 +77,7 @@
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _peak = null;        // /api/energy/host-peak payload, or null
-  let _slot = null, _busyOn = false, _statusErr = false;
+  let _slot = null, _busyOn = false, _statusErr = false, _queuedRun = null;
   let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
   let _batch = null, _batchPoll = null, _batchHosts = [];   // batch (#891)
   const BATCH_POLL_MS = 5000;
@@ -726,24 +726,27 @@
     const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
     return startRun(body, ids);
   }
-  async function startRun(body, ids, now) {
+  async function startRun(body, ids) {
     if (!batchActive()) _batch = null;
-    const s = slot(), gateBusy = s && !now && !running() && !_busyOn && s.busy();
-    if (gateBusy) { s.queue({ body, ids }); return; }
+    const s = slot();
+    if (s && s.queued()) { _toastErr('A run is already queued · drop it first.'); return; }
     let r;
     try {
       const resp = await fetch(tq('/api/llm/autotune/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       r = await resp.json();
     } catch (e) { _toastErr('Autotune request failed: ' + (e && e.message ? e.message : e)); return; }
-    if (!r || !r.ok) {
-      // Lost the race with another browser — attach, and hold this run behind it.
-      if (r && /in progress/i.test(r.error || r.detail || '')) {
-        attach();
-        if (s) s.queue({ body, ids }, 'the run in progress');
-        return;
-      }
-      _toastErr((r && (r.error || r.detail)) || 'Failed to start autotune'); return;
+    if (r && r.ok && r.queued) {
+      _queuedRun = { body, ids };
+      if (s) s.hold(r.job_id, r);
+      log(`queued${r.position > 1 ? ` · ${r.position - 1} ahead` : ''} · starts when ${r.wait_for || 'the run in progress'} finishes`, 'dim');
+      return;
     }
+    if (!r || !r.ok) { _toastErr((r && (r.error || r.detail)) || 'Failed to start autotune'); return; }
+    began(body, ids);
+  }
+  // Shows a run this tab started (directly or through the queue) and follows its stream.
+  function began(body, ids) {
+    _attached = false;
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     if (!isLms()) fetchMeta(ids);
     newRun(null);
@@ -751,6 +754,12 @@
     setPane('Run');
     busy(true);
     openStream();
+  }
+  // The job this tab queued started: follow it as this tab's own run.
+  function adoptOwn() {
+    const q = _queuedRun || { body: {}, ids: [] };
+    _queuedRun = null;
+    began(q.body, q.ids);
   }
   async function verify() {
     const mid = primaryModel();
@@ -778,14 +787,15 @@
     if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
   }
   const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'load-mode', 'lm']);
-  // Shared gate (#888): another tool on this host turns Run into Queue.
+  // Server queue slot (#897): holds the job a queued start returns and adopts it when it runs.
   function slot() {
     if (!_slot && typeof toolsQueueSlot === 'function') {
       _slot = toolsQueueSlot('autotune', {
         provider: () => prov(),
         agent: () => tagent(),
-        start: (p) => startRun(p.body, p.ids, true),
         render: (st) => syncQueue(st),
+        attach: () => { if (_attached || !running()) adoptOwn(); },
+        dropped: () => { _queuedRun = null; log('queued run dropped', 'warn'); syncQueue({ queued: false, busy: null, others: 0 }); },
       });
     }
     return _slot;
@@ -793,16 +803,14 @@
   function syncQueue(st) {
     if (running() || _busyOn) return;
     const btn = $('atRunBtn'), c = $('atCancelBtn'), n = $('atQueueNote');
-    if (btn) btn.textContent = st.queued ? '⏸ Queued · waiting'
+    if (btn) btn.textContent = st.queued ? `⏸ Queued${st.ahead ? ` · ${st.ahead} ahead` : ' · waiting'}`
       : st.busy ? '▶ Queue autotune' : '▶ Run autotune';
     if (c) {
       c.style.display = st.queued ? '' : 'none';
       c.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
     }
     if (n) {
-      n.textContent = st.queued
-        ? `Queued behind ${st.waitFor} — this run starts on its own when that finishes.`
-        : st.busy ? `${st.busy.label} is running on ${st.busy.host}. A run started now queues behind it.` : '';
+      n.textContent = typeof toolsQueueText === 'function' ? toolsQueueText(st, 'run') : '';
       n.style.display = n.textContent ? '' : 'none';
     }
   }

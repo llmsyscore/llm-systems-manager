@@ -140,6 +140,7 @@ CATALOG: list[dict] = [
     # jobs (#915) — hot: the dispatcher reads both every tick
     _e("manager.jobs.workers", "int", "Parallel jobs", "How many jobs the dispatcher runs at once.", "jobs", MANAGER, min=1, max=16, hot=True),
     _e("manager.jobs.history_days", "int", "Keep finished jobs (days)", "Done, failed and cancelled jobs older than this are deleted daily.", "jobs", MANAGER, min=1, max=365, hot=True),
+    _e("manager.jobs.tool_queue_max", "int", "Runs waiting per host", "Benchmark, Autotune and Quality guard runs that may queue behind a busy host.", "jobs", MANAGER, min=1, max=20, hot=True),
     # audit (#794) — hot: the manager re-reads these after every save
     _e("manager.audit.retention_days", "int", "Keep entries for (days)", "0 keeps everything; the 100,000-row cap still applies.", "audit", MANAGER, min=0, max=3650, hot=True, common=True),
     _e("manager.audit.page_size", "int", "Rows per page", "Default page size on the Audit Log tab.", "audit", MANAGER, min=10, max=500, hot=True),

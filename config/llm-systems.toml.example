@@ -320,6 +320,7 @@ regression_pct = 15.0                                    # alert when decode t/s
 # (Tower timers, autotune batches). Both keys are hot.
 workers = 4                                              # jobs the dispatcher runs at once (1-16)
 history_days = 30                                        # done/failed/cancelled jobs older than this are deleted daily (1-365)
+tool_queue_max = 5                                       # Tools runs that may wait per host (1-20)
 
 [manager.audit]
 # Admin action audit log. Entries older than retention_days are purged every

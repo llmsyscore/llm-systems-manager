@@ -311,27 +311,15 @@ describe('custom-mode model datalist', () => {
 // contends for the same GPU as the agent-side tools.
 function stubGate() {
   const slots = [];
-  const state = { busy: null, queued: null };
-  vi.stubGlobal('toolsGateRefusal',
-    (t) => /in progress|already running/i.test(String(t || '')));
-  vi.stubGlobal('toolsSetQueued',
-    (id, w) => { state.queued = w ? [id, w] : null; });
+  const state = { busy: null };
   vi.stubGlobal('toolsQueueSlot', (id, opts) => {
     const s = {
       id, pending: null,
       busy: () => state.busy,
       queued: () => !!s.pending,
       waitFor: () => (s.pending ? s.pending.waitFor : null),
-      queue(payload, waitFor) {
-        const b = state.busy;
-        s.pending = { payload,
-          waitFor: waitFor || (b ? `${b.label} on ${b.host}` : 'the run in progress') };
-        s.sync();
-      },
       drop() { if (!s.pending) return false; s.pending = null; s.sync(); return true; },
-      fire() { const p = s.pending.payload; s.pending = null; s.sync(); return opts.start(p); },
       sync() {
-        globalThis.toolsSetQueued(id, s.pending ? s.pending.waitFor : null);
         if (opts.render) {
           opts.render({ queued: !!s.pending,
             waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });
@@ -344,8 +332,9 @@ function stubGate() {
   return { slots, state };
 }
 
-describe('report card queueing behind another tool (#888)', () => {
-  it('queues instead of starting while a Benchmark holds the same host', async () => {
+// #897: Report Card runs in the manager, so a busy host blocks Run instead of queueing it.
+describe('report card behind another tool (#888, #897)', () => {
+  it('blocks the run while a Benchmark holds the same host', async () => {
     const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
     const gate = stubGate();
     gate.state.busy = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01' };
@@ -353,60 +342,49 @@ describe('report card queueing behind another tool (#888)', () => {
     await tick(); await tick();
     expect(sources).toHaveLength(0);
     expect(fetch.mock.calls.map(c => c[0])).not.toContain('/api/reportcard/run');
-    expect(gate.slots[0].queued()).toBe(true);
-    expect(gate.state.queued).toEqual(['reportcard', 'Benchmark on gpu-01']);
-    expect(document.getElementById('rcRunBtn').textContent).toContain('Queued');
-    expect(document.getElementById('rcCancelBtn').textContent).toContain('Drop queued run');
+    expect(gate.slots[0].queued()).toBe(false);
     expect(document.getElementById('rcNote').textContent)
-      .toContain('Queued behind Benchmark on gpu-01');
+      .toBe('Benchmark is running on gpu-01. Try again when it finishes.');
+    api.rcCancelRun();
+    expect(fetch.mock.calls.map(c => c[0]).join(' ')).not.toContain('/api/reportcard/cancel');
   });
 
-  it('starts the queued card by itself once the gate clears', async () => {
+  it('runs once the host frees up', async () => {
     const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j7' } });
     const gate = stubGate();
     gate.state.busy = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01' };
     api.rcRun();
     await tick(); await tick();
     gate.state.busy = null;
-    gate.slots[0].fire();
+    api.rcRun();
     await tick(); await tick();
     expect(sources).toHaveLength(1);
     expect(sources[0].url).toContain('/api/reportcard/stream/j7');
   });
 
-  it('drops a queued card on Cancel and never posts a cancel for it', async () => {
-    const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
-    const gate = stubGate();
-    gate.state.busy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01' };
-    api.rcRun();
-    await tick(); await tick();
-    api.rcCancelRun();
-    expect(gate.slots[0].queued()).toBe(false);
-    expect(fetch.mock.calls.map(c => c[0]).join(' ')).not.toContain('/api/reportcard/cancel');
-    expect(document.getElementById('rcNote').textContent).toBe('Queued run dropped.');
-  });
-
-  it('labels the button Queue while the host is busy and nothing is pending', async () => {
+  it('names the busy host under a plain Run button', async () => {
     const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
     const gate = stubGate();
     gate.state.busy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01' };
     api.rcRun();
     await tick();
-    gate.slots[0].drop();
-    expect(document.getElementById('rcRunBtn').textContent).toContain('Queue report card');
+    gate.slots[0].sync();
+    expect(document.getElementById('rcRunBtn').textContent).toBe('\u25b6 Run report card');
+    expect(document.getElementById('rcRunBtn').disabled).toBe(false);
+    expect(document.getElementById('rcCancelBtn').style.display).toBe('none');
     expect(document.getElementById('rcNote').textContent)
       .toContain('Autotune is running on gpu-01');
   });
 
-  it('queues rather than losing the card when the run is refused', async () => {
+  it('shows a refused run as the error note', async () => {
     const { api, sources } = loadModule({
       runResponse: { error: 'a benchmark is already in progress' }, httpOk: false });
     const gate = stubGate();
     api.rcRun();
     await tick(); await tick();
     expect(sources).toHaveLength(0);
-    expect(gate.slots[0].queued()).toBe(true);
-    expect(gate.slots[0].waitFor()).toBe('the run in progress');
+    expect(gate.slots[0].queued()).toBe(false);
+    expect(document.getElementById('rcNote').textContent).toBe('a benchmark is already in progress');
     expect(document.getElementById('rcRunBtn').disabled).toBe(false);
   });
 });

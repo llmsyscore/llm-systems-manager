@@ -1,6 +1,6 @@
 // #880: Autotune module — dims state, plan card, estimate, stream plumbing, stepper.
 import { describe, it, expect, vi } from 'vitest';
-import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB, TOOLS_GATE_SRC, TOOLS_GATE_BODY, toolsGateFeed } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
 // The real module markup, so ids and classes cannot drift from index.html.
@@ -44,7 +44,7 @@ const STUBS = `
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
       : u.startsWith('/api/llm/config') && !(opts && opts.method) ? { __DEFAULTS__: {}, 'org/m:Q4': { 'ctx-size': '32768', threads: '32', temperature: '0.8' } }
       : u.startsWith('/api/llm/model-meta') ? { repo: 'org/m', base_model: 'org/base', suggestions: [{ key: 'temperature', value: 0.7, source: 'sidecar' }, { key: 'top-p', value: 0.8, source: 'model_card' }, { key: 'min-p', value: 0, source: 'base_model' }] }
-      : u.startsWith('/api/llm/autotune/run') ? (window.__runReply || { ok: true, run_id: 'r1' })
+      : u.startsWith('/api/llm/autotune/run') ? (window.__runAnswer || window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
       : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21, peak_active_w: 300.2, active_hours: 12 })
       : u.startsWith('/api/llm/draft-candidates') ? (window.__draft || { ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6, params_b: 0.6 }, reason: 'smallest instruct GGUF at ≤ 25 % of the target' })
@@ -856,40 +856,47 @@ describe('AT queueing behind another tool (#888)', () => {
   const runPosts = (win) => win.__fetches.filter(
     f => f[0] === '/api/llm/autotune/run' && f[1] && f[1].method === 'POST');
 
-  it('queues instead of starting while a Report Card holds the host', async () => {
+  const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Report Card on gpu-01' };
+
+  it('posts the start while a Report Card holds the host and holds the queued job', async () => {
     const win = await openedGated(BUSY);
     win.__fetches.length = 0;
+    win.__runReply = QUEUED;
     await win.AT.run();
-    await flush();
-    expect(runPosts(win)).toHaveLength(0);
+    for (let i = 0; i < 4; i++) await flush();
+    expect(runPosts(win)).toHaveLength(1);
     expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].jobId()).toBe('j1');
+    expect(win.AT.running()).toBe(false);
     expect(win.document.getElementById('atRunBtn').textContent).toContain('Queued');
     expect(win.document.getElementById('atQueueNote').textContent)
       .toContain('Queued behind Report Card on gpu-01');
-    expect(win.__queued).toEqual(['autotune', 'Report Card on gpu-01']);
   });
 
-  it('starts the queued run by itself once the gate clears', async () => {
+  it('runs the held job as its own run once it starts', async () => {
     const win = await openedGated(BUSY);
+    win.__runReply = QUEUED;
     await win.AT.run();
-    await flush();
+    for (let i = 0; i < 4; i++) await flush();
     win.__fetches.length = 0;
     win.__gateBusy = null;
-    await win.__slots[0].fire();
-    for (let i = 0; i < 4; i++) await flush();
-    expect(runPosts(win)).toHaveLength(1);
-    expect(JSON.parse(runPosts(win)[0][1].body).model_ids).toEqual(['org/m:Q4']);
+    win.__slots[0].startHeld();
+    await flush();
+    expect(runPosts(win)).toHaveLength(0);
+    expect(win.AT.running()).toBe(true);
+    expect(win.document.getElementById('atCancelBtn').style.display).toBe('');
+    expect(win.document.getElementById('atLog').textContent).not.toContain('attached');
   });
 
   it('drops a queued run on Cancel without cancelling anything on the agent', async () => {
     const win = await openedGated(BUSY);
+    win.__runReply = QUEUED;
     await win.AT.run();
-    await flush();
+    for (let i = 0; i < 4; i++) await flush();
     win.__fetches.length = 0;
     win.AT.cancel();
     expect(win.__slots[0].queued()).toBe(false);
     expect(win.__fetches.map(f => f[0])).not.toContain('/api/llm/autotune/cancel');
-    expect(win.__queued).toBe(null);
   });
 
   it('labels the button Queue while the host is busy and nothing is pending', async () => {
@@ -899,14 +906,43 @@ describe('AT queueing behind another tool (#888)', () => {
       .toContain('Report Card is running on gpu-01');
   });
 
-  it('queues rather than losing the run when the agent refuses it', async () => {
+  it('holds the job the server queued even when the gate looked idle', async () => {
     const win = await openedGated();
-    win.__runReply = { ok: false, error: 'an autotune run is already in progress' };
+    win.__runReply = { ...QUEUED, wait_for: 'Autotune on gpu-01' };
     await win.AT.run();
     for (let i = 0; i < 4; i++) await flush();
     expect(win.__slots[0].queued()).toBe(true);
-    expect(win.__slots[0].waitFor()).toBe('the run in progress');
+    expect(win.__slots[0].waitFor()).toBe('Autotune on gpu-01');
     expect(win.__alerts).toEqual([]);
+  });
+});
+
+describe('Autotune on the server queue (#897)', () => {
+  const AGENTS = { llama: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true }] };
+  async function bootReal(activity) {
+    const win = runHarness({
+      sources: [LAYOUT, STUBS, toolsGateFeed(AGENTS), ...TOOLS_GATE_SRC.map(srcFile), srcFile('js/autotune.js')],
+      bodyHtml: TOOLS_GATE_BODY + BODY,
+      bootstrap: `window.__activity = ${JSON.stringify(activity)}; initToolsTab(); window.__done = toolsPollActivity();`,
+    });
+    await win.__done; await flush();
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    return win;
+  }
+
+  it('holds a queued start and runs it as its own once it starts', async () => {
+    const win = await bootReal({ reportcard: false, benchmark: true, autotune: false, quality: false, agents: { a1: ['benchmark'] }, queue: {} });
+    win.__runAnswer = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Benchmark on gpu-01' };
+    await win.AT.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.AT.running()).toBe(false);
+    expect(win.document.getElementById('atQueueNote').textContent).toContain('Queued behind Benchmark on gpu-01');
+    win.__activity = { reportcard: false, benchmark: false, autotune: true, quality: false, agents: { a1: ['autotune'] },
+      queue: { a1: [{ job_id: 'j1', tool: 'autotune', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status: 'running', created: 1 }] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.AT.running()).toBe(true);
+    expect(win.document.getElementById('atCancelBtn').style.display).toBe('');
   });
 });
 

@@ -1,5 +1,4 @@
-// #887: modules driving the REAL shared gate from js/tools.js — not the slot
-// stub — so the gate's own subscriber, targets and auto-fire path are exercised.
+// #887/#897: modules driving the REAL shared gate and server-queue slot from js/tools.js.
 import { describe, it, expect } from 'vitest';
 import { srcFile, runHarness, flush } from './helpers/harness.js';
 
@@ -10,21 +9,27 @@ const TOOLS_BODY = `
 `;
 
 const AGENTS = { llama: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true }] };
-const IDLE = { reportcard: false, benchmark: false, autotune: false, agents: {} };
+const IDLE = { reportcard: false, benchmark: false, autotune: false, agents: {}, queue: {} };
 const AT_ON_A1 = { reportcard: false, benchmark: false, autotune: true,
-                   agents: { a1: ['autotune'] } };
+                   agents: { a1: ['autotune'] }, queue: {} };
 
 // The activity/agents feed tools.js polls, swappable at runtime via __activity.
 const GATE_FEED = `
   window.saveLayout = function () {};
   window._claim = function () { return true; };
   window._release = function () {};
-  window._fetchT = (url) => Promise.resolve({
+  window._fetchT = (url, opts) => {
+    if (opts && opts.method === 'POST') {
+      window.__fetches.push([url, opts]);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    }
+    return Promise.resolve({
     ok: true, json: () => Promise.resolve(
       url.indexOf('/api/tools/activity') === 0 ? window.__activity
       : url.indexOf('/api/agents/list-by-provider') === 0 ? ${JSON.stringify(AGENTS)}
       : {}),
-  });
+    });
+  };
 `;
 
 const TOOLS_SRC = ['js/lib/modelcards.js', 'js/lib/toolcards.js', 'js/tools.js'];
@@ -75,6 +80,7 @@ const BL_STUBS = `
   Chart.prototype.update = function () {}; Chart.prototype.resize = function () {};
   Chart.prototype.destroy = function () {};
   window.__fetches = [];
+  window._me = { username: 'alice' };
   window.__fleetJob = { job_id: 'j1', hosts: [{ agent_id: 'a1', hostname: 'gpu-01', status: 'running' }], done: false };
   window.fetch = function (url, opts) {
     const u = String(url);
@@ -87,6 +93,7 @@ const BL_STUBS = `
       : (u.indexOf('/api/benchmark/live/fleet/') === 0 && u.indexOf('/cancel') < 0)
       ? { ok: true, job: window.__fleetJob }
       : u.indexOf('/api/benchmark/live/runs') === 0 ? { ok: true, runs: [] }
+      : u.indexOf('/api/benchmark/live/run') === 0 ? (window.__runAnswer || { ok: true, run_id: 'r1' })
       : { ok: true, run_id: 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
@@ -108,53 +115,93 @@ function bootLive(activity, bootstrap = '') {
 
 const posted = (win, path) => win.__fetches.filter(f => f[0] === path);
 
-describe('Benchmark · Live cancel precedence (#887)', () => {
-  // A fleet job is exempt from the gate, so it can run while a run is queued.
-  async function queuedBehindAFleetJob() {
+const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+const heldRow = (status = 'queued', tool = 'benchmark') =>
+  ({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool, provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status, created: 1 }] } });
+
+describe('Benchmark · Live on the server queue (#897)', () => {
+  it('posts the start even while the host is busy and holds the queued job', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(1);
+    expect(win.BL.running()).toBe(false);
+    expect(win.document.getElementById('blStatus').textContent).toContain('queued');
+    expect(win.document.getElementById('blNotice').textContent).toContain('Queued behind Autotune on gpu-01');
+  });
+
+  it('attaches by itself when the held job starts running', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__activity = heldRow('queued');
+    await win.toolsPollActivity(); await flush(); await flush();
+    win.__activity = { ...heldRow('running'), autotune: false, benchmark: true, agents: { a1: ['benchmark'] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.BL.running()).toBe(true);
+    expect(win.document.getElementById('blStatus').textContent).toContain('running');
+    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(1);
+  });
+
+  it('runs the adopted job as this tab own run, cancellable from here', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__activity = heldRow('queued');
+    await win.toolsPollActivity(); await flush(); await flush();
+    win.__activity = { ...heldRow('running'), autotune: false, benchmark: true, agents: { a1: ['benchmark'] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    const d = win.document;
+    expect(d.getElementById('blCancelBtn').style.display).toBe('');
+    expect(d.getElementById('blStatus').textContent).toContain('running');
+    expect(d.getElementById('blStatus').textContent).not.toContain('elsewhere');
+    win.__fetches.length = 0;
+    win.BL.cancel();
+    expect(posted(win, '/api/benchmark/cancel')).toHaveLength(1);
+  });
+
+  it('drops the queued job through the jobs API', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__activity = heldRow('queued');
+    await win.toolsPollActivity(); await flush(); await flush();
+    win.BL.cancel();
+    await flush();
+    expect(win.__fetches.some(f => f[0] === '/api/jobs/j1/cancel')).toBe(true);
+    expect(win.document.getElementById('blStatus').textContent).toBe('queued run dropped');
+  });
+
+  it('still cancels a running fleet job before anything else', async () => {
     const win = await bootLive(AT_ON_A1);
     win.sessionStorage.setItem('bl.fleetJob', 'j1');
     await win.BL.onOpen('org/m');
     await flush(); await flush();
-    await win.BL.run();
-    await flush();
-    return win;
-  }
-
-  it('cancels the running fleet job instead of dropping the queued run', async () => {
-    const win = await queuedBehindAFleetJob();
-    expect(win.BL.running()).toBe(true);
     win.__fetches.length = 0;
     win.BL.cancel();
     expect(posted(win, '/api/benchmark/live/fleet/j1/cancel')).toHaveLength(1);
-    expect(win.document.getElementById('blStatus').textContent).toContain('cancelling');
   });
 
-  it('still drops the queued run when nothing is running', async () => {
+  it('shows a cap refusal as the status error', async () => {
     const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = { ok: false, error: '5 runs already queued on gpu-01' };
     await win.BL.onOpen('org/m');
     await flush(); await flush();
     await win.BL.run();
-    await flush();
-    expect(win.BL.running()).toBe(false);
-    win.BL.cancel();
-    expect(win.document.getElementById('blStatus').textContent).toBe('queued run dropped');
-    win.__activity = IDLE;
-    await win.toolsPollActivity();
-    await flush(); await flush();
-    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(0);
-  });
-
-  it('auto-starts the queued run off the real gate once the host frees up', async () => {
-    const win = await bootLive(AT_ON_A1);
-    await win.BL.onOpen('org/m');
-    await flush(); await flush();
-    await win.BL.run();
-    await flush();
-    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(0);
-    win.__activity = IDLE;
-    await win.toolsPollActivity();
-    await flush(); await flush(); await flush();
-    expect(posted(win, '/api/benchmark/live/run')).toHaveLength(1);
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.document.getElementById('blStatus').textContent).toBe('5 runs already queued on gpu-01');
   });
 });
 
@@ -175,6 +222,7 @@ const BA_STUBS = `
   window.cssVar = () => '#888';
   window.adminEsc = (s) => String(s);
   window.shortName = (s) => String(s);
+  window._me = { username: 'alice' };
   window.__confirmed = null;
   window._themedConfirm = () => new Promise((r) => { window.__confirmed = r; });
   HTMLCanvasElement.prototype.getContext = function () { return {}; };
@@ -189,6 +237,7 @@ const BA_STUBS = `
     const body = u.indexOf('/api/llm/models') === 0
       ? { data: [{ id: 'org/m', status: { value: 'loaded' } }] }
       : u.indexOf('/api/llama-state') === 0 ? { state: 'unknown' }
+      : u.indexOf('/api/benchmark/run') === 0 ? (window.__runAnswer || { ok: true })
       : { ok: true };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
@@ -207,13 +256,13 @@ function bootOffline(activity) {
   return win.__done.then(() => flush()).then(() => flush()).then(() => win);
 }
 
-describe('Offline benchmark re-checks the gate after its confirm (#887)', () => {
+describe('Offline benchmark on the server queue (#897)', () => {
   it('queues instead of stopping llama-server when the host was taken meanwhile', async () => {
     const win = await bootOffline(IDLE);
+    win.__runAnswer = QUEUED;
     win.runBenchmark();
     for (let i = 0; i < 4; i++) await flush();
     expect(typeof win.__confirmed).toBe('function');
-    // The dialog sat unanswered while another tool took the host.
     win.__activity = AT_ON_A1;
     await win.toolsPollActivity();
     await flush();
@@ -221,9 +270,8 @@ describe('Offline benchmark re-checks the gate after its confirm (#887)', () => 
     for (let i = 0; i < 6; i++) await flush();
     expect(posted(win, '/api/llm/unload')).toHaveLength(0);
     expect(posted(win, '/api/llm/server/stop')).toHaveLength(0);
-    expect(posted(win, '/api/benchmark/run')).toHaveLength(0);
-    expect(win.document.getElementById('benchStatus').textContent)
-      .toContain('waiting for Autotune on gpu-01');
+    expect(posted(win, '/api/benchmark/run')).toHaveLength(1);
+    expect(win.document.getElementById('benchStatus').textContent).toContain('queued');
   });
 
   it('goes ahead when the host is still free after the confirm', async () => {
@@ -236,18 +284,28 @@ describe('Offline benchmark re-checks the gate after its confirm (#887)', () => 
     expect(posted(win, '/api/benchmark/run')).toHaveLength(1);
   });
 
-  it('says the queued run was dropped when the operator answers Cancel', async () => {
-    const win = await bootOffline(AT_ON_A1);
-    await win.runBenchmark();
-    await flush();
+  it('adopts the user queued row when the module opens, without a Run click', async () => {
+    const win = await bootOffline({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'benchmark', provider: 'llama', model_id: 'org/m',
+      user: 'alice', mine: true, status: 'queued', created: 1, path: '/llama/bench/run' }] } });
+    await win.openBench('org/m');
+    for (let i = 0; i < 4; i++) await flush();
     expect(win.document.getElementById('benchStatus').textContent).toContain('queued');
-    win.__activity = IDLE;
-    await win.toolsPollActivity();
-    for (let i = 0; i < 4; i++) await flush();
-    expect(typeof win.__confirmed).toBe('function');
-    win.__confirmed(false);
-    for (let i = 0; i < 4; i++) await flush();
     expect(posted(win, '/api/benchmark/run')).toHaveLength(0);
-    expect(win.document.getElementById('benchStatus').textContent).toBe('queued run dropped');
+  });
+
+  it('opens the stream when the held job starts running', async () => {
+    const win = await bootOffline(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    win.runBenchmark();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__confirmed(true);
+    for (let i = 0; i < 6; i++) await flush();
+    expect(win.document.getElementById('benchStatus').textContent).toContain('queued');
+    win.__activity = heldRow('queued');
+    await win.toolsPollActivity(); await flush(); await flush();
+    win.__activity = { ...heldRow('running'), autotune: false, benchmark: true, agents: { a1: ['benchmark'] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.__sse && win.__sse.url).toBe('/api/benchmark/stream');
+    expect(win.document.getElementById('benchStatus').textContent).toContain('running');
   });
 });

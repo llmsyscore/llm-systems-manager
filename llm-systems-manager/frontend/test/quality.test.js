@@ -1,6 +1,6 @@
 // #888: Quality guard module — standalone KL check of any config change against f16.
 import { describe, it, expect } from 'vitest';
-import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
+import { srcFile, runHarness, flush, QUEUE_SLOT_STUB, TOOLS_GATE_SRC, TOOLS_GATE_BODY, toolsGateFeed } from './helpers/harness.js';
 
 const INDEX = srcFile('index.html');
 const BODY = INDEX.slice(INDEX.indexOf('<div id="toolsModQg"'), INDEX.indexOf('<!-- /toolsModQg -->'));
@@ -27,7 +27,7 @@ const STUBS = `
       : (u === '/api/llm/config' && (!opts || !opts.method)) ? window.__cfg
       : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } })
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
-      : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runReply || { ok: true, run_id: 'q1' })
+      : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runAnswer || window.__runReply || { ok: true, run_id: 'q1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__configWriteReply || { ok: true })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
@@ -189,11 +189,12 @@ describe('Quality guard module (#888)', () => {
     expect(win.document.getElementById('qgRunBtn').disabled).toBe(false);
   });
 
-  it('attaches neutrally when the shared stream is already busy', async () => {
+  it('waits quietly when the server queues the check behind a busy stream', async () => {
     const win = await opened('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
-    win.__runReply = { ok: false, error: 'a run is already in progress' };
+    win.__runReply = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
     await win.QG.run(); await flush();
-    expect(win.document.getElementById('qgPill').textContent).toBe('another tool is running');
+    expect(win.document.getElementById('qgPill').textContent).toBe('queued');
+    expect(win.QG.running()).toBe(false);
     expect(win.__alerts.length).toBe(0);
     expect(win.__toasts.length).toBe(0);
   });
@@ -446,36 +447,45 @@ describe('QG queueing behind another tool (#888)', () => {
   const runPosts = (win) => win.__fetches.filter(
     f => f[0] === '/api/llm/autotune/run' && f[1] && f[1].method === 'POST');
 
-  it('queues instead of starting while a Benchmark holds the host', async () => {
+  const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Benchmark on gpu-01' };
+
+  it('posts the check while a Benchmark holds the host and holds the queued job', async () => {
     const win = await openedGated(BUSY);
     win.__fetches.length = 0;
+    win.__runReply = QUEUED;
     await win.QG.run();
-    await flush();
-    expect(runPosts(win)).toHaveLength(0);
+    for (let i = 0; i < 4; i++) await flush();
+    expect(runPosts(win)).toHaveLength(1);
     expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].jobId()).toBe('j1');
+    expect(win.QG.running()).toBe(false);
     expect(win.document.getElementById('qgRunBtn').textContent).toContain('Queued');
     expect(win.document.getElementById('qgQueueNote').textContent)
       .toContain('Queued behind Benchmark on gpu-01');
     expect(win.document.getElementById('qgPill').textContent).toBe('queued');
-    expect(win.__queued).toEqual(['quality', 'Benchmark on gpu-01']);
   });
 
-  it('starts the queued check by itself once the gate clears', async () => {
+  it('runs the held check as its own once it starts', async () => {
     const win = await openedGated(BUSY);
+    win.__runReply = QUEUED;
     await win.QG.run();
-    await flush();
+    for (let i = 0; i < 4; i++) await flush();
     win.__fetches.length = 0;
     win.__gateBusy = null;
-    await win.__slots[0].fire();
-    for (let i = 0; i < 4; i++) await flush();
-    expect(runPosts(win)).toHaveLength(1);
-    expect(JSON.parse(runPosts(win)[0][1].body).mode).toBe('quality');
+    win.__slots[0].startHeld();
+    await flush();
+    expect(runPosts(win)).toHaveLength(0);
+    expect(win.QG.running()).toBe(true);
+    expect(win.__sse.url).toBe('/api/llm/autotune/stream');
+    expect(win.document.getElementById('qgCancelBtn').style.display).toBe('');
+    expect(win.document.getElementById('qgPill').textContent).toBe('running');
   });
 
   it('drops a queued check on Cancel without cancelling anything on the agent', async () => {
     const win = await openedGated(BUSY);
+    win.__runReply = QUEUED;
     await win.QG.run();
-    await flush();
+    for (let i = 0; i < 4; i++) await flush();
     win.__fetches.length = 0;
     win.QG.cancel();
     expect(win.__slots[0].queued()).toBe(false);
@@ -489,14 +499,43 @@ describe('QG queueing behind another tool (#888)', () => {
       .toContain('Benchmark is running on gpu-01');
   });
 
-  it('queues rather than losing the check when the agent refuses it', async () => {
+  it('holds the check the server queued even when the gate looked idle', async () => {
     const win = await openedGated();
-    win.__runReply = { ok: false, error: 'an autotune run is already in progress' };
+    win.__runReply = { ...QUEUED, wait_for: 'Autotune on gpu-01' };
     await win.QG.run();
     for (let i = 0; i < 4; i++) await flush();
     expect(win.__slots[0].queued()).toBe(true);
-    expect(win.__slots[0].waitFor()).toBe('the run in progress');
-    // Still attached to the run it lost the race to.
-    expect(win.__sse.url).toBe('/api/llm/autotune/stream');
+    expect(win.__slots[0].waitFor()).toBe('Autotune on gpu-01');
+    expect(win.__toasts).toEqual([]);
+  });
+});
+
+describe('Quality guard on the server queue (#897)', () => {
+  const AGENTS = { llama: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true }] };
+  async function bootReal(activity) {
+    const win = runHarness({
+      sources: ['let layout = {}; window.saveLayout = function () {};', STUBS, toolsGateFeed(AGENTS),
+                ...TOOLS_GATE_SRC.map(srcFile), srcFile('js/quality.js')],
+      bodyHtml: TOOLS_GATE_BODY + BODY,
+      bootstrap: `window.__activity = ${JSON.stringify(activity)}; initToolsTab(); window.__done = toolsPollActivity();`,
+    });
+    await win.__done; await flush();
+    await win.QG.onOpen('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    await flush();
+    return win;
+  }
+
+  it('holds a queued start and runs it as its own once it starts', async () => {
+    const win = await bootReal({ reportcard: false, benchmark: true, autotune: false, quality: false, agents: { a1: ['benchmark'] }, queue: {} });
+    win.__runAnswer = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Benchmark on gpu-01' };
+    await win.QG.run();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.QG.running()).toBe(false);
+    expect(win.document.getElementById('qgQueueNote').textContent).toContain('this check starts');
+    win.__activity = { reportcard: false, benchmark: false, autotune: false, quality: true, agents: { a1: ['quality'] },
+      queue: { a1: [{ job_id: 'j1', tool: 'quality', provider: 'llama', model_id: 'org/m', user: 'alice', mine: true, status: 'running', created: 1 }] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.QG.running()).toBe(true);
+    expect(win.document.getElementById('qgCancelBtn').style.display).toBe('');
   });
 });

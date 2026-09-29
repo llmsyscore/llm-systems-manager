@@ -560,7 +560,8 @@ async function openBench(modelId) {
   });
   _updateBenchModelLabel();
 
-  if (!fresh) return;
+  _benchQueue();
+  if (!fresh) { if (_benchSlot) _benchSlot.sync(); return; }
 
   // First open: reset UI state — clear data BEFORE switchBenchTab so its axis
   // update sees a clean slate and honors the default axes (n_depth / avg_ts).
@@ -859,8 +860,10 @@ function _benchQueue() {
   if (!_benchSlot && typeof toolsQueueSlot === 'function') {
     _benchSlot = toolsQueueSlot('benchmark:offline', {
       provider: () => 'llama',
-      start: (sel) => _benchRunNow(sel, true),
+      match: (r) => !/\/bench\/live\//.test(r.path || ''),
       render: (st) => _benchSyncQueue(st),
+      attach: () => { if (!_benchEventSrc) _benchAttach(); },
+      dropped: () => { const st = document.getElementById('benchStatus'); if (st) st.textContent = 'queued run dropped'; _benchSetState('idle'); },
     });
   }
   return _benchSlot;
@@ -878,7 +881,7 @@ function _benchSyncQueue(st) {
     cancel.style.display = st.queued ? '' : 'none';
     cancel.textContent = st.queued ? '✕ Drop queued run' : '✕ Cancel';
   }
-  if (status && st.queued) status.textContent = 'queued · waiting for ' + st.waitFor;
+  if (status && st.queued) status.textContent = `queued${st.ahead ? ` · ${st.ahead} ahead` : ''} · waiting for ${st.waitFor}`;
   else if (status && status.textContent.indexOf('queued') === 0) status.textContent = 'idle';
 }
 
@@ -890,13 +893,10 @@ async function runBenchmark() {
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
   if (!modelIds.length) { _toastErr('Select at least one model.'); return; }
 
-  const slot = _benchQueue();
-  const gateBusy = slot && !_benchEventSrc && slot.busy();
-  if (gateBusy) { slot.queue({ modelIds, tool, switches }); return; }
   return _benchRunNow({ modelIds, tool, switches });
 }
 
-async function _benchRunNow(sel, fromQueue) {
+async function _benchRunNow(sel) {
   const { modelIds, tool, switches } = sel;
   const slot = _benchQueue();
 
@@ -937,17 +937,12 @@ async function _benchRunNow(sel, fromQueue) {
       if (!ok) {
         _benchRunEnable();
         const st = document.getElementById('benchStatus');
-        if (st) st.textContent = fromQueue ? 'queued run dropped' : 'idle';
+        if (st) st.textContent = 'idle';
         return;
       }
-      // The dialog can sit for minutes; another tool may hold the host by now,
-      // and what follows stops llama-server underneath it.
-      if (slot && slot.busy()) {
-        _benchRunEnable();
-        slot.queue(sel);
-        return;
-      }
-      if (loadedModel) {
+      // Taken meanwhile: the server queues the run; leave the loaded model and server alone.
+      const taken = !!(slot && slot.busy());
+      if (loadedModel && !taken) {
         document.getElementById('benchStatus').textContent = 'unloading model…';
         _benchSetState('running');
         try {
@@ -957,7 +952,7 @@ async function _benchRunNow(sel, fromQueue) {
           });
         } catch(_) {}
       }
-      if (serverUp) {
+      if (serverUp && !taken) {
         document.getElementById('benchStatus').textContent = 'stopping server…';
         _benchSetState('running');
         try { await fetch('/api/llm/server/stop', {method: 'POST'}); } catch(_) {}
@@ -995,84 +990,24 @@ async function _benchRunNow(sel, fromQueue) {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({model_ids: modelIds, tool, switches})
   }).then(r => r.json()).then(d => {
+    if (d.ok && d.queued) {
+      _benchRunEnable();
+      document.getElementById('benchCancelBtn').style.display = '';
+      document.getElementById('benchStatus').textContent = `queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · waiting for ${d.wait_for || 'the run in progress'}`;
+      _benchSetState('idle');
+      _benchSetChartIdle(true);
+      if (slot) slot.hold(d.job_id, d);
+      return;
+    }
     if (!d.ok) {
       _benchRunEnable();
       document.getElementById('benchCancelBtn').style.display = 'none';
       document.getElementById('benchStatus').textContent = 'idle';
       _benchSetState('idle');
-      // Lost the race with another browser — hold the run instead of dropping it.
-      if (slot && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d.error || d.detail)) {
-        slot.queue(sel, 'the run in progress');
-        return;
-      }
       _toastErr(d.error || 'Failed to start benchmark');
       return;
     }
-    if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
-    _benchStatus('running…');
-    _benchEventSrc = SG.open({
-      url: '/api/benchmark/stream', maxDrops: _BENCH_MAX_DROPS, bypassPause: true,
-      onReconnecting: () => {
-        _benchReconnecting = true;
-        document.getElementById('benchStatus').textContent = 'reconnecting…';
-      },
-      onRestored: () => { _benchReconnecting = false; _benchStatus(_benchLiveStatus); },
-      onLost: () => {
-        _benchReconnecting = false;
-        _benchEventSrc = null; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-        _benchRunEnable();
-        document.getElementById('benchCancelBtn').style.display = 'none';
-        document.getElementById('benchStatus').textContent = 'disconnected';
-        _benchSetState('err');
-        _benchPerfNote(null);
-      },
-      onEvent: (msg, e) => {
-      if (msg.type === 'model_start') {
-        _benchAddModelDatasets(msg.model_id);
-        _benchLogAppend(`<div class="bench-log-sep">── ${_hEsc(msg.model_id)} ──</div>`);
-        if (msg.cmd) _benchLogAppend(`<span class="bench-log-cmd">$ ${_hEsc(msg.cmd)}</span>`);
-        _benchStatus(`running: ${msg.model_id.split('/').pop()}`);
-      } else if (msg.type === 'line') {
-        const html = _benchFormatLine(msg.text || '');
-        if (html) _benchLogAppend(html);
-      } else if (msg.type === 'result') {
-        if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null || msg.pg_tps != null)) {
-          _benchPushPoint(msg);
-        }
-      } else if (msg.type === 'model_done') {
-        // The agent sends its own maxes from v2026.08.31-1 on; matching them
-        // keeps this row identical to the one the agent records (#772).
-        const mx = msg.max_gen_tps === undefined
-          ? _benchMaxes(msg.model_id)
-          : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
-        const energy = { wh_per_ktok: msg.wh_per_ktok ?? null, energy_wh: msg.energy_wh ?? null,
-                          energy_source: msg.energy_source || null };
-        _benchAddModelResultRow(msg.model_id, tool, mx, energy);
-        document.getElementById('benchResults').classList.add('shown');
-        _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
-                                     ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
-                                     run_id: msg.run_id || _runIdOf(e),
-                                     wh_per_ktok: energy.wh_per_ktok,
-                                     ok: mx.gen != null || mx.ppt != null || mx.pg != null});
-        if (energy.wh_per_ktok != null) {
-          _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
-        } else if ('wh_per_ktok' in msg) {
-          _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
-        }
-      } else if (msg.type === 'perf_mode') {
-        _benchPerfNote(msg);
-      } else if (msg.type === 'done') {
-        if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
-        _benchRunEnable();
-        document.getElementById('benchCancelBtn').style.display = 'none';
-        _benchStatus(msg.ok ? 'done' : (msg.error ? 'error' : 'done'));
-        _benchSetState(msg.ok ? 'ok' : 'err');
-        if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
-        _benchPerfNote(null);
-      }
-      },
-    });
-    if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
+    _benchOpenStream(tool);
   }).catch(e => {
     _toastErr('Benchmark request failed: ' + e);
     _benchRunEnable();
@@ -1080,6 +1015,94 @@ async function _benchRunNow(sel, fromQueue) {
     document.getElementById('benchStatus').textContent = 'idle';
     _benchSetState('idle');
   });
+}
+
+// Opens the benchmark event stream for a run this tab started or adopted.
+function _benchOpenStream(tool) {
+  if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} }
+  _benchStatus('running…');
+  _benchEventSrc = SG.open({
+    url: '/api/benchmark/stream', maxDrops: _BENCH_MAX_DROPS, bypassPause: true,
+    onReconnecting: () => {
+      _benchReconnecting = true;
+      document.getElementById('benchStatus').textContent = 'reconnecting…';
+    },
+    onRestored: () => { _benchReconnecting = false; _benchStatus(_benchLiveStatus); },
+    onLost: () => {
+      _benchReconnecting = false;
+      _benchEventSrc = null; if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+      _benchRunEnable();
+      document.getElementById('benchCancelBtn').style.display = 'none';
+      document.getElementById('benchStatus').textContent = 'disconnected';
+      _benchSetState('err');
+      _benchPerfNote(null);
+    },
+    onEvent: (msg, e) => {
+    if (msg.type === 'model_start') {
+      _benchAddModelDatasets(msg.model_id);
+      _benchLogAppend(`<div class="bench-log-sep">── ${_hEsc(msg.model_id)} ──</div>`);
+      if (msg.cmd) _benchLogAppend(`<span class="bench-log-cmd">$ ${_hEsc(msg.cmd)}</span>`);
+      _benchStatus(`running: ${msg.model_id.split('/').pop()}`);
+    } else if (msg.type === 'line') {
+      const html = _benchFormatLine(msg.text || '');
+      if (html) _benchLogAppend(html);
+    } else if (msg.type === 'result') {
+      if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null || msg.pg_tps != null)) {
+        _benchPushPoint(msg);
+      }
+    } else if (msg.type === 'model_done') {
+      // The agent sends its own maxes from v2026.08.31-1 on; matching them
+      // keeps this row identical to the one the agent records (#772).
+      const mx = msg.max_gen_tps === undefined
+        ? _benchMaxes(msg.model_id)
+        : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
+      const energy = { wh_per_ktok: msg.wh_per_ktok ?? null, energy_wh: msg.energy_wh ?? null,
+                        energy_source: msg.energy_source || null };
+      _benchAddModelResultRow(msg.model_id, tool, mx, energy);
+      document.getElementById('benchResults').classList.add('shown');
+      _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
+                                   ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
+                                   run_id: msg.run_id || _runIdOf(e),
+                                   wh_per_ktok: energy.wh_per_ktok,
+                                   ok: mx.gen != null || mx.ppt != null || mx.pg != null});
+      if (energy.wh_per_ktok != null) {
+        _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
+      } else if ('wh_per_ktok' in msg) {
+        _benchLogAppend(`<span class="bench-log-text">energy: no power reading</span>`);
+      }
+    } else if (msg.type === 'perf_mode') {
+      _benchPerfNote(msg);
+    } else if (msg.type === 'done') {
+      if (_benchEventSrc) { try { _benchEventSrc.close(); } catch(_){} _benchEventSrc = null; } if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+      _benchRunEnable();
+      document.getElementById('benchCancelBtn').style.display = 'none';
+      _benchStatus(msg.ok ? 'done' : (msg.error ? 'error' : 'done'));
+      _benchSetState(msg.ok ? 'ok' : 'err');
+      if (msg.error) _benchLogAppend(`<span class="bench-log-text" style="color:var(--crit)">✗ Error: ${_hEsc(String(msg.error))}</span>`);
+      _benchPerfNote(null);
+    }
+    },
+  });
+  if (typeof toolsSyncRunDot === "function") toolsSyncRunDot();
+}
+
+// A queued run started on the agent: show it running and follow its stream.
+function _benchAttach() {
+  const runBtn = document.getElementById('benchRunBtn');
+  if (runBtn) { runBtn.disabled = true; runBtn.dataset.benchRunning = '1'; }
+  document.getElementById('benchCancelBtn').style.display = '';
+  document.getElementById('benchResults').classList.remove('shown');
+  document.getElementById('benchResultRows').innerHTML = '';
+  _benchLogClear();
+  if (_benchChart) {
+    _benchChart.data.datasets = [];
+    _benchChart.data.labels = [];
+    _benchChart.update('none');
+  }
+  _benchModelDatasets = {}; _benchRawRows = [];
+  _benchSetChartIdle(false);
+  _benchSetState('running');
+  _benchOpenStream('llama-bench');
 }
 
 // Function to cancel a running benchmark: closes the event stream, sends a cancel request to the backend, and updates the UI state

@@ -86,29 +86,30 @@ export function flush() {
 export const QUEUE_SLOT_STUB = `
   window.__slots = [];
   window.__gateBusy = null;
-  window.toolsGateRefusal = (t) => /in progress|already running/i.test(String(t || ''));
-  window.toolsSetQueued = function (id, w) { window.__queued = w ? [id, w] : null; };
+  window.toolsQueueText = window.toolsQueueText || function (st, noun) {
+    if (st.queued) return 'Queued behind ' + st.waitFor + ' \u2014 this ' + (noun || 'run') + ' starts on its own when that finishes.';
+    return st.busy ? st.busy.label + ' is running on ' + st.busy.host + '. New ' + (noun || 'run') + 's queue behind it.' : '';
+  };
   window.toolsQueueSlot = function (id, opts) {
     const s = {
       id: id, pending: null,
+      jobId: () => (s.pending ? s.pending.job_id || null : null),
+      // Server-queue surface (#897): hold a 202 job, then start or vanish it from the test.
+      hold(jobId, meta) {
+        const b = window.__gateBusy;
+        s.pending = { job_id: jobId, meta: meta || null,
+          waitFor: (meta && meta.wait_for) || (b ? b.label + (b.host ? ' on ' + b.host : '') : 'the run in progress') };
+        s.sync();
+      },
+      startHeld() { const j = s.jobId(); s.pending = null; s.sync(); if (opts.attach) opts.attach({ job_id: j, status: 'running' }); },
+      vanishHeld() { s.pending = null; s.sync(); if (opts.dropped) opts.dropped(); },
       busy: () => window.__gateBusy || null,
       queued: () => !!s.pending,
       waitFor: () => (s.pending ? s.pending.waitFor : null),
-      queue(payload, waitFor) {
-        const b = window.__gateBusy;
-        s.pending = { payload: payload,
-          waitFor: waitFor || (b ? b.label + (b.host ? ' on ' + b.host : '') : 'the run in progress') };
-        s.sync();
-        return s.pending.waitFor;
-      },
       drop() { if (!s.pending) return false; s.pending = null; s.sync(); return true; },
-      fire() {
-        const p = s.pending.payload; s.pending = null; s.sync();
-        return opts.start(p);
-      },
       sync() {
-        window.toolsSetQueued(id, s.pending ? s.pending.waitFor : null);
-        if (opts.render) opts.render({ queued: !!s.pending,
+        if (opts.render) opts.render({ queued: !!s.pending, mine: !!s.pending, job_id: s.jobId(),
+          ahead: 0, position: s.pending ? 1 : null, others: 0,
           waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });
       },
     };
@@ -116,3 +117,30 @@ export const QUEUE_SLOT_STUB = `
     return s;
   };
 `;
+
+// Real tools.js gate for module tests (#897): its sources, launcher markup and
+// the activity/agents feed it polls, swappable at runtime via window.__activity.
+export const TOOLS_GATE_SRC = ['js/lib/modelcards.js', 'js/lib/toolcards.js', 'js/tools.js'];
+export const TOOLS_GATE_BODY = `
+  <span id="toolsRunDot"></span>
+  <div id="toolsHome" style="display:none"><div id="toolsLauncher"></div></div>
+  <div id="toolsLedgerBody"></div>
+`;
+export function toolsGateFeed(agents) {
+  return `
+  window.__fetches = window.__fetches || [];
+  window._me = { username: 'alice' };
+  window._claim = function () { return true; };
+  window._release = function () {};
+  window._fetchT = (url, opts) => {
+    if (opts && opts.method === 'POST') {
+      window.__fetches.push([url, opts]);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    }
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      url.indexOf('/api/tools/activity') === 0 ? window.__activity
+      : url.indexOf('/api/agents/list-by-provider') === 0 ? ${JSON.stringify(agents)}
+      : {}) });
+  };
+`;
+}

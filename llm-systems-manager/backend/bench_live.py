@@ -135,8 +135,10 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                     fleet_hosts: Optional[Callable] = None, run_on_agent: Optional[Callable] = None,
                     cancel_on_agent: Optional[Callable] = None,
                     llama_build_of: Optional[Callable[[str], str]] = None,
-                    valid_provider: Optional[Callable[[str], bool]] = None) -> None:
-    """fleet_hosts(provider|None), run_on_agent(agent_id, body, provider), cancel_on_agent(agent_id, provider)."""
+                    valid_provider: Optional[Callable[[str], bool]] = None,
+                    start_or_queue: Optional[Callable] = None) -> None:
+    """fleet_hosts(provider|None), run_on_agent(agent_id, body, provider), cancel_on_agent(agent_id, provider),
+    start_or_queue(provider, tool, path, cancel, body) → Flask response (#897)."""
     from flask import jsonify, request as flask_request
 
     def _provider(body: Optional[dict] = None) -> "tuple[str, Optional[str]]":
@@ -355,6 +357,8 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
         if err:
             return jsonify({"ok": False, "error": err}), 400
         body.pop("provider", None)
+        if start_or_queue is not None:
+            return start_or_queue(provider, "benchmark", f"/{provider}/bench/live/run", f"/{provider}/bench/cancel", body)
         return proxy(provider, "POST", f"/{provider}/bench/live/run", json=body, timeout=15,
                      on_target=note_tool_start(provider, "benchmark"))
 

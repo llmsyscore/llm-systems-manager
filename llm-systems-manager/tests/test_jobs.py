@@ -160,12 +160,22 @@ def test_exclusive_keys_serialise_jobs_and_workers_cap_concurrency():
     b = svc.submit("hold", {"h": "x"})
     store.update(a["id"], status="running", started=1000.0, lease=1030.0)   # a holds perf:x on a live worker
     assert svc.tick() == 0
-    assert svc.get(b["id"])["message"] == "waiting for perf:x"
+    assert svc.get(b["id"])["message"] == "waiting for another job on this host"
     c = svc.submit("hold", {"h": "y"})
     assert svc.tick() == 0          # workers=1 and a is running
     store.update(a["id"], status="done", resolved=1000.0)
     assert svc.tick() == 2 and started == [b["id"], c["id"]]
 
+
+
+def test_waiting_message_names_a_generic_key():
+    svc, store = _service()
+    svc.register(jobs.Kind("lockd", "Lockd", run=lambda j: jobs.ok(), exclusive=lambda s: ["store:reconcile"]))
+    a = svc.submit("lockd", {})
+    b = svc.submit("lockd", {})
+    store.update(a["id"], status="running", started=1000.0, lease=1030.0)
+    assert svc.tick() == 0
+    assert svc.get(b["id"])["message"] == "waiting for store:reconcile"
 
 def test_cancel_queued_and_running_jobs():
     clock = Clock(1000.0)
@@ -321,7 +331,7 @@ def test_a_live_cancelled_worker_keeps_its_slot_and_exclusive_key():
     b = svc.submit("hold", {"h": "x"})
     c = svc.submit("hold", {"h": "y"})
     assert svc.tick() == 0
-    assert svc.get(b["id"])["message"] == "waiting for perf:x"
+    assert svc.get(b["id"])["message"] == "waiting for another job on this host"
     assert svc.get(c["id"])["status"] == "queued" and svc.get(c["id"])["message"] == "queued"
     gate.set()
     svc._workers[a["id"]]["thread"].join(1.0)

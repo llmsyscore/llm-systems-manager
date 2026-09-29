@@ -42,14 +42,12 @@ function _rcBusy(busy) {
   if (!busy) { _rcJobId = null; if (_rcSlot) _rcSlot.sync(); }
 }
 
-// Queue slot for the picked host: Report Card drives a running server, so it
-// contends for the same GPU as the agent-side tools (#888).
+// Gate slot for the picked host: a busy host blocks Run; Report Card runs in the manager, so it never queues.
 function _rcQueue() {
   if (!_rcSlot && typeof toolsQueueSlot === 'function') {
     _rcSlot = toolsQueueSlot('reportcard', {
       provider: () => _rcEl('rcProvider')?.value || 'llama',
       agent: () => _rcEl('rcAgent')?.value || '',
-      start: (body) => _rcStart(body),
       render: (st) => _rcRenderQueue(st),
     });
   }
@@ -59,21 +57,11 @@ function _rcQueue() {
 function _rcRenderQueue(st) {
   if (_rcJobId || _rcStarting) return;
   const btn = _rcEl('rcRunBtn'), cancel = _rcEl('rcCancelBtn');
-  if (btn) {
-    btn.textContent = st.queued ? '\u23f8 Queued \u00b7 waiting'
-      : st.busy ? '\u25b6 Queue report card' : '\u25b6 Run report card';
-    btn.disabled = false;
-  }
-  if (cancel) {
-    cancel.style.display = st.queued ? '' : 'none';
-    cancel.textContent = st.queued ? '\u2715 Drop queued run' : '\u2715 Cancel';
-  }
-  if (st.queued) {
+  if (btn) { btn.textContent = '\u25b6 Run report card'; btn.disabled = false; }
+  if (cancel) { cancel.style.display = 'none'; cancel.textContent = '\u2715 Cancel'; }
+  if (st.busy) {
     _rcGateNote = true;
-    _rcNote('Queued behind ' + st.waitFor + ' \u2014 this card starts on its own when that finishes.');
-  } else if (st.busy) {
-    _rcGateNote = true;
-    _rcNote(st.busy.label + ' is running on ' + st.busy.host + '. A run started now queues behind it.');
+    _rcNote(_rcBusyText(st.busy));
   } else if (_rcGateNote) {
     _rcGateNote = false;
     _rcNote('');
@@ -216,12 +204,17 @@ function rcRun(confirm) {
 
   const slot = _rcQueue();
   const busy = !_rcJobId && slot && slot.busy();
-  if (busy) { slot.queue(body); return; }
+  if (busy) { _rcNote(_rcBusyText(busy), true); return; }
   _rcStart(body);
 }
 
+// The note shown while another tool holds the picked host.
+function _rcBusyText(b) {
+  if (b.unresolved) return 'Waiting for the agent list to load. Try again in a moment.';
+  return `${b.label} is running on ${b.host}. Try again when it finishes.`;
+}
+
 function _rcStart(body) {
-  const slot = _rcQueue();
   _rcGateNote = false;
   _rcBusy(true);
   const box = _rcEl('rcProgress');
@@ -240,10 +233,6 @@ function _rcStart(body) {
     _rcStarting = false;
     if (!ok) {
       _rcBusy(false);
-      // The gate is a courtesy — another browser can win the race.
-      if (slot && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d.error)) {
-        slot.queue(body); return;
-      }
       _rcNote(d.error || 'Run failed.', true); return;
     }
     if (d.status === 'needs_confirm') {

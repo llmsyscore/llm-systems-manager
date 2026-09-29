@@ -141,3 +141,21 @@ def test_latest_is_newest_ok_run_per_model_for_the_selected_agent(app):
     assert d["models"]["org/b"]["run_id"] == "r3" and d["models"]["org/b"]["bench"] == "qualitative"
     assert d["models"]["org/a"]["ts"] and d["models"]["org/a"]["hostname"]
     assert app.get("/api/benchmark/live/latest?agent_id=" + "f" * 32).get_json()["models"] == {}
+
+
+def test_live_run_goes_through_start_or_queue_when_wired(tmp_path):
+    from flask import Flask, jsonify
+    app = Flask(__name__)
+    seen = []
+
+    def start_or_queue(provider, tool, path, cancel, body):
+        seen.append((provider, tool, path, cancel, body))
+        return jsonify({"ok": True, "queued": True, "job_id": "j1", "position": 1, "wait_for": "Autotune on gpu-01"}), 202
+    bl.register_routes(app, None, db_path=str(tmp_path / "q.db"), proxy=lambda *a, **k: {"ok": False},
+                       agent_by_token=lambda t: None, request_agent=lambda p: AGENT,
+                       note_tool_start=lambda p, t: None, start_or_queue=start_or_queue)
+    c = app.test_client()
+    r = c.post("/api/benchmark/live/run", json={"model_id": "org/m", "bench": "qualitative", "provider": "llama"})
+    assert r.status_code == 202 and r.get_json()["job_id"] == "j1"
+    assert seen == [("llama", "benchmark", "/llama/bench/live/run", "/llama/bench/cancel",
+                     {"model_id": "org/m", "bench": "qualitative"})]

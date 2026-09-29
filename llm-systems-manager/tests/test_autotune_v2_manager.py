@@ -17,7 +17,8 @@ def test_preflight_route_proxies_to_the_agent():
 
 def test_run_route_still_notes_tool_start():
     m = re.search(r'@app\.route\("/api/llm/autotune/run", methods=\["POST"\]\)(.*?)\n\n', SRC, re.S)
-    assert m and '_note_tool_start(provider, tool)' in m.group(1) and "_tool_provider()" in m.group(1)
+    # #897: the route hands off to _tool_start, which notes the start (proxied) or queues the run.
+    assert m and "_tool_start(provider, tool," in m.group(1) and "_tool_provider()" in m.group(1)
     # The quality guard shares this route but is its own tool to the gate (#887).
     assert '"quality" if (body.get("mode") or "") == "quality" else "autotune"' in m.group(1)
 

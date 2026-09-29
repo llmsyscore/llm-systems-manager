@@ -7,6 +7,24 @@ let _vatResult = null;      // last model_done payload
 
 function _vatEl(id) { return document.getElementById(id); }
 
+let _vatSlot = null, _vbenchSlot = null;
+function _vatQueue() {
+  if (!_vatSlot && typeof toolsQueueSlot === 'function') {
+    _vatSlot = toolsQueueSlot('autotune:vllm', { provider: () => 'vllm',
+      attach: () => { if (!_vatEventSrc) { _wizStatus('vllmAtStatus', 'Starting…'); _vatOpenStream(); } },
+      dropped: () => { _wizStatus('vllmAtStatus', 'queued run dropped'); _vatFinish(); } });
+  }
+  return _vatSlot;
+}
+function _vbenchQueue() {
+  if (!_vbenchSlot && typeof toolsQueueSlot === 'function') {
+    _vbenchSlot = toolsQueueSlot('benchmark:vllm', { provider: () => 'vllm',
+      attach: () => { if (!_vbenchEventSrc) { _wizStatus('vllmBenchStatus', 'Starting…'); _vbenchOpenStream(); } },
+      dropped: () => { _wizStatus('vllmBenchStatus', 'queued run dropped'); _vbenchFinish(); } });
+  }
+  return _vbenchSlot;
+}
+
 // Last live label per status element, restored after a transient drop.
 const _wizLive = {};
 
@@ -117,6 +135,7 @@ function _vatGetMaxLen(args) {
 
 function closeVllmAutotune() {
   _vatEl('vllmAtOverlay').classList.remove('open');
+  const s = _vatQueue(); if (s && s.queued()) s.drop();
   if (_vatEventSrc) cancelVllmAutotune();
   _vatFinish();
 }
@@ -128,6 +147,8 @@ function _vatNum(id, def) {
 
 async function runVllmAutotune() {
   if (!_vatOrig) return;
+  const q = _vatQueue();
+  if (q && q.queued()) { _wizStatus('vllmAtStatus', 'a run is already queued · drop it first', 'err'); return; }
   const body = {
     probe_len: Math.round(_vatNum('vllmAtProbeLen', 4096)),
     concurrency: _vatNum('vllmAtConc', 1.0),
@@ -155,11 +176,23 @@ async function runVllmAutotune() {
       body: JSON.stringify(body),
     }).then(_jsonOrThrow);
   } catch (e) { r = { ok: false, error: e.message || String(e) }; }
+  if (r.ok && r.queued) {
+    _wizStatus('vllmAtStatus', `queued${r.position > 1 ? ` · ${r.position - 1} ahead` : ''} · waiting for ${r.wait_for || 'the run in progress'}`);
+    const s = _vatQueue(); if (s) s.hold(r.job_id, r);
+    return;
+  }
   if (!r.ok) {
     _wizStatus('vllmAtStatus', `⚠ ${r.error || 'run failed'}`, 'err');
     _vatFinish();
     return;
   }
+  _vatOpenStream();
+}
+
+// Follows the autotune stream with Cancel showing.
+function _vatOpenStream() {
+  _vatEl('vllmAtRunBtn').style.display = 'none';
+  _vatEl('vllmAtCancelBtn').style.display = '';
   _vatEventSrc = SG.open({
     url: window._withAgentParam('/api/vllm/autotune/stream'), bypassPause: true,
     onReconnecting: () => _wizReconnecting('vllmAtStatus'),
@@ -272,6 +305,8 @@ function vllmAtRevert(btn) {
 }
 
 async function cancelVllmAutotune() {
+  const s = _vatQueue();
+  if (!_vatEventSrc && s && s.drop()) { _wizStatus('vllmAtStatus', 'queued run dropped'); _vatFinish(); return; }
   _wizStatus('vllmAtStatus', 'Cancelling…');
   try {
     await fetch(window._withAgentParam('/api/vllm/autotune/cancel'), { method: 'POST' });
@@ -412,11 +447,14 @@ function openVllmBench() {
 
 function closeVllmBench() {
   _vatEl('vllmBenchOverlay').classList.remove('open');
+  const s = _vbenchQueue(); if (s && s.queued()) s.drop();
   if (_vbenchEventSrc) cancelVllmBench();
   _vbenchFinish();
 }
 
 async function runVllmBench() {
+  const q = _vbenchQueue();
+  if (q && q.queued()) { _wizStatus('vllmBenchStatus', 'a run is already queued · drop it first', 'err'); return; }
   const switches = _vbenchSwitches
     .map(s => ({ flag: String(s.flag || '').trim(), value: String(s.value || '').trim() }))
     .filter(s => s.flag);
@@ -431,11 +469,23 @@ async function runVllmBench() {
       body: JSON.stringify({ model: _vbenchModel, switches }),
     }).then(_jsonOrThrow);
   } catch (e) { r = { ok: false, error: e.message || String(e) }; }
+  if (r.ok && r.queued) {
+    _wizStatus('vllmBenchStatus', `queued${r.position > 1 ? ` · ${r.position - 1} ahead` : ''} · waiting for ${r.wait_for || 'the run in progress'}`);
+    const s = _vbenchQueue(); if (s) s.hold(r.job_id, r);
+    return;
+  }
   if (!r.ok) {
     _wizStatus('vllmBenchStatus', `⚠ ${r.error || 'run failed'}`, 'err');
     _vbenchFinish();
     return;
   }
+  _vbenchOpenStream();
+}
+
+// Follows the benchmark stream with Cancel showing.
+function _vbenchOpenStream() {
+  _vatEl('vllmBenchRunBtn').style.display = 'none';
+  _vatEl('vllmBenchCancelBtn').style.display = '';
   _vbenchEventSrc = SG.open({
     url: window._withAgentParam('/api/vllm/bench/stream'), bypassPause: true,
     onReconnecting: () => _wizReconnecting('vllmBenchStatus'),
@@ -549,6 +599,8 @@ async function clearVllmBench(btn) {
 }
 
 async function cancelVllmBench() {
+  const s = _vbenchQueue();
+  if (!_vbenchEventSrc && s && s.drop()) { _wizStatus('vllmBenchStatus', 'queued run dropped'); _vbenchFinish(); return; }
   _wizStatus('vllmBenchStatus', 'Cancelling…');
   try {
     await fetch(window._withAgentParam('/api/vllm/bench/cancel'), { method: 'POST' });
