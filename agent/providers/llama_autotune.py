@@ -54,13 +54,21 @@ KEY_ALIASES = {"cache-type-k": ("ctk",), "cache-type-v": ("ctv",), "threads": ("
                "threads-batch": ("tb",), "parallel": ("np",), "n-cpu-moe": ("ncmoe",),
                "model-draft": ("md",), "gpu-layers-draft": ("ngld",),
                "cache-type-k-draft": ("ctkd",), "cache-type-v-draft": ("ctvd",),
-               "load-mode": ("lm",)}
+               "load-mode": ("lm",), "n-gpu-layers": ("ngl", "gpu-layers"), "batch-size": ("b",),
+               "ubatch-size": ("ub",), "flash-attn": ("fa",), "kv-unified": ("kvu",),
+               "cache-ram": ("cram",), "cpu-moe": ("cmoe",), "override-tensor": ("ot",),
+               "split-mode": ("sm",), "tensor-split": ("ts",), "main-gpu": ("mg",), "device": ("dev",)}
 ALIAS_TO_KEY = {a: k for k, aliases in KEY_ALIASES.items() for a in aliases}
 # context.custom_args limits; these flags carry paths/identity the tuner owns.
 CUSTOM_ARGS_MAX = 32
 CUSTOM_ARG_MAX_LEN = 256
 CUSTOM_ARGS_DENY = ("-m", "--model", "-md", "--model-draft", "--lora", "--lora-scaled", "--mmproj",
-                    "--models-preset", "--hf-repo", "-hf", "--hf-file", "--port", "--host")
+                    "--models-preset", "--hf-repo", "-hf", "-hfr", "--hf-file", "-hff", "--hf-repo-draft", "-hfd", "-hfrd",
+                    "--hf-repo-v", "-hfv", "-hfrv", "--hf-file-v", "-hffv", "--hf-token", "-hft", "--model-url", "-mu", "--mmproj-url", "--api-key", "--port", "--host",
+                    "--chat-template-file", "--grammar-file", "--log-file", "--override-tensor", "-ot",
+                    "--override-tensor-draft", "-otd", "--control-vector", "--control-vector-scaled",
+                    "--api-key-file", "--ssl-key-file", "--ssl-cert-file", "--slot-save-path", "--path",
+                    "--models-dir", "--system-prompt-file", "-spf", "--prompt-file", "-f")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\-]{0,199}$")
 _FACT_RE = re.compile(r"print_info:\s*([A-Za-z0-9_.][A-Za-z0-9_. ]*?)\s*=\s*(.+?)\s*$")
 _MTP_KV_RE = re.compile(r"nextn_predict_layers\s+\w+\s*=\s*(\d+)")
@@ -133,9 +141,9 @@ def _custom_args(ca: list) -> list[str]:
         raise ValueError(f"context.custom_args must be at most {CUSTOM_ARGS_MAX} tokens")
     if any(len(t) > CUSTOM_ARG_MAX_LEN for t in toks):
         raise ValueError(f"context.custom_args tokens must be at most {CUSTOM_ARG_MAX_LEN} characters")
-    bad = next((t for t in toks if t in CUSTOM_ARGS_DENY), None)
+    bad = next((t for t in toks if t.partition("=")[0] in CUSTOM_ARGS_DENY), None)
     if bad:
-        raise ValueError(f"context.custom_args must not set {bad}")
+        raise ValueError(f"context.custom_args must not set {bad.partition('=')[0]}")
     return toks
 
 
@@ -156,7 +164,7 @@ def validate_request(body: dict, *, cache_root: Optional[Path] = None, v1_args=N
         for d in dims:
             dims[d]["on"] = d == "context"
         dims["context"].update({"target_mb": target, "tolerance_mb": tol,
-                                "custom_args": list(v1_args(params)) if v1_args else []})
+                                "custom_args": _custom_args(list(v1_args(params))) if v1_args else []})
         return {"model_ids": ids, "objective": "fit", "budget_min": 600, "dims": dims, "mode": "tune"}
     objective = str(body.get("objective") or "")
     if objective not in OBJECTIVES:
@@ -326,10 +334,11 @@ def section_args(section: dict, overrides: dict, valued: Optional[set] = None) -
         sv = "" if v is None else _unquote(str(v).strip())
         if not k or sv == "":
             continue
+        k = ALIAS_TO_KEY.get(k, k)
         flag = ("-" if len(k) == 1 else "--") + k
         low = sv.lower()
         if low in BOOL_ON or low in BOOL_OFF:
-            takes = valued is not None and (k in valued or ALIAS_TO_KEY.get(k, "") in valued)
+            takes = valued is not None and k in valued
             if takes:
                 out += [flag, sv]
             elif low in BOOL_ON:

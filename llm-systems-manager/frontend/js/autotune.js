@@ -77,15 +77,15 @@
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _peak = null;        // /api/energy/host-peak payload, or null
-  let _slot = null, _busyOn = false, _statusErr = false, _queuedRun = null;
+  let _slot = null, _busyOn = false, _statusErr = false, _queuedRun = null, _foreign = false;
   let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
   let _batch = null, _batchPoll = null, _batchHosts = [];   // batch (#891)
   const BATCH_POLL_MS = 5000;
-  // Newest row per model wins; the route returns one row per (agent, model).
+  // Newest row per model wins; the route is scoped to the tool's target host.
   async function loadStatus() {
     _status = {}; _statusErr = false;
     try {
-      const d = await fetch('/api/llm/autotune/status').then(r => r.json());
+      const d = await fetch(tq('/api/llm/autotune/status')).then(r => r.json());
       (d && d.items || []).forEach(i => {
         const cur = _status[i.model_id];
         if (!cur || (Date.parse(i.ts || '') || 0) > (Date.parse(cur.ts || '') || 0)) _status[i.model_id] = i;
@@ -746,7 +746,7 @@
   }
   // Shows a run this tab started (directly or through the queue) and follows its stream.
   function began(body, ids) {
-    _attached = false;
+    _attached = false; _foreign = false;
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     if (!isLms()) fetchMeta(ids);
     newRun(null);
@@ -815,7 +815,7 @@
     }
   }
   function attach() {
-    _attached = true;
+    _attached = true; _foreign = false;
     newRun(null);
     setPane('Run');
     busy(true);
@@ -962,8 +962,26 @@
     if (!c) { c = { value, status: 'pending' }; list.push(c); }
     return c;
   }
+  // A Quality-guard run on the shared stream is not ours: only its start and end are looked at.
+  function foreignEvent(msg) {
+    const t = msg.type;
+    if (t === 'model_start') {
+      _foreign = msg.mode === 'quality';
+      if (_foreign) { const p = $('atRunPill'); if (p) p.textContent = 'another tool is running'; }
+      return _foreign;
+    }
+    if (!_foreign) return false;
+    if (t === 'done') {
+      _foreign = false;
+      if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+      _attached = false; stopElapsed(); busy(false); setPane('Plan');
+      const p = $('atRunPill'); if (p) p.textContent = 'running';
+    }
+    return true;
+  }
   function onEvent(msg) {
     if (!_run) newRun(null);
+    if (foreignEvent(msg)) return;
     const t = msg.type;
     if (t === 'model_start') {
       if (Array.isArray(msg.stages) && msg.stages.length) _run.order = msg.stages;
@@ -1026,7 +1044,6 @@
                || t === 'non_monotonic_detected' || t === 'cycle_detected') {
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
     } else if (t === 'model_done') {
-      if (msg.mode === 'quality') return;   // a Quality-guard run on the shared stream is not ours
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
       if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');

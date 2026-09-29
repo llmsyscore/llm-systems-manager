@@ -252,15 +252,17 @@ function _llamaFresh(modelId, cfg) {
   return null;
 }
 
-// #887: newest tune per model, keyed by model id; route returns every agent's rows.
+// #887: newest tune per model, keyed by model id; the route is scoped to the selected llama host.
 var _llamaTuneStatus = {};
 var _llamaTuneStatusTs = 0;
+var _llamaTuneStatusHost = '';
 async function _loadTuneStatus(force) {
   const now = Date.now();
-  if (!force && now - _llamaTuneStatusTs < 60000) return;
-  _llamaTuneStatusTs = now;
+  const host = (typeof _selectedAgent === 'function' && _selectedAgent('llama')) || '';
+  if (!force && host === _llamaTuneStatusHost && now - _llamaTuneStatusTs < 60000) return;
+  _llamaTuneStatusTs = now; _llamaTuneStatusHost = host;
   try {
-    const d = await fetch('/api/llm/autotune/status').then(r => r.json());
+    const d = await fetch('/api/llm/autotune/status' + (host ? '?agent_id=' + encodeURIComponent(host) : '')).then(r => r.json());
     const map = {};
     (d && d.items || []).forEach(i => {
       const existing = map[i.model_id];

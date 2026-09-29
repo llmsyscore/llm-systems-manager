@@ -12,7 +12,7 @@ function boot(status) {
     window.MC = { busyOf: () => null, isOpen: () => false, esc: s => String(s), age: () => '' };
     window.__fetches = [];
     window.fetch = (u) => { window.__fetches.push(String(u)); return Promise.resolve({ json: () => Promise.resolve(${JSON.stringify(status)}) }); };
-    window._llamaTuneStatus = {}; window._llamaTuneStatusTs = 0;
+    window._llamaTuneStatus = {}; window._llamaTuneStatusTs = 0; window._llamaTuneStatusHost = '';
   `;
   const fns = ['_llamaTuneFor', '_loadTuneStatus', '_llamaDescriptor', '_llamaLiveFor'].map(n => {
     const s = fnSrc(SRC, n); if (!s) throw new Error(n + ' missing'); return s;
@@ -42,6 +42,18 @@ describe('tune chip descriptor', () => {
     expect(win.__fetches.length).toBe(1);
     await win._loadTuneStatus(true); await flush();
     expect(win.__fetches.length).toBe(2);
+  });
+  // #917: the fetch names the picker's llama host and a host switch refetches at once.
+  it('scopes the status fetch to the selected llama host and refetches when it changes', async () => {
+    const win = boot({ ok: true, items: [] });
+    win._selectedAgent = () => 'host-a';
+    await win._loadTuneStatus(); await flush();
+    expect(win.__fetches[0]).toBe('/api/llm/autotune/status?agent_id=host-a');
+    await win._loadTuneStatus(); await flush();
+    expect(win.__fetches.length).toBe(1);
+    win._selectedAgent = () => 'host-b';
+    await win._loadTuneStatus(); await flush();
+    expect(win.__fetches[1]).toBe('/api/llm/autotune/status?agent_id=host-b');
   });
   it('keeps the newest ts across two agents tuning the same model, regardless of array order', async () => {
     const win = boot({ ok: true, items: [

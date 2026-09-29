@@ -109,3 +109,26 @@ def test_start_run_clears_kept_and_progress_records():
     b.append({"type": "progress", "done": 1, "total": 2})
     b.start_run("r2")
     assert b.replay_after(None) == []
+
+
+# #1115: the autotune streams keep their own run-shape vocabulary across a long run.
+def test_keep_types_is_configurable_and_the_autotune_set_covers_its_events():
+    b = BenchReplayBuffer(maxlen=2, keep_types=_bench_replay.AUTOTUNE_KEEP_TYPES)
+    b.start_run("at")
+    b.append({"type": "model_start"})
+    b.append({"type": "iter_start", "iter": 1})
+    b.append({"type": "stage_start", "stage": "kv"})
+    b.append({"type": "candidate_result", "value": "q8_0"})
+    for n in range(10):
+        b.append({"type": "line", "text": str(n)})
+    b.append({"type": "step_start", "step": "probe"})
+    kinds = [r["event"]["type"] for r in b.replay_after(None)]
+    assert kinds[:4] == ["model_start", "iter_start", "stage_start", "candidate_result"]
+    assert kinds.count("line") == 2 and kinds[-1] == "step_start"
+    # The benchmark default still evicts those names.
+    d = BenchReplayBuffer(maxlen=2)
+    d.start_run("b")
+    d.append({"type": "iter_start"})
+    for n in range(3):
+        d.append({"type": "line"})
+    assert "iter_start" not in [r["event"]["type"] for r in d.replay_after(None)]

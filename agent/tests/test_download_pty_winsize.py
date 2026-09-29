@@ -43,7 +43,7 @@ def _load_llama():
     def _be(*a, **k):
         yield
     _stub("_best_effort", best_effort=_be)
-    _stub("_bench_replay", BenchReplayBuffer=lambda *a, **k: object())
+    _stub("_bench_replay", BenchReplayBuffer=lambda *a, **k: object(), AUTOTUNE_KEEP_TYPES=frozenset())
     _stub("collectors")
     _stub("collectors.gpu", collect_gpu=lambda *a, **k: {})
 

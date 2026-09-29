@@ -29,7 +29,7 @@ from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 import stream_pool  # type: ignore[import-not-found]  # sibling at agent root
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling at agent root
-from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
+from _bench_replay import BenchReplayBuffer, AUTOTUNE_KEEP_TYPES  # type: ignore[import-not-found]  # sibling at agent root
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import _shared
@@ -144,7 +144,7 @@ _bench_pgid: "Optional[int]" = None
 _bench_cancel_event = threading.Event()
 _BENCH_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-_autotune_replay = BenchReplayBuffer(maxlen=5000)
+_autotune_replay = BenchReplayBuffer(maxlen=5000, keep_types=AUTOTUNE_KEEP_TYPES)
 _autotune_cond = threading.Condition()
 _autotune_lock = threading.Lock()
 _autotune_active = False
