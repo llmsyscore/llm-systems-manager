@@ -23,7 +23,9 @@
   let _toolsDefaultAgent = {};     // provider -> primary agent id
   let _toolsByProvider = {};       // provider -> [{agent_id, hostname, is_default}] (#916 target picker)
   let _toolsTarget = { provider: 'llama', agent: null };   // host the Benchmark/Autotune modules drive (#916)
-  let _toolsPending = {};          // tool id -> what its queued run waits for
+  let _toolsQueue = {};            // agent_id -> live tool_run rows from the snapshot (#897)
+  let _toolsQueueHolds = 0;        // slots holding a job; drives the fast poll
+  let _toolsQueueTimer = null;
   let _toolsAgentsLoad = null;
   let _toolsAgentsReady = false;
   let _toolsGateKey = '';
@@ -71,6 +73,7 @@
           autotune: !!d.autotune, quality: !!d.quality,
         };
         _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
+        _toolsQueue = (d.queue && typeof d.queue === 'object') ? d.queue : {};
         toolsSyncRunDot();
       })
       .catch(() => {});
@@ -194,79 +197,122 @@
 
   function toolsGateOn(fn) { if (typeof fn === 'function') _toolsGateSubs.add(fn); }
 
-  // An agent refusal that means "something else holds the tool lock".
-  function toolsGateRefusal(text) {
-    return /in progress|already running/i.test(String(text || ''));
+  function _toolsMe() { return (window._me && window._me.username) || null; }
+
+  // Queued rows of one tool across every host, for the tile badge.
+  function toolsQueuedCount(tool) {
+    let n = 0;
+    Object.keys(_toolsQueue).forEach(id => {
+      (_toolsQueue[id] || []).forEach(r => { if (r.tool === tool && r.status === 'queued') n++; });
+    });
+    return n;
   }
 
-  // Tile id behind a slot key: 'benchmark:offline' marks the Benchmark tile.
-  function _toolsPendingFor(toolId) {
-    const hit = Object.keys(_toolsPending).find(
-      k => k === toolId || k.indexOf(toolId + ':') === 0);
-    return hit ? _toolsPending[hit] : null;
+  // Polls every 3 s while any slot holds a job, 10 s otherwise (boot.js owns the slow timer).
+  function _toolsQueueFast(on) {
+    _toolsQueueHolds = Math.max(0, _toolsQueueHolds + (on ? 1 : -1));
+    if (_toolsQueueHolds > 0 && !_toolsQueueTimer) _toolsQueueTimer = setInterval(toolsPollActivity, 3000);
+    if (_toolsQueueHolds === 0 && _toolsQueueTimer) { clearInterval(_toolsQueueTimer); _toolsQueueTimer = null; }
   }
 
-  // A module's pending run, so the launcher can't show the tool as idle.
-  function toolsSetQueued(toolId, waitFor) {
-    if (!toolId) return;
-    if (waitFor) _toolsPending[toolId] = waitFor; else delete _toolsPending[toolId];
-    const home = _tEl('toolsHome');
-    if (_toolsInited && home && home.style.display !== 'none') _toolsRenderLauncher();
+  // The sentence a module shows under its Run button; noun is "run" or "check".
+  function toolsQueueText(st, noun) {
+    const n = noun || 'run';
+    if (st.queued) {
+      if (st.ahead > 0) return `${st.ahead} run${st.ahead === 1 ? '' : 's'} queued ahead of you — this ${n} starts on its own when they finish.`;
+      return `Queued behind ${st.waitFor} — this ${n} starts on its own when that finishes.`;
+    }
+    const b = st.busy;
+    const others = st.others > 0 ? ` ${st.others} run${st.others === 1 ? '' : 's'} queued on this host.` : '';
+    if (b) return `${b.label} is running on ${b.host}.${others || ` New ${n}s queue behind it.`}`;
+    return others.trim();
   }
 
   function _toolsGateNotify() {
     const key = JSON.stringify([_toolsActivityAgents, _toolsLocalAgents(),
-                                _toolsDefaultAgent, _toolsAgentsReady]);
+                                _toolsDefaultAgent, _toolsAgentsReady, _toolsQueue]);
     if (key === _toolsGateKey) return;
     _toolsGateKey = key;
     [..._toolsGateSubs].forEach(fn => { try { fn(); } catch (_) {} });
   }
 
-  // One queue slot per tool: at most one pending run, started by the gate once
-  // the provider/agent it waits on goes idle.
+  // One slot per tool: follows the tool_run job this tab holds (or the current user's
+  // queued row on the target host) and fires attach when it starts running (#897).
   function toolsQueueSlot(toolId, opts) {
-    let pending = null;
-    // A pending run keeps the host it was queued against, so changing a picker
-    // can't repoint the gate at a host the frozen payload will not hit.
+    const tool = String(toolId).split(':')[0];
+    let held = null, info = null, seenRow = false;
     const pick = () => ({ provider: opts.provider ? opts.provider() : 'llama',
                           agent: opts.agent ? opts.agent() : null });
-    const target = () => {
-      const t = pending ? pending.target : pick();
-      return toolsGateBusy(t.provider, t.agent);
+    const agentId = () => { const t = pick(); return t.agent || _toolsDefaultAgent[t.provider] || null; };
+    const rows = () => _toolsQueue[agentId()] || [];
+    const queuedRows = () => rows().filter(r => r.status === 'queued');
+    const rowOf = (id) => rows().find(r => r.job_id === id) || null;
+    const adopt = () => {
+      if (held) return;
+      const me = _toolsMe();
+      const m = me ? queuedRows().find(r => r.tool === tool && r.user === me) : null;
+      if (m) { held = m.job_id; info = null; seenRow = true; _toolsQueueFast(true); }
     };
-    const paint = () => {
-      toolsSetQueued(toolId, pending ? pending.waitFor : null);
-      if (opts.render) {
-        // An unresolved host gates the run but has no name to show for it.
-        const b = target();
-        try {
-          opts.render({ queued: !!pending, waitFor: pending ? pending.waitFor : null,
-                        busy: (b && b.unresolved) ? null : b });
-        } catch (_) {}
-      }
+    const release = () => { held = null; info = null; seenRow = false; _toolsQueueFast(false); };
+    const state = () => {
+      adopt();
+      const t = pick();
+      const b = toolsGateBusy(t.provider, t.agent);
+      const busy = (b && b.unresolved) ? null : b;
+      const q = queuedRows();
+      const idx = held ? q.findIndex(r => r.job_id === held) : -1;
+      const mine = !!held && (idx >= 0 || !seenRow);
+      const ahead = mine ? (idx >= 0 ? idx : Math.max(0, ((info && info.position) || 1) - 1)) : q.length;
+      const waitFor = (info && info.wait_for) || _toolsGateText(busy);
+      return { queued: mine, mine, job_id: mine ? held : null, ahead, position: mine ? ahead + 1 : null,
+               others: q.length - (mine && idx >= 0 ? 1 : 0), waitFor, busy };
     };
+    const paint = () => { if (opts.render) { try { opts.render(state()); } catch (_) {} } };
     const slot = {
-      busy: target,
-      queued: () => !!pending,
-      waitFor: () => (pending ? pending.waitFor : null),
-      queue(payload, waitFor) {
-        const t = pick();
-        const b = toolsGateBusy(t.provider, t.agent);
-        pending = { payload, target: t, waitFor: waitFor || _toolsGateText(b) };
+      busy: () => { const t = pick(); return toolsGateBusy(t.provider, t.agent); },
+      queued: () => state().queued,
+      waitFor: () => state().waitFor,
+      jobId: () => (state().queued ? held : null),
+      hold(jobId, meta) {
+        if (held) release();
+        held = jobId; info = meta || null; seenRow = false;
+        _toolsQueueFast(true);
         paint();
-        return pending.waitFor;
+        toolsPollActivity();
       },
-      drop() { if (!pending) return false; pending = null; paint(); return true; },
-      fire() {
-        if (!pending) return;
-        const payload = pending.payload;
-        pending = null;
+      drop() {
+        if (!state().queued) return false;
+        const id = held;
+        release();
+        const f = typeof _fetchT === 'function' ? _fetchT : ((u, o) => fetch(u, o));
+        f('/api/jobs/' + encodeURIComponent(id) + '/cancel', { method: 'POST' }).catch(() => {});
+        const aid = agentId();
+        if (aid && _toolsQueue[aid]) _toolsQueue[aid] = _toolsQueue[aid].filter(r => r.job_id !== id);
         paint();
-        try { opts.start(payload); } catch (_) {}
+        _toolsGateNotify();
+        return true;
       },
       sync: paint,
     };
-    toolsGateOn(() => { if (pending && !target()) slot.fire(); else paint(); });
+    toolsGateOn(() => {
+      adopt();
+      if (held) {
+        const r = rowOf(held);
+        if (r) seenRow = true;
+        if (r && r.status === 'running') {
+          release(); paint();
+          if (opts.attach) { try { opts.attach(r); } catch (_) {} }
+          return;
+        }
+        if (!r && seenRow) {
+          release(); paint();
+          if (opts.dropped) { try { opts.dropped(); } catch (_) {} }
+          return;
+        }
+      }
+      paint();
+    });
+    paint();
     return slot;
   }
 
@@ -290,7 +336,8 @@
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
   function _runToolDesc(cfg, row, running, local) {
-    const pending = !running && _toolsPendingFor(cfg.id);
+    const nq = toolsQueuedCount(cfg.id === 'reportcard' ? 'reportcard' : cfg.id);
+    const pending = !running && nq > 0;
     const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row
       ? '<b>' + TC.esc(TC.age(row.ts) || '') + '</b> · '
@@ -299,10 +346,10 @@
     return {
       id: cfg.id, icon: cfg.icon, tone: cfg.tone, name: cfg.name, desc: cfg.desc,
       status: running ? 'running' : pending ? 'queued' : 'ready',
+      statusLabel: pending ? `${nq} queued` : null,
       stats: row ? cfg.stats(row) : null,
       empty: cfg.empty,
-      last: pending ? 'queued behind ' + TC.esc(pending)
-        : core ? 'last run ' + core : 'no runs yet',
+      last: pending ? `${nq} run${nq === 1 ? '' : 's'} queued` : core ? 'last run ' + core : 'no runs yet',
       lastShort: row ? '<b>' + TC.esc(TC.when(row.ts) || '—') + '</b>' : '—',
       sub: row ? subVal + ' · ' + (TC.age(row.ts) || '') : null,
       action: local ? 'View run' : (row ? 'Open' : 'Set up'),
@@ -840,11 +887,11 @@
   window.toolsPollActivity = toolsPollActivity;
   window.toolsGateBusy = toolsGateBusy;
   window.toolsGateOn = toolsGateOn;
-  window.toolsGateRefusal = toolsGateRefusal;
-  window.toolsSetQueued = toolsSetQueued;
   window.toolsTarget = toolsTarget;
   window.toolsTargetQs = toolsTargetQs;
   window.toolsUrl = toolsUrl;
   window.toolsSetTarget = toolsSetTarget;
   window.toolsQueueSlot = toolsQueueSlot;
+  window.toolsQueueText = toolsQueueText;
+  window.toolsQueuedCount = toolsQueuedCount;
 })();
