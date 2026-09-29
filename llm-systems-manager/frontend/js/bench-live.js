@@ -731,13 +731,14 @@
         agent: () => tagent(),
         match: (r) => /\/bench\/live\//.test(r.path || ''),
         render: (st) => syncQueue(st),
-        attach: () => { if (_attached || !running()) attach(); },
+        attach: (row) => { if (_attached || !running()) adoptOwn(row); },
         dropped: () => { setStatus('queued run dropped'); if (!running()) busy(false); },
       });
     }
     return _slot;
   }
   function syncQueue(st) {
+    if (_attached) { const rb = $('blRunBtn'); if (rb) rb.disabled = !!st.queued; }
     if (_attached || running() || _busyOn) { syncCancelBtn(); return; }
     const b = st.busy;
     runLabel(st.queued || b ? 'Queue run' : null);
@@ -760,6 +761,13 @@
     else setStatus('running · started elsewhere', 'running');
     notice(true);
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  }
+  // The job this tab queued started: follow it as this tab's own run.
+  function adoptOwn() {
+    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    _attached = false; _runId = null; notice(false);
+    resetRunView(); busy(true); startElapsed(); openStream();
+    setStatus('running', 'running'); runLabel(null);
   }
   // Clears the run panes; the stream that follows replays the run from its first event.
   function resetRunView() {
@@ -820,6 +828,7 @@
     if (quiet) $('blRunBtn').disabled = false;
     if (d && d.ok && d.queued) {
       if (!quiet) { busy(false); stopElapsed(); }
+      $('blRunBtn').disabled = true;
       if (s) s.hold(d.job_id, d);
       setStatus(`queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · starts when ${d.wait_for || 'the run in progress'} finishes`, 'running');
       return;
@@ -840,7 +849,7 @@
       onLost: () => { _es = null; _attached = false; notice(false); runLabel(null); setStatus('disconnected', 'err'); busy(false); stopElapsed(); },
       onEvent: (msg) => {
         if (msg.run_id && _runId && msg.run_id !== _runId) return;
-        if (msg.type === 'model_start') { if (_attached && msg.run_id) _runId = msg.run_id;
+        if (msg.type === 'model_start') { if ((_attached || !_runId) && msg.run_id) _runId = msg.run_id;
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
           if ((msg.levels || []).length) _sweepLevels = msg.levels.slice();
           _matrixRun = !!msg.matrix;
@@ -877,7 +886,8 @@
           if (_attached) leaveAttached();
           const nf = msg.ok ? failedSamples(msg) : 0;
           if (nf) setStatus(`complete · ${failedText(nf)}`, 'warn');
-          else setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
+          else setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err');
+          if (_slot) _slot.sync(); }
       } });
     if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
   }

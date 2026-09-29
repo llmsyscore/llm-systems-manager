@@ -10,7 +10,7 @@ const BODY = `
   <span id="benchStatus">idle</span>
   <div id="benchResults"><div id="benchResultRows"></div></div>
   <div id="benchLog"></div>
-  <canvas id="benchChart"></canvas>
+  <div id="benchChartWrap"><div id="benchChartEmpty"></div><canvas id="benchChart"></canvas></div>
 `;
 
 const STUBS = `
@@ -56,6 +56,7 @@ describe('Offline benchmark queueing (#888)', () => {
     for (let i = 0; i < 6; i++) await flush();
     expect(starts(win)).toHaveLength(1);
     expect(win.__slots[0].jobId()).toBe('j1');
+    expect(el(win, 'benchChartWrap').classList.contains('idle')).toBe(true);
     expect(win.__slots[0].queued()).toBe(true);
     expect(el(win, 'benchRunBtn').textContent).toContain('Queued');
     expect(el(win, 'benchStatus').textContent).toContain('waiting for Autotune on gpu-01');

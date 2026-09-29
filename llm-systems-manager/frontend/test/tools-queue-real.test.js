@@ -149,6 +149,26 @@ describe('Benchmark · Live on the server queue (#897)', () => {
     expect(posted(win, '/api/benchmark/live/run')).toHaveLength(1);
   });
 
+  it('runs the adopted job as this tab own run, cancellable from here', async () => {
+    const win = await bootLive(AT_ON_A1);
+    win.__runAnswer = QUEUED;
+    await win.BL.onOpen('org/m');
+    await flush(); await flush();
+    await win.BL.run();
+    for (let i = 0; i < 4; i++) await flush();
+    win.__activity = heldRow('queued');
+    await win.toolsPollActivity(); await flush(); await flush();
+    win.__activity = { ...heldRow('running'), autotune: false, benchmark: true, agents: { a1: ['benchmark'] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    const d = win.document;
+    expect(d.getElementById('blCancelBtn').style.display).toBe('');
+    expect(d.getElementById('blStatus').textContent).toContain('running');
+    expect(d.getElementById('blStatus').textContent).not.toContain('elsewhere');
+    win.__fetches.length = 0;
+    win.BL.cancel();
+    expect(posted(win, '/api/benchmark/cancel')).toHaveLength(1);
+  });
+
   it('drops the queued job through the jobs API', async () => {
     const win = await bootLive(AT_ON_A1);
     win.__runAnswer = QUEUED;
@@ -262,6 +282,15 @@ describe('Offline benchmark on the server queue (#897)', () => {
     for (let i = 0; i < 8; i++) await flush();
     expect(posted(win, '/api/llm/unload')).toHaveLength(1);
     expect(posted(win, '/api/benchmark/run')).toHaveLength(1);
+  });
+
+  it('adopts the user queued row when the module opens, without a Run click', async () => {
+    const win = await bootOffline({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'benchmark', model_id: 'org/m',
+      user: 'alice', status: 'queued', created: 1, path: '/llama/bench/run' }] } });
+    await win.openBench('org/m');
+    for (let i = 0; i < 4; i++) await flush();
+    expect(win.document.getElementById('benchStatus').textContent).toContain('queued');
+    expect(posted(win, '/api/benchmark/run')).toHaveLength(0);
   });
 
   it('opens the stream when the held job starts running', async () => {

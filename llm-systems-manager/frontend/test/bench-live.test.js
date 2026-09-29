@@ -254,6 +254,18 @@ describe('BL presets and mode', () => {
     expect(win.BL.running()).toBe(true);
     expect(win.__slots[0].queued()).toBe(false);
   });
+  it('repaints the queued notice once the attached run finishes', async () => {
+    const win = bootGated('window.__busy = true; window.__runReply = ' + JSON.stringify(QUEUED) + '; BL.onOpen("org/m:Q4");');
+    await flush();
+    await win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'done', ok: true });
+    await flush();
+    const d = win.document;
+    expect(d.getElementById('blNotice').textContent).toContain('Queued behind Autotune on gpu-01');
+    expect(d.getElementById('blRunBtn').textContent).toBe('Queue run');
+    expect(d.getElementById('blRunBtn').disabled).toBe(true);
+  });
   it('setup is refused while attached and the attached state clears on done', async () => {
     const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
     await flush();
@@ -275,8 +287,10 @@ describe('BL presets and mode', () => {
     await win.BL.run();
     await flush();
     expect(win.__slots[0].jobId()).toBe('j1');
+    expect(d.getElementById('blRunBtn').disabled).toBe(true);
     expect(d.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
     win.BL.cancel();
+    expect(d.getElementById('blRunBtn').disabled).toBe(false);
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/cancel')).toBe(false);
     expect(d.getElementById('blStatus').textContent).toContain('dropped');
     expect(win.BL.running()).toBe(true);

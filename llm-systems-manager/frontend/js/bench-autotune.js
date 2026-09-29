@@ -560,7 +560,8 @@ async function openBench(modelId) {
   });
   _updateBenchModelLabel();
 
-  if (!fresh) return;
+  _benchQueue();
+  if (!fresh) { if (_benchSlot) _benchSlot.sync(); return; }
 
   // First open: reset UI state — clear data BEFORE switchBenchTab so its axis
   // update sees a clean slate and honors the default axes (n_depth / avg_ts).
@@ -994,6 +995,7 @@ async function _benchRunNow(sel) {
       document.getElementById('benchCancelBtn').style.display = '';
       document.getElementById('benchStatus').textContent = `queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · waiting for ${d.wait_for || 'the run in progress'}`;
       _benchSetState('idle');
+      _benchSetChartIdle(true);
       if (slot) slot.hold(d.job_id, d);
       return;
     }
