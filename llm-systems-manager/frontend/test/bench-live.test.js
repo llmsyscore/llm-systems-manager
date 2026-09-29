@@ -7,7 +7,7 @@ const BODY = `
   <span id="benchModeNote"></span>
   <div id="benchOffline"></div>
   <div id="benchLive" style="display:none">
-    <div id="blPreflight"></div>
+    <div id="blPreflight"></div><button id="blStartBtn"></button>
     <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="longctx">Long context</span><span class="bl-chip" data-preset="custom">Custom</span></div>
     <div id="blBenchRow"><select id="blBench"><option>qualitative</option><option>throughput_1k</option><option>throughput_2k</option><option>throughput_8k</option><option>throughput_16k</option><option>throughput_32k</option></select></div>
     <div id="blCatsRow"><span class="bl-hint" id="blCatsHint">all</span><div id="blCats"></div></div>
@@ -58,9 +58,9 @@ const STUBS = `
   window.fetch = function (url, opts) {
     window.__fetches.push([url, opts]);
     const body = url.indexOf('/api/benchmark/live/preflight') === 0
-      ? { ok: true, server: { up: true, url: 'http://h:9931', models: [{ id: 'org/m:Q4', status: 'loaded' }], loaded_id: 'org/m:Q4', slots_idle: 2, slots_total: 2 },
+      ? (window.__pre || { ok: true, server: { up: true, url: 'http://h:9931', models: [{ id: 'org/m:Q4', status: 'loaded' }], loaded_id: 'org/m:Q4', slots_idle: 2, slots_total: 2 },
           runtime: window.__noRt ? { python: '', source: '', script: '', script_status: 'ok' } : { python: '/p', source: 'venv', script: '/s', script_status: 'ok' },
-          datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy }
+          datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy })
       : url.indexOf('/api/benchmark/live/runs/') === 0
       ? { ok: true, run: window.__baseDoc || null }
       : url.indexOf('/api/benchmark/live/runs') === 0
@@ -108,6 +108,19 @@ describe('BL pure helpers', () => {
     expect(win.BL.knee([lv(1, 142), lv(2, 126), lv(4, 101), lv(8, 64)])).toBe(4);
     expect(win.BL.knee([lv(1, 100)])).toBe(1);
     expect(win.BL.knee([])).toBeNull();
+  });
+});
+
+describe('BL vLLM target (#894)', () => {
+  it('renders vLLM preflight and hides Offline for a vLLM target', async () => {
+    const win = boot(`window.__pre = { ok: true, provider: 'vllm', server: { up: false, url: 'http://localhost:8000', provider: 'vllm', models: [], loaded_id: null, slots_idle: 0, slots_total: 0 }, runtime: { python: '/p', script: '/s', script_status: 'ok' }, datasets: {}, benches: [] };
+      window.toolsTarget = () => ({ provider: 'vllm', agent: 'V1' });
+      window.toolsUrl = (p) => p + (p.indexOf('?') >= 0 ? '&' : '?') + 'provider=vllm&agent=V1';`);
+    await win.BL.onOpen();
+    await flush();
+    expect(win.document.querySelector('#benchModeSeg button[data-mode="offline"]').style.display).toBe('none');
+    expect(win.document.getElementById('blPreflight').textContent).toContain('vLLM server is down.');
+    expect(win.document.getElementById('blStartBtn').style.display).toBe('');
   });
 });
 

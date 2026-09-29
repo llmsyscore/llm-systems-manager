@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.29-3"
+__version__ = "v2026.09.29-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2171,13 +2171,17 @@ def benchmark_stream():
     return proxies.proxy_stream_to_primary(provider, f"/{provider}/bench/stream", long_running=True)
 
 
-def _tool_provider() -> "tuple[str, str | None]":
-    """(provider, error) for the Benchmark/Autotune tool routes: ?provider=, default llama, llama or lms only."""
+AUTOTUNE_PROVIDERS = ("llama", "lms")  # Providers the Tools Autotune module can drive.
+
+
+def _tool_provider(tool: str = "benchmark") -> "tuple[str, str | None]":
+    """(provider, error) for the Benchmark/Autotune tool routes: ?provider=, default llama."""
     provider, err = _bench_provider(flask_request.args.get("provider"))
     if err:
         return "llama", err
-    if provider not in bench_live.BENCH_PROVIDERS:
-        return provider, f"provider {provider} has no benchmark tools"
+    allowed = bench_live.BENCH_PROVIDERS if tool == "benchmark" else AUTOTUNE_PROVIDERS
+    if provider not in allowed:
+        return provider, f"provider {provider} has no {tool} tools"
     return provider, None
 
 
@@ -2507,7 +2511,7 @@ def benchmark_cancel():
 @app.route("/api/llm/autotune/run", methods=["POST"])
 def llm_autotune_run():
     body = flask_request.get_json(force=True) or {}
-    provider, perr = _tool_provider()
+    provider, perr = _tool_provider("autotune")
     if perr:
         return jsonify({"ok": False, "error": perr}), 400
     body.pop("provider", None)
@@ -2518,7 +2522,7 @@ def llm_autotune_run():
 
 @app.route("/api/llm/autotune/stream")
 def llm_autotune_stream():
-    provider, perr = _tool_provider()
+    provider, perr = _tool_provider("autotune")
     if perr:
         return jsonify({"ok": False, "error": perr}), 400
     return proxies.proxy_stream_to_primary(provider, f"/{provider}/autotune/stream", long_running=True)
@@ -2527,7 +2531,7 @@ def llm_autotune_stream():
 @app.route("/api/llm/autotune/stream-info")
 def llm_autotune_stream_info():
     """Direct-agent SSE URL for auto-tune progress (matches download/log pattern)."""
-    provider, perr = _tool_provider()
+    provider, perr = _tool_provider("autotune")
     if perr:
         return jsonify({"ok": False, "error": perr}), 400
     agent = _request_agent(provider)
@@ -2544,7 +2548,7 @@ def llm_autotune_stream_info():
 
 @app.route("/api/llm/autotune/cancel", methods=["POST"])
 def llm_autotune_cancel():
-    provider, perr = _tool_provider()
+    provider, perr = _tool_provider("autotune")
     if perr:
         return jsonify({"ok": False, "error": perr}), 400
     return proxies.proxy_to_primary(provider, "POST", f"/{provider}/autotune/cancel", timeout=10)
@@ -2552,7 +2556,7 @@ def llm_autotune_cancel():
 
 @app.route("/api/llm/autotune/preflight")
 def llm_autotune_preflight():
-    provider, perr = _tool_provider()
+    provider, perr = _tool_provider("autotune")
     if perr:
         return jsonify({"ok": False, "error": perr}), 400
     return proxies.proxy_to_primary(provider, "GET", f"/{provider}/autotune/preflight", timeout=20)
@@ -2566,7 +2570,7 @@ def llm_autotune_status():
         want_model = (flask_request.args.get("model_id") or "").strip()
         want_agent = (flask_request.args.get("agent_id") or "").strip()
         if not want_agent:
-            provider, _perr = _tool_provider()
+            provider, _perr = _tool_provider("autotune")
             want_agent = str((_request_agent(provider) or {}).get("agent_id") or "")
         where, params = "tool = 'autotune' AND ok = 1", []
         if want_model:
@@ -5966,9 +5970,9 @@ draft_candidates.register_routes(app, ctx, db_path=str(DB_PATH), read_ini=_read_
 
 
 def _fleet_hosts(provider: "str | None" = "llama") -> list:
-    """Approved bench-capable agents for the fleet host picker; None = llama and LM Studio hosts together."""
+    """Approved bench-capable agents for the fleet host picker; None = llama, LM Studio and vLLM hosts together."""
     if provider is None:
-        return _fleet_hosts("llama") + _fleet_hosts("lms")
+        return _fleet_hosts("llama") + _fleet_hosts("lms") + _fleet_hosts("vllm")
     out = []
     spec = providers.get(provider)
     cap_key = spec.capability_key if spec else provider
@@ -5986,6 +5990,12 @@ def _fleet_hosts(provider: "str | None" = "llama") -> list:
             ids = [str(r.get("identifier") or r.get("model") or "") for r in (sample.get("ps") or []) if isinstance(r, dict)]
             ids = [i for i in ids if i]
             row.update({"model": ids[0] if ids else None, "models": ids, "state": "awake" if ids else "idle"})
+        elif provider == "vllm":
+            v = sample.get("vllm") or {}
+            ids = [str(i) for i in (v.get("models") or []) if i]
+            running = v.get("state") == "running"
+            row.update({"model": (v.get("model") if running else None) or (ids[0] if (running and ids) else None),
+                        "models": ids if running else [], "state": "awake" if running else "idle"})
         else:
             llama = sample.get("llama") or {}
             row.update({"model": providers.llama.clean_display_model(llama.get("model")), "state": llama.get("state")})

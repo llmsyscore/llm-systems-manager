@@ -2128,7 +2128,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
             <div class="mc-menu">
               <button onclick="openServerConfig('vllm')"><span class="mi">⚙</span>Server config</button>
-              <button onclick="openVllmBench()"><span class="mi">◷</span>Benchmark</button>
+              <button onclick="toolsDeepLink('benchmark', null, { provider: 'vllm', agent: (typeof _selectedAgent === 'function' && _selectedAgent('vllm')) || toolsDefaultAgentFor('vllm'), install: true })"><span class="mi">◷</span>Benchmark</button>
               <button onclick="openVllmAutotune()"><span class="mi">⌖</span>Autotune</button>
             </div>
           </div>
@@ -2778,14 +2778,14 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol-models.js?v=2026.09.29-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.29-2"></script>
-<script src="/static/js/bench-live.js?v=2026.09.29-2"></script>
+<script src="/static/js/bench-live.js?v=2026.09.29-4"></script>
 <script src="/static/js/autotune.js?v=2026.09.29-2"></script>
 <script src="/static/js/quality.js?v=2026.09.29-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.28-4"></script>
 <script src="/static/js/vllm.js?v=2026.09.28-4"></script>
 <script src="/static/js/vllm-bench-autotune.js?v=2026.09.28-8"></script>
 <script src="/static/js/report-card.js?v=2026.09.29-3"></script>
-<script src="/static/js/tools.js?v=2026.09.29-3"></script>
+<script src="/static/js/tools.js?v=2026.09.29-4"></script>
 <script src="/static/js/energy.js?v=2026.09.28-2"></script>
 <script src="/static/js/forecast.js?v=2026.09.21-7"></script>
 <script src="/static/js/overall.js?v=2026.09.19-1"></script>

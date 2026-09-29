@@ -240,6 +240,32 @@ def test_bench_run_gating_and_provider_tag(env, monkeypatch):
     assert any(e.get("type") == "line" and "not loaded" in e.get("text", "") for e in events)
 
 
+def test_bench_shim_start_failure_frees_the_slot_and_ends_the_run(env, monkeypatch):
+    t = env.tools
+    monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s"})
+
+    class FailShim:
+        def __init__(self, upstream): self.url = "http://127.0.0.1:1"
+        def __enter__(self): raise OSError("bind failed")
+        def __exit__(self, *a): return None
+    monkeypatch.setattr(t._shim, "Shim", FailShim)
+    monkeypatch.setattr(env.llama, "_bench_live_run_all", lambda *a, **k: pytest.fail("run must not start"))
+    started = []
+    real_thread = threading.Thread
+
+    def thread(*a, **k):
+        th = real_thread(*a, **k)
+        started.append(th)
+        return th
+    monkeypatch.setattr(t.threading, "Thread", thread)
+    assert t.lms_bench_live_run({"model_id": "qwen3.5-9b@q6_k", "bench": "throughput_1k"})["ok"]
+    started[0].join(5)
+    assert env.llama._bench_active is False
+    events = [rec["event"] for rec in env.llama._bench_replay.records_after_seq(0)]
+    assert events[-1]["type"] == "done" and events[-1]["ok"] is False
+    assert any(e.get("type") == "line" and "bind failed" in e.get("text", "") for e in events)
+
+
 def test_backend_current_load_and_restore(env, monkeypatch):
     monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": None, "script": None})
     be = env.tools._LmsBackend("qwen3.5-9b@q6_k", "run1")

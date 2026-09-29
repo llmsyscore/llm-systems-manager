@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.29-1"
+VERSION = "v2026.09.29-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).

@@ -170,3 +170,29 @@ def test_shim_proxies_and_answers_non_streamed(shim):
     finally:
         up.shutdown()
         up.server_close()
+
+
+def test_shim_label_names_the_upstream_in_errors(shim, monkeypatch):
+    import types
+
+    class _Refused(Exception):
+        pass
+
+    def _refuse(*a, **k):
+        raise _Refused("connection refused")
+
+    monkeypatch.setattr(shim, "requests", types.SimpleNamespace(
+        Session=lambda: types.SimpleNamespace(post=_refuse, close=lambda: None), RequestException=_Refused))
+    sh = shim.Shim("http://127.0.0.1:1", native=False, label="vLLM")
+    assert sh.label == "vLLM" and sh.native_available() is False
+    with sh:
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(sh.url + "/v1/chat/completions", data=json.dumps(
+            {"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            assert False, "expected 502"
+        except urllib.error.HTTPError as e:
+            assert e.code == 502 and "vLLM unreachable" in e.read().decode()
