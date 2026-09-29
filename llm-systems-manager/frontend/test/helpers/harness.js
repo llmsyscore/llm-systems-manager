@@ -101,7 +101,7 @@ export const QUEUE_SLOT_STUB = `
           waitFor: (meta && meta.wait_for) || (b ? b.label + (b.host ? ' on ' + b.host : '') : 'the run in progress') };
         s.sync();
       },
-      startHeld() { const j = s.jobId(); s.pending = null; s.sync(); if (opts.attach) opts.attach({ job_id: j, status: 'running' }); },
+      startHeld(extra) { const j = s.jobId(); s.pending = null; s.sync(); if (opts.attach) opts.attach(Object.assign({ job_id: j, status: 'running' }, extra || {})); },
       vanishHeld() { s.pending = null; s.sync(); if (opts.dropped) opts.dropped(); },
       busy: () => window.__gateBusy || null,
       queued: () => !!s.pending,

@@ -1,4 +1,5 @@
-"""tool_queue (#897): Tools runs that wait for a busy host, as `tool_run` jobs on the job service."""
+"""tool_queue (#897): Tools runs that wait for a busy host, as `tool_run` jobs on the job service.
+Report Card runs in the manager and waits the same way as a `report_card` job (#1136)."""
 from __future__ import annotations
 
 import logging
@@ -13,6 +14,10 @@ log = logging.getLogger(__name__)
 
 KIND = "tool_run"
 TITLE = "Tool run"
+CARD_KIND = "report_card"
+CARD_TITLE = "Report Card"
+CARD_TOOL = "reportcard"
+KINDS = (KIND, CARD_KIND)
 TOOLS = ("benchmark", "autotune", "quality")
 FLAG = {"benchmark": "bench_active", "autotune": "autotune_active", "quality": "quality_active"}
 LABEL = {"benchmark": "Benchmark", "autotune": "Autotune", "quality": "Quality guard", "reportcard": "Report Card"}
@@ -57,6 +62,11 @@ class Deps:
     max_queued: Callable[[], int]
     sleep: Callable[[float], None] = field(default=time.sleep)
     now: Callable[[], float] = field(default=time.time)
+    # Report Card runner (#1136): start(req) -> runner job id or None when busy;
+    # status(id) -> None while running, the terminal event when done, {"event": "lost"} when unknown.
+    card_start: Optional[Callable[[dict], Optional[str]]] = None
+    card_status: Optional[Callable[[str], Optional[dict]]] = None
+    card_cancel: Optional[Callable[[str], None]] = None
 
 
 def model_of(body: dict) -> str:
@@ -87,6 +97,11 @@ class Queue:
             KIND, TITLE, run=self.run, validate=self._validate, label=self._label,
             exclusive=lambda spec: [f"perf:{spec.get('agent_id', '')}"],
             on_cancel=self.on_cancel, resume="requeue", max_run_s=max_run_s))
+        if deps.card_start is not None:
+            service.register(jobs.Kind(
+                CARD_KIND, CARD_TITLE, run=self.run_card, validate=self._validate_card, label=self._label,
+                exclusive=lambda spec: [f"perf:{spec.get('agent_id', '')}"],
+                on_cancel=self.on_cancel_card, resume="requeue", max_run_s=MAX_RUN_S))
 
     # ── kind hooks ──
     @staticmethod
@@ -105,6 +120,15 @@ class Queue:
         out["body"] = spec.get("body") if isinstance(spec.get("body"), dict) else {}
         out["model_id"] = str(out.get("model_id") or model_of(out["body"]))
         return out, None
+
+    @staticmethod
+    def _validate_card(spec: dict, who: dict):
+        req = spec.get("req")
+        if not spec.get("agent_id") or not spec.get("provider") or not isinstance(req, dict):
+            return None, "agent, provider and req are required"
+        model = str(req.get("model") or req.get("model_key") or "")
+        return {"provider": str(spec["provider"]), "agent_id": str(spec["agent_id"]), "tool": CARD_TOOL,
+                "model_id": model[:200], "req": req}, None
 
     def _label(self, spec: dict) -> str:
         return f"{LABEL.get(spec.get('tool'), 'Tool')} · {_short(spec.get('model_id') or '')} · {self.d.hostname(spec.get('agent_id') or '') or 'host'}"
@@ -169,6 +193,51 @@ class Queue:
             self._nap(job)
         return jobs.fail("cancelled", alert=False)
 
+    def run_card(self, job: jobs.Job) -> jobs.Outcome:
+        """Waits for the host, starts the in-manager Report Card runner, then follows it to its end."""
+        spec, state = job.spec, dict(job.state or {})
+        aid, provider = spec["agent_id"], spec["provider"]
+        agent = self.d.agent_for(aid)
+        if not agent:
+            return jobs.fail("unknown agent")
+        run_id = state.get("run_id")
+        if run_id and (self.d.card_status(run_id) or {}).get("event") == "lost":
+            # Re-entry after a restart: the runner died with the manager, so the run starts over.
+            run_id, state = None, {}
+        if not run_id:
+            if aid in set(self.d.held_agents() or ()) or self._agent_busy(agent, provider):
+                return jobs.again(POLL_S, state=state, message="waiting for the host")
+            run_id = self.d.card_start(spec["req"])
+            if not run_id:
+                return jobs.again(POLL_S, state=state, message="waiting for the host")
+            state = {"run_id": run_id, "started": self.d.now()}
+            self.s.set_state(job.id, state)
+            if job.cancelled():
+                self.d.card_cancel(run_id)
+                return jobs.fail("cancelled", alert=False)
+        while not job.cancelled():
+            ev = self.d.card_status(run_id)
+            if ev is not None:
+                kind = ev.get("event")
+                if kind == "done":
+                    res = (ev.get("card") or {}).get("result") or {}
+                    return jobs.finish({"run_id": run_id, "model": res.get("model"), "gen_tps": res.get("gen_tps")})
+                if kind == "cancelled":
+                    return jobs.fail("cancelled", alert=False)
+                if kind == "lost":
+                    return jobs.fail("report card run lost")
+                return jobs.fail(str(ev.get("error") or "report card failed")[:300])
+            self._nap(job)
+        return jobs.fail("cancelled", alert=False)
+
+    def on_cancel_card(self, job: jobs.Job) -> None:
+        run_id = (getattr(job, "state", None) or {}).get("run_id")
+        if run_id and self.d.card_cancel is not None:
+            try:
+                self.d.card_cancel(run_id)
+            except Exception:  # noqa: BLE001 — best effort
+                pass
+
     def _agent_busy(self, agent: dict, provider: str) -> bool:
         """True when the agent's tools/state reports any tool running; unreadable counts as not busy."""
         try:
@@ -204,11 +273,14 @@ class Queue:
             pass
 
     # ── start-or-queue questions ──
-    def rows_for(self, agent_id: str) -> "list[dict]":
-        """Live tool_run rows for one host: running first, then queued by creation."""
-        rows = [r for r in self.s.list("live", kind=KIND, limit=jobs.LIST_MAX) if r["spec"].get("agent_id") == agent_id]
+    def _live_rows(self) -> "list[dict]":
+        """Live tool_run and report_card rows: running first, then queued by creation."""
+        rows = [r for kind in KINDS for r in self.s.list("live", kind=kind, limit=jobs.LIST_MAX)]
         rows.sort(key=lambda r: (0 if r["status"] == "running" else 1, r["created"], r["id"]))
         return rows
+
+    def rows_for(self, agent_id: str) -> "list[dict]":
+        return [r for r in self._live_rows() if r["spec"].get("agent_id") == agent_id]
 
     def _batch_holds(self, agent_id: str) -> bool:
         key = f"perf:{agent_id}"
@@ -236,13 +308,17 @@ class Queue:
         name = "Autotune batch" if tool == "batch" else LABEL.get(tool, tool)
         return f"{name} on {host}" if host else name
 
-    def submit(self, *, provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict,
-               user: str, role: str, pre: Optional[str] = None) -> dict:
-        aid = agent["agent_id"]
+    def _queued_or_full(self, aid: str) -> "list[dict]":
         queued = [r for r in self.rows_for(aid) if r["status"] == "queued"]
         cap = int(self.d.max_queued() or 5)
         if len(queued) >= cap:
             raise QueueFull(f"{cap} run{'s' if cap != 1 else ''} already queued on {self.d.hostname(aid) or 'this host'}")
+        return queued
+
+    def submit(self, *, provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict,
+               user: str, role: str, pre: Optional[str] = None) -> dict:
+        aid = agent["agent_id"]
+        queued = self._queued_or_full(aid)
         spec = {"provider": provider, "agent_id": aid, "tool": tool, "path": path, "cancel": cancel,
                 "body": body, "model_id": model_of(body)}
         if pre:
@@ -250,15 +326,21 @@ class Queue:
         row = self.s.submit(KIND, spec, user=user or "", role=role or "", source="ui")
         return {"job_id": row["id"], "position": len(queued) + 1, "wait_for": self.wait_for(aid)}
 
+    def submit_card(self, *, provider: str, agent: dict, req: dict, user: str, role: str) -> dict:
+        """Queues a Report Card run (#1136); same answer shape as submit()."""
+        aid = agent["agent_id"]
+        queued = self._queued_or_full(aid)
+        spec = {"provider": provider, "agent_id": aid, "req": req}
+        row = self.s.submit(CARD_KIND, spec, user=user or "", role=role or "", source="ui")
+        return {"job_id": row["id"], "position": len(queued) + 1, "wait_for": self.wait_for(aid)}
+
     def snapshot(self) -> dict:
-        """{agent_id: [{job_id, tool, provider, model_id, user, status, created, path}, …]} in FIFO order."""
+        """{agent_id: [{job_id, tool, provider, model_id, user, status, created, path, run_id}, …]} in FIFO order."""
         out: "dict[str, list]" = {}
-        rows = self.s.list("live", kind=KIND, limit=jobs.LIST_MAX)
-        rows.sort(key=lambda r: (0 if r["status"] == "running" else 1, r["created"], r["id"]))
-        for r in rows:
+        for r in self._live_rows():
             out.setdefault(r["spec"].get("agent_id") or "", []).append(
                 {"job_id": r["id"], "tool": r["spec"].get("tool"), "provider": r["spec"].get("provider") or "",
                  "model_id": r["spec"].get("model_id") or "",
                  "user": r.get("user") or "", "status": r["status"], "created": r["created"],
-                 "path": r["spec"].get("path") or ""})
+                 "path": r["spec"].get("path") or "", "run_id": (r.get("state") or {}).get("run_id") or ""})
         return out

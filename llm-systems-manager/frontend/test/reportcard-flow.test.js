@@ -307,22 +307,31 @@ describe('custom-mode model datalist', () => {
 });
 
 
-// #888: the shared run gate — Report Card drives a running server, so it
-// contends for the same GPU as the agent-side tools.
+// #888/#897/#1136: the shared run gate — Report Card drives a running server, so it
+// contends for the same GPU as the agent-side tools and queues behind them.
 function stubGate() {
   const slots = [];
   const state = { busy: null };
+  vi.stubGlobal('toolsQueueText', (st, noun) => {
+    if (st.queued) return 'Queued behind ' + st.waitFor + ' \u2014 this ' + noun + ' starts on its own when that finishes.';
+    return st.busy ? st.busy.label + ' is running on ' + st.busy.host + '. New ' + noun + 's queue behind it.' : '';
+  });
   vi.stubGlobal('toolsQueueSlot', (id, opts) => {
     const s = {
       id, pending: null,
       busy: () => state.busy,
       queued: () => !!s.pending,
       waitFor: () => (s.pending ? s.pending.waitFor : null),
+      jobId: () => (s.pending ? s.pending.job_id : null),
+      hold(jobId, meta) { s.pending = { job_id: jobId, waitFor: (meta && meta.wait_for) || 'the run in progress' }; s.sync(); },
+      startHeld(extra) { const j = s.jobId(); s.pending = null; s.sync(); if (opts.attach) opts.attach(Object.assign({ job_id: j, status: 'running' }, extra || {})); },
+      vanishHeld() { s.pending = null; s.sync(); if (opts.dropped) opts.dropped(); },
       drop() { if (!s.pending) return false; s.pending = null; s.sync(); return true; },
       sync() {
         if (opts.render) {
-          opts.render({ queued: !!s.pending,
-            waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });
+          const b = s.busy();
+          opts.render({ queued: !!s.pending, waitFor: s.pending ? s.pending.waitFor : null, busy: b,
+            canQueue: !(b && b.queueable === false) });
         }
       },
     };
@@ -332,12 +341,93 @@ function stubGate() {
   return { slots, state };
 }
 
-// #897: Report Card runs in the manager, so a busy host blocks Run instead of queueing it.
-describe('report card behind another tool (#888, #897)', () => {
-  it('blocks the run while a Benchmark holds the same host', async () => {
-    const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+const QUEUED = { ok: true, queued: true, job_id: 'q1', position: 1, wait_for: 'Benchmark on gpu-01' };
+const BENCH_BUSY = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01', queueable: true };
+
+describe('report card behind another tool (#888, #897, #1136)', () => {
+  it('queues the run behind a Benchmark on the same host', async () => {
+    const { api, sources } = loadModule({ runResponse: QUEUED });
     const gate = stubGate();
-    gate.state.busy = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01' };
+    gate.state.busy = BENCH_BUSY;
+    api.rcRun();
+    await tick(); await tick();
+    expect(fetch.mock.calls.map(c => c[0])).toContain('/api/reportcard/run');
+    expect(sources).toHaveLength(0);
+    expect(gate.slots[0].queued()).toBe(true);
+    expect(gate.slots[0].jobId()).toBe('q1');
+    const btn = document.getElementById('rcRunBtn');
+    expect(btn.textContent).toBe('Queue run');
+    expect(btn.disabled).toBe(true);
+    expect(document.getElementById('rcCancelBtn').style.display).toBe('');
+    expect(document.getElementById('rcNote').textContent)
+      .toBe('Queued behind Benchmark on gpu-01 \u2014 this run starts on its own when that finishes.');
+  });
+
+  it('a second click while queued is refused, Cancel drops the queued job', async () => {
+    const { api, sources } = loadModule({ runResponse: QUEUED });
+    const gate = stubGate();
+    gate.state.busy = BENCH_BUSY;
+    api.rcRun();
+    await tick(); await tick();
+    api.rcRun();
+    await tick();
+    expect(fetch.mock.calls.filter(c => c[0] === '/api/reportcard/run')).toHaveLength(1);
+    expect(document.getElementById('rcNote').textContent).toBe('A run is already queued. Drop it first.');
+    api.rcCancelRun();
+    expect(gate.slots[0].queued()).toBe(false);
+    expect(sources).toHaveLength(0);
+    expect(fetch.mock.calls.map(c => c[0]).join(' ')).not.toContain('/api/reportcard/cancel');
+    expect(document.getElementById('rcNote').textContent).toBe('Queued run dropped.');
+    expect(document.getElementById('rcRunBtn').disabled).toBe(false);
+    expect(document.getElementById('rcCancelBtn').style.display).toBe('none');
+  });
+
+  it('adopts the queued run as its own once the job starts', async () => {
+    const { api, sources } = loadModule({ runResponse: QUEUED });
+    const gate = stubGate();
+    gate.state.busy = BENCH_BUSY;
+    api.rcRun();
+    await tick(); await tick();
+    gate.state.busy = null;
+    gate.slots[0].startHeld({ run_id: 'j9', provider: 'llama', agent_id: 'a'.repeat(32) });
+    expect(sources).toHaveLength(1);
+    expect(sources[0].url).toContain('/api/reportcard/stream/j9');
+    expect(document.getElementById('rcRunBtn').textContent).toBe('Running…');
+    expect(document.getElementById('rcRunBtn').disabled).toBe(true);
+    expect(document.getElementById('rcCancelBtn').style.display).toBe('');
+    expect(document.getElementById('rcNote').textContent).toBe('');
+    api.rcCancelRun();
+    expect(fetch.mock.calls.map(c => c[0])).toContain('/api/reportcard/cancel/j9');
+  });
+
+  it('ignores a started row that carries no runner id', async () => {
+    const { api, sources } = loadModule({ runResponse: QUEUED });
+    const gate = stubGate();
+    gate.state.busy = BENCH_BUSY;
+    api.rcRun();
+    await tick(); await tick();
+    gate.slots[0].startHeld({});
+    expect(sources).toHaveLength(0);
+    expect(document.getElementById('rcRunBtn').disabled).toBe(false);
+  });
+
+  it('a queued job that vanishes re-enables Run with a note', async () => {
+    const { api } = loadModule({ runResponse: QUEUED });
+    const gate = stubGate();
+    gate.state.busy = BENCH_BUSY;
+    api.rcRun();
+    await tick(); await tick();
+    gate.state.busy = null;
+    gate.slots[0].vanishHeld();
+    expect(document.getElementById('rcNote').textContent).toBe('Queued run dropped.');
+    expect(document.getElementById('rcRunBtn').textContent).toBe('\u25b6 Run report card');
+    expect(document.getElementById('rcRunBtn').disabled).toBe(false);
+  });
+
+  it('blocks the run on a host that cannot be queued against', async () => {
+    const { api, sources } = loadModule({ runResponse: QUEUED });
+    const gate = stubGate();
+    gate.state.busy = { ...BENCH_BUSY, queueable: false };
     api.rcRun();
     await tick(); await tick();
     expect(sources).toHaveLength(0);
@@ -345,16 +435,19 @@ describe('report card behind another tool (#888, #897)', () => {
     expect(gate.slots[0].queued()).toBe(false);
     expect(document.getElementById('rcNote').textContent)
       .toBe('Benchmark is running on gpu-01. Try again when it finishes.');
-    api.rcCancelRun();
-    expect(fetch.mock.calls.map(c => c[0]).join(' ')).not.toContain('/api/reportcard/cancel');
+    gate.slots[0].sync();
+    expect(document.getElementById('rcRunBtn').textContent).toBe('\u25b6 Run report card');
   });
 
-  it('runs once the host frees up', async () => {
+  it('runs directly once the host frees up', async () => {
     const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j7' } });
     const gate = stubGate();
-    gate.state.busy = { tool: 'benchmark', label: 'Benchmark', host: 'gpu-01' };
+    gate.state.busy = { tool: 'unknown', label: 'the agent list to load', host: '', unresolved: true };
     api.rcRun();
     await tick(); await tick();
+    expect(sources).toHaveLength(0);
+    expect(document.getElementById('rcNote').textContent)
+      .toBe('Waiting for the agent list to load. Try again in a moment.');
     gate.state.busy = null;
     api.rcRun();
     await tick(); await tick();
@@ -362,18 +455,18 @@ describe('report card behind another tool (#888, #897)', () => {
     expect(sources[0].url).toContain('/api/reportcard/stream/j7');
   });
 
-  it('names the busy host under a plain Run button', async () => {
-    const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
-    const gate = stubGate();
-    gate.state.busy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01' };
-    api.rcRun();
-    await tick();
-    gate.slots[0].sync();
-    expect(document.getElementById('rcRunBtn').textContent).toBe('\u25b6 Run report card');
+  it('names the busy host under a Queue run button', async () => {
+    const { api } = loadModule({ runResponse: QUEUED });
+    stubGate().state.busy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', queueable: true };
+    api._rcRenderQueue({ queued: false, waitFor: null, canQueue: true,
+                         busy: { tool: 'autotune', label: 'Autotune', host: 'gpu-01', queueable: true } });
+    expect(document.getElementById('rcRunBtn').textContent).toBe('Queue run');
     expect(document.getElementById('rcRunBtn').disabled).toBe(false);
     expect(document.getElementById('rcCancelBtn').style.display).toBe('none');
     expect(document.getElementById('rcNote').textContent)
-      .toContain('Autotune is running on gpu-01');
+      .toBe('Autotune is running on gpu-01. New runs queue behind it.');
+    api._rcRenderQueue({ queued: false, waitFor: null, busy: null, canQueue: true });
+    expect(document.getElementById('rcNote').textContent).toBe('');
   });
 
   it('shows a refused run as the error note', async () => {

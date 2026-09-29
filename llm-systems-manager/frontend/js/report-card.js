@@ -42,13 +42,17 @@ function _rcBusy(busy) {
   if (!busy) { _rcJobId = null; if (_rcSlot) _rcSlot.sync(); }
 }
 
-// Gate slot for the picked host: a busy host blocks Run; Report Card runs in the manager, so it never queues.
+// Queue slot for the picked host (#897/#1136): a busy host queues the run as a
+// report_card job; the module adopts it as its own run once the job starts.
 function _rcQueue() {
   if (!_rcSlot && typeof toolsQueueSlot === 'function') {
     _rcSlot = toolsQueueSlot('reportcard', {
       provider: () => _rcEl('rcProvider')?.value || 'llama',
       agent: () => _rcEl('rcAgent')?.value || '',
       render: (st) => _rcRenderQueue(st),
+      started: (r) => !!r.run_id,
+      attach: (r) => _rcAdopt(r),
+      dropped: () => { _rcBusy(false); _rcNote('Queued run dropped.'); },
     });
   }
   return _rcSlot;
@@ -57,11 +61,15 @@ function _rcQueue() {
 function _rcRenderQueue(st) {
   if (_rcJobId || _rcStarting) return;
   const btn = _rcEl('rcRunBtn'), cancel = _rcEl('rcCancelBtn');
-  if (btn) { btn.textContent = '\u25b6 Run report card'; btn.disabled = false; }
-  if (cancel) { cancel.style.display = 'none'; cancel.textContent = '\u2715 Cancel'; }
-  if (st.busy) {
+  const queueable = !!st.busy && st.canQueue !== false;
+  if (btn) { btn.textContent = (st.queued || queueable) ? 'Queue run' : '\u25b6 Run report card'; btn.disabled = !!st.queued; }
+  if (cancel) { cancel.style.display = st.queued ? '' : 'none'; cancel.textContent = '\u2715 Cancel'; }
+  const text = st.queued || queueable
+    ? (typeof toolsQueueText === 'function' ? toolsQueueText(st, 'run') : '')
+    : (st.busy ? _rcBusyText(st.busy) : '');
+  if (text) {
     _rcGateNote = true;
-    _rcNote(_rcBusyText(st.busy));
+    _rcNote(text);
   } else if (_rcGateNote) {
     _rcGateNote = false;
     _rcNote('');
@@ -203,18 +211,21 @@ function rcRun(confirm) {
   if (confirm === 'download') body.confirm_download = true;
 
   const slot = _rcQueue();
+  if (slot && slot.queued()) { _rcNote('A run is already queued. Drop it first.', true); return; }
   const busy = !_rcJobId && slot && slot.busy();
-  if (busy) { _rcNote(_rcBusyText(busy), true); return; }
+  // An unresolved or unqueueable host still blocks; any other busy host queues server-side.
+  if (busy && (busy.unresolved || busy.queueable === false)) { _rcNote(_rcBusyText(busy), true); return; }
   _rcStart(body);
 }
 
-// The note shown while another tool holds the picked host.
+// The note shown while another tool holds the picked host and the run cannot queue.
 function _rcBusyText(b) {
   if (b.unresolved) return 'Waiting for the agent list to load. Try again in a moment.';
   return `${b.label} is running on ${b.host}. Try again when it finishes.`;
 }
 
-function _rcStart(body) {
+// Clears the last run's panes before a start or an adopted run.
+function _rcResetView() {
   _rcGateNote = false;
   _rcBusy(true);
   const box = _rcEl('rcProgress');
@@ -225,6 +236,22 @@ function _rcStart(body) {
     if (c) c.style.display = 'none';
   });
   rcCleanupKeep();
+}
+
+// The queued job started: follow the runner it launched as this tab's own run.
+function _rcAdopt(r) {
+  if (_rcJobId || _rcStarting || !r || !r.run_id) return;
+  _rcResetView();
+  _rcJobId = r.run_id;
+  _rcRunTarget = {agent: r.agent_id || _rcEl('rcAgent')?.value || '',
+                  provider: r.provider || _rcEl('rcProvider')?.value || 'llama'};
+  _rcTickSet('Starting…', 0);
+  _rcLog('run started');
+  rcStream(r.run_id);
+}
+
+function _rcStart(body) {
+  _rcResetView();
   _rcStarting = true;
   fetch('/api/reportcard/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -234,6 +261,12 @@ function _rcStart(body) {
     if (!ok) {
       _rcBusy(false);
       _rcNote(d.error || 'Run failed.', true); return;
+    }
+    if (d.queued) {
+      _rcBusy(false);
+      const slot = _rcQueue();
+      if (slot) slot.hold(d.job_id, d);
+      return;
     }
     if (d.status === 'needs_confirm') {
       _rcBusy(false); rcShowVllmConfirm(d); return;

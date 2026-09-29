@@ -52,6 +52,22 @@ const last = (win) => win.__rendered[win.__rendered.length - 1];
 async function poll(win, activity) { win.__activity = activity; await win.toolsPollActivity(); await flush(); await flush(); }
 
 describe('toolsQueueSlot on the server queue (#897)', () => {
+  it('started() defers attach until the running row qualifies, and stamps the host (#1136)', async () => {
+    const win = await boot(AT_ON_A1, `
+      window.__rcAt = [];
+      window.__rc = toolsQueueSlot('reportcard', { provider: () => 'llama', started: r => !!r.run_id,
+        attach: r => window.__rcAt.push(r), dropped: () => { window.__dropped++; } });
+    `);
+    win.__rc.hold('c1', { position: 1 });
+    await poll(win, { ...AT_ON_A1, queue: { a1: [{ ...row('c1', 'reportcard', 'alice', 'running'), run_id: '' }] } });
+    expect(win.__rcAt).toHaveLength(0);
+    await poll(win, { ...AT_ON_A1, queue: { a1: [{ ...row('c1', 'reportcard', 'alice', 'running'), run_id: 'rc9' }] } });
+    expect(win.__rcAt).toHaveLength(1);
+    expect(win.__rcAt[0]).toMatchObject({ job_id: 'c1', run_id: 'rc9', agent_id: 'a1' });
+    expect(win.__rc.queued()).toBe(false);
+    expect(win.__dropped).toBe(0);
+  });
+
   it('keeps the provisional hold until the row appears', async () => {
     const win = await boot(AT_ON_A1);
     win.__slot.hold('j1', { position: 2, wait_for: 'Autotune on gpu-01' });
