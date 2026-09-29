@@ -117,7 +117,7 @@ const posted = (win, path) => win.__fetches.filter(f => f[0] === path);
 
 const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
 const heldRow = (status = 'queued', tool = 'benchmark') =>
-  ({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool, model_id: 'org/m', user: 'alice', status, created: 1 }] } });
+  ({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool, provider: 'llama', model_id: 'org/m', user: 'alice', status, created: 1 }] } });
 
 describe('Benchmark · Live on the server queue (#897)', () => {
   it('posts the start even while the host is busy and holds the queued job', async () => {
@@ -285,7 +285,7 @@ describe('Offline benchmark on the server queue (#897)', () => {
   });
 
   it('adopts the user queued row when the module opens, without a Run click', async () => {
-    const win = await bootOffline({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'benchmark', model_id: 'org/m',
+    const win = await bootOffline({ ...AT_ON_A1, queue: { a1: [{ job_id: 'j1', tool: 'benchmark', provider: 'llama', model_id: 'org/m',
       user: 'alice', status: 'queued', created: 1, path: '/llama/bench/run' }] } });
     await win.openBench('org/m');
     for (let i = 0; i < 4; i++) await flush();

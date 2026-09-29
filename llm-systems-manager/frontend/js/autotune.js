@@ -787,7 +787,7 @@
     if (typeof toolsOpenTool === 'function') toolsOpenTool('quality', done.model_id, { overrides });
   }
   const QUALITY_KEYS = new Set(['cache-type-k', 'ctk', 'cache-type-v', 'ctv', 'threads', 't', 'threads-batch', 'tb', 'n-gpu-layers', 'ngl', 'n-cpu-moe', 'ncmoe', 'batch-size', 'b', 'ubatch-size', 'ub', 'flash-attn', 'fa', 'load-mode', 'lm']);
-  // Shared gate (#888): another tool on this host turns Run into Queue.
+  // Server queue slot (#897): holds the job a queued start returns and adopts it when it runs.
   function slot() {
     if (!_slot && typeof toolsQueueSlot === 'function') {
       _slot = toolsQueueSlot('autotune', {

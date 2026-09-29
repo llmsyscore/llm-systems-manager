@@ -266,8 +266,9 @@
     const adopt = () => {
       if (held) return;
       const me = _toolsMe();
-      const m = me ? queuedRows().find(r => r.tool === tool && r.user === me && !_toolsHeldIds.has(r.job_id)
-                                       && (!opts.match || opts.match(r))) : null;
+      const prov = pick().provider;
+      const m = me ? queuedRows().find(r => r.tool === tool && r.provider === prov && r.user === me
+                                       && !_toolsHeldIds.has(r.job_id) && (!opts.match || opts.match(r))) : null;
       if (m) take(m.job_id, liveAgent(), null, true);
     };
     const state = () => {

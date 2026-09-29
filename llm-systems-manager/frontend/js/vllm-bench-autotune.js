@@ -11,7 +11,7 @@ let _vatSlot = null, _vbenchSlot = null;
 function _vatQueue() {
   if (!_vatSlot && typeof toolsQueueSlot === 'function') {
     _vatSlot = toolsQueueSlot('autotune:vllm', { provider: () => 'vllm',
-      attach: () => { if (!_vatEventSrc) _vatOpenStream(); },
+      attach: () => { if (!_vatEventSrc) { _wizStatus('vllmAtStatus', 'Starting…'); _vatOpenStream(); } },
       dropped: () => { _wizStatus('vllmAtStatus', 'queued run dropped'); _vatFinish(); } });
   }
   return _vatSlot;
@@ -19,7 +19,7 @@ function _vatQueue() {
 function _vbenchQueue() {
   if (!_vbenchSlot && typeof toolsQueueSlot === 'function') {
     _vbenchSlot = toolsQueueSlot('benchmark:vllm', { provider: () => 'vllm',
-      attach: () => { if (!_vbenchEventSrc) _vbenchOpenStream(); },
+      attach: () => { if (!_vbenchEventSrc) { _wizStatus('vllmBenchStatus', 'Starting…'); _vbenchOpenStream(); } },
       dropped: () => { _wizStatus('vllmBenchStatus', 'queued run dropped'); _vbenchFinish(); } });
   }
   return _vbenchSlot;
@@ -135,6 +135,7 @@ function _vatGetMaxLen(args) {
 
 function closeVllmAutotune() {
   _vatEl('vllmAtOverlay').classList.remove('open');
+  const s = _vatQueue(); if (s && s.queued()) s.drop();
   if (_vatEventSrc) cancelVllmAutotune();
   _vatFinish();
 }
@@ -146,6 +147,8 @@ function _vatNum(id, def) {
 
 async function runVllmAutotune() {
   if (!_vatOrig) return;
+  const q = _vatQueue();
+  if (q && q.queued()) { _wizStatus('vllmAtStatus', 'a run is already queued · drop it first', 'err'); return; }
   const body = {
     probe_len: Math.round(_vatNum('vllmAtProbeLen', 4096)),
     concurrency: _vatNum('vllmAtConc', 1.0),
@@ -444,11 +447,14 @@ function openVllmBench() {
 
 function closeVllmBench() {
   _vatEl('vllmBenchOverlay').classList.remove('open');
+  const s = _vbenchQueue(); if (s && s.queued()) s.drop();
   if (_vbenchEventSrc) cancelVllmBench();
   _vbenchFinish();
 }
 
 async function runVllmBench() {
+  const q = _vbenchQueue();
+  if (q && q.queued()) { _wizStatus('vllmBenchStatus', 'a run is already queued · drop it first', 'err'); return; }
   const switches = _vbenchSwitches
     .map(s => ({ flag: String(s.flag || '').trim(), value: String(s.value || '').trim() }))
     .filter(s => s.flag);

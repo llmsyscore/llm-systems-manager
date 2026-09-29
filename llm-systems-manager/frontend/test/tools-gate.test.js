@@ -149,7 +149,7 @@ describe('a held job keeps its own target (#897)', () => {
   });
 
   const IDLE_Q = (q) => ({ reportcard: false, benchmark: false, autotune: false, agents: {}, queue: q });
-  const rcRow = (status) => ({ job_id: 'j1', tool: 'reportcard', model_id: 'org/m', user: 'alice', status, created: 1 });
+  const rcRow = (status) => ({ job_id: 'j1', tool: 'reportcard', provider: 'llama', model_id: 'org/m', user: 'alice', status, created: 1 });
   async function heldThenRepointed() {
     const win = await pickerBoot(IDLE_Q({}));
     win.__slot.hold('j1', { position: 1 });

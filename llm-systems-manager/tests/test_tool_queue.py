@@ -238,7 +238,7 @@ def test_snapshot_groups_by_host_running_first():
     snap = q.snapshot()
     assert [r["job_id"] for r in snap[A1]] == [b["id"], a["id"]]
     assert snap[A1][0]["status"] == "running" and snap[A1][1]["user"] == "alice"
-    assert snap[A2] == [{"job_id": c["id"], "tool": "quality", "model_id": "org/m", "user": "alice",
+    assert snap[A2] == [{"job_id": c["id"], "tool": "quality", "provider": "llama", "model_id": "org/m", "user": "alice",
                          "status": "queued", "created": c["created"], "path": "/llama/bench/run"}]
 
 

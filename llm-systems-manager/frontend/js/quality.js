@@ -219,14 +219,14 @@
     closeStream();
     _es = SG.open({ url: '/api/llm/autotune/stream', bypassPause: true, onEvent: onEvent, onDrop: () => log('stream dropped — reconnecting'), onGiveUp: () => finish({ ok: false, error: 'stream lost' }) });
   }
-  // Shared gate (#888): another tool on this host turns Run into Queue.
+  // Server queue slot (#897): holds the job a queued start returns and adopts it when it runs.
   function slot() {
     if (!_slot && typeof toolsQueueSlot === 'function') {
       _slot = toolsQueueSlot('quality', {
         provider: () => 'llama',
         render: (st) => syncQueue(st),
         attach: () => { if (_neutral || !running()) began(); },
-        dropped: () => { log('queued check dropped'); pill('', 'idle'); stage(''); },
+        dropped: () => { log('queued check dropped'); if (!running()) { pill('', 'idle'); stage(''); } },
       });
     }
     return _slot;

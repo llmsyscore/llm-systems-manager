@@ -14,6 +14,7 @@ const BODY = `
   <button id="vllmBenchRunBtn"></button><button id="vllmBenchCancelBtn"></button>
   <span id="vllmBenchStatus" class="sub"></span>
   <div id="vllmBenchResults"></div>
+  <div id="vllmAtOverlay"></div><div id="vllmBenchOverlay"></div>
   <div id="vllmBenchRawLog"></div><span id="vllmBenchRawCount"></span>
 `;
 
@@ -129,7 +130,7 @@ describe('vLLM benchmark stream', () => {
 
 describe('vLLM benchmark on the server queue (#897)', () => {
   const AGENTS = { vllm: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true }] };
-  it('holds a queued start and opens the stream when it runs', async () => {
+  async function bootReal() {
     const win = runHarness({
       sources: ['let layout = {}; window.saveLayout = function () {};', STUBS, toolsGateFeed(AGENTS),
                 ...TOOLS_GATE_SRC.map(srcFile), srcFile('js/lib/sseguard.js'), GUARD_TIMERS,
@@ -139,15 +140,32 @@ describe('vLLM benchmark on the server queue (#897)', () => {
                   initToolsTab(); window.__done = toolsPollActivity();`,
     });
     await win.__done; await flush();
+    return win;
+  }
+
+  it('holds a queued start and opens the stream when it runs', async () => {
+    const win = await bootReal();
     win.__runAnswer = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
     await win.runVllmBench();
     for (let i = 0; i < 4; i++) await flush();
     expect(text(win, 'vllmBenchStatus')).toContain('queued');
     expect(win.eval('_vbenchEventSrc')).toBe(null);
     win.__activity = { reportcard: false, benchmark: true, autotune: false, quality: false, agents: { a1: ['benchmark'] },
-      queue: { a1: [{ job_id: 'j1', tool: 'benchmark', model_id: 'org/m', user: 'alice', status: 'running', created: 1 }] } };
+      queue: { a1: [{ job_id: 'j1', tool: 'benchmark', provider: 'vllm', model_id: 'org/m', user: 'alice', status: 'running', created: 1 }] } };
     await win.toolsPollActivity(); await flush(); await flush();
     expect(win.eval('_vbenchEventSrc')).toBeTruthy();
+    expect(text(win, 'vllmBenchStatus')).toBe('Starting…');
     expect(win.document.getElementById('vllmBenchCancelBtn').style.display).toBe('');
+  });
+
+  it('drops the held job when the overlay closes', async () => {
+    const win = await bootReal();
+    win.__runAnswer = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+    await win.runVllmBench();
+    for (let i = 0; i < 4; i++) await flush();
+    win.closeVllmBench();
+    await flush();
+    expect(win.__fetches.map(f => f[0])).toContain('/api/jobs/j1/cancel');
+    expect(win.document.getElementById('vllmBenchRunBtn').style.display).toBe('');
   });
 });
