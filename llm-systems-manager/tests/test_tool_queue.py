@@ -239,7 +239,7 @@ def test_snapshot_groups_by_host_running_first():
     assert [r["job_id"] for r in snap[A1]] == [b["id"], a["id"]]
     assert snap[A1][0]["status"] == "running" and snap[A1][1]["user"] == "alice"
     assert snap[A2] == [{"job_id": c["id"], "tool": "quality", "model_id": "org/m", "user": "alice",
-                         "status": "queued", "created": c["created"]}]
+                         "status": "queued", "created": c["created"], "path": "/llama/bench/run"}]
 
 
 def test_can_wait_needs_a_readable_tools_state():

@@ -30,6 +30,9 @@
   let _toolsAgentsReady = false;
   let _toolsGateKey = '';
   const _toolsGateSubs = new Set();
+  const _toolsPollSubs = new Set();   // run after every successful activity poll
+  const _toolsHeldIds = new Set();    // job ids some slot holds, so no two slots adopt one row
+  const _TOOLS_HOLD_ABSENT_MAX = 5;
 
   function _tEl(id) { return document.getElementById(id); }
   function _tLayout() { return (typeof layout === 'object' && layout) ? layout : null; }
@@ -75,6 +78,7 @@
         _toolsActivityAgents = (d.agents && typeof d.agents === 'object') ? d.agents : {};
         _toolsQueue = (d.queue && typeof d.queue === 'object') ? d.queue : {};
         toolsSyncRunDot();
+        [..._toolsPollSubs].forEach(fn => { try { fn(); } catch (_) {} });
       })
       .catch(() => {});
   }
@@ -240,20 +244,32 @@
   // queued row on the target host) and fires attach when it starts running (#897).
   function toolsQueueSlot(toolId, opts) {
     const tool = String(toolId).split(':')[0];
-    let held = null, info = null, seenRow = false;
+    let held = null, heldAgent = null, info = null, seenRow = false, absent = 0;
     const pick = () => ({ provider: opts.provider ? opts.provider() : 'llama',
                           agent: opts.agent ? opts.agent() : null });
-    const agentId = () => { const t = pick(); return t.agent || _toolsDefaultAgent[t.provider] || null; };
+    const liveAgent = () => { const t = pick(); return t.agent || _toolsDefaultAgent[t.provider] || null; };
+    const agentId = () => (held && heldAgent) || liveAgent();
     const rows = () => _toolsQueue[agentId()] || [];
     const queuedRows = () => rows().filter(r => r.status === 'queued');
     const rowOf = (id) => rows().find(r => r.job_id === id) || null;
+    const take = (id, agent, meta, seen) => {
+      held = id; heldAgent = agent; info = meta || null; seenRow = seen; absent = 0;
+      _toolsHeldIds.add(id);
+      _toolsQueueFast(true);
+    };
+    const release = () => {
+      if (!held) return;
+      _toolsHeldIds.delete(held);
+      held = null; heldAgent = null; info = null; seenRow = false; absent = 0;
+      _toolsQueueFast(false);
+    };
     const adopt = () => {
       if (held) return;
       const me = _toolsMe();
-      const m = me ? queuedRows().find(r => r.tool === tool && r.user === me) : null;
-      if (m) { held = m.job_id; info = null; seenRow = true; _toolsQueueFast(true); }
+      const m = me ? queuedRows().find(r => r.tool === tool && r.user === me && !_toolsHeldIds.has(r.job_id)
+                                       && (!opts.match || opts.match(r))) : null;
+      if (m) take(m.job_id, liveAgent(), null, true);
     };
-    const release = () => { held = null; info = null; seenRow = false; _toolsQueueFast(false); };
     const state = () => {
       adopt();
       const t = pick();
@@ -274,19 +290,22 @@
       waitFor: () => state().waitFor,
       jobId: () => (state().queued ? held : null),
       hold(jobId, meta) {
-        if (held) release();
-        held = jobId; info = meta || null; seenRow = false;
-        _toolsQueueFast(true);
+        release();
+        take(jobId, liveAgent(), meta, false);
         paint();
         toolsPollActivity();
       },
       drop() {
         if (!state().queued) return false;
-        const id = held;
+        const id = held, meta = info, aid = agentId();
         release();
+        // A refused or failed cancel puts the hold back on the same host.
+        const reHold = () => { if (held) return; take(id, aid, meta, false); paint(); toolsPollActivity(); };
         const f = typeof _fetchT === 'function' ? _fetchT : ((u, o) => fetch(u, o));
-        f('/api/jobs/' + encodeURIComponent(id) + '/cancel', { method: 'POST' }).catch(() => {});
-        const aid = agentId();
+        f('/api/jobs/' + encodeURIComponent(id) + '/cancel', { method: 'POST' })
+          .then(r => (r && r.ok ? r.json().catch(() => ({})) : { ok: false }))
+          .then(d => { if (!d || d.ok === false) reHold(); })
+          .catch(reHold);
         if (aid && _toolsQueue[aid]) _toolsQueue[aid] = _toolsQueue[aid].filter(r => r.job_id !== id);
         paint();
         _toolsGateNotify();
@@ -312,6 +331,13 @@
       }
       paint();
     });
+    _toolsPollSubs.add(() => {
+      if (!held || seenRow) return;
+      if (rowOf(held)) { seenRow = true; absent = 0; return; }
+      if (++absent < _TOOLS_HOLD_ABSENT_MAX) return;
+      release(); paint();
+      if (opts.dropped) { try { opts.dropped(); } catch (_) {} }
+    });
     paint();
     return slot;
   }
@@ -336,7 +362,7 @@
 
   // Shared shape for a runnable tool tile: status/last/sub/action derived once.
   function _runToolDesc(cfg, row, running, local) {
-    const nq = toolsQueuedCount(cfg.id === 'reportcard' ? 'reportcard' : cfg.id);
+    const nq = toolsQueuedCount(cfg.id);
     const pending = !running && nq > 0;
     const subVal = row ? (cfg.sub ? cfg.sub(row) : (_tNum(cfg.tps(row)) || '—') + ' t/s') : null;
     const core = row

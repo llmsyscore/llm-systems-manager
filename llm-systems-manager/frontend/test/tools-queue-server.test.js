@@ -29,7 +29,7 @@ function boot(activity, bootstrap = '') {
       window.__activity = ${JSON.stringify(activity)};
       window.__posts = [];
       window._fetchT = (url, opts) => {
-        if (opts && opts.method === 'POST') { window.__posts.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); }
+        if (opts && opts.method === 'POST') { window.__posts.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve(window.__cancelAnswer || { ok: true }) }); }
         return Promise.resolve({ ok: true, json: () => Promise.resolve(
           url.indexOf('/api/tools/activity') === 0 ? window.__activity
           : url.indexOf('/api/agents/list-by-provider') === 0 ? ${JSON.stringify(AGENTS)} : {}) });
@@ -134,5 +134,60 @@ describe('toolsQueueSlot on the server queue (#897)', () => {
     expect(win.toolsQueuedCount('autotune')).toBe(0);
     const html = win.document.getElementById('toolsLauncher').innerHTML;
     expect(html).toContain('2 queued');
+  });
+  it('adopts a row only in the slot whose match accepts it', async () => {
+    const live = { ...row('j4', 'benchmark', 'alice'), path: '/llama/bench/live/run' };
+    const win = await boot(AT_ON_A1, `
+      window.__liveAt = []; window.__offAt = [];
+      window.__off = toolsQueueSlot('benchmark:offline', { provider: () => 'llama',
+        match: r => !/\\/bench\\/live\\//.test(r.path || ''), attach: r => window.__offAt.push(r) });
+      window.__live = toolsQueueSlot('benchmark', { provider: () => 'llama',
+        match: r => /\\/bench\\/live\\//.test(r.path || ''), attach: r => window.__liveAt.push(r) });
+    `);
+    await poll(win, { ...AT_ON_A1, queue: { a1: [live] } });
+    expect(win.__live.jobId()).toBe('j4');
+    expect(win.__off.queued()).toBe(false);
+    await poll(win, { ...AT_ON_A1, queue: { a1: [{ ...live, status: 'running' }] } });
+    expect(win.__liveAt).toHaveLength(1);
+    expect(win.__offAt).toHaveLength(0);
+  });
+
+  it('does not adopt a row another slot on the same tool holds', async () => {
+    const win = await boot(AT_ON_A1, `
+      window.__a = toolsQueueSlot('benchmark', { provider: () => 'llama' });
+      window.__b = toolsQueueSlot('benchmark:offline', { provider: () => 'llama' });
+      window.__a.hold('j5', { position: 1 });
+    `);
+    await poll(win, { ...AT_ON_A1, queue: { a1: [row('j5', 'benchmark', 'alice')] } });
+    expect(win.__a.jobId()).toBe('j5');
+    expect(win.__b.queued()).toBe(false);
+  });
+
+  it('ends a provisional hold after five polls without its row', async () => {
+    const win = await boot(AT_ON_A1);
+    win.__slot.hold('j9', { position: 1 });
+    await flush(); await flush();                    // hold's own poll is the first
+    for (let i = 0; i < 3; i++) await poll(win, AT_ON_A1);
+    expect(win.__dropped).toBe(0);
+    expect(win.__slot.queued()).toBe(true);
+    await poll(win, AT_ON_A1);
+    expect(win.__dropped).toBe(1);
+    expect(win.__slot.queued()).toBe(false);
+    await poll(win, AT_ON_A1);
+    expect(win.__dropped).toBe(1);
+  });
+
+  it('re-holds the job when the cancel is refused', async () => {
+    const win = await boot(AT_ON_A1);
+    win.__slot.hold('j2', { position: 1 });
+    await poll(win, { ...AT_ON_A1, queue: { a1: [row('j2', 'autotune', 'alice')] } });
+    win.__cancelAnswer = { ok: false };
+    expect(win.__slot.drop()).toBe(true);
+    await flush(); await flush();
+    expect(win.__slot.queued()).toBe(true);
+    expect(win.__slot.jobId()).toBe('j2');
+    await poll(win, { ...AT_ON_A1, queue: { a1: [row('j2', 'autotune', 'alice', 'running')] } });
+    expect(win.__attached).toHaveLength(1);
+    expect(win.__slot.queued()).toBe(false);
   });
 });

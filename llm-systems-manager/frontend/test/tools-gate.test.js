@@ -126,12 +126,13 @@ describe('a held job keeps its own target (#897)', () => {
             : {}),
         });
         initToolsTab();
-        window.__attached = [];
+        window.__attached = []; window.__dropped = 0;
         window.__done = toolsPollActivity().then(() => {
           window.__slot = toolsQueueSlot('reportcard', {
             provider: () => 'llama',
             agent: () => document.getElementById('tAgent').value,
             attach: (r) => window.__attached.push(r),
+            dropped: () => { window.__dropped++; },
           });
         });
       `,
@@ -145,6 +146,36 @@ describe('a held job keeps its own target (#897)', () => {
     expect(win.__slot.busy()).toBe(null);
     win.document.getElementById('tAgent').value = 'a2';
     expect(win.__slot.busy().host).toBe('gpu-02');
+  });
+
+  const IDLE_Q = (q) => ({ reportcard: false, benchmark: false, autotune: false, agents: {}, queue: q });
+  const rcRow = (status) => ({ job_id: 'j1', tool: 'reportcard', model_id: 'org/m', user: 'alice', status, created: 1 });
+  async function heldThenRepointed() {
+    const win = await pickerBoot(IDLE_Q({}));
+    win.__slot.hold('j1', { position: 1 });
+    win.document.getElementById('tAgent').value = 'a2';
+    return win;
+  }
+  async function pollWith(win, activity) {
+    win.__activity = activity;
+    await win.toolsPollActivity(); await flush(); await flush();
+  }
+
+  it('attaches off the host it held, after the picker moves', async () => {
+    const win = await heldThenRepointed();
+    await pollWith(win, IDLE_Q({ a1: [rcRow('running')] }));
+    expect(win.__attached).toHaveLength(1);
+    expect(win.__dropped).toBe(0);
+  });
+
+  it('stays queued on the host it held, after the picker moves', async () => {
+    const win = await pickerBoot(IDLE_Q({}));
+    win.__slot.hold('j1', { position: 1 });
+    await pollWith(win, IDLE_Q({ a1: [rcRow('queued')] }));
+    win.document.getElementById('tAgent').value = 'a2';
+    await pollWith(win, IDLE_Q({ a1: [rcRow('queued')], a2: [] }));
+    expect(win.__slot.queued()).toBe(true);
+    expect(win.__dropped).toBe(0);
   });
 });
 

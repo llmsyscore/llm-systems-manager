@@ -195,12 +195,13 @@ class Queue:
         return {"job_id": row["id"], "position": len(queued) + 1, "wait_for": self.wait_for(aid)}
 
     def snapshot(self) -> dict:
-        """{agent_id: [{job_id, tool, model_id, user, status, created}, …]} in FIFO order."""
+        """{agent_id: [{job_id, tool, model_id, user, status, created, path}, …]} in FIFO order."""
         out: "dict[str, list]" = {}
         rows = self.s.list("live", kind=KIND, limit=jobs.LIST_MAX)
         rows.sort(key=lambda r: (0 if r["status"] == "running" else 1, r["created"], r["id"]))
         for r in rows:
             out.setdefault(r["spec"].get("agent_id") or "", []).append(
                 {"job_id": r["id"], "tool": r["spec"].get("tool"), "model_id": r["spec"].get("model_id") or "",
-                 "user": r.get("user") or "", "status": r["status"], "created": r["created"]})
+                 "user": r.get("user") or "", "status": r["status"], "created": r["created"],
+                 "path": r["spec"].get("path") or ""})
         return out
