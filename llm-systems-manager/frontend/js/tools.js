@@ -291,7 +291,7 @@
       jobId: () => (state().queued ? held : null),
       hold(jobId, meta) {
         release();
-        take(jobId, liveAgent(), meta, false);
+        take(jobId, (meta && meta.agent_id) || liveAgent(), meta, false);
         paint();
         toolsPollActivity();
       },

@@ -88,9 +88,23 @@ export const QUEUE_SLOT_STUB = `
   window.__gateBusy = null;
   window.toolsGateRefusal = (t) => /in progress|already running/i.test(String(t || ''));
   window.toolsSetQueued = function (id, w) { window.__queued = w ? [id, w] : null; };
+  window.toolsQueueText = window.toolsQueueText || function (st, noun) {
+    if (st.queued) return 'Queued behind ' + st.waitFor + ' \u2014 this ' + (noun || 'run') + ' starts on its own when that finishes.';
+    return st.busy ? st.busy.label + ' is running on ' + st.busy.host + '. New ' + (noun || 'run') + 's queue behind it.' : '';
+  };
   window.toolsQueueSlot = function (id, opts) {
     const s = {
       id: id, pending: null,
+      jobId: () => (s.pending ? s.pending.job_id || null : null),
+      // Server-queue surface (#897): hold a 202 job, then start or vanish it from the test.
+      hold(jobId, meta) {
+        const b = window.__gateBusy;
+        s.pending = { job_id: jobId, meta: meta || null,
+          waitFor: (meta && meta.wait_for) || (b ? b.label + (b.host ? ' on ' + b.host : '') : 'the run in progress') };
+        s.sync();
+      },
+      startHeld() { const j = s.jobId(); s.pending = null; s.sync(); if (opts.attach) opts.attach({ job_id: j, status: 'running' }); },
+      vanishHeld() { s.pending = null; s.sync(); if (opts.dropped) opts.dropped(); },
       busy: () => window.__gateBusy || null,
       queued: () => !!s.pending,
       waitFor: () => (s.pending ? s.pending.waitFor : null),
@@ -108,7 +122,8 @@ export const QUEUE_SLOT_STUB = `
       },
       sync() {
         window.toolsSetQueued(id, s.pending ? s.pending.waitFor : null);
-        if (opts.render) opts.render({ queued: !!s.pending,
+        if (opts.render) opts.render({ queued: !!s.pending, mine: !!s.pending, job_id: s.jobId(),
+          ahead: 0, position: s.pending ? 1 : null, others: 0,
           waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });
       },
     };

@@ -20,7 +20,7 @@
   const BENCH_ORDER = Object.keys(BENCH_LABEL);
   let _model = null, _pre = null, _runs = [], _es = null, _chart = null;
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
-  let _attached = false, _queued = null, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
+  let _attached = false, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
   let _base = null, _baseTimer = null, _baseAutoAttached = null, _slot = null, _baselineFor = null;
   // Chart metric (#906): the y-value drawn on whichever chart shape the run produced.
@@ -662,11 +662,11 @@
     return _levels.reduce((n, l) => n + (Number((l.all || {}).failed) || 0), 0);
   }
   function running() { return !!_es || _attached || !!_fleetPoll; }
-  // Cancel is for runs this tab started; while attached it only drops a queued config.
+  // Cancel is for runs this tab started; while attached it only drops a queued job.
   function syncCancelBtn() {
     const b = $('blCancelBtn'); if (!b) return;
     if (b._blLabel == null) b._blLabel = b.textContent;
-    const drop = (_attached && !!_queued) || !!(_slot && _slot.queued());
+    const drop = !!(_slot && _slot.queued());
     b.style.display = (drop || (_busyOn && !_attached)) ? '' : 'none';
     b.textContent = drop ? 'Drop queued run' : (b._blLabel || '');
   }
@@ -729,8 +729,10 @@
       _slot = toolsQueueSlot('benchmark', {
         provider: () => prov(),
         agent: () => tagent(),
-        start: (cfg) => run(cfg, { now: true }),
+        match: (r) => /\/bench\/live\//.test(r.path || ''),
         render: (st) => syncQueue(st),
+        attach: () => { if (_attached || !running()) attach(); },
+        dropped: () => { setStatus('queued run dropped'); if (!running()) busy(false); },
       });
     }
     return _slot;
@@ -739,18 +741,17 @@
     if (_attached || running() || _busyOn) { syncCancelBtn(); return; }
     const b = st.busy;
     runLabel(st.queued || b ? 'Queue run' : null);
-    notice(!!(st.queued || b), st.queued
-      ? `Queued behind ${st.waitFor} — this run starts on its own when that finishes.`
-      : b ? `${b.label} is running on ${b.host}. New runs queue behind it.` : '');
+    const text = typeof toolsQueueText === 'function' ? toolsQueueText(st, 'run') : '';
+    notice(!!text, text);
     const rb = $('blRunBtn'); if (rb) rb.disabled = !!st.queued;
-    if (st.queued) setStatus(`queued · starts when ${st.waitFor} finishes`, 'running');
+    if (st.queued) setStatus(`queued${st.ahead ? ` · ${st.ahead} ahead` : ''} · starts when ${st.waitFor} finishes`, 'running');
     syncCancelBtn();
   }
   function runLabel(text) { const b = $('blRunBtn'); if (b) b.textContent = text == null ? (b._blLabel || '') : text; }
   function leaveAttached() { _attached = false; notice(false); runLabel(null); syncCancelBtn(); }
   // Follows a run started by another tab (or the scheduler) — replays its stream and queues ours behind it.
   function attach(recheck) {
-    _attached = true; _runId = null; _queued = null;
+    _attached = true; _runId = null;
     stopElapsed(); const el = $('blElapsed'); if (el) el.textContent = '';
     resetRunView();
     openStream(); busy(true);
@@ -774,7 +775,7 @@
     try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(r => r.json()); _baseline = (r && r.run) || null; } catch (_) { _baseline = null; }
     if (_baselineFor === runId) redraw();
   }
-  async function run(cfg, opts) {
+  async function run(cfg) {
     const c = cfg || config();
     if (!c.model_id) { setStatus('pick a model', 'err'); return; }
     if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
@@ -782,12 +783,9 @@
       // Mirrors MATRIX_MAX_CELLS in the agent.
       setStatus('matrix too large (max 24 cells × levels)', 'err'); return;
     }
-    if (_attached) {
-      if (fleetOn()) { setStatus('finish or cancel the attached run first', 'err'); return; }
-      _queued = c; setStatus('queued · starts when the current run finishes', 'running'); $('blRunBtn').disabled = true; syncCancelBtn(); return;
-    }
-    const s = slot(), gateBusy = s && !fleetOn() && !(opts && opts.now) && s.busy();
-    if (gateBusy) { s.queue(c); return; }
+    if (_attached && fleetOn()) { setStatus('finish or cancel the attached run first', 'err'); return; }
+    const s = slot();
+    if (s && s.queued()) { setStatus('a run is already queued · drop it first', 'err'); return; }
     if (fleetOn()) {
       const agents = fleetAgents();
       if (!agents.length) { setStatus('no host has this model loaded', 'err'); return; }
@@ -806,22 +804,32 @@
       return;
     }
     if ($('blRunBtn').disabled) return;
-    _lastCfg = c;
-    busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; setProgress(0, 0);
-    syncAttachBtn(); syncPinBtn();
-    _baseline = null; _baselineFor = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
-    if (c.baseline_run_id) await loadBaselineDoc(c.baseline_run_id);
-    redraw(); setStatus('starting…', 'running');
+    // While attached the start only queues, so the attached run's panes stay.
+    const quiet = _attached;
+    if (!quiet) {
+      _lastCfg = c;
+      busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; setProgress(0, 0);
+      syncAttachBtn(); syncPinBtn();
+      _baseline = null; _baselineFor = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
+      if (c.baseline_run_id) await loadBaselineDoc(c.baseline_run_id);
+      redraw(); setStatus('starting…', 'running');
+    } else $('blRunBtn').disabled = true;
     let d;
     try { d = await fetch(tq('/api/benchmark/live/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }).then(r => r.json()); }
     catch (e) { d = { ok: false, error: String(e) }; }
+    if (quiet) $('blRunBtn').disabled = false;
+    if (d && d.ok && d.queued) {
+      if (!quiet) { busy(false); stopElapsed(); }
+      if (s) s.hold(d.job_id, d);
+      setStatus(`queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · starts when ${d.wait_for || 'the run in progress'} finishes`, 'running');
+      return;
+    }
     if (!d || !d.ok) {
-      busy(false); stopElapsed();
+      if (!quiet) { busy(false); stopElapsed(); }
       if (d && d.runtime) { _pre = Object.assign(_pre || {}, { runtime: d.runtime }); renderPreflight(); }
-      // Lost the race with another browser — the gate holds the run until the host frees up.
-      if (s && typeof toolsGateRefusal === 'function' && toolsGateRefusal(d && (d.error || d.detail))) { s.queue(c, 'the run in progress'); return; }
       setStatus(d && d.error ? d.error : 'failed to start', 'err'); return;
     }
+    if (quiet) { leaveAttached(); resetRunView(); _lastCfg = c; busy(true); startElapsed(); }
     _runId = d.run_id; openStream();
   }
   function openStream() {
@@ -852,7 +860,7 @@
         else if (msg.type === 'setup_done') { log(msg.ok ? 'runtime ready' : `setup failed: ${msg.error || ''}`, msg.ok ? 'ok' : 'warn');
           if (msg.runtime) { _pre = Object.assign(_pre || {}, { runtime: msg.runtime }); renderPreflight(); }
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-          _queued = null; leaveAttached(); stopElapsed();
+          leaveAttached(); stopElapsed();
           setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
         else if (msg.type === 'model_done') { _lastDoc = msg; const e = msg.wh_per_ktok != null ? ` · ${fmt(msg.wh_per_ktok, 2)} Wh / 1k tokens` : '';
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
@@ -866,8 +874,7 @@
           stopElapsed(); _curLevel = null; redraw(); loadRuns(); loadBaselines(); syncAttachBtn(); syncPinBtn();
           if (_fleetPoll) return;
           busy(false);
-          if (_attached) { const q = _queued; _queued = null; leaveAttached();
-            if (q) { setStatus('starting…', 'running'); run(q, { now: true }); return; } }
+          if (_attached) leaveAttached();
           const nf = msg.ok ? failedSamples(msg) : 0;
           if (nf) setStatus(`complete · ${failedText(nf)}`, 'warn');
           else setStatus(msg.ok ? 'complete' : (msg.cancelled ? 'cancelled' : 'failed'), msg.ok ? 'ok' : 'err'); }
@@ -882,13 +889,9 @@
       setStatus('cancelling…', 'running');
       return;
     }
-    if (_attached) {
-      if (!_queued) return;
-      _queued = null; runLabel('Queue run'); $('blRunBtn').disabled = false; syncCancelBtn(); setStatus('queued run dropped');
-      return;
-    }
+    if (_attached) { if (_slot && _slot.drop()) setStatus('queued run dropped'); return; }
     if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-    _queued = null; leaveAttached(); stopElapsed(); _curLevel = null; redraw();
+    leaveAttached(); stopElapsed(); _curLevel = null; redraw();
     fetch(tq('/api/benchmark/cancel'), { method: 'POST' }).catch(() => {}); setStatus('cancelled', 'err'); busy(false); }
   async function setup() {
     if (_attached) { setStatus('a run is in progress on this host', 'err'); return; }

@@ -71,6 +71,8 @@ const STUBS = `
   };
 `;
 
+const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+
 function boot(bootstrap = '') {
   return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
 }
@@ -226,18 +228,31 @@ describe('BL presets and mode', () => {
     await flush();
     expect(win.BL.running()).toBe(false);
   });
-  it('queued run starts after the attached run finishes', async () => {
-    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+  it('a run started while attached is queued by the server and keeps the attached panes', async () => {
+    const win = boot('window.__busy = true; window.__runReply = ' + JSON.stringify(QUEUED) + '; BL.onOpen("org/m:Q4");');
     await flush();
     const d = win.document;
-    win.BL.run();
+    win.__sse.onEvent({ type: 'line', text: 'attached-line' });
+    await win.BL.run();
     await flush();
-    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+    expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
     expect(d.getElementById('blStatus').textContent).toContain('queued');
+    expect(d.getElementById('blLog').textContent).toContain('attached-line');
+    expect(win.BL.running()).toBe(true);
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
-    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(true);
-    win.BL.cancel();
+    expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
+  });
+  it('follows the held job when it starts before the attached stream says done', async () => {
+    const win = bootGated('window.__busy = true; window.__runReply = ' + JSON.stringify(QUEUED) + '; BL.onOpen("org/m:Q4");');
+    await flush();
+    await win.BL.run();
+    await flush();
+    const before = win.__sse;
+    win.__slots[0].startHeld();
+    expect(win.__sse).not.toBe(before);
+    expect(win.BL.running()).toBe(true);
+    expect(win.__slots[0].queued()).toBe(false);
   });
   it('setup is refused while attached and the attached state clears on done', async () => {
     const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
@@ -254,11 +269,12 @@ describe('BL presets and mode', () => {
     expect(d.getElementById('blRunBtn').textContent).not.toBe('Queue run');
   });
   it('cancel while attached drops only the queued run', async () => {
-    const win = boot('window.__busy = true; BL.onOpen("org/m:Q4");');
+    const win = bootGated('window.__busy = true; window.__runReply = ' + JSON.stringify(QUEUED) + '; BL.onOpen("org/m:Q4");');
     await flush();
     const d = win.document;
-    win.BL.run();
+    await win.BL.run();
     await flush();
+    expect(win.__slots[0].jobId()).toBe('j1');
     expect(d.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
     win.BL.cancel();
     expect(win.__fetches.some(([u]) => u === '/api/benchmark/cancel')).toBe(false);
@@ -267,19 +283,20 @@ describe('BL presets and mode', () => {
     expect(d.getElementById('blRunBtn').textContent).toBe('Queue run');
     win.__sse.onEvent({ type: 'done', ok: true });
     await flush();
-    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/run')).toBe(false);
+    expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
   });
 });
 
-describe('BL refused start (#888)', () => {
-  it('queues through the gate instead of attaching to a stale stream', async () => {
+describe('BL queued start (#897)', () => {
+  it('holds the job the server queued instead of attaching to a stale stream', async () => {
     const win = bootGated('BL.onOpen("org/m:Q4");');
     await flush();
-    win.__runReply = { ok: false, error: 'Another benchmark or autotune is in progress' };
+    win.__runReply = QUEUED;
     win.BL.run();
     for (let i = 0; i < 4; i++) await flush();
     expect(win.__fetches.filter(([u]) => u === '/api/benchmark/live/run')).toHaveLength(1);
     expect(win.__slots[0].queued()).toBe(true);
+    expect(win.__slots[0].jobId()).toBe('j1');
     expect(win.BL.running()).toBe(false);
     expect(win.document.getElementById('blStatus').textContent).toContain('queued');
   });
@@ -867,18 +884,18 @@ describe('BL baselines operator feedback (#882 followups)', () => {
 });
 
 
-// #888: the shared run gate — Run becomes Queue while another tool holds the host.
+// #888/#897: another tool on the host turns Run into Queue; the server holds the queued job.
 describe('queueing behind another tool (#888)', () => {
-  const BUSY = "window.__gateBusy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', agent_id: 'a1' };";
+  const BUSY = "window.__gateBusy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', agent_id: 'a1' }; window.__runReply = " + JSON.stringify(QUEUED) + ';';
 
-  it('queues instead of starting while Autotune holds the host', async () => {
+  it('posts the start and holds the queued job while Autotune holds the host', async () => {
     const win = bootGated(BUSY);
     await win.BL.onOpen('org/m:Q4');
     await flush();
     win.__fetches.length = 0;
     await win.BL.run();
     await flush();
-    expect(win.__fetches.filter(f => String(f[0]).indexOf('/api/benchmark/live/run') === 0)).toHaveLength(0);
+    expect(win.__fetches.filter(f => String(f[0]) === '/api/benchmark/live/run')).toHaveLength(1);
     expect(win.__slots[0].queued()).toBe(true);
     expect(win.__slots[0].waitFor()).toBe('Autotune on gpu-01');
     expect(win.document.getElementById('blRunBtn').textContent).toBe('Queue run');
@@ -886,7 +903,7 @@ describe('queueing behind another tool (#888)', () => {
     expect(win.document.getElementById('blStatus').textContent).toContain('queued');
   });
 
-  it('starts the queued run by itself once the gate clears', async () => {
+  it('attaches to the held job once it starts running', async () => {
     const win = bootGated(BUSY);
     await win.BL.onOpen('org/m:Q4');
     await flush();
@@ -894,11 +911,11 @@ describe('queueing behind another tool (#888)', () => {
     await flush();
     win.__fetches.length = 0;
     win.__gateBusy = null;
-    win.__slots[0].fire();
-    await flush(); await flush();
-    expect(win.__fetches.map(f => String(f[0])))
-      .toContain('/api/benchmark/live/run');
-    expect(win.__slots[0].queued()).toBe(false);
+    win.__slots[0].startHeld();
+    await flush();
+    expect(win.BL.running()).toBe(true);
+    expect(win.__fetches.map(f => String(f[0]))).not.toContain('/api/benchmark/live/run');
+    expect(win.document.getElementById('blStatus').textContent).toContain('running');
   });
 
   it('drops a queued run on Cancel', async () => {
@@ -921,22 +938,15 @@ describe('queueing behind another tool (#888)', () => {
     expect(win.document.getElementById('blRunBtn').textContent).toBe('Queue run');
   });
 
-  it('queues rather than losing the run when the agent refuses it', async () => {
-    const win = bootGated();
+  it('says so when the held job vanishes before it runs', async () => {
+    const win = bootGated(BUSY);
     await win.BL.onOpen('org/m:Q4');
     await flush();
-    win.fetch = (url, opts) => {
-      win.__fetches.push([String(url), opts]);
-      const body = String(url).indexOf('/api/benchmark/live/run') === 0
-        ? { ok: false, error: 'a benchmark run is already in progress' }
-        : { ok: true, runs: [] };
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
-    };
     await win.BL.run();
-    await flush(); await flush();
-    // Attached to the run it lost the race to, with this config still queued.
-    expect(win.document.getElementById('blNotice').style.display).not.toBe('none');
-    expect(win.document.getElementById('blCancelBtn').textContent).toBe('Drop queued run');
+    await flush();
+    win.__slots[0].vanishHeld();
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.document.getElementById('blStatus').textContent).toBe('queued run dropped');
   });
 });
 

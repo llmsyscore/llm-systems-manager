@@ -177,6 +177,14 @@ describe('toolsQueueSlot on the server queue (#897)', () => {
     expect(win.__dropped).toBe(1);
   });
 
+  it('pins the hold to the host the 202 answer names', async () => {
+    const win = await boot(AT_ON_A1);
+    win.__slot.hold('j1', { position: 1, agent_id: 'a2' });
+    await poll(win, { ...AT_ON_A1, queue: { a2: [row('j1', 'autotune', 'alice', 'running')] } });
+    expect(win.__attached).toHaveLength(1);
+    expect(win.__attached[0].job_id).toBe('j1');
+  });
+
   it('re-holds the job when the cancel is refused', async () => {
     const win = await boot(AT_ON_A1);
     win.__slot.hold('j2', { position: 1 });

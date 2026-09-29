@@ -1,4 +1,4 @@
-// #888: the Offline benchmark obeys the same run gate as the other tools.
+// #888/#897: the Offline benchmark obeys the run gate; the server holds a queued run.
 import { describe, it, expect } from 'vitest';
 import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.js';
 
@@ -19,6 +19,8 @@ const STUBS = `
   window.shortName = (s) => String(s);
   window._themedConfirm = () => Promise.resolve(true);
   window.toolsSyncRunDot = function () {};
+  window.__toasts = [];
+  window._toastErr = (m) => { window.__toasts.push(m); };
   HTMLCanvasElement.prototype.getContext = function () { return {}; };
   window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; };
   Chart.prototype.update = function () {};
@@ -44,14 +46,16 @@ function boot(bootstrap = '') {
 
 const el = (win, id) => win.document.getElementById(id);
 const starts = (win) => win.__fetches.filter(f => f[0].indexOf('/api/benchmark/run') === 0);
-const BUSY = "window.__gateBusy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', agent_id: 'a1' };";
+const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+const BUSY = "window.__gateBusy = { tool: 'autotune', label: 'Autotune', host: 'gpu-01', agent_id: 'a1' }; window.__runReply = " + JSON.stringify(QUEUED) + ';';
 
 describe('Offline benchmark queueing (#888)', () => {
-  it('queues instead of starting while Autotune holds the host', async () => {
+  it('posts the start and holds the queued job while Autotune holds the host', async () => {
     const win = boot(BUSY);
     await win.runBenchmark();
-    await flush();
-    expect(starts(win)).toHaveLength(0);
+    for (let i = 0; i < 6; i++) await flush();
+    expect(starts(win)).toHaveLength(1);
+    expect(win.__slots[0].jobId()).toBe('j1');
     expect(win.__slots[0].queued()).toBe(true);
     expect(el(win, 'benchRunBtn').textContent).toContain('Queued');
     expect(el(win, 'benchStatus').textContent).toContain('waiting for Autotune on gpu-01');
@@ -59,21 +63,24 @@ describe('Offline benchmark queueing (#888)', () => {
     expect(win.__queued[0]).toBe('benchmark:offline');
   });
 
-  it('starts the queued run by itself once the gate clears', async () => {
+  it('follows the held job stream once it starts running', async () => {
     const win = boot(BUSY);
     await win.runBenchmark();
-    await flush();
-    win.__gateBusy = null;
-    await win.__slots[0].fire();
     for (let i = 0; i < 6; i++) await flush();
-    expect(starts(win)).toHaveLength(1);
     expect(JSON.parse(starts(win)[0][1].body).model_ids).toEqual(['org/m']);
+    win.__gateBusy = null;
+    win.__slots[0].startHeld();
+    await flush();
+    expect(starts(win)).toHaveLength(1);
+    expect(win.__sse.url).toBe('/api/benchmark/stream');
+    expect(el(win, 'benchStatus').textContent).toContain('running');
+    expect(el(win, 'benchRunBtn').disabled).toBe(true);
   });
 
   it('drops a queued run on Cancel without cancelling anything on the agent', async () => {
     const win = boot(BUSY);
     await win.runBenchmark();
-    await flush();
+    for (let i = 0; i < 6; i++) await flush();
     win.__fetches.length = 0;
     win.cancelBenchmark();
     expect(win.__slots[0].queued()).toBe(false);
@@ -85,19 +92,20 @@ describe('Offline benchmark queueing (#888)', () => {
     const win = boot(BUSY);
     win.__slots.length = 0;
     await win.runBenchmark();
-    await flush();
+    for (let i = 0; i < 6; i++) await flush();
     win.__slots[0].drop();
     expect(el(win, 'benchRunBtn').textContent).toContain('Queue Benchmark');
     expect(el(win, 'benchRunBtn').disabled).toBe(false);
   });
 
-  it('queues rather than losing the run when the agent refuses it', async () => {
+  it('shows a start the server refused as an error toast', async () => {
     const win = boot();
-    win.__runReply = { ok: false, error: 'a benchmark is already in progress' };
+    win.__runReply = { ok: false, error: '5 runs already queued on gpu-01' };
     await win.runBenchmark();
     for (let i = 0; i < 6; i++) await flush();
-    expect(win.__slots[0].queued()).toBe(true);
-    expect(win.__slots[0].waitFor()).toBe('the run in progress');
+    expect(win.__slots[0].queued()).toBe(false);
+    expect(win.__toasts).toEqual(['5 runs already queued on gpu-01']);
+    expect(el(win, 'benchStatus').textContent).toBe('idle');
   });
 
   it('runs straight away when the host is free', async () => {

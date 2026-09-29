@@ -2145,7 +2145,7 @@ def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel:
         return jsonify({"ok": False, "error": str(e)}), 409
     except jobs.JobError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
-    return jsonify({"ok": True, "queued": True, **info}), 202
+    return jsonify({"ok": True, "queued": True, **info, "agent_id": agent.get("agent_id")}), 202
 
 
 @app.route("/api/benchmark/run", methods=["POST"])
