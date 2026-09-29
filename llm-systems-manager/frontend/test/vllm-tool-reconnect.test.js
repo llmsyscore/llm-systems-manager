@@ -1,7 +1,7 @@
 // #782/#780: the vLLM wizards ride the shared SSE guard and post ledger rows
 // that carry the agent's run id.
 import { describe, it, expect } from 'vitest';
-import { srcFile, runHarness, flush } from './helpers/harness.js';
+import { srcFile, runHarness, flush, TOOLS_GATE_SRC, TOOLS_GATE_BODY, toolsGateFeed } from './helpers/harness.js';
 
 const BODY = `
   <button id="vllmAtRunBtn"></button><button id="vllmAtCancelBtn"></button>
@@ -30,8 +30,11 @@ const STUBS = `
   window.EventSource = function (url) { this.url = url; this.readyState = 0; window.__streams.push(this); };
   EventSource.CONNECTING = 0; EventSource.OPEN = 1; EventSource.CLOSED = 2;
   EventSource.prototype.close = function () { this.readyState = 2; };
-  window.fetch = function () {
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, results: [] }) });
+  window.fetch = function (url) {
+    const u = String(url);
+    const run = u.indexOf('/api/vllm/bench/run') === 0 || u.indexOf('/api/vllm/autotune/run') === 0;
+    const body = (run && window.__runAnswer) || { ok: true, results: [] };
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
 `;
 
@@ -121,5 +124,30 @@ describe('vLLM benchmark stream', () => {
     r.send({ type: 'done', ok: true, cancelled: false });
     expect(text(r.win, 'vllmBenchStatus')).toBe('Done.');
     expect(r.es.readyState).toBe(2);
+  });
+});
+
+describe('vLLM benchmark on the server queue (#897)', () => {
+  const AGENTS = { vllm: [{ agent_id: 'a1', hostname: 'gpu-01', is_default: true }] };
+  it('holds a queued start and opens the stream when it runs', async () => {
+    const win = runHarness({
+      sources: ['let layout = {}; window.saveLayout = function () {};', STUBS, toolsGateFeed(AGENTS),
+                ...TOOLS_GATE_SRC.map(srcFile), srcFile('js/lib/sseguard.js'), GUARD_TIMERS,
+                srcFile('js/vllm-bench-autotune.js')],
+      bodyHtml: TOOLS_GATE_BODY + BODY,
+      bootstrap: `window.__activity = { reportcard: false, benchmark: false, autotune: true, quality: false, agents: { a1: ['autotune'] }, queue: {} };
+                  initToolsTab(); window.__done = toolsPollActivity();`,
+    });
+    await win.__done; await flush();
+    win.__runAnswer = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'Autotune on gpu-01' };
+    await win.runVllmBench();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(text(win, 'vllmBenchStatus')).toContain('queued');
+    expect(win.eval('_vbenchEventSrc')).toBe(null);
+    win.__activity = { reportcard: false, benchmark: true, autotune: false, quality: false, agents: { a1: ['benchmark'] },
+      queue: { a1: [{ job_id: 'j1', tool: 'benchmark', model_id: 'org/m', user: 'alice', status: 'running', created: 1 }] } };
+    await win.toolsPollActivity(); await flush(); await flush();
+    expect(win.eval('_vbenchEventSrc')).toBeTruthy();
+    expect(win.document.getElementById('vllmBenchCancelBtn').style.display).toBe('');
   });
 });

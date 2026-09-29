@@ -311,27 +311,15 @@ describe('custom-mode model datalist', () => {
 // contends for the same GPU as the agent-side tools.
 function stubGate() {
   const slots = [];
-  const state = { busy: null, queued: null };
-  vi.stubGlobal('toolsGateRefusal',
-    (t) => /in progress|already running/i.test(String(t || '')));
-  vi.stubGlobal('toolsSetQueued',
-    (id, w) => { state.queued = w ? [id, w] : null; });
+  const state = { busy: null };
   vi.stubGlobal('toolsQueueSlot', (id, opts) => {
     const s = {
       id, pending: null,
       busy: () => state.busy,
       queued: () => !!s.pending,
       waitFor: () => (s.pending ? s.pending.waitFor : null),
-      queue(payload, waitFor) {
-        const b = state.busy;
-        s.pending = { payload,
-          waitFor: waitFor || (b ? `${b.label} on ${b.host}` : 'the run in progress') };
-        s.sync();
-      },
       drop() { if (!s.pending) return false; s.pending = null; s.sync(); return true; },
-      fire() { const p = s.pending.payload; s.pending = null; s.sync(); return opts.start(p); },
       sync() {
-        globalThis.toolsSetQueued(id, s.pending ? s.pending.waitFor : null);
         if (opts.render) {
           opts.render({ queued: !!s.pending,
             waitFor: s.pending ? s.pending.waitFor : null, busy: s.busy() });

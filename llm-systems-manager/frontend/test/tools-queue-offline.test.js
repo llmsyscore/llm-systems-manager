@@ -60,8 +60,8 @@ describe('Offline benchmark queueing (#888)', () => {
     expect(win.__slots[0].queued()).toBe(true);
     expect(el(win, 'benchRunBtn').textContent).toContain('Queued');
     expect(el(win, 'benchStatus').textContent).toContain('waiting for Autotune on gpu-01');
-    // The launcher tile is marked against the Benchmark tool, not a new one.
-    expect(win.__queued[0]).toBe('benchmark:offline');
+    // The slot is filed under the Benchmark tool, not a new one.
+    expect(win.__slots[0].id).toBe('benchmark:offline');
   });
 
   it('follows the held job stream once it starts running', async () => {
