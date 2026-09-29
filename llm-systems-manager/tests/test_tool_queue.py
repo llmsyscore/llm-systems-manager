@@ -181,3 +181,78 @@ def test_kind_metadata():
     assert k.resume == "requeue" and k.limit_s(_spec()) == tq.MAX_RUN_S
     assert k.validate({"provider": "llama", "agent_id": A1, "tool": "nope"}, {})[1]
     assert k.validate({"provider": "lms", "agent_id": A1, "tool": "quality"}, {})[1]
+
+
+# ── start-or-queue questions ──
+
+def test_held_by_activity_by_live_row_and_by_batch():
+    q, svc, _ = _env(FakeAgent(), held={A2})
+    assert q.held(A2) is True and q.held(A1) is False
+    svc.submit(tq.KIND, _spec(agent_id=A1), user="alice")
+    assert q.held(A1) is True
+    svc.register(jobs.Kind("autotune_batch", "Autotune batch", run=lambda j: jobs.ok(),
+                           exclusive=lambda spec: [f"perf:{a}" for a in spec["agent_ids"]]))
+    assert q.held("c" * 32) is False
+    batch = svc.submit("autotune_batch", {"agent_ids": ["c" * 32]}, user="bob", not_before=5000.0)
+    assert q.held("c" * 32) is False          # a batch that has not started holds nothing yet
+    svc._store.update(batch["id"], status="running", started=1000.0, lease=1030.0)
+    assert q.held("c" * 32) is True
+
+
+def test_submit_positions_are_fifo_per_host_and_capped():
+    q, svc, _ = _env(FakeAgent(), held={A1}, max_queued=2)
+    first = q.submit(provider="llama", agent=AGENTS[A1], tool="benchmark", path="/llama/bench/run",
+                     cancel="/llama/bench/cancel", body={"model_ids": ["org/m"]}, user="alice", role="operator")
+    second = q.submit(provider="llama", agent=AGENTS[A1], tool="autotune", path="/llama/autotune/run",
+                      cancel="/llama/autotune/cancel", body={"model_ids": ["org/n"]}, user="bob", role="operator")
+    assert first["position"] == 1 and second["position"] == 2
+    assert first["wait_for"] == "the run in progress"
+    with pytest.raises(tq.QueueFull, match="2 runs already queued on gpu-01"):
+        q.submit(provider="llama", agent=AGENTS[A1], tool="quality", path="/llama/autotune/run",
+                 cancel="/llama/autotune/cancel", body={"model_ids": ["org/m"]}, user="alice", role="operator")
+    other = q.submit(provider="llama", agent=AGENTS[A2], tool="benchmark", path="/llama/bench/run",
+                     cancel="/llama/bench/cancel", body={}, user="alice", role="operator")
+    assert other["position"] == 1
+    row = svc.get(first["job_id"])
+    assert row["spec"]["model_id"] == "org/m" and row["label"] == "Benchmark · m · gpu-01"
+    assert row["exclusive"] == [f"perf:{A1}"] and row["source"] == "ui" and row["user"] == "alice"
+
+
+def test_wait_for_names_the_holder():
+    q, svc, _ = _env(FakeAgent(), held={A1}, holder={A1: "autotune"})
+    assert q.wait_for(A1) == "Autotune on gpu-01"
+    q2, svc2, _ = _env(FakeAgent())
+    row = svc2.submit(tq.KIND, _spec(tool="quality"), user="alice")
+    svc2._store.update(row["id"], status="running", started=1000.0, lease=2000.0)
+    assert q2.wait_for(A1) == "Quality guard on gpu-01"
+
+
+def test_snapshot_groups_by_host_running_first():
+    q, svc, clock = _env(FakeAgent(), held={A1})
+    a = svc.submit(tq.KIND, _spec(agent_id=A1, tool="benchmark"), user="alice")
+    clock.t += 1
+    b = svc.submit(tq.KIND, _spec(agent_id=A1, tool="autotune"), user="bob")
+    clock.t += 1
+    c = svc.submit(tq.KIND, _spec(agent_id=A2, tool="quality"), user="alice")
+    svc._store.update(b["id"], status="running", started=clock.t, lease=clock.t + 30)
+    snap = q.snapshot()
+    assert [r["job_id"] for r in snap[A1]] == [b["id"], a["id"]]
+    assert snap[A1][0]["status"] == "running" and snap[A1][1]["user"] == "alice"
+    assert snap[A2] == [{"job_id": c["id"], "tool": "quality", "model_id": "org/m", "user": "alice",
+                         "status": "queued", "created": c["created"]}]
+
+
+def test_can_wait_needs_a_readable_tools_state():
+    q, _, _ = _env(FakeAgent(states=[IDLE]))
+    assert q.can_wait(AGENTS[A1], "llama") is True
+    q2, _, _ = _env(FakeAgent(states=[{"_status": 404}]))
+    assert q2.can_wait(AGENTS[A1], "llama") is False
+    q3, _, _ = _env(FakeAgent(states=[None]))
+    assert q3.can_wait(AGENTS[A1], "llama") is False
+
+
+def test_model_of_reads_every_body_shape():
+    assert tq.model_of({"model_id": "a/b:Q4"}) == "a/b:Q4"
+    assert tq.model_of({"model_ids": ["x/y", "z"]}) == "x/y"
+    assert tq.model_of({"model": "vllm/m"}) == "vllm/m"
+    assert tq.model_of({}) == "" and tq.model_of(None) == ""
