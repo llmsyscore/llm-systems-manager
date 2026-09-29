@@ -209,6 +209,7 @@ import draft_candidates  # type: ignore[import-not-found]  # noqa: E402  # leaf,
 import bench_live  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #879
 import bench_baseline  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #882
 import tool_activity  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #775
+import tool_queue  # type: ignore[import-not-found]  # sibling; #897
 import gateway_usage  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #502
 import discord_bot  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #471
 import tower        # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
@@ -2097,13 +2098,53 @@ def _note_tool_start(provider: str, tool: str):
     return _hook
 
 
+_tool_queue = None   # tool_queue.Queue, wired after the job service below (#897)
+
+
+def _tool_start(provider: str, tool: str, path: str, cancel: str, body: dict, timeout: float = 15):
+    """Proxy a Tools start to its host, or queue it as a tool_run job when the host is held (#897)."""
+    agent = _request_agent(provider)
+    if not agent or _tool_queue is None:
+        return proxies.proxy_to_primary(provider, "POST", path, json=body, timeout=timeout,
+                                        on_target=_note_tool_start(provider, tool))
+    aid = agent.get("agent_id") or ""
+    if _tool_queue.held(aid) and _tool_queue.can_wait(agent, provider):
+        return _tool_queue_answer(provider, agent, tool, path, cancel, body)
+    resp = proxies.proxy_to_primary(provider, "POST", path, json=body, timeout=timeout, agent_id=aid,
+                                    on_target=_note_tool_start(provider, tool))
+    if _tool_refused(resp) and _tool_queue.can_wait(agent, provider):
+        return _tool_queue_answer(provider, agent, tool, path, cancel, body)
+    return resp
+
+
+def _tool_refused(resp) -> bool:
+    """True when a proxied start came back as the agent's busy-lock refusal."""
+    r = resp[0] if isinstance(resp, tuple) else resp
+    if getattr(r, "status_code", 0) != 200:
+        return False
+    with best_effort("tool start refusal"):
+        data = r.get_json(silent=True) or {}
+        return data.get("ok") is False and bool(tool_queue.REFUSAL.search(str(data.get("error") or data.get("detail") or "")))
+    return False
+
+
+def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel: str, body: dict):
+    try:
+        info = _tool_queue.submit(provider=provider, agent=agent, tool=tool, path=path, cancel=cancel, body=body,
+                                  user=tower.session_user(_flask_session), role=auth.effective_role() or "operator")
+    except tool_queue.QueueFull as e:
+        return jsonify({"ok": False, "error": str(e)}), 409
+    except jobs.JobError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "queued": True, **info}), 202
+
+
 @app.route("/api/benchmark/run", methods=["POST"])
 def benchmark_run():
     # Proxy to the primary llama agent — llama-bench lives next to llama-server
     # on the inference host, never on the manager host.
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("llama", "POST", "/llama/bench/run", json=body, timeout=15,
-                                    on_target=_note_tool_start("llama", "benchmark"))
+    return _tool_start("llama", "benchmark", "/llama/bench/run", "/llama/bench/cancel", body)
 
 
 @app.route("/api/benchmark/stream")
@@ -2386,7 +2427,9 @@ def tool_activity_get():
     """Which tools are running fleet-wide, so every dashboard shows the same
     run indicators rather than only the browser that started the run."""
     try:
-        return jsonify(tool_activity.snapshot())
+        snap = tool_activity.snapshot()
+        snap["queue"] = _tool_queue.snapshot() if _tool_queue is not None else {}
+        return jsonify(snap)
     except Exception as e:
         return _err_json("internal error", 500, exc=e)
 
@@ -2448,8 +2491,7 @@ def llm_autotune_run():
     body.pop("provider", None)
     # The quality guard shares this route; it is a tool of its own to the gate.
     tool = "quality" if (body.get("mode") or "") == "quality" else "autotune"
-    return proxies.proxy_to_primary(provider, "POST", f"/{provider}/autotune/run", json=body, timeout=15,
-                                    on_target=_note_tool_start(provider, tool))
+    return _tool_start(provider, tool, f"/{provider}/autotune/run", f"/{provider}/autotune/cancel", body)
 
 
 @app.route("/api/llm/autotune/stream")
@@ -3402,8 +3444,7 @@ def vllm_lora_unload():
 @app.route("/api/vllm/autotune/run", methods=["POST"])
 def vllm_autotune_run():
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/run", json=body, timeout=15,
-                                    on_target=_note_tool_start("vllm", "autotune"))
+    return _tool_start("vllm", "autotune", "/vllm/autotune/run", "/vllm/autotune/cancel", body)
 
 
 @app.route("/api/vllm/autotune/stream")
@@ -3421,8 +3462,7 @@ def vllm_autotune_cancel():
 @app.route("/api/vllm/bench/run", methods=["POST"])
 def vllm_bench_run():
     body = flask_request.get_json(force=True) or {}
-    return proxies.proxy_to_primary("vllm", "POST", "/vllm/bench/run", json=body, timeout=15,
-                                    on_target=_note_tool_start("vllm", "benchmark"))
+    return _tool_start("vllm", "benchmark", "/vllm/bench/run", "/vllm/bench/cancel", body)
 
 
 @app.route("/api/vllm/bench/stream")
@@ -5970,7 +6010,8 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
                            agent_by_token=agent_registry.agent_by_token, request_agent=_request_agent,
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
                            run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent,
-                           llama_build_of=_llama_build_of, valid_provider=lambda p: p in providers.names())
+                           llama_build_of=_llama_build_of, valid_provider=lambda p: p in providers.names(),
+                           start_or_queue=_tool_start)
 
 
 # --- Overnight autotune batch (#891): agent callables for autotune_batch.Runner ---
@@ -6145,6 +6186,24 @@ def _jobs_audit_rows(job_id: str) -> "list[dict]":
 
 jobs.register_routes(app, _jobs_service, role_of=auth.effective_role,
                      user_of=lambda: tower.session_user(_flask_session), audit_for=_jobs_audit_rows)
+
+
+def _tool_holder(agent_id: str) -> "str | None":
+    """The tool the activity snapshot shows running on this host, if any."""
+    tools = (tool_activity.snapshot().get("agents") or {}).get(agent_id) or []
+    return tools[0] if tools else None
+
+
+_tool_queue = tool_queue.Queue(_jobs_service, tool_queue.Deps(
+    agent_for=agent_registry.resolve_agent_by_id,
+    agent_call=lambda m, a, p, **kw: agent_registry.agent_request(
+        m, a, p, headers={"Authorization": f"Bearer {a.get('token') or ''}"}, **kw)[0],
+    held_agents=_batch_busy_agents,
+    holder_tool=_tool_holder,
+    hostname=lambda aid: str((agent_registry.resolve_agent_by_id(aid) or {}).get("hostname") or ""),
+    note_start=tool_activity.note_start,
+    max_queued=lambda: int(getattr(settings.manager.jobs, "tool_queue_max", 5) or 5),
+))
 
 
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891

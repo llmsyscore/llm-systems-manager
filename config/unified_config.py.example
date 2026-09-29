@@ -324,6 +324,7 @@ class ManagerJobs(BaseModel):
     model_config = _MODEL_CFG
     workers: int = Field(4, ge=1, le=16)
     history_days: int = Field(30, ge=1, le=365)
+    tool_queue_max: int = Field(5, ge=1, le=20)
 
 
 class ManagerConfig(BaseModel):
