@@ -771,6 +771,44 @@ describe('re-verify (#887)', () => {
     win.AT.checkQuality();
     expect(win.__opened).toBeUndefined();
   });
+  // #919: attaching while a Quality guard check runs paints nothing of that run.
+  it('ignores every event of a quality-mode run on the shared stream, then returns to Plan', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, busy: true };
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    expect(win.AT.running()).toBe(true);
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'model_start', objective: 'quality', mode: 'quality', stages: ['quality'] });
+    ev({ type: 'stage_start', stage: 'quality', candidates: ['f16 base', 'candidate'], est_s: 120 });
+    ev({ type: 'candidate_start', stage: 'quality', value: 'f16 base' });
+    ev({ type: 'candidate_result', stage: 'quality', value: 'candidate', ok: true, kl: 0.006, guard_pass: true });
+    ev({ type: 'line', text: 'perplexity output' });
+    ev({ type: 'stage_done', stage: 'quality', choice: 'pass', reason: 'KL 0.006 ≤ 0.02', seconds: 90, loads: 0 });
+    ev({ type: 'model_done', ok: true, mode: 'quality', run_id: 'q1', guard: { kl: 0.006, pass: true }, changes: [], stages: [] });
+    expect(win.document.getElementById('atRunPill').textContent).toBe('another tool is running');
+    expect([...win.document.querySelectorAll('#atStepper .at-step')].some(s => s.classList.contains('live') || s.classList.contains('done'))).toBe(false);
+    const log = win.document.getElementById('atLog').textContent;
+    expect(log).not.toContain('stage 1');
+    expect(log).not.toContain('candidate');
+    expect(win.document.getElementById('atRawLog').textContent).not.toContain('perplexity');
+    const tools = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST');
+    expect(tools.length).toBe(0);
+    ev({ type: 'done', ok: true });
+    expect(win.AT.running()).toBe(false);
+    expect(win.document.getElementById('atPanePlan').style.display).toBe('');
+    expect(win.document.getElementById('atRunBtn').disabled).toBe(false);
+  });
+  it('a verify-mode run on the shared stream is still followed', async () => {
+    const win = boot();
+    win.__pre = { ...PRE, busy: true };
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'model_start', objective: 'fit', mode: 'verify', stages: ['verify'] });
+    ev({ type: 'stage_start', stage: 'verify', candidates: [1], est_s: 60 });
+    expect([...win.document.querySelectorAll('#atStepper .at-step')][0].classList.contains('live')).toBe(true);
+  });
   it('a failed verify repaints the Done panel instead of keeping the previous tune', async () => {
     const win = await opened();
     await finished(win);                                  // a full tune leaves green complete + guard cards

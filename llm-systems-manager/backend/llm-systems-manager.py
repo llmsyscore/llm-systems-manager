@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.28-11"
+__version__ = "v2026.09.29-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2558,24 +2558,30 @@ def llm_autotune_preflight():
 
 @app.route("/api/llm/autotune/status")
 def llm_autotune_status():
-    """Newest successful tune per (agent, model) with the llama.cpp build it ran on vs the host's current build."""
+    """Newest successful tune per (agent, model) with the llama.cpp build it ran on vs the host's current build.
+    Scoped to ?agent_id=, else the ?agent= / default host of ?provider= (llama); rows of every host when none resolves."""
     try:
         want_model = (flask_request.args.get("model_id") or "").strip()
         want_agent = (flask_request.args.get("agent_id") or "").strip()
+        if not want_agent:
+            provider, _perr = _tool_provider()
+            want_agent = str((_request_agent(provider) or {}).get("agent_id") or "")
+        where, params = "tool = 'autotune' AND ok = 1", []
+        if want_model:
+            where += " AND model_id = ?"
+            params.append(want_model)
+        if want_agent:
+            where += " AND agent_id = ?"
+            params.append(want_agent)
         conn = get_db()
         rows = conn.execute(
             "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id FROM tool_runs "
-            "WHERE tool = 'autotune' AND ok = 1 AND id IN "
-            "(SELECT MAX(id) FROM tool_runs WHERE tool = 'autotune' AND ok = 1 GROUP BY agent_id, model_id)"
+            f"WHERE id IN (SELECT MAX(id) FROM tool_runs WHERE {where} GROUP BY agent_id, model_id)", params
         ).fetchall()
         items = []
         builds: dict = {}
         for r in rows:
             row = _tool_run_row(r)
-            if want_model and row["model_id"] != want_model:
-                continue
-            if want_agent and row["agent_id"] != want_agent:
-                continue
             aid = row["agent_id"]
             if aid not in builds:
                 builds[aid] = _llama_build_of(aid)

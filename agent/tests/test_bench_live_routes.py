@@ -40,8 +40,8 @@ def _load_llama():
     def _be(*a, **k):
         yield
     _stub("_best_effort", best_effort=_be)
-    from _bench_replay import BenchReplayBuffer  # real, stdlib-only
-    _stub("_bench_replay", BenchReplayBuffer=BenchReplayBuffer)
+    from _bench_replay import BenchReplayBuffer, AUTOTUNE_KEEP_TYPES  # real, stdlib-only
+    _stub("_bench_replay", BenchReplayBuffer=BenchReplayBuffer, AUTOTUNE_KEEP_TYPES=AUTOTUNE_KEEP_TYPES)
     _stub("collectors")
     _stub("collectors.gpu", collect_gpu=lambda *a, **k: {})
     pkg = types.ModuleType("providers")

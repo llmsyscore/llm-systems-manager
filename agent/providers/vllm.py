@@ -21,7 +21,7 @@ import requests
 from fastapi import Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from _bench_replay import BenchReplayBuffer  # type: ignore[import-not-found]  # sibling at agent root
+from _bench_replay import BenchReplayBuffer, AUTOTUNE_KEEP_TYPES  # type: ignore[import-not-found]  # sibling at agent root
 
 from . import _shared
 from . import residency
@@ -479,7 +479,7 @@ def _at_args_with_max_len(args: list, value: int) -> list:
     return out
 
 
-_at_replay = BenchReplayBuffer(maxlen=5000)
+_at_replay = BenchReplayBuffer(maxlen=5000, keep_types=AUTOTUNE_KEEP_TYPES)
 _at_cond = threading.Condition()
 
 

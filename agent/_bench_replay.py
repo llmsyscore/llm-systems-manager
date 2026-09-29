@@ -6,13 +6,20 @@ from collections import deque
 # Run-shape events survive a full buffer; only log lines are evicted.
 KEEP_TYPES = frozenset(("model_start", "level_start", "level_result", "result", "model_done",
                         "setup_step", "setup_done", "done"))
+# The autotune streams (llama, LM Studio, vLLM) emit their own run-shape vocabulary.
+AUTOTUNE_KEEP_TYPES = KEEP_TYPES | frozenset((
+    "facts", "stage_start", "stage_done", "stage_skipped", "candidate_start", "candidate_result",
+    "iter_start", "iter_result", "iter_failed", "sentinel_retry", "plateau_detected",
+    "bracket_precision_reached", "non_monotonic_detected", "cycle_detected", "perf_mode",
+    "step_start", "kv_capacity", "recommendation", "rollback_failed"))
 KEEP_MAX = 2000
 
 
 class BenchReplayBuffer:
-    def __init__(self, maxlen=5000):
+    def __init__(self, maxlen=5000, keep_types=KEEP_TYPES):
         self._buf = deque(maxlen=maxlen)
         self._keep = deque(maxlen=KEEP_MAX)
+        self._keep_types = frozenset(keep_types)
         self._progress = None
         self._run_id = ""
         self._seq = 0
@@ -37,7 +44,7 @@ class BenchReplayBuffer:
         kind = event.get("type") if isinstance(event, dict) else None
         if kind == "progress":
             self._progress = rec
-        elif kind in KEEP_TYPES:
+        elif kind in self._keep_types:
             self._keep.append(rec)
         else:
             self._buf.append(rec)

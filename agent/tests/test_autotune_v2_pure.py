@@ -91,8 +91,17 @@ def test_section_args_merges_and_drops(at):
 
 
 def test_section_args_short_keys_and_bool_overrides(at):
-    out = at.section_args({"b": "2048"}, {"kv-unified": "true", "parallel": 4})
-    assert out == ["-b", "2048", "--kv-unified", "--parallel", "4"]
+    out = at.section_args({"b": "2048", "n": "-1"}, {"kv-unified": "true", "parallel": 4})
+    assert out == ["--batch-size", "2048", "-n", "-1", "--kv-unified", "--parallel", "4"]
+
+
+# #901: llama-server short aliases written as ini keys get their long name, never `--ctk`.
+def test_section_args_maps_alias_keys_to_long_flags(at):
+    out = at.section_args({"ctk": "q8_0", "ctv": "q8_0", "ngl": "99", "np": "4", "fa": "on", "ub": "512"},
+                          {}, valued={"flash-attn", "cache-type-k"})
+    assert out == ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--n-gpu-layers", "99",
+                   "--parallel", "4", "--flash-attn", "on", "--ubatch-size", "512"]
+    assert not any(tok.startswith("--") and len(tok) <= 5 and tok not in ("--fa",) and tok[2:] in at.ALIAS_TO_KEY for tok in out)
 
 
 def test_section_args_normalises_dash_prefixed_keys(at):
@@ -104,8 +113,8 @@ def test_section_args_normalises_dash_prefixed_keys(at):
 
 def test_section_args_override_alias_drops_the_canonical_key(at):
     out = at.section_args({"cache-type-k": "f16", "ctv": "f16"}, {"ctk": "q8_0", "--cache-type-v": "q8_0"})
-    assert "--cache-type-k" not in out                      # canonical key dropped by the ctk override
-    assert out.count("--ctk") == 1 and out[out.index("--ctk") + 1] == "q8_0"
+    assert out.count("--cache-type-k") == 1 and out[out.index("--cache-type-k") + 1] == "q8_0"
+    assert "--ctk" not in out and "-ctk" not in out         # the alias override lands as the long flag
     assert "--ctv" not in out                               # alias dropped by the canonical override
     assert out.count("--cache-type-v") == 1 and out[out.index("--cache-type-v") + 1] == "q8_0"
 
@@ -124,6 +133,24 @@ def test_custom_args_are_capped_and_screened(at):
     with pytest.raises(ValueError):
         at.validate_request(body(["--hf-repo", "o/r"]))
     assert at.validate_request(body(["--models"]))["dims"]["context"]["custom_args"] == ["--models"]
+
+
+# #900: `--flag=value` forms and the wider path-taking flag set are refused too.
+def test_custom_args_screen_joined_forms_and_path_flags(at):
+    def body(args):
+        return {"model_ids": ["m"], "objective": "fit", "dims": {"context": {"custom_args": args}}}
+    for args in (["--model=/tmp/x.gguf"], ["-m=/tmp/x.gguf"], ["--hf-repo=o/r"], ["--chat-template-file", "/t.jinja"],
+                 ["--grammar-file=/g.gbnf"], ["--log-file", "/var/log/x"], ["--override-tensor", "exps=CPU"],
+                 ["-ot=exps=CPU"], ["--api-key-file", "/k"], ["--slot-save-path=/s"], ["--models-dir", "/m"]):
+        with pytest.raises(ValueError, match="must not set"):
+            at.validate_request(body(args))
+    assert at.validate_request(body(["--temp=0.7", "-ub", "512"]))["dims"]["context"]["custom_args"] == ["--temp=0.7", "-ub", "512"]
+
+
+def test_v1_custom_args_are_screened_like_v2(at):
+    with pytest.raises(ValueError, match="must not set"):
+        at.validate_request({"model_ids": ["m"], "target_mb": 900, "optional_params": {}},
+                            v1_args=lambda p: ["--model=/tmp/x.gguf"])
 
 
 
