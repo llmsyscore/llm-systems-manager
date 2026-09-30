@@ -45,11 +45,8 @@
   // Streams this browser owns; instant, but private to this session.
   function _toolsRunningLocal() {
     const rc = typeof _rcEventSrc !== 'undefined' && _rcEventSrc;
-    const bench = (typeof _benchEventSrc !== 'undefined' && _benchEventSrc)
-      || (typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc)
-      || (window.BL && BL.running());
-    const at = (window.AT && AT.running())
-      || (typeof _vatEventSrc !== 'undefined' && _vatEventSrc);
+    const bench = (typeof _benchEventSrc !== 'undefined' && _benchEventSrc) || (window.BL && BL.running());
+    const at = (window.AT && AT.running());
     const qg = window.QG && QG.running();
     return { rc: !!rc, bench: !!bench, at: !!at, qg: !!qg };
   }
@@ -116,7 +113,7 @@
   function toolsUrl(path) { return path + toolsTargetQs(path.indexOf('?') >= 0 ? '&' : '?'); }
   // Providers whose runs target one picked host; llama always drives its default host.
   const _TOOLS_HOST_PROVIDERS = ['lms', 'vllm'];
-  const _TOOLS_AUTOTUNE_PROVIDERS = ['lms'];
+  const _TOOLS_AUTOTUNE_PROVIDERS = ['lms', 'vllm'];
   const _TOOLS_PROVIDER_LABEL = { llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
   function toolsSetTarget(provider, agent) {
     const p = _TOOLS_HOST_PROVIDERS.includes(provider) ? provider : 'llama';
@@ -126,7 +123,7 @@
   function toolsDefaultAgentFor(provider) { return _toolsDefaultAgent[provider] || null; }
   function _toolsTargetKey() { return _toolsTarget.provider + '|' + (_toolsTarget.agent || ''); }
   // One picker per module head; hidden until an LM Studio or vLLM host is approved, since
-  // llama runs always target the default llama host. The Autotune picker omits vLLM.
+  // llama runs always target the default llama host. Both pickers list every approved LM Studio and vLLM host.
   function toolsRenderTargetPickers() {
     const llama = (_toolsByProvider.llama || []).find(a => a.is_default) || (_toolsByProvider.llama || [])[0];
     const rowsFor = provs => {
@@ -188,14 +185,12 @@
     const out = {};
     const add = (id, tool) => { if (id) (out[id] = out[id] || []).push(tool); };
     const l = _toolsRunningLocal();
-    const vb = typeof _vbenchEventSrc !== 'undefined' && _vbenchEventSrc;
-    const va = typeof _vatEventSrc !== 'undefined' && _vatEventSrc;
     const rcTarget = typeof _rcRunTarget !== 'undefined' && _rcRunTarget;
     // The Benchmark/Autotune modules drive the picked target host (#916).
     const tgt = _toolsTarget.agent || _toolsDefaultAgent[_toolsTarget.provider] || _toolsDefaultAgent.llama;
     if (l.rc) add((rcTarget && rcTarget.agent) || _toolsDefaultAgent.llama, 'reportcard');
-    if (l.bench) add(vb ? _toolsDefaultAgent.vllm : ((window.BL && BL.running()) ? tgt : _toolsDefaultAgent.llama), 'benchmark');
-    if (l.at) add(va ? _toolsDefaultAgent.vllm : ((window.AT && AT.running()) ? tgt : _toolsDefaultAgent.llama), 'autotune');
+    if (l.bench) add((window.BL && BL.running()) ? tgt : _toolsDefaultAgent.llama, 'benchmark');
+    if (l.at) add((window.AT && AT.running()) ? tgt : _toolsDefaultAgent.llama, 'autotune');
     if (l.qg) add(_toolsDefaultAgent.llama, 'quality');
     return out;
   }

@@ -55,12 +55,12 @@ Backend API endpoints consumed:
   <script src="/static/vendor/xterm.min.js?v=5.3.0"></script>
   <script src="/static/vendor/xterm-addon-fit.min.js?v=0.8.0"></script>
   <link rel="stylesheet" href="/static/css/fonts.css?v=2026.08.30-1">
-  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.28-1">
+  <link rel="stylesheet" href="/static/css/base.css?v=2026.09.29-1">
   <link rel="stylesheet" href="/static/css/settings.css?v=2026.09.04-2">
   <link rel="stylesheet" href="/static/css/modelcards.css?v=2026.09.28-4">
   <link rel="stylesheet" href="/static/css/reportcard.css?v=2026.09.09-1">
   <link rel="stylesheet" href="/static/css/tools.css?v=2026.09.23-3">
-  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.23-1">
+  <link rel="stylesheet" href="/static/css/autotune.css?v=2026.09.29-1">
   <link rel="stylesheet" href="/static/css/energy.css?v=2026.08.19-2">
   <link rel="stylesheet" href="/static/css/overall.css?v=2026.09.28-4">
   <link rel="stylesheet" href="/static/css/forecast.css?v=2026.09.28-1">
@@ -2129,7 +2129,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             <div class="mc-menu">
               <button onclick="openServerConfig('vllm')"><span class="mi">⚙</span>Server config</button>
               <button onclick="toolsDeepLink('benchmark', null, { provider: 'vllm', agent: (typeof _selectedAgent === 'function' && _selectedAgent('vllm')) || toolsDefaultAgentFor('vllm'), install: true })"><span class="mi">◷</span>Benchmark</button>
-              <button onclick="openVllmAutotune()"><span class="mi">⌖</span>Autotune</button>
+              <button onclick="toolsDeepLink('autotune', null, { provider: 'vllm', agent: (typeof _selectedAgent === 'function' && _selectedAgent('vllm')) || toolsDefaultAgentFor('vllm') })"><span class="mi">⌖</span>Autotune</button>
             </div>
           </div>
         </div>
@@ -2341,6 +2341,28 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <span class="bl-note" id="benchModeNote"></span>
       </div>
       <div id="benchOffline" style="display:none;">
+      <div id="blVllmOffline" style="display:none;">
+        <div class="bl-body">
+          <div class="bl-rail">
+            <div class="bl-grp"><div class="bl-grp-h">vllm bench serve <span class="r">switches</span></div><div class="bl-grp-b">
+              <div id="blVllmSwitches"></div>
+              <div class="bl-row bl-switch"><input type="text" id="blVllmAddFlag" class="bl-in" placeholder="--flag"><input type="text" id="blVllmAddVal" class="bl-in" placeholder="value (blank = boolean)"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="BL.addVllmSwitch()">+ Add</button></div>
+              <div class="bl-hint">vLLM's own load generator against the served model. The server stays up.</div>
+            </div></div>
+            <div class="bl-run">
+              <button id="blVllmRunBtn" class="mcbtn mcbtn-pri" type="button" onclick="BL.runVllm()">▶ Run benchmark</button>
+              <button id="blVllmCancelBtn" class="mcbtn mcbtn-ghost warn" type="button" style="display:none;" onclick="BL.cancelVllm()">✕ Cancel</button>
+            </div>
+          </div>
+          <div class="bl-pane">
+            <div class="bl-strip"><span id="blVllmStatus" class="bench-status-pill">idle</span>
+              <span class="bl-acts" id="blVllmActions" style="display:none;"><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.saveVllm()">Save result</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blVllmClearBtn" onclick="BL.clearVllm()">Clear saved</button></span></div>
+            <div class="bl-tiles" id="blVllmTiles"></div>
+            <div class="bl-card"><div class="bl-card-h">Output</div><div class="bl-card-b"><div class="bl-log" id="blVllmLog"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div id="benchOfflineLlama">
       <div class="bench-body">
       <div class="bench-rail">
         <div class="modal-group" id="benchConfigGroup">
@@ -2400,6 +2422,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <div id="benchLog"></div>
       </div>
     </div>
+      </div>
       </div><!-- /benchOffline -->
       <div id="benchLive" style="display:none;">
         <div class="bl-body">
@@ -2536,11 +2559,30 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <div class="at-dim closed" data-dim="context">
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on disabled><span class="track"></span></button><span class="n">Context size</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
             <div class="at-dim-b">
-              <div class="at-frow slider"><label id="atTargetLbl">Target free VRAM</label><input class="at-in range" id="atTargetMb" type="range" min="0" max="16384" step="64" value="1024"><span class="at-val" id="atTargetMbVal">1024 MB</span></div>
-              <div class="at-frow slider"><label>Tolerance ±</label><input class="at-in range" id="atToleranceMb" type="range" min="10" max="500" step="10" value="50"><span class="at-val" id="atToleranceMbVal">50 MB</span></div>
+              <div class="at-frow slider" data-prov="llama lms"><label id="atTargetLbl">Target free VRAM</label><input class="at-in range" id="atTargetMb" type="range" min="0" max="16384" step="64" value="1024"><span class="at-val" id="atTargetMbVal">1024 MB</span></div>
+              <div class="at-frow slider" data-prov="llama lms"><label>Tolerance ±</label><input class="at-in range" id="atToleranceMb" type="range" min="10" max="500" step="10" value="50"><span class="at-val" id="atToleranceMbVal">50 MB</span></div>
               <div class="at-frow" data-prov="llama"><label>Custom args</label><input class="at-in" id="atCustomArgs" placeholder="--flash-attn --rope-freq-base 1e7"></div>
               <div class="at-hint" data-prov="llama">Converges <span class="at-tag">-fitt</span> and reads back the context llama.cpp fits. Always runs first.</div>
               <div class="at-hint" data-prov="lms" style="display:none;">Always runs first. Fit searches for the largest context that leaves the target memory free; other objectives only check the loaded one. Free memory is measured while the model is busy, with a 512 MB safety margin on probes. On a Mac it matches Activity Monitor.</div>
+              <div class="at-frow" data-prov="vllm" style="display:none;"><label>Probe length</label><input class="at-in" id="atProbeLen" type="number" min="256" max="262144" step="256" value="4096"></div>
+              <div class="at-frow g2" data-prov="vllm" style="display:none;"><label>Concurrency</label><input class="at-in xs" id="atKvConc" type="number" min="1" max="64" step="0.5" value="1"><span class="at-hint">requests sharing the KV cache</span></div>
+              <div class="at-frow g2" data-prov="vllm" style="display:none;"><label>KV share</label><input class="at-in xs" id="atKvFrac" type="number" min="10" max="100" step="5" value="100"><span class="at-hint">% of the capacity to plan for</span></div>
+              <div class="at-frow slider" data-prov="vllm" style="display:none;"><label>Target KV budget</label><input class="at-in range" id="atKvBudget" type="range" min="50" max="95" step="5" value="90"><span class="at-val" id="atKvBudgetVal">90 %</span></div>
+              <div class="at-hint" data-prov="vllm" style="display:none;">Always runs first. One restart at the probe length reads the KV cache capacity from the server log, and the context length is set so that capacity holds the chosen concurrency. Target KV budget is the share of GPU memory vLLM may take.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="seqs" data-prov="vllm" style="display:none;">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Max sequences</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atSeqChips"><span class="bl-chip on" data-v="1">1</span><span class="bl-chip on" data-v="4">4</span><span class="bl-chip on" data-v="8">8</span><span class="bl-chip" data-v="16">16</span><span class="bl-chip" data-v="32">32</span></div>
+              <div class="at-hint">Requests the server runs at once, measured with a live concurrency sweep. Serve keeps the highest aggregate, Speed a single sequence.</div>
+            </div>
+          </div>
+          <div class="at-dim closed" data-dim="kvdtype" data-prov="vllm" style="display:none;">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">KV cache dtype</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b">
+              <div class="bl-chips" id="atKvDtypeChips"><span class="bl-chip on" data-v="auto">auto</span><span class="bl-chip on" data-v="fp8">fp8</span></div>
+              <div class="at-hint">Measures decode with each dtype. A dtype the engine refuses to start with is skipped, not fatal.</div>
             </div>
           </div>
           <div class="at-dim closed" data-dim="flash" data-prov="lms" style="display:none;">
@@ -2584,7 +2626,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <div class="at-hint" id="atThreadHint">Candidates are seeded from the host's physical cores. Batch threads are set separately when MoE offload is on.</div>
             </div>
           </div>
-          <div class="at-dim closed" data-dim="slots">
+          <div class="at-dim closed" data-dim="slots" data-prov="llama lms">
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Parallel slots</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
             <div class="at-dim-b">
               <div class="bl-chips" id="atSlotChips"><span class="bl-chip on" data-v="1">1</span><span class="bl-chip on" data-v="2">2</span><span class="bl-chip on" data-v="4">4</span><span class="bl-chip on" data-v="8">8</span><span class="bl-chip" data-v="16">16</span></div>
@@ -2595,13 +2637,19 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <div class="at-dim closed" data-dim="spec">
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Speculative decoding</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
             <div class="at-dim-b">
-              <div class="bl-chips" id="atSpecChips"><span class="bl-chip on" data-v="auto">auto-detect</span><span class="bl-chip" data-v="draft-mtp" data-prov="llama">NextN / MTP</span><span class="bl-chip" data-v="draft-dflash" data-prov="llama">DFlash</span><span class="bl-chip" data-v="draft-simple" data-prov="llama">draft model</span><span class="bl-chip" data-v="ngram-simple" data-prov="llama">ngram</span><span class="bl-chip" data-v="mtp" data-prov="lms" style="display:none;">NextN / MTP</span><span class="bl-chip" data-v="draft" data-prov="lms" style="display:none;">draft model</span></div>
-              <div class="at-frow g2"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
+              <div class="bl-chips" id="atSpecChips"><span class="bl-chip on" data-v="auto">auto-detect</span><span class="bl-chip" data-v="draft-mtp" data-prov="llama">NextN / MTP</span><span class="bl-chip" data-v="draft-dflash" data-prov="llama">DFlash</span><span class="bl-chip" data-v="draft-simple" data-prov="llama">draft model</span><span class="bl-chip" data-v="ngram-simple" data-prov="llama">ngram</span><span class="bl-chip" data-v="mtp" data-prov="lms" style="display:none;">NextN / MTP</span><span class="bl-chip" data-v="draft" data-prov="lms" style="display:none;">draft model</span><span class="bl-chip" data-v="ngram" data-prov="vllm" style="display:none;">ngram</span><span class="bl-chip" data-v="draft" data-prov="vllm" style="display:none;">draft model</span></div>
+              <div class="at-frow g2" data-prov="llama lms"><label>Draft model</label><select class="at-in" id="atDraftSel"><option value="auto">auto</option><option value="none">none</option></select></div>
+              <div class="at-frow g2" data-prov="vllm" style="display:none;"><label>Draft model</label><input class="at-in" id="atVllmDraft" placeholder="model id, optional"></div>
               <div class="at-frow" id="atDraftRow" style="display:none;"><span class="at-hint" id="atDraftNote"></span><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="atDraftDlBtn" onclick="AT.downloadDraft()">Download</button></div>
-              <div class="at-frow g2"><label>Window</label><span class="at-range"><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></span></div>
-              <div class="at-frow g2"><label>p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
-              <div class="at-hint">NextN / MTP heads are read from the GGUF; DFlash and draft models are tried when present in the cache. Each type is scored by decode t/s and accept rate.</div>
+              <div class="at-frow g2" data-prov="llama lms"><label>Window</label><span class="at-range"><input class="at-in xs" id="atSpecNmin" type="number" min="0" value="0"><span class="at-hint">→</span><input class="at-in xs" id="atSpecNmax" type="number" min="1" value="16"><span class="at-hint">tokens</span></span></div>
+              <div class="at-frow g2" data-prov="llama lms"><label>p-min</label><input class="at-in xs" id="atSpecPmin" type="number" min="0" max="1" step="0.05" value="0.75"></div>
+              <div class="at-hint" data-prov="llama lms">NextN / MTP heads are read from the GGUF; DFlash and draft models are tried when present in the cache. Each type is scored by decode t/s and accept rate.</div>
+              <div class="at-hint" data-prov="vllm" style="display:none;">ngram drafts from the prompt itself and needs no extra model; a draft model is tried when you name one. Each setup is scored by decode t/s and accept rate.</div>
             </div>
+          </div>
+          <div class="at-dim closed" data-dim="prefix" data-prov="vllm" style="display:none;">
+            <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Prefix caching</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
+            <div class="at-dim-b"><div class="at-hint">Measures decode with prefix caching on and off; the faster one is kept.</div></div>
           </div>
           <div class="at-dim closed" data-dim="sampling" data-prov="llama">
             <div class="at-dim-h"><button type="button" class="mc-toggle on" data-dim-on><span class="track"></span></button><span class="n">Sampling defaults</span><span class="s" data-dim-sum></span><span class="chev">▾</span></div>
@@ -2777,15 +2825,14 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/autopilot.js?v=2026.09.11-2"></script>
 <script src="/static/js/llmcontrol-models.js?v=2026.09.29-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
-<script src="/static/js/bench-autotune.js?v=2026.09.29-2"></script>
-<script src="/static/js/bench-live.js?v=2026.09.29-4"></script>
-<script src="/static/js/autotune.js?v=2026.09.29-2"></script>
+<script src="/static/js/bench-autotune.js?v=2026.09.29-3"></script>
+<script src="/static/js/bench-live.js?v=2026.09.29-5"></script>
+<script src="/static/js/autotune.js?v=2026.09.29-3"></script>
 <script src="/static/js/quality.js?v=2026.09.29-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.28-4"></script>
-<script src="/static/js/vllm.js?v=2026.09.28-4"></script>
-<script src="/static/js/vllm-bench-autotune.js?v=2026.09.28-8"></script>
+<script src="/static/js/vllm.js?v=2026.09.29-1"></script>
 <script src="/static/js/report-card.js?v=2026.09.29-3"></script>
-<script src="/static/js/tools.js?v=2026.09.29-4"></script>
+<script src="/static/js/tools.js?v=2026.09.29-5"></script>
 <script src="/static/js/energy.js?v=2026.09.28-2"></script>
 <script src="/static/js/forecast.js?v=2026.09.21-7"></script>
 <script src="/static/js/overall.js?v=2026.09.19-1"></script>
@@ -2940,120 +2987,6 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
   </div>
 </div>
 
-<!-- vLLM Auto-Tune overlay (#356) -->
-<div class="bench-overlay at-wizard" id="vllmAtOverlay">
-  <div class="bench-panel">
-    <div class="bench-header">
-      <div class="bench-head-l">
-        <h2>🎯 vLLM Auto-Tune max-model-len</h2>
-        <span class="bench-sub">Probe KV-cache capacity, compute the largest safe --max-model-len, apply via Server Config.</span>
-      </div>
-      <button class="close-btn" onclick="closeVllmAutotune()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
-    </div>
-    <div class="bench-body">
-      <div class="bench-rail">
-        <div class="bench-row" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;">
-          <span id="vllmAtCurrent" style="flex:1;font-size:0.85em;">Reading server config…</span>
-        </div>
-        <div class="modal-group">
-          <div class="modal-group-h">Targets</div>
-          <div class="bench-row">
-            <div class="at-field">
-              <label>Target concurrency (×)</label>
-              <input id="vllmAtConc" type="number" min="1" max="64" step="0.5" value="1" />
-            </div>
-            <div class="at-field">
-              <label>KV budget (%)</label>
-              <input id="vllmAtFrac" type="number" min="10" max="100" step="5" value="100" />
-            </div>
-            <label class="mc-toggle mc-ckt" style="margin-left:auto;font-size:0.85em;">
-              <input id="vllmAtReportOnly" type="checkbox" role="switch" /><span class="track"></span>
-              <span class="tlbl">Report only (restore original config, apply manually)</span>
-            </label>
-          </div>
-        </div>
-        <details id="vllmAtAdvanced">
-          <summary>Advanced</summary>
-          <div class="bench-row" style="margin-top:6px;">
-            <div class="at-field">
-              <label>Probe --max-model-len</label>
-              <input id="vllmAtProbeLen" type="number" min="256" max="262144" step="256" value="4096" />
-            </div>
-            <div class="at-field">
-              <label>Load timeout (s)</label>
-              <input id="vllmAtTimeout" type="number" min="60" max="3600" step="30" value="600" />
-            </div>
-          </div>
-        </details>
-        <div class="sub" style="margin-top:8px;color:var(--warn,#e0a020);">
-          ⚠ This wizard restarts the vLLM server 2–3 times. In-flight requests will drop.
-        </div>
-        <div class="bench-rail-actions">
-          <button id="vllmAtCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelVllmAutotune()" style="display:none;">✕ Cancel</button>
-          <button id="vllmAtRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runVllmAutotune()">▶ Run Auto Tune</button>
-        </div>
-      </div>
-      <div class="bench-results-pane">
-        <div id="vllmAtStatus" class="sub"></div>
-        <div id="vllmAtProgress"></div>
-        <details id="vllmAtRawDetails" style="margin-top:8px;">
-          <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
-            Raw journal output (<span id="vllmAtRawCount">0</span> lines)
-          </summary>
-          <div class="dl-log" id="vllmAtRawLog" style="height:220px;"></div>
-        </details>
-        <div id="vllmAtResults"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- vLLM Benchmark overlay (#357) -->
-<div class="bench-overlay at-wizard" id="vllmBenchOverlay">
-  <div class="bench-panel">
-    <div class="bench-header">
-      <div class="bench-head-l">
-        <h2>⏱ vLLM Benchmark</h2>
-        <span class="bench-sub">Run vllm bench serve against the live server and save throughput + latency results.</span>
-      </div>
-      <button class="close-btn" onclick="closeVllmBench()" style="background:none;border:none;color:var(--fg-dim);cursor:pointer;font-size:1.2em;">✕</button>
-    </div>
-    <div class="bench-body">
-      <div class="bench-rail">
-        <div class="bench-row" id="vllmBenchPreflight" style="background:var(--bg-card-alt);border:1px solid var(--border-strong);border-radius:6px;padding:8px 12px;margin-bottom:6px;">
-          <span id="vllmBenchPreflightMsg" style="flex:1;font-size:0.85em;">Checking vLLM server…</span>
-          <button id="vllmBenchStartBtn" class="btn btn-stone-muted-gradient" onclick="vllmBenchStartServer()" style="display:none;">▶ Start vLLM</button>
-        </div>
-        <div class="modal-group">
-          <div class="modal-group-h">Switches</div>
-          <div id="vllmBenchSwitchList" style="display:flex;flex-direction:column;gap:4px;"></div>
-          <div class="bench-row" style="margin-top:6px;">
-            <input type="text" id="vllmBenchAddFlag" class="vbench-input" placeholder="--flag" style="width:150px;">
-            <input type="text" id="vllmBenchAddVal" class="vbench-input" placeholder="value (blank = boolean)" style="flex:1;min-width:120px;">
-            <button class="btn btn-gray-muted-gradient btn-sm" onclick="vllmBenchAddSwitch()">+ Add</button>
-          </div>
-        </div>
-        <div class="sub" style="margin-top:8px;color:var(--fg-dim);">
-          Runs against the live server — active requests will contend with the benchmark load.
-        </div>
-        <div class="bench-rail-actions">
-          <button id="vllmBenchCancelBtn" class="btn btn-red-muted-gradient" onclick="cancelVllmBench()" style="display:none;">✕ Cancel</button>
-          <button id="vllmBenchRunBtn" class="btn btn-stone-muted-gradient bench-run-primary" onclick="runVllmBench()">▶ Run Benchmark</button>
-        </div>
-      </div>
-      <div class="bench-results-pane">
-        <div id="vllmBenchStatus" class="sub"></div>
-        <details id="vllmBenchRawDetails" style="margin-top:8px;" open>
-          <summary style="cursor:pointer;font-size:0.9em;color:var(--fg-dim);user-select:none;">
-            Benchmark output (<span id="vllmBenchRawCount">0</span> lines)
-          </summary>
-          <div class="dl-log" id="vllmBenchRawLog" style="height:260px;"></div>
-        </details>
-        <div id="vllmBenchResults"></div>
-      </div>
-    </div>
-  </div>
-</div>
 <!-- ── Alarm Engine Toast Container (top-right, matches Events tab style) ── -->
 <link rel="stylesheet" href="/static/css/toasts.css?v=2026.06.10-6">
 <div id="alarmToastContainer"></div>

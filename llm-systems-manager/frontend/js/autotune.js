@@ -15,6 +15,8 @@
   const prov = () => (typeof toolsTarget === 'function' ? toolsTarget().provider : 'llama');
   const tagent = () => (typeof toolsTarget === 'function' ? toolsTarget().agent : null);
   const isLms = () => prov() === 'lms';
+  const isVllm = () => prov() === 'vllm';
+  const hosted = () => isLms() || isVllm();   // providers whose model list and server come from the autotune preflight
   const LLAMA_MAPS = {
     name: { context: 'Context size', kv: 'KV cache type', moe: 'MoE CPU offload', threads: 'CPU threads',
             spec: 'Speculative decoding', slots: 'Parallel slots', sampling: 'Sampling defaults', verify: 'Verify' },
@@ -38,40 +40,69 @@
     measured: ['flash', 'batch', 'kvgpu', 'spec', 'slots'],
     est: { context: 150, flash: 60, batch: 60, kvgpu: 60, spec: 120, slots: 60, verify: 120 },
   };
+  // vLLM tunes serve flags; every stage after Context is measured; Context is one restart that reads KV capacity.
+  const VLLM_MAPS = {
+    name: { context: 'Context length', seqs: 'Max sequences', kvdtype: 'KV cache dtype', spec: 'Speculative decoding', prefix: 'Prefix caching', verify: 'Verify' },
+    flag: { context: '--max-model-len', seqs: '--max-num-seqs', kvdtype: '--kv-cache-dtype', spec: '--speculative-config', prefix: '--enable-prefix-caching', verify: '' },
+    short: { context: 'Context', seqs: 'Sequences', kvdtype: 'KV dtype', spec: 'Speculative', prefix: 'Prefix', verify: 'Verify' },
+    order: ['context', 'seqs', 'kvdtype', 'spec', 'prefix', 'verify'],
+    measured: ['seqs', 'kvdtype', 'spec', 'prefix'],
+    est: { context: 120, seqs: 90, kvdtype: 90, spec: 90, prefix: 90, verify: 150 },
+  };
   let STAGE_NAME = LLAMA_MAPS.name, STAGE_FLAG = LLAMA_MAPS.flag, STAGE_SHORT = LLAMA_MAPS.short;
   let ORDER = LLAMA_MAPS.order, MEASURED = LLAMA_MAPS.measured, EST = LLAMA_MAPS.est;
   let _provUi = '';
   const SKIP_TEXT = { off: 'off', runtime: 'no bench runtime', budget: 'out of budget', fits: 'already fits', not_moe: 'dense model',
-                      manager: 'from metadata', kv_unified: 'kv-unified', no_candidates: 'nothing to try' };
+                      manager: 'from metadata', kv_unified: 'kv-unified', no_candidates: 'nothing to try', not_served: 'not the served model' };
   const LMS_OBJ_HINT = {
     fit: '<b>Fit</b> finds the largest context length that still leaves the target memory free; other dimensions run only if enabled.',
     speed: '<b>Speed</b> spends memory on single-request throughput: one slot, the fastest batch size and speculative setup.',
     balanced: '<b>Balanced</b> keeps at least the minimum context per slot and takes any change that is speed-neutral or better.',
     serve: '<b>Serve</b> maximises aggregate tokens/s across parallel slots, accepting lower per-request speed.',
   };
+  const VLLM_OBJ_HINT = {
+    fit: '<b>Fit</b> reads the KV cache capacity from one restart and sets the largest context length it holds at the chosen concurrency; other dimensions run only if enabled.',
+    speed: '<b>Speed</b> tunes for single-request throughput: one sequence, the faster KV cache dtype and speculative setup.',
+    balanced: '<b>Balanced</b> keeps per-request decode within 70 % of a single sequence and takes any change that is speed-neutral or better.',
+    serve: '<b>Serve</b> maximises aggregate tokens/s across sequences, accepting lower per-request speed.',
+  };
+  // Per-provider UI: stage maps, hints and the labels that differ between the three engines.
+  const PROV_UI = {
+    llama: { maps: LLAMA_MAPS, hints: OBJ_HINT, quiet: true, batch: true, profile: true, target: 'Target free VRAM', ctxName: 'Context size',
+             restart: 'Restart server after apply', free: 'free VRAM', server: 'llama-server', tab: 'llama.cpp',
+             reverify: '' },
+    lms:   { maps: LMS_MAPS, hints: LMS_OBJ_HINT, quiet: false, batch: false, profile: false, target: 'Target free memory', ctxName: 'Context length',
+             restart: 'Reload model after apply', free: 'free memory', server: 'LM Studio server', tab: 'LM Studio',
+             reverify: 'Re-verify loads the model with its current settings and measures it again.' },
+    vllm:  { maps: VLLM_MAPS, hints: VLLM_OBJ_HINT, quiet: false, batch: false, profile: false, target: 'Target free VRAM', ctxName: 'Context length',
+             restart: 'Restart server after apply', free: 'free memory', server: 'vLLM server', tab: 'vLLM',
+             reverify: 'Re-verify restarts the server with its current flags and measures it again.' },
+  };
+  const pd = () => PROV_UI[prov()] || PROV_UI.llama;
   // Swaps the stage maps and the rail rows to the picked provider's set.
   function applyProvider() {
-    const p = prov(), M = p === 'lms' ? LMS_MAPS : LLAMA_MAPS;
+    const p = prov(), U = pd(), M = U.maps;
     STAGE_NAME = M.name; STAGE_FLAG = M.flag; STAGE_SHORT = M.short; ORDER = M.order; MEASURED = M.measured; EST = M.est;
     if (_provUi === p) return;
     _provUi = p;
-    document.querySelectorAll('#toolsModAt [data-prov]').forEach(el => { el.style.display = el.dataset.prov === p ? '' : 'none'; });
+    // data-prov lists the providers an element belongs to ("llama lms"); others hide it.
+    document.querySelectorAll('#toolsModAt [data-prov]').forEach(el => { el.style.display = el.dataset.prov.split(' ').includes(p) ? '' : 'none'; });
     document.querySelectorAll('#atSpecChips .bl-chip').forEach(c => {
-      if (c.dataset.prov && c.dataset.prov !== p) c.classList.remove('on');
+      if (c.dataset.prov && !c.dataset.prov.split(' ').includes(p)) c.classList.remove('on');
     });
     const quiet = document.querySelector('#atObjSeg button[data-obj="quiet"]');
-    if (quiet) quiet.style.display = p === 'lms' ? 'none' : '';
-    if (p === 'lms' && objective() === 'quiet') setObjective('balanced');
-    const tl = $('atTargetLbl'); if (tl) tl.textContent = p === 'lms' ? 'Target free memory' : 'Target free VRAM';
-    const cn = document.querySelector('#toolsModAt .at-dim[data-dim="context"] .n'); if (cn) cn.textContent = p === 'lms' ? 'Context length' : 'Context size';
+    if (quiet) quiet.style.display = U.quiet ? '' : 'none';
+    if (!U.quiet && objective() === 'quiet') setObjective('balanced');
+    const tl = $('atTargetLbl'); if (tl) tl.textContent = U.target;
+    const cn = document.querySelector('#toolsModAt .at-dim[data-dim="context"] .n'); if (cn) cn.textContent = U.ctxName;
     // Fields still at the other provider's default take this provider's default.
     const swap = (id, mine, theirs) => { const el = $(id); if (el && (el.value === '' || String(el.value) === String(theirs))) el.value = String(mine); };
     const tm = $('atTargetMb'); if (tm) { tm.max = p === 'lms' ? '65536' : '16384'; tm.step = p === 'lms' ? '256' : '64'; }
     if (p === 'lms') { swap('atTargetMb', 2048, 1024); swap('atToleranceMb', 250, 50); swap('atMinCtxSlot', 8192, 32768); }
-    else { swap('atTargetMb', 1024, 2048); swap('atToleranceMb', 50, 250); swap('atMinCtxSlot', 32768, 8192); }
-    const rl = $('atRestartLbl'); if (rl) rl.textContent = p === 'lms' ? 'Reload model after apply' : 'Restart server after apply';
-    const bg = $('atBatchGrp'); if (bg) bg.style.display = p === 'lms' ? 'none' : '';
-    ['atProfileBtn', 'atCopyArgsBtn'].forEach(id => { const b = $(id); if (b) b.style.display = p === 'lms' ? 'none' : ''; });
+    else if (p === 'llama') { swap('atTargetMb', 1024, 2048); swap('atToleranceMb', 50, 250); swap('atMinCtxSlot', 32768, 8192); }
+    const rl = $('atRestartLbl'); if (rl) rl.textContent = U.restart;
+    const bg = $('atBatchGrp'); if (bg) bg.style.display = U.batch ? '' : 'none';
+    ['atProfileBtn', 'atCopyArgsBtn'].forEach(id => { const b = $(id); if (b) b.style.display = U.profile ? '' : 'none'; });
   }
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
   let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
@@ -106,10 +137,7 @@
       prev.style.display = '';
       buildNote(prev).textContent = 'Tune status could not be loaded, so whether an earlier tune is stale is unknown.';
     }
-    if (prev && st && isLms()) {
-      prev.style.display = '';
-      buildNote(prev).textContent = 'Re-verify loads the model with its current settings and measures it again.';
-    } else if (prev && st) {
+    if (prev && st && hosted()) { prev.style.display = ''; buildNote(prev).textContent = pd().reverify; } else if (prev && st) {
       prev.style.display = '';
       const note = buildNote(prev);
       // The line above already carries the date, so this sentence only adds the build.
@@ -127,6 +155,16 @@
   function num(id, def) { const el = $(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : def; }
   function moeVisible() { const el = document.querySelector('.at-dim[data-dim="moe"]'); return !el || el.style.display !== 'none'; }
   function dimsState() {
+    if (isVllm()) {
+      return {
+        context: { on: true, probe_len: Math.round(num('atProbeLen', 4096)), concurrency: num('atKvConc', 1), kv_fraction: num('atKvFrac', 100) / 100 },
+        seqs: { on: dimOn('seqs'), candidates: chips('atSeqChips').map(Number) },
+        kvdtype: { on: dimOn('kvdtype'), candidates: chips('atKvDtypeChips') },
+        spec: { on: dimOn('spec'), types: chips('atSpecChips').filter(v => ['auto', 'ngram', 'draft', 'none'].includes(v)),
+                draft_model: (($('atVllmDraft') || {}).value || '').trim() || 'none' },
+        prefix: { on: dimOn('prefix'), candidates: [true, false] },
+      };
+    }
     if (isLms()) {
       return {
         context: { on: true, target_mb: num('atTargetMb', 2048), tolerance_mb: num('atToleranceMb', 256) },
@@ -153,9 +191,9 @@
   }
   function objective() { const b = document.querySelector('#atObjSeg button.on'); return (b && b.dataset.obj) || 'balanced'; }
   function setObjective(o) {
-    if (isLms() && o === 'quiet') o = 'balanced';
+    if (!pd().quiet && o === 'quiet') o = 'balanced';
     document.querySelectorAll('#atObjSeg button').forEach(b => b.classList.toggle('on', b.dataset.obj === o));
-    const h = $('atObjHint'); if (h) h.innerHTML = (isLms() ? LMS_OBJ_HINT[o] : OBJ_HINT[o]) || '';
+    const h = $('atObjHint'); if (h) h.innerHTML = pd().hints[o] || '';
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L) { L.atObjective = o; try { saveLayout(); } catch (_) {} }
     if (o === 'quiet') applyQuietDefaults();
@@ -219,10 +257,10 @@
       lab.innerHTML = `<button type="button" class="mc-toggle${on ? ' on' : ''}" data-model="${esc(m)}"><span class="track"></span></button><b>${esc(m)}</b>`;
       const moe = isMoe(m);
       if (moe) { const t = document.createElement('span'); t.className = 'at-tag moe'; t.textContent = `MoE · ${factsFor(m).n_expert} experts`; lab.appendChild(t); }
-      const lrow = isLms() && _pre && (_pre.models || []).find(x => x.key === m);
+      const lrow = hosted() && _pre && (_pre.models || []).find(x => x.key === m);
       if (lrow && lrow.loaded) { const t = document.createElement('span'); t.className = 'at-tag moe'; t.textContent = 'loaded'; lab.appendChild(t); }
       if (lrow && lrow.params) { const t = document.createElement('span'); t.className = 'at-tag'; t.textContent = lrow.params + (lrow.quant ? ' · ' + lrow.quant : ''); lab.appendChild(t); }
-      if (!isLms() && noFit(m)) { const t = document.createElement('span'); t.className = 'at-tag nofit'; t.textContent = 'no fit'; lab.appendChild(t); }
+      if (!hosted() && noFit(m)) { const t = document.createElement('span'); t.className = 'at-tag nofit'; t.textContent = 'no fit'; lab.appendChild(t); }
       host.appendChild(lab);
       if (on) _sel.add(m);
     });
@@ -232,7 +270,7 @@
     const n = selected().length;
     const c = $('atModelsCount'); if (c) c.textContent = `${n} selected`;
     const moeRow = document.querySelector('.at-dim[data-dim="moe"]');
-    if (moeRow && !isLms()) { const p = primaryModel(); moeRow.style.display = (p && isMoe(p) === false) ? 'none' : ''; }
+    if (moeRow && !hosted()) { const p = primaryModel(); moeRow.style.display = (p && isMoe(p) === false) ? 'none' : ''; }
     const prev = $('atPrevTune');
     if (prev) {
       const p = primaryModel();
@@ -266,6 +304,7 @@
       && (!(size > 0) || Number(d.size || 0) <= size / 8));
   }
   function seedDrafts(drafts, mid) {
+    if (isVllm()) return;
     const sel = $('atDraftSel'); if (!sel) return;
     const cur = sel.value;
     if (isLms()) {
@@ -296,7 +335,7 @@
   async function syncDraft() {
     const row = $('atDraftRow'), note = $('atDraftNote'), btn = $('atDraftDlBtn');
     if (!row) return;
-    if (isLms()) { row.style.display = 'none'; dimSummaries(); return; }
+    if (hosted()) { row.style.display = 'none'; dimSummaries(); return; }
     const mid = primaryModel();
     if (!mid || hasDraft(mid) !== false || manualDraft() || _dl) { if (!_dl) { row.style.display = 'none'; dimSummaries(); } return; }
     if (_draftFor !== mid) {
@@ -351,9 +390,16 @@
   }
   function dimSummaries() {
     const d = dimsState();
-    const tv = $('atTargetMbVal'); if (tv) tv.textContent = `${d.context.target_mb} MB`;
-    const tol = $('atToleranceMbVal'); if (tol) tol.textContent = `${d.context.tolerance_mb} MB`;
-    const s = isLms() ? {
+    const tv = $('atTargetMbVal'); if (tv && d.context.target_mb != null) tv.textContent = `${d.context.target_mb} MB`;
+    const tol = $('atToleranceMbVal'); if (tol && d.context.tolerance_mb != null) tol.textContent = `${d.context.tolerance_mb} MB`;
+    const kb = $('atKvBudgetVal'); if (kb) kb.textContent = `${Math.round(num('atKvBudget', 90))} %`;
+    const s = isVllm() ? {
+      context: `probe ${Number(d.context.probe_len).toLocaleString()} · ${d.context.concurrency}× concurrency · ${Math.round(d.context.kv_fraction * 100)} % KV`,
+      seqs: `${d.seqs.candidates.join(' · ') || '—'}`,
+      kvdtype: `${d.kvdtype.candidates.join(' · ') || '—'}`,
+      spec: `${d.spec.types.join(' · ') || '—'}${d.spec.draft_model !== 'none' ? ' · draft ' + d.spec.draft_model : ''}`,
+      prefix: 'on · off',
+    } : isLms() ? {
       context: `free ${d.context.target_mb} ± ${d.context.tolerance_mb} MB`,
       flash: 'on · off',
       batch: `${d.batch.candidates.join(' · ') || '—'}`,
@@ -398,7 +444,28 @@
     });
     return rows;
   }
+  function planRowsVllm(obj, dims, pre) {
+    const rt = !!(pre && pre.runtime && pre.runtime.ok);
+    const rows = [];
+    ORDER.forEach(stage => {
+      const d = dims[stage] || {};
+      const on = stage === 'context' || stage === 'verify' || !!d.on;
+      let desc = '', n = 1;
+      if (stage === 'context') desc = `one restart at ${Number(dims.context.probe_len).toLocaleString()} reads the KV capacity · ${obj === 'fit' ? 'sets' : 'keeps or shrinks to'} the largest context for ${dims.context.concurrency}× concurrency`;
+      else if (stage === 'seqs') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — ${obj === 'serve' ? 'keep the highest aggregate' : obj === 'speed' ? 'single sequence' : 'keep ≥ 70 % of single-sequence decode'}`; }
+      else if (stage === 'kvdtype') { n = Math.max(1, (d.candidates || []).length); desc = `${(d.candidates || []).join(' · ')} — a dtype the engine refuses is skipped`; }
+      else if (stage === 'spec') { n = (d.types || []).includes('auto') ? 3 : 1 + (d.types || []).filter(t => t !== 'none').length; desc = `none · ${(d.types || []).join(' · ')}${d.draft_model && d.draft_model !== 'none' ? ' · draft ' + d.draft_model : ''} — keep a setup that gains 5 %`; }
+      else if (stage === 'prefix') { n = 2; desc = 'on · off — keep the faster decode'; }
+      else desc = `restart with the recommended set once, confirm the server answers + ${rt ? '60 s of chat traffic' : 'readiness'}`;
+      const measured = MEASURED.includes(stage);
+      if (measured && on && !rt) desc = 'skipped: install the bench runtime (Benchmark · Live) to measure this';
+      const est_s = on ? (measured && !rt ? 0 : EST[stage] * n) : 0;
+      rows.push({ stage, name: STAGE_NAME[stage], flag: STAGE_FLAG[stage], desc, on, est_s });
+    });
+    return rows;
+  }
   function planRows(obj, dims, pre, facts) {
+    if (isVllm()) return planRowsVllm(obj, dims, pre);
     if (isLms()) return planRowsLms(obj, dims, pre);
     const rt = !!(pre && pre.runtime && pre.runtime.ok);
     const moe = facts && facts.n_expert != null ? facts.n_expert > 1 : null;
@@ -458,14 +525,14 @@
     const banner = $('atPreflight'), msg = $('atPreflightMsg'), btn = $('atStopBtn'), run = $('atRunBtn'), inst = $('atInstallBtn');
     if (!banner) return;
     if (inst) inst.style.display = 'none';
-    if (isLms()) {
+    if (hosted()) {
       // LM Studio stays up: the tuner unloads and reloads the model itself.
       let p = pre;
       if (!p) { try { p = await fetch(tq('/api/llm/autotune/preflight')).then(r => r.json()); } catch (_) { p = null; } }
       if (p && p.ok) _pre = p;
       const srvUp = !!(p && p.ok && p.server && p.server.up);
       banner.style.display = srvUp && !runtimeMissing() ? 'none' : '';
-      if (!srvUp && msg) msg.innerHTML = '<b>LM Studio server is not running.</b> Start it on the LM Studio tab, then come back.';
+      if (!srvUp && msg) msg.innerHTML = `<b>${esc(pd().server)} is not running.</b> Start it on the ${esc(pd().tab)} tab, then come back.`;
       else if (runtimeMissing() && msg) { msg.innerHTML = RT_MISSING; if (inst) inst.style.display = ''; }
       if (btn) btn.style.display = 'none';
       if (run && !running()) run.disabled = !srvUp;
@@ -543,6 +610,7 @@
     });
     mod.addEventListener('input', ev => {
       if (ev.target.id === 'atPowerCap') { const L = typeof layout !== 'undefined' ? layout : null; if (L) { L.atPowerCap = capValue(); try { saveLayout(); } catch (_) {} } return; }
+      if (ev.target.id === 'atKvBudget') ev.target._touched = 1;
       if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan();
     });
     mod.addEventListener('change', ev => { if (ev.target.id === 'atDraftSel') syncDraft(); if (ev.target.closest('.at-dim-b, .at-grp-b')) refreshPlan(); });
@@ -554,7 +622,7 @@
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
     if (running()) return;
     if (opts && opts.retarget) { _sel = new Set(); _pre = null; _done = {}; _doneModel = null; setPane('Plan'); }
-    const lms = isLms();
+    const lms = hosted();
     const [models, pre, runs] = await Promise.all([
       lms ? Promise.resolve({}) : fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
       fetch(tq('/api/llm/autotune/preflight')).then(r => r.json()).catch(() => null),
@@ -564,6 +632,10 @@
       lms ? Promise.resolve() : loadBatchHosts(),
     ]);
     _pre = pre && pre.ok ? pre : _pre;
+    if (isVllm()) {
+      const kb = $('atKvBudget'), g = _pre && _pre.config ? _pre.config.gpu_memory_utilization : null;
+      if (kb && g != null && !kb._touched) { kb.value = String(Math.round(Number(g) * 100)); dimSummaries(); }
+    }
     if (lms) {
       // Downloaded LLMs on the host, loaded ones first.
       const rows = ((_pre && _pre.models) || []).filter(m => m.key && (!m.type || m.type === 'llm'));
@@ -670,7 +742,7 @@
     const rows = planRows(objective(), dimsState(), _pre, factsFor(primaryModel() || ''));
     const staticEst = {}; rows.forEach(r => { staticEst[r.stage] = r.est_s; });
     _run = { order: stages || ORDER, stages: {}, cands: {}, current: null, startTs: Date.now(), staticEst,
-             estTotal: rows.reduce((a, r) => a + (r.on ? r.est_s : 0), 0), iters: [], loads: 0 };
+             estTotal: rows.reduce((a, r) => a + (r.on ? r.est_s : 0), 0), iters: [], loads: 0, kvTokens: null, kvRec: null };
     _run.order.forEach(s => { _run.stages[s] = { status: 'pending', text: '—' }; });
     const lg = $('atLog'); if (lg) lg.innerHTML = '';
     const rw = $('atRawLog'); if (rw) rw.innerHTML = '';
@@ -681,6 +753,13 @@
   }
   const DIM_FALLBACK = { kv: ['f16', 'q8_0', 'q4_0'], slots: [1, 2, 4, 8], spec: ['auto'] };
   function dimsProblem(d) {
+    if (isVllm()) {
+      if (d.context.probe_len < 256) return 'Probe length must be at least 256 tokens.';
+      if (d.seqs.on && !d.seqs.candidates.length) return 'Pick at least one sequence count, or switch the Max sequences dimension off.';
+      if (d.kvdtype.on && !d.kvdtype.candidates.length) return 'Pick at least one KV cache dtype, or switch that dimension off.';
+      if (d.spec.on && !d.spec.types.length) return 'Pick at least one speculative decoding type, or switch that dimension off.';
+      return null;
+    }
     if (isLms()) {
       if (d.batch.on && !d.batch.candidates.length) return 'Pick at least one batch size, or switch the Batch size dimension off.';
       if (d.slots.on && !d.slots.candidates.length) return 'Pick at least one slot count, or switch the Parallel slots dimension off.';
@@ -699,6 +778,12 @@
   // The agent validates every candidates key it is sent, empty or not, so an off
   // dimension must carry a usable list or omit the key entirely.
   function fillDimDefaults(d) {
+    if (isVllm()) {
+      if (!d.seqs.candidates.length) delete d.seqs.candidates;
+      if (!d.kvdtype.candidates.length) d.kvdtype.candidates = ['auto', 'fp8'];
+      if (!d.spec.types.length) d.spec.types = ['auto'];
+      return;
+    }
     if (isLms()) {
       if (!d.batch.candidates.length) d.batch.candidates = [512, 1024, 2048];
       if (!d.slots.candidates.length) d.slots.candidates = DIM_FALLBACK.slots.slice();
@@ -717,13 +802,13 @@
     const ids = selected();
     if (!ids.length) { _toastErr('Select at least one model.'); return; }
     const dims = dimsState();
-    if (!Number.isFinite(dims.context.target_mb) || dims.context.target_mb < 0) { _toastErr('Target free VRAM must be a non-negative number.'); return; }
+    if (!isVllm() && (!Number.isFinite(dims.context.target_mb) || dims.context.target_mb < 0)) { _toastErr('Target free VRAM must be a non-negative number.'); return; }
     const problem = dimsProblem(dims);
     if (problem) { _toastErr(problem); return; }
     fillDimDefaults(dims);
-    const quiet = !isLms() && objective() === 'quiet', cap = capValue();
+    const quiet = pd().quiet && objective() === 'quiet', cap = capValue();
     if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
-    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}) };
+    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}), ...(isVllm() ? { gpu_memory_utilization: Math.round(num('atKvBudget', 90)) / 100 } : {}) };
     return startRun(body, ids);
   }
   async function startRun(body, ids) {
@@ -748,7 +833,7 @@
   function began(body, ids) {
     _attached = false; _foreign = false;
     _done = {}; _doneModel = null; _meta = {}; _section = {};
-    if (!isLms()) fetchMeta(ids);
+    if (!hosted()) fetchMeta(ids);
     newRun(null);
     _run.powerCap = body.power_cap_w != null ? Number(body.power_cap_w) : null;
     setPane('Run');
@@ -771,7 +856,7 @@
     const baseline = {};
     [['decode_tps', 'decode_tps'], ['prefill_tps', 'prefill_tps'], ['agg_tps', 'agg_tps'], ['ctx', 'ctx_size'], ['free_mb', 'free_mb']]
       .forEach(([k, sk]) => { if (sm[sk] != null) baseline[k] = sm[sk]; });
-    const quiet = !isLms() && objective() === 'quiet', cap = capValue();
+    const quiet = pd().quiet && objective() === 'quiet', cap = capValue();
     if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
     const body = { model_ids: [mid], objective: objective(), budget_min: 15, mode: 'verify',
                    baseline_tps: sm.decode_tps ?? null, baseline, dims, ...(quiet ? { power_cap_w: cap } : {}) };
@@ -929,7 +1014,11 @@
     if (!s) { if (title) title.textContent = 'Starting'; if (meta) meta.textContent = ''; if (body) body.innerHTML = '<div class="at-hint">Waiting for the first stage…</div>'; return; }
     const cands = _run.cands[s] || [];
     if (title) title.textContent = STAGE_NAME[s];
-    if (s === 'context' && isLms()) {
+    if (s === 'context' && isVllm()) {
+      if (meta) meta.textContent = 'KV capacity from one restart at the probe length';
+      const c = cands[cands.length - 1] || {};
+      if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(_run.kvTokens != null ? Number(_run.kvTokens).toLocaleString() : (c.status === 'pending' ? '…' : '—'))}<em>tokens</em></div><div class="l">KV capacity</div></div><div class="bl-tile"><div class="v">${esc(_run.kvRec != null ? Number(_run.kvRec).toLocaleString() : '—')}</div><div class="l">context fits</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode at probe</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'up' : 'failed')}</div><div class="l">${esc(c.error || 'server')}</div></div></div>`;
+    } else if (s === 'context' && isLms()) {
       if (meta) meta.textContent = 'free memory after each load · target band';
       const d = dimsState().context;
       if (body) body.innerHTML = `<table class="at-kvt"><thead><tr><th>context</th><th>free</th><th>fits</th></tr></thead><tbody>${cands.map(c => `<tr><td>${esc(c.value === 'current' ? 'as loaded' : Number(c.value).toLocaleString())}</td><td>${c.free_mb != null ? esc(Number(c.free_mb).toLocaleString()) + ' MB' : (c.status === 'pending' ? '…' : '—')}</td><td>${c.fits === true || (c.value === 'current' && c.ok) ? '<span class="ok">yes</span>' : c.fits === false ? '<span class="warn">no</span>' : (c.ok === false ? '<span class="crit">' + esc(c.error || 'failed') + '</span>' : '—')}</td></tr>`).join('')}</tbody></table><div class="at-hint" style="margin-top:6px">target ${esc(d.target_mb)} ± ${esc(d.tolerance_mb)} MB free · probes are read under one request and carry a 512 MB traffic margin; the loaded context and verify are read through real traffic</div>`;
@@ -948,7 +1037,7 @@
     } else if (s === 'verify') {
       if (meta) meta.textContent = 'recommended set · traffic at the chosen concurrency';
       const c = cands[cands.length - 1] || {};
-      if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">${isLms() ? 'free memory' : 'free VRAM'}</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
+      if (body) body.innerHTML = `<div class="bl-tiles"><div class="bl-tile"><div class="v">${esc(fmt(c.decode_tps))}<em>t/s</em></div><div class="l">decode</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.agg_tps))}<em>t/s</em></div><div class="l">aggregate</div></div><div class="bl-tile"><div class="v">${esc(fmt(c.free_mb, 0))}<em>MB</em></div><div class="l">${pd().free}</div></div><div class="bl-tile"><div class="v">${c.status === 'pending' ? '…' : (c.ok ? 'pass' : 'fail')}</div><div class="l">attempt ${esc(c.value)}</div></div></div>`;
     } else {
       const metric = s === 'slots' && objective() === 'serve' ? 'agg_tps' : 'decode_tps';
       if (meta) meta.innerHTML = `${metric === 'agg_tps' ? 'aggregate' : 'decode'} t/s per <b>${esc(STAGE_FLAG[s])}</b> · chat preset` + (_run.powerCap != null ? ` · cap ${esc(_run.powerCap)} W` : '');
@@ -1038,6 +1127,16 @@
     } else if (t === 'perf_mode') {
       perfNote(msg);
       log(`perf mode → ${msg.mode}${msg.ok ? '' : ' (not applied: ' + (msg.error || 'rc=' + msg.rc) + ')'}`, msg.ok ? 'dim' : 'warn');
+    } else if (t === 'candidate_rejected') {
+      log(`candidate ${msg.value} rejected · ${msg.reason || 'the engine did not start'}`, 'warn');
+    } else if (t === 'kv_capacity') {
+      _run.kvTokens = msg.tokens; if (_run.current === 'context') renderStage();
+      log(`KV cache capacity · ${Number(msg.tokens || 0).toLocaleString()} tokens`, 'dim');
+    } else if (t === 'recommendation') {
+      _run.kvRec = msg.max_model_len; if (_run.current === 'context') renderStage();
+      log(`context length ${Number(msg.max_model_len || 0).toLocaleString()} fits ${Number(msg.kv_tokens || 0).toLocaleString()} KV tokens at ${msg.concurrency}× · ${Math.round((msg.kv_fraction || 1) * 100)} % KV`, 'dim');
+    } else if (t === 'rollback_failed') {
+      log(`rollback failed · ${msg.error || 'unknown'}`, 'crit');
     } else if (t === 'line') {
       if (msg.text) raw(msg.text);
     } else if (t === 'loading_progress' || t === 'sentinel_seen_update' || t === 'plateau_detected' || t === 'bracket_precision_reached'
@@ -1112,7 +1211,7 @@
       ? '<div class="at-hint" style="margin-bottom:8px">The last tune recorded no measurements to compare against, so this verify becomes the baseline for the next one.</div>' : '';
     host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
-      + row(isLms() ? 'Memory free' : 'VRAM free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
+      + row(pd().free === 'free VRAM' ? 'VRAM free' : 'Memory free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
   // Verify draw vs the cap: over, at (within the agent's tolerance), or under.
   function capReadout(w, cap, over) {
@@ -1137,7 +1236,7 @@
   }
   function renderDone(done) {
     renderDoneModels();
-    const lms = isLms() || done.provider === 'lms';
+    const lms = hosted() || done.provider === 'lms' || done.provider === 'vllm';
     const section = lms ? (done.base_config || {}) : (_section[done.model_id] || {}), meta = lms ? null : (_meta[done.model_id] || null);
     const d = lms ? { on: false, overwrite: false } : dimsState().sampling;
     _rows = recRows(done, section, d.on ? meta : null, d.overwrite);
@@ -1145,7 +1244,7 @@
     const g = pct(a.decode_tps, b.decode_tps), x = b.ctx && a.ctx ? a.ctx / b.ctx : null;
     const big = $('atRecBig');
     if (big) big.innerHTML = [g != null ? `decode <b${g < 0 ? ' class="neg"' : ''}>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : '', x ? `context <b>${x >= 2 ? Math.round(x) : Math.round(x * 100) / 100}×</b>` : '',
-                              a.free_mb != null ? `${lms ? 'memory' : 'VRAM'} free ${fmt(a.free_mb, 0)} MB` : '',
+                              a.free_mb != null ? `${pd().free === 'free VRAM' ? 'VRAM' : 'memory'} free ${fmt(a.free_mb, 0)} MB` : '',
                               done.power_cap_w != null && a.avg_w != null
                                 ? capReadout(a.avg_w, done.power_cap_w, done.over_cap) : ''].filter(Boolean).join(' · ');
     const warn = $('atRecWarn');
@@ -1204,7 +1303,8 @@
     if (qb) qb.style.display = !lms && (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
     if (guardCard) guardCard.style.display = lms ? 'none' : '';
     if (!lms) renderGuard(done);
-    setMsg(lms ? 'Apply keeps these load options for this model on this host and reloads it with them.'
+    setMsg(isVllm() || done.provider === 'vllm' ? 'Apply writes these flags into the vLLM service file on this host; Restart server after apply restarts it with them.'
+      : lms ? 'Apply keeps these load options for this model on this host and reloads it with them.'
       : `Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
   }
   function selectedRows() { return _rows.filter(r => r.selected); }
@@ -1226,6 +1326,22 @@
     const restart = restartOn(), enc = encodeURIComponent(mid);
     const btn = $('atApplyBtn'); if (btn) btn.disabled = true;
     let step = 'read config';
+    if (isVllm()) {
+      try {
+        step = 'read server config';
+        const cur = await fetch(tq('/api/vllm/server/svcconfig')).then(r => r.json());
+        if (!cur || !cur.ok) throw new Error((cur && cur.error) || 'server config unavailable');
+        step = 'write server config';
+        await postJson(tq('/api/vllm/server/svcconfig'), { binary: cur.binary, args: vllmArgsWith(cur.args || [], sel), restart });
+        setMsg(`Applied ${sel.length} change${sel.length === 1 ? '' : 's'}${restart ? ' and restarted the vLLM server' : ' — they take effect on the next restart'}. Revert from Server config on the vLLM tab.`, 'ok');
+        if (typeof fetchVllmMetrics === 'function') { try { fetchVllmMetrics(); } catch (_) {} }
+        return { ok: true };
+      } catch (e) {
+        setMsg(`Stopped at “${step}”: ${e && e.message ? e.message : e}. Nothing after that step was attempted.`, 'crit');
+        if (btn) btn.disabled = false;
+        return { ok: false, step };
+      }
+    }
     if (isLms()) {
       const config = {};
       sel.forEach(r => { config[r.key] = r.value !== undefined ? r.value : r.recommended; });
@@ -1275,6 +1391,20 @@
     } catch (e) { setMsg('Profile save failed: ' + (e && e.message ? e.message : e), 'crit'); }
   }
   function argsText(list) { return (list || []).map(r => (r.recommended === true || r.recommended === 'true') ? `--${r.key}` : `--${r.key} ${r.recommended}`).join(' '); }
+  // Rewrites ExecStart flag rows for the selected vLLM recommendations (both --flag v and --flag=v forms).
+  const VLLM_ALIASES = { '--speculative-config': ['-sc'], '--enable-prefix-caching': ['--no-enable-prefix-caching'] };
+  function vllmArgsWith(args, rows) {
+    const drop = new Set();
+    rows.forEach(r => { drop.add(r.flag); (VLLM_ALIASES[r.flag] || []).forEach(a => drop.add(a)); });
+    const out = (args || []).filter(a => !drop.has(String(a.flag || '').split('=')[0].replace(/_/g, '-')));
+    rows.forEach(r => {
+      const v = r.value !== undefined ? r.value : r.recommended;
+      if (v === null || v === undefined || v === '') return;
+      if (r.flag === '--enable-prefix-caching') { out.push({ flag: (v === true || v === 'true') ? '--enable-prefix-caching' : '--no-enable-prefix-caching', value: null, bool: true }); return; }
+      out.push({ flag: r.flag, value: typeof v === 'object' ? JSON.stringify(v) : String(v), bool: false });
+    });
+    return out;
+  }
   async function copyArgs() {
     const text = argsText(selectedRows());
     try { await navigator.clipboard.writeText(text); setMsg('Copied: ' + text, 'ok'); }
@@ -1466,6 +1596,6 @@
 
   window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, installRuntime, showModel, running, downloadDraft, startBatch, cancelBatch, batchWatch, batchActive, batchStartAt, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
-                renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText,
+                renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText, vllmArgsWith,
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };
 })();

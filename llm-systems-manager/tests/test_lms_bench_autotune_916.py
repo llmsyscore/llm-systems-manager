@@ -151,7 +151,8 @@ def test_autotune_and_benchmark_routes_take_a_provider(monkeypatch):
     assert calls == [("llama", "GET", "/llama/autotune/preflight", "absent"), ("lms", "GET", "/lms/autotune/preflight", "absent"),
                      ("lms", "POST", "/lms/autotune/run", "absent"), ("lms", "POST", "/lms/autotune/cancel", "absent"),
                      ("lms", "POST", "/lms/bench/cancel", "absent")]
-    assert c.get("/api/llm/autotune/preflight?provider=vllm").status_code == 400
+    assert c.get("/api/llm/autotune/preflight?provider=vllm").status_code == 200
+    assert calls[-1] == ("vllm", "GET", "/vllm/autotune/preflight", "absent")
     assert c.get("/api/llm/autotune/preflight?provider=bogus").status_code == 400
     assert c.get("/api/benchmark/stream?provider=bogus").status_code == 400
 

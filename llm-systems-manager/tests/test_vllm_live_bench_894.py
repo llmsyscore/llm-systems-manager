@@ -31,7 +31,7 @@ def test_fleet_hosts_lists_vllm_served_model(monkeypatch):
     assert [r["provider"] for r in manager_mod._fleet_hosts(None)] == ["llama", "lms", "vllm", "vllm"]
 
 
-def test_autotune_routes_refuse_vllm_but_benchmark_routes_proxy_it(monkeypatch):
+def test_autotune_and_benchmark_routes_proxy_vllm(monkeypatch):
     calls = []
 
     def fake_proxy(kind, method, path, **kw):
@@ -44,8 +44,33 @@ def test_autotune_routes_refuse_vllm_but_benchmark_routes_proxy_it(monkeypatch):
     with c.session_transaction() as s:
         s["auth_ok"] = True
         s["role"] = "admin"
-    assert manager_mod.AUTOTUNE_PROVIDERS == ("llama", "lms")
-    r = c.get("/api/llm/autotune/preflight?provider=vllm")
-    assert r.status_code == 400 and "has no autotune tools" in r.get_json()["error"]
+    assert manager_mod.AUTOTUNE_PROVIDERS == ("llama", "lms", "vllm")
+    assert c.get("/api/llm/autotune/preflight?provider=vllm").status_code == 200
+    assert c.post("/api/llm/autotune/cancel?provider=vllm").status_code == 200
     assert c.post("/api/benchmark/cancel?provider=vllm").status_code == 200
-    assert calls == [("vllm", "/vllm/bench/cancel")]
+    assert calls == [("vllm", "/vllm/autotune/preflight"), ("vllm", "/vllm/autotune/cancel"), ("vllm", "/vllm/bench/cancel")]
+
+
+def test_benchmark_run_dispatches_offline_runner_by_provider(monkeypatch):
+    starts = []
+    monkeypatch.setattr(manager_mod, "_tool_start", lambda provider, tool, path, cancel, body, timeout=15, pre=None:
+                        starts.append((provider, tool, path, cancel, body, pre)) or manager_mod.jsonify({"ok": True, "run_id": "r1"}))
+    monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
+    manager_mod.app.config["TESTING"] = True
+    c = manager_mod.app.test_client()
+    with c.session_transaction() as s:
+        s["auth_ok"] = True
+        s["role"] = "admin"
+    assert c.post("/api/benchmark/run?provider=vllm", json={"model": "org/m", "switches": [{"flag": "--num-prompts", "value": "20"}]}).status_code == 200
+    assert c.post("/api/benchmark/run", json={"models": ["org/m"]}).status_code == 200
+    r = c.post("/api/benchmark/run?provider=lms", json={})
+    assert r.status_code == 400 and "no offline benchmark" in r.get_json()["error"]
+    assert c.post("/api/benchmark/run?provider=bogus", json={}).status_code == 400
+    assert starts == [("vllm", "benchmark", "/vllm/bench/run", "/vllm/bench/cancel", {"model": "org/m", "switches": [{"flag": "--num-prompts", "value": "20"}]}, None),
+                      ("llama", "benchmark", "/llama/bench/run", "/llama/bench/cancel", {"models": ["org/m"]}, "/llama/server/stop")]
+
+
+def test_vllm_autotune_overlay_routes_are_gone():
+    rules = {str(r) for r in manager_mod.app.url_map.iter_rules()}
+    assert not any(r.startswith("/api/vllm/autotune/") for r in rules)
+    assert {"/api/vllm/bench/run", "/api/vllm/bench/stream", "/api/vllm/bench/cancel"} <= rules

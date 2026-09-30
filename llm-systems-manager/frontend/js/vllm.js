@@ -245,6 +245,19 @@ function _setVllmBtns(serverUp) {
   if (start) start.disabled = serverUp;
 }
 
+// Stored vllm bench serve results for the model-card badges (moved from the retired overlay, #894).
+window._vbenchData = window._vbenchData || {};
+async function loadVllmBenchData() {
+  try {
+    const r = await fetch(window._withAgentParam('/api/benchmark/results?provider=vllm')).then(x => x.json());
+    const map = {};
+    for (const row of ((r && r.results) || [])) map[row.model_id] = row;
+    window._vbenchData = map;
+    if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
+  } catch (e) { /* offline manager: badges simply stay hidden */ }
+}
+loadVllmBenchData();
+
 let _vllmLastModels = null, _vllmLastActive = null;
 
 function renderVllmModelCards(models, activeId) {
@@ -304,8 +317,10 @@ function renderVllmModelCards(models, activeId) {
       const btn = ev.target.closest('button[data-vllmact]');
       if (!btn) return;
       const act = btn.dataset.vllmact;
-      if (act === 'bench')         { MC.closeMenus(); openVllmBench(); }
-      else if (act === 'autotune') { MC.closeMenus(); openVllmAutotune(); }
+      const agent = (typeof _selectedAgent === 'function' && _selectedAgent('vllm')) || (typeof toolsDefaultAgentFor === 'function' && toolsDefaultAgentFor('vllm')) || null;
+      const id = btn.dataset.id || null;
+      if (act === 'bench')         { MC.closeMenus(); toolsDeepLink('benchmark', id, { provider: 'vllm', agent, mode: 'offline' }); }
+      else if (act === 'autotune') { MC.closeMenus(); toolsDeepLink('autotune', id, { provider: 'vllm', agent }); }
     });
   }
 }

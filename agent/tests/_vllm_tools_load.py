@@ -1,4 +1,4 @@
-"""Hermetic loader for providers/vllm_tools.py: stubs third-party imports, loads llama + vllm + the shim + vllm_tools."""
+"""Hermetic loader for providers/vllm_tools.py: stubs third-party imports, loads llama + vllm + the shim + the LM Studio tools + the vLLM engine + vllm_tools."""
 from __future__ import annotations
 import contextlib, importlib.util, sys, types
 from pathlib import Path
@@ -41,7 +41,7 @@ def load():
     for sub in ("llama_install", "llama_sse", "llama_upgrade"):
         sys.modules[f"providers.{sub}"] = types.ModuleType(f"providers.{sub}")
     llama = _file_module("providers.llama", _AGENT_ROOT / "providers" / "llama.py")
-    for name in ("residency", "vllm", "lms_timings_shim"):
+    for name in ("residency", "vllm", "lms_timings_shim", "llama_autotune", "lms", "lms_autotune", "lms_tools", "vllm_autotune"):
         _file_module(f"providers.{name}", _AGENT_ROOT / "providers" / f"{name}.py")
     tools = _file_module("providers.vllm_tools", _AGENT_ROOT / "providers" / "vllm_tools.py")
     def restore():
