@@ -5,7 +5,7 @@
 #
 # Install:
 #   ./install.sh [--user USER] [--install-dir DIR] [--manager-url URL]
-#                [--role auto|llama_host|lms_host|mixed]
+#                [--role auto|llama_host|lms_host|vllm_host|mixed]
 #                [--enable-perf | --no-perf]
 #                [--enable-llama | --no-llama]
 #                [--enable-lms   | --no-lms]
@@ -181,7 +181,7 @@ INSTALL — agent identity
       <manager-host>:8081. Pass this when the AE lives on a different
       host than the manager AND the manager is not on this host.
 
-  --role auto|llama_host|lms_host|mixed
+  --role auto|llama_host|lms_host|vllm_host|mixed
       Role label sent in the registration. Default: auto.
       With 'auto', the installer probes the host:
         - llama.cpp:  pgrep llama-server, then HTTP probe at 127.0.0.1:8080/:9931,
@@ -464,9 +464,9 @@ done
 # `auto` is included because the auto-detect path resolves it to one of
 # the explicit roles before registration.
 case "$ROLE" in
-  auto|llama_host|lms_host|mixed|system_only) ;;
+  auto|llama_host|lms_host|vllm_host|mixed|system_only) ;;
   *)
-    echo "ERROR: --role must be one of: auto, llama_host, lms_host, mixed, system_only (got '$ROLE')" >&2
+    echo "ERROR: --role must be one of: auto, llama_host, lms_host, vllm_host, mixed, system_only (got '$ROLE')" >&2
     exit 2
     ;;
 esac
@@ -3392,14 +3392,20 @@ if [[ "$ROLE" == "auto" ]]; then
   fi
 
   # Resolve role from what was found. The role label only encodes the
-  # two inference providers (llama / lms); OpenClaw is observability and
-  # doesn't shift the role.
-  if $ENABLE_LLAMA && $ENABLE_LMS; then
+  # three inference providers (llama / lms / vllm); OpenClaw is observability
+  # and doesn't shift the role.
+  _providers=0
+  $ENABLE_LLAMA && _providers=$((_providers + 1))
+  $ENABLE_LMS && _providers=$((_providers + 1))
+  [[ "$ENABLE_VLLM" == "true" ]] && _providers=$((_providers + 1))
+  if [[ $_providers -gt 1 ]]; then
     ROLE="mixed"
   elif $ENABLE_LLAMA; then
     ROLE="llama_host"
   elif $ENABLE_LMS; then
     ROLE="lms_host"
+  elif [[ "$ENABLE_VLLM" == "true" ]]; then
+    ROLE="vllm_host"
   else
     ROLE="system_only"
   fi
@@ -3868,7 +3874,7 @@ else
 fi
 echo "──────────────────────────────────────────────────────────────────"
 
-if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" == "llama_host" || "$ROLE" == "mixed" ]]; then
+if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" == "llama_host" || "$ROLE" == "vllm_host" || "$ROLE" == "mixed" ]]; then
   _section "Optional host-metric tooling"
   _missing_hw=()
   command -v sensors    >/dev/null 2>&1 || _missing_hw+=("lm-sensors")

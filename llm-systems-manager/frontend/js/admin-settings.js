@@ -636,22 +636,22 @@
       + `<td>${esc(String(c.calls ?? 0))}</td><td>${esc(String(Math.max(1, Math.round((c.ms || 0) / 1000))))} s</td><td class="det">${esc(c.detail || '')}</td></tr>`).join('');
     return `<details class="st-evalcases"><summary>Questions</summary><table><tr><th></th><th>Question</th><th>Calls</th><th>Time</th><th>Result</th></tr>${rows}</table></details>`;
   }
-  // label: the fixed-width lead ("Primary"); model: shown in the summary line instead (other models).
-  function evalResultHtml(r, label, model) {
-    const v = (window.TW && TW.evalSummary) ? TW.evalSummary(r, towerNowS()) : null;
-    const lead = `<span class="d w">${esc(label || '')}</span>`;
-    if (!v) return `<div class="row ev">${lead}<span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></div>`;
-    const line = (model ? `<b>${esc(v.short || model)}</b> · ` : '') + esc(v.line);
-    return `<div class="row ev">${lead}<span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span><span class="d line">${line}</span></div>`;
-  }
   function towerLiveHtml(job) {
     const txt = (window.TW && TW.evalProgress) ? TW.evalProgress(job) : 'Running…';
     const cancel = job.can_cancel ? ` <button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" data-tower-cancel="${esc(job.id)}">Stop</button>` : '';
     return `<div class="row ev st-live" role="status"><span class="d w">Running</span><span class="d line">${esc(job.label || '')} · ${esc(txt)}</span>${cancel}</div>`;
   }
+  // One table row per evaluated model; the primary model comes first.
+  function evalTableRow(r, label, model) {
+    const v = (window.TW && TW.evalSummary) ? TW.evalSummary(r, towerNowS()) : null;
+    const name = `<b>${esc(v ? v.short : String(model || '').split('/').pop())}</b>`;
+    if (!v) return `<tr><td>${name}</td><td>${esc(label)}</td><td><span class="st-chip dim tl" data-tip="No eval has run for this model yet">Not run</span></td><td></td><td></td></tr>`;
+    return `<tr><td>${name}</td><td>${esc(label)}</td><td><span class="st-chip ${v.cls} tl" data-tip="${esc(v.title)}">${esc(v.text)}</span></td>`
+      + `<td>${esc(v.line)}</td><td>${esc(v.when === 'now' ? 'just now' : v.when ? v.when + ' ago' : '')}</td></tr>`;
+  }
   function towerEvalHtml() {
     const s = _towerState, e = _towerEval;
-    let control, btn = '';
+    let control, body = '';
     if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
     else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
     else if (!s.model) control = '<div class="row"><span class="d">No model loaded</span></div>';
@@ -659,19 +659,22 @@
       const live = (e && e.live) || (_towerModels && _towerModels.live) || null;
       const mine = e ? (e.results || []).find(r => r.model === s.model) : null;
       const others = e ? (e.results || []).filter(r => r.model !== s.model) : [];
-      if (s.admin) {
-        btn = `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerEvalBtn"${live || _towerActBusy ? ' disabled' : ''}>`
+      control = s.admin
+        ? `<span class="acts"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTowerEvalBtn"${live || _towerActBusy ? ' disabled' : ''}>`
           + `${_towerActBusy === 'eval' ? 'Starting…' : 'Run'}</button>`
-          + (mine ? `<a class="mcbtn mcbtn-ghost mcbtn-sm" href="/api/tower/eval/${esc(mine.id)}?export=1" download>Export</a>` : '') + '</span>';
-      }
-      control = (live && live.kind === 'tower_eval' ? towerLiveHtml(live) : '')
-        + evalResultHtml(mine, 'Primary') + (mine ? evalCasesHtml(mine) : '')
-        + others.slice(0, 3).map(r => evalResultHtml(r, 'Other', r.model)).join('');
+          + (mine ? `<a class="mcbtn mcbtn-ghost mcbtn-sm" href="/api/tower/eval/${esc(mine.id)}?export=1" download>Export</a>` : '') + '</span>'
+        : '';
+      body = (live && live.kind === 'tower_eval' ? towerLiveHtml(live) : '')
+        + '<table class="st-evtab"><tr><th>Model</th><th>Role</th><th>Score</th><th>Details</th><th>When</th></tr>'
+        + evalTableRow(mine, 'Primary', s.model)
+        + others.slice(0, 3).map(r => evalTableRow(r, 'Other', r.model)).join('') + '</table>'
+        + (mine ? evalCasesHtml(mine) : '');
     }
-    return '<div class="settings-row st-fld st-checkrow" id="stTowerEval">'
-      + `<div class="st-lb"><label>Model evaluation</label>${btn}</div>`
+    return '<div class="settings-row st-fld st-checkrow st-wide" id="stTowerEval">'
+      + '<div class="st-lb"><label>Model evaluation</label></div>'
       + '<div class="help">Asks the primary model a set of canned questions through Tower and scores each. Fewer calls, corrections and retries mean a stronger model.</div>'
-      + `<div class="st-ct">${control}</div></div>`;
+      + `<div class="st-ct">${control}</div>`
+      + (body ? `<div class="st-body">${body}</div>` : '') + '</div>';
   }
   // The finished download job the operator dismissed from the card, kept per browser.
   const TOWER_GET_SEEN = 'stTowerGetDismissed';
@@ -690,7 +693,7 @@
   }
   function towerModelsHtml() {
     const s = _towerState, m = _towerModels;
-    let control, btn = '';
+    let control, btn = '', body = '';
     if (!s) control = '<div class="row"><span class="d">Loading…</span></div>';
     else if (!s.enabled) control = '<div class="row"><span class="d">Tower is off</span></div>';
     else if (!m) control = '<div class="row"><span class="d">Loading…</span></div>';
@@ -729,15 +732,18 @@
       const hostCtl = hosts.length > 1
         ? `<select id="stTowerGetHost" class="sel st-input"${busy ? ' disabled' : ''}>${hosts.map(h => `<option value="${esc(h.agent_id)}" data-provider="${esc(h.provider)}"${h === curHost ? ' selected' : ''}>${esc(hostText(h))}</option>`).join('')}</select>`
         : `<span class="d line" id="stTowerGetHostOne" data-agent="${esc(hosts[0].agent_id)}" data-provider="${esc(hosts[0].provider)}">${esc(hostText(hosts[0]))}</span>`;
-      control = `<div class="row ev"><span class="d w">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m, curHost.provider)}</select></div>`
-        + `<div class="row ev"><span class="d w">Host</span>${hostCtl}</div>`
+      control = btn;
+      body = '<div class="st-getgrid">'
+        + `<div class="fld"><span class="d">Model</span><select id="stTowerGetSel" class="sel st-input"${busy ? ' disabled' : ''}>${towerModelOptions(m, curHost.provider)}</select></div>`
+        + `<div class="fld"><span class="d">Host</span>${hostCtl}</div></div>`
         + (live ? towerLiveHtml(live) : '') + done
         + '<div class="note">A Tower model takes VRAM from the models the host serves. On a llama.cpp host the server restarts after the download, which unloads what it was serving.</div>';
     }
-    return '<div class="settings-row st-fld st-checkrow st-getrow" id="stTowerGet">'
-      + `<div class="st-lb"><label>Download a Tower model</label>${btn}</div>`
+    return '<div class="settings-row st-fld st-checkrow st-getrow st-wide" id="stTowerGet">'
+      + '<div class="st-lb"><label>Download a Tower model</label></div>'
       + '<div class="help">Recommended models by the VRAM they need. Download fetches one to the primary llama.cpp or LM Studio host, loads it and scores it; Pin as primary then makes it the Primary model.</div>'
-      + `<div class="st-ct">${control}</div></div>`;
+      + `<div class="st-ct">${control}</div>`
+      + (body ? `<div class="st-body">${body}</div>` : '') + '</div>';
   }
   function towerExtrasLive() {
     return !!((_towerEval && _towerEval.live) || (_towerModels && _towerModels.live));
