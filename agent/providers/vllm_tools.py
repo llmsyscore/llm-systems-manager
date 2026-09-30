@@ -678,11 +678,12 @@ def _autotune_run_all(req: dict, head_tokens: list, orig_args: list) -> None:
 
 
 def _unit_active() -> bool:
-    with best_effort("vllm tools: is-active", log=log):
+    try:
         r = subprocess.run(["systemctl", "is-active", _ctx().config.VLLM_SYSTEMD_UNIT],
                            capture_output=True, text=True, timeout=5)
-        return (r.stdout or "").strip() == "active"
-    return False
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (r.stdout or "").strip() == "active"
 
 
 def vllm_autotune_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
