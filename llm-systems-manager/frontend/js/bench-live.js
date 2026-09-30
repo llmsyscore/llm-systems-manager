@@ -6,9 +6,9 @@
   const prov = () => (typeof toolsTarget === 'function' ? toolsTarget().provider : 'llama');
   const tagent = () => (typeof toolsTarget === 'function' ? toolsTarget().agent : null);
   const PROV = {
-    llama: { server: 'llama-server', start: '/api/llm/server/start', offline: true },
+    llama: { server: 'llama-server', start: '/api/llm/server/start', offline: 'llama-bench' },
     lms:   { server: 'LM Studio server', start: '/api/lmstudio/server/start', offline: false },
-    vllm:  { server: 'vLLM server', start: '/api/vllm/server/start', offline: false },
+    vllm:  { server: 'vLLM server', start: '/api/vllm/server/start', offline: 'vllm-bench' },
   };
   const pd = () => PROV[prov()] || PROV.llama;
   const serverName = () => pd().server;
@@ -198,8 +198,11 @@
     document.querySelectorAll('#benchModeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     $('benchLive').style.display = mode === 'live' ? '' : 'none';
     $('benchOffline').style.display = mode === 'offline' ? '' : 'none';
+    const off = pd().offline, lb = $('benchOfflineLlama'), vb = $('blVllmOffline');
+    if (lb) lb.style.display = off === 'llama-bench' ? '' : 'none';
+    if (vb) vb.style.display = off === 'vllm-bench' ? '' : 'none';
     const note = $('benchModeNote');
-    if (note) note.textContent = mode === 'live' ? 'Live · speed-bench against the running server' : 'Offline · llama-bench · server must be stopped';
+    if (note) note.textContent = mode === 'live' ? 'Live · speed-bench against the running server' : off === 'vllm-bench' ? 'Offline · vllm bench serve · load generator against the running server' : 'Offline · llama-bench · server must be stopped';
     if (mode === 'live' && _chart) { try { _chart.resize(); } catch (_) {} }
     if (mode !== 'live') { clearTimeout(_baseTimer); _baseTimer = null; }
   }
@@ -244,11 +247,15 @@
   }
   async function onOpen(modelId, opts) {
     // A new target host benchmarks its own loaded model, not the last host's (#916).
-    if (opts && opts.retarget && !running()) { _model = null; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn(); }
+    if (opts && opts.retarget && !running()) {
+      _model = null; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn();
+      _vllmResult = null; const vt = $('blVllmTiles'), vl = $('blVllmLog'), va = $('blVllmActions');
+      if (vt) vt.innerHTML = ''; if (vl) vl.innerHTML = ''; if (va) va.style.display = 'none'; vllmStatus('');
+    }
     if (modelId && modelId !== _model && !running()) { _fleetJob = null; _fleetSel = null; renderFleet(); syncPinBtn(); }
     if (modelId) _model = modelId;
     const wantFleet = !!(opts && opts.fleet);
-    // Only llama has an offline (llama-bench) mode.
+    // Offline: llama-bench for llama, vllm bench serve for vLLM, none for LM Studio.
     const off = document.querySelector('#benchModeSeg button[data-mode="offline"]');
     if (off) off.style.display = pd().offline ? '' : 'none';
     setMode(wantFleet || !pd().offline ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
@@ -258,6 +265,7 @@
     const loaded = ((_pre && _pre.server) || {}).loaded_id;
     if (!modelId && !running() && loaded && _model && loaded !== _model) { _model = loaded; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn(); }
     renderPreflight();
+    if (pd().offline === 'vllm-bench') renderVllmSwitches();
     const rt = (_pre && _pre.runtime) || {};
     if (opts && opts.install && !running() && (!rt.python || !rt.script) && (_pre.server || {}).up) setup();
     await loadRuns();
@@ -789,6 +797,7 @@
     if (_baselineFor === runId) redraw();
   }
   async function run(cfg) {
+    if (_vllmBusyOn && _es) { setStatus('an offline benchmark is running on this host', 'err'); return; }
     const c = cfg || config();
     if (!c.model_id) { setStatus('pick a model', 'err'); return; }
     if (c.extra_inputs === null) { setStatus('request extras must be a JSON object', 'err'); return; }
@@ -923,6 +932,127 @@
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) {}
     if (b) b.disabled = false;
     renderPreflight();
+  }
+  // vLLM Offline (#894): vllm bench serve switches, moved from the retired sub-tab overlay.
+  const VLLM_SWITCH_DEFAULTS = [
+    { flag: '--dataset-name', value: 'random' }, { flag: '--random-input-len', value: '1024' },
+    { flag: '--random-output-len', value: '128' }, { flag: '--num-prompts', value: '200' },
+  ];
+  let _vllmSwitches = [], _vllmResult = null, _vllmSlot = null, _vllmBusyOn = false;
+  // Own queue slot for vllm bench serve runs, separate from the Live pane's.
+  function vllmSlot() {
+    if (!_vllmSlot && typeof toolsQueueSlot === 'function') {
+      _vllmSlot = toolsQueueSlot('benchmark:vllm', {
+        provider: () => 'vllm', agent: () => tagent(),
+        match: (r) => /\/vllm\/bench\/run$/.test(r.path || ''),
+        render: (st) => {
+          if (_es || _vllmBusyOn) return;
+          const rb = $('blVllmRunBtn'); if (rb) rb.disabled = !!st.queued;
+          if (st.queued) vllmStatus(`queued${st.ahead ? ` · ${st.ahead} ahead` : ''} · starts when ${st.waitFor} finishes`, 'running');
+        },
+        attach: () => { if (!_es) { vllmStatus('starting…', 'running'); vllmBusy(true); openVllmStream(); } },
+        dropped: () => { vllmStatus('queued run dropped'); vllmBusy(false); },
+      });
+    }
+    return _vllmSlot;
+  }
+  function vllmSwitches() { if (!_vllmSwitches.length) _vllmSwitches = VLLM_SWITCH_DEFAULTS.map(s => ({ ...s })); return _vllmSwitches; }
+  function renderVllmSwitches() {
+    const host = $('blVllmSwitches'); if (!host) return;
+    host.innerHTML = '';
+    vllmSwitches().forEach((s, i) => {
+      const row = document.createElement('div'); row.className = 'bl-row bl-switch';
+      const flag = document.createElement('input'); flag.type = 'text'; flag.className = 'bl-in'; flag.value = s.flag; flag.oninput = () => { _vllmSwitches[i].flag = flag.value; };
+      const val = document.createElement('input'); val.type = 'text'; val.className = 'bl-in'; val.value = s.value; val.oninput = () => { _vllmSwitches[i].value = val.value; };
+      const rm = document.createElement('button'); rm.type = 'button'; rm.className = 'mcbtn mcbtn-ghost mcbtn-sm'; rm.textContent = '✕'; rm.onclick = () => { _vllmSwitches.splice(i, 1); renderVllmSwitches(); };
+      row.append(flag, val, rm); host.appendChild(row);
+    });
+  }
+  function addVllmSwitch() {
+    const f = $('blVllmAddFlag'), v = $('blVllmAddVal');
+    const flag = ((f || {}).value || '').trim(); if (!flag) return;
+    vllmSwitches().push({ flag, value: ((v || {}).value || '').trim() });
+    if (f) f.value = ''; if (v) v.value = '';
+    renderVllmSwitches();
+  }
+  function vllmSwitchList() { return vllmSwitches().map(s => ({ flag: String(s.flag || '').trim(), value: String(s.value || '').trim() })).filter(s => s.flag); }
+  function vllmStatus(text, cls) { const el = $('blVllmStatus'); if (!el) return; el.textContent = text || ''; el.classList.remove('running', 'ok', 'err', 'warn'); if (cls) el.classList.add(cls); }
+  function vllmLog(text) { const el = $('blVllmLog'); if (!el) return; const div = document.createElement('div'); div.textContent = text; el.appendChild(div); el.scrollTop = el.scrollHeight; }
+  function vllmBusy(on) { _vllmBusyOn = on; const r = $('blVllmRunBtn'), c = $('blVllmCancelBtn'); if (r) r.disabled = on; if (c) c.style.display = on ? '' : 'none'; if (_vllmSlot) _vllmSlot.sync(); if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot(); }
+  const vfmt = (x, d = 1) => (typeof x === 'number' && isFinite(x)) ? x.toFixed(d) : '—';
+  function renderVllmResult(msg) {
+    const m = msg.extra || {};
+    const tile = (v, u, l) => `<div class="bl-tile"><div class="v">${esc(v)}<em>${esc(u)}</em></div><div class="l">${esc(l)}</div></div>`;
+    const el = $('blVllmTiles');
+    if (el) el.innerHTML = tile(vfmt(m.request_throughput, 2), 'req/s', 'requests') + tile(vfmt(m.output_throughput), 'tok/s', 'output') + tile(vfmt(m.total_token_throughput), 'tok/s', 'total')
+      + tile(`${vfmt(m.median_ttft_ms, 0)}/${vfmt(m.p99_ttft_ms, 0)}`, 'ms', 'TTFT p50/p99') + tile(`${vfmt(m.median_tpot_ms, 1)}/${vfmt(m.p99_tpot_ms, 1)}`, 'ms', 'TPOT p50/p99') + tile(`${vfmt(m.median_itl_ms, 1)}/${vfmt(m.p99_itl_ms, 1)}`, 'ms', 'ITL p50/p99');
+    const a = $('blVllmActions'); if (a) a.style.display = '';
+    syncVllmClearBtn();
+  }
+  function syncVllmClearBtn() {
+    const cb = $('blVllmClearBtn'); if (cb) cb.style.display = (_vllmResult && (window._vbenchData || {})[_vllmResult.model_id]) ? '' : 'none';
+  }
+  async function runVllm() {
+    const s = vllmSlot();
+    if (s && s.queued()) { vllmStatus('a run is already queued · drop it first', 'err'); return; }
+    const rb = $('blVllmRunBtn'); if (rb && rb.disabled) return;
+    const model = _model || ((_pre && _pre.server) || {}).loaded_id || null;
+    _vllmResult = null; _runId = null;
+    const t = $('blVllmTiles'); if (t) t.innerHTML = ''; const a = $('blVllmActions'); if (a) a.style.display = 'none'; const lg = $('blVllmLog'); if (lg) lg.innerHTML = '';
+    vllmBusy(true); vllmStatus('starting…', 'running');
+    let d;
+    try { d = await fetch(tq('/api/benchmark/run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, switches: vllmSwitchList() }) }).then(r => r.json()); }
+    catch (e) { d = { ok: false, error: String(e) }; }
+    if (d && d.ok && d.queued) { vllmBusy(false); if (rb) rb.disabled = true; if (s) s.hold(d.job_id, d); vllmStatus(`queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · starts when ${d.wait_for || 'the run in progress'} finishes`, 'running'); return; }
+    if (!d || !d.ok) { vllmBusy(false); vllmStatus(d && d.error ? d.error : 'failed to start', 'err'); return; }
+    _runId = d.run_id; openVllmStream();
+  }
+  function openVllmStream() {
+    if (_es) { try { _es.close(); } catch (_) {} }
+    _es = SG.open({ url: tq('/api/benchmark/stream'), maxDrops: 6, bypassPause: true,
+      onReconnecting: () => vllmStatus('reconnecting…', 'running'),
+      onRestored: () => vllmStatus('running', 'running'),
+      onLost: () => { _es = null; vllmStatus('disconnected', 'err'); vllmBusy(false); },
+      onEvent: (msg) => {
+        if (msg.type === 'model_start') { vllmStatus(`benchmarking ${msg.model || ''}…`, 'running'); if (msg.cmd) vllmLog('$ ' + msg.cmd); }
+        else if (msg.type === 'line') vllmLog(msg.text || '');
+        else if (msg.type === 'result') {
+          _vllmResult = msg; renderVllmResult(msg);
+          if (typeof _recordToolRun === 'function') { const m = msg.extra || {}; _recordToolRun('benchmark', { model_id: msg.model_id, provider: 'vllm', agent_id: tagent() || undefined, gen_tps: m.output_throughput, pg_tps: m.total_token_throughput, bench_tool: 'vllm-bench-serve', ok: true, run_id: msg.run_id || _runId }); }
+        }
+        else if (msg.type === 'model_done') { if (!msg.ok && !msg.cancelled) vllmLog(`error: ${msg.error || 'benchmark failed'}`); }
+        else if (msg.type === 'done') {
+          if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+          vllmBusy(false); vllmStatus(msg.cancelled ? 'cancelled' : (msg.ok ? 'complete' : 'failed'), msg.ok ? 'ok' : 'err');
+          if (_vllmSlot) _vllmSlot.sync();
+        }
+      } });
+    if (typeof toolsSyncRunDot === 'function') toolsSyncRunDot();
+  }
+  function cancelVllm() {
+    if (!_es && _vllmSlot && _vllmSlot.drop()) { vllmStatus('queued run dropped'); vllmBusy(false); return; }
+    if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+    fetch(tq('/api/benchmark/cancel'), { method: 'POST' }).catch(() => {});
+    vllmStatus('cancelled', 'err'); vllmBusy(false);
+  }
+  async function saveVllm() {
+    if (!_vllmResult) return;
+    const m = _vllmResult.extra || {};
+    let r;
+    try { r = await fetch(tq('/api/benchmark/store'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_id: _vllmResult.model_id, provider: 'vllm', avg_gen_tps: m.output_throughput ?? null, avg_pg_tps: m.total_token_throughput ?? null, avg_ppt_tps: null, bench_tool: 'vllm-bench-serve', switches: _vllmResult.switches || [], extra_json: m }) }).then(r => r.json()); }
+    catch (e) { r = { ok: false, error: String(e) }; }
+    vllmStatus(r && r.ok ? 'saved' : `save failed: ${(r && r.error) || 'unknown'}`, r && r.ok ? 'ok' : 'err');
+    if (r && r.ok) { window._vbenchData = window._vbenchData || {}; window._vbenchData[_vllmResult.model_id] = { avg_gen_tps: m.output_throughput ?? null, avg_pg_tps: m.total_token_throughput ?? null }; syncVllmClearBtn(); }
+    if (r && r.ok && typeof loadVllmBenchData === 'function') loadVllmBenchData();
+  }
+  async function clearVllm() {
+    if (!_vllmResult) return;
+    let r;
+    try { r = await fetch(tq('/api/benchmark/results/' + encodeURIComponent(_vllmResult.model_id)), { method: 'DELETE' }).then(r => r.json()); }
+    catch (e) { r = { ok: false, error: String(e) }; }
+    vllmStatus(r && r.ok ? 'cleared' : `clear failed: ${(r && r.error) || 'unknown'}`, r && r.ok ? 'ok' : 'err');
+    if (r && r.ok) { if (window._vbenchData) delete window._vbenchData[_vllmResult.model_id]; syncVllmClearBtn(); }
+    if (r && r.ok && typeof loadVllmBenchData === 'function') loadVllmBenchData();
   }
   async function pinBaseline() { if (_fleetSel) return; const id = (_lastDoc && _lastDoc.run_id) || _runId; if (!id) return; await fetch('/api/benchmark/live/runs/' + encodeURIComponent(id) + '/baseline', { method: 'POST' }).catch(() => {}); loadRuns(); loadBaselines(); }
   function baselineMeta(s) {
@@ -1084,6 +1214,7 @@
   window.BL = { onOpen, setMode, run, cancel, setup, startServer, running, applyPreset, parseSweep, parseOsls, estimateSeconds, deltaText, knee, pinBaseline, exportJson,
     toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
     toggleBaseSchedule, toggleBasePromote, openBaseSettings, fmtTs,
+    runVllm, cancelVllm, addVllmSwitch, saveVllm, clearVllm, renderVllmSwitches, _vllmSwitches: () => vllmSwitches(),
     _config: config, _debugLevels: (rows, opts) => { _levels = rows; _cell = null; _baseline = (opts && opts.baseline) || null; if (opts && opts.metric) _metric = opts.metric; renderMetricSeg(); redraw(); },
     _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
     _debugBaselines: (d) => { _base = d; renderBaselines(); },

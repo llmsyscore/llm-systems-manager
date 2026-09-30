@@ -274,11 +274,11 @@ def test_tools_state_reports_shared_bench(mods, ctx, monkeypatch):
     assert r["ok"] is True and r["bench_active"] is True and r["autotune_active"] is False
 
 
-def test_run_refused_while_vllm_autotune_runs(mods, ctx, monkeypatch):
+def test_run_refused_while_shared_autotune_runs(mods, ctx, monkeypatch):
     llama, vllm, tools = mods
     _server_up(vllm, monkeypatch)
     monkeypatch.setattr(tools, "_bench_resolve_bin", lambda: ("/bin/true", None))
-    monkeypatch.setattr(vllm, "_at_job", SimpleNamespace(active=True))
+    monkeypatch.setattr(llama, "_autotune_active", True)
     r = tools.vllm_bench_run({"switches": []})
     assert r["ok"] is False and "in progress" in r["error"]
     assert llama._bench_active is False
@@ -421,7 +421,7 @@ def test_preflight_shape(mods, ctx, monkeypatch):
     p = tools.vllm_bench_live_preflight()
     assert p["ok"] and p["provider"] == "vllm" and p["server"]["up"] and p["busy"] is False
     assert set(p) >= {"server", "runtime", "datasets", "benches"}
-    monkeypatch.setattr(vllm, "_at_job", SimpleNamespace(active=True))
+    monkeypatch.setattr(llama, "_autotune_active", True)
     assert tools.vllm_bench_live_preflight()["busy"] is True
 
 def test_run_refuses_unserved_model(mods, ctx, monkeypatch):
@@ -485,5 +485,7 @@ def test_route_table_covers_live_and_serve(mods):
     paths = {(m, p) for m, p, _h in tools._ROUTES}
     assert paths == {("GET", "/vllm/bench/live/preflight"), ("POST", "/vllm/bench/live/setup"),
                      ("POST", "/vllm/bench/live/run"), ("POST", "/vllm/bench/run"), ("GET", "/vllm/bench/stream"),
-                     ("POST", "/vllm/bench/cancel"), ("GET", "/vllm/tools/state")}
-    assert not any("/vllm/bench" in p or p == "/vllm/tools/state" for _m, p, _h in vllm._ROUTES)
+                     ("POST", "/vllm/bench/cancel"), ("GET", "/vllm/tools/state"),
+                     ("GET", "/vllm/autotune/preflight"), ("POST", "/vllm/autotune/run"),
+                     ("GET", "/vllm/autotune/stream"), ("POST", "/vllm/autotune/cancel")}
+    assert not any("/vllm/bench" in p or "/vllm/autotune" in p or p == "/vllm/tools/state" for _m, p, _h in vllm._ROUTES)

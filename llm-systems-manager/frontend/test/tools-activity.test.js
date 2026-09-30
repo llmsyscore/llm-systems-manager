@@ -100,7 +100,7 @@ describe('launcher tiles under a remote run', () => {
 
   it('treats a live vLLM benchmark as a running Benchmark tool', async () => {
     const win = await run({ reportcard: false, benchmark: false, autotune: false },
-      { local: 'window._vbenchEventSrc = { readyState: 1 };' });
+      { local: 'window.BL = { running: () => true };' });
     expect(dotOn(win)).toBe(true);
   });
 

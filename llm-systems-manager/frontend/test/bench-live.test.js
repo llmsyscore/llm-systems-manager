@@ -5,7 +5,7 @@ import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.j
 const BODY = `
   <div class="mc-seg" id="benchModeSeg"><button data-mode="live" class="on">Live</button><button data-mode="offline">Offline</button></div>
   <span id="benchModeNote"></span>
-  <div id="benchOffline"></div>
+  <div id="benchOffline"><div id="benchOfflineLlama"></div><div id="blVllmOffline" style="display:none"><div id="blVllmSwitches"></div><input id="blVllmAddFlag"><input id="blVllmAddVal"><button id="blVllmRunBtn"></button><button id="blVllmCancelBtn" style="display:none"></button><span id="blVllmStatus"></span><div id="blVllmTiles"></div><div id="blVllmActions" style="display:none"><button id="blVllmClearBtn"></button></div><div id="blVllmLog"></div></div></div>
   <div id="benchLive" style="display:none">
     <div id="blPreflight"></div><button id="blStartBtn"></button>
     <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="longctx">Long context</span><span class="bl-chip" data-preset="custom">Custom</span></div>
@@ -54,6 +54,7 @@ const STUBS = `
   HTMLCanvasElement.prototype.getContext = function () { return {}; };
   window.Chart = function (ctx, cfg) { this.data = cfg.data; this.options = cfg.options; window.__chart = this; };
   Chart.prototype.update = function () {}; Chart.prototype.resize = function () {}; Chart.prototype.destroy = function () {};
+  window.__runs = []; window._recordToolRun = function (tool, data) { window.__runs.push([tool, data]); };
   window.__fetches = [];
   window.fetch = function (url, opts) {
     window.__fetches.push([url, opts]);
@@ -66,6 +67,7 @@ const STUBS = `
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
       : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
+      : (url.indexOf('/api/benchmark/run?') === 0 && window.__vllmRunReply) ? window.__vllmRunReply
       : { ok: true, run_id: window.__runId || 'r1' };
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   };
@@ -111,16 +113,157 @@ describe('BL pure helpers', () => {
   });
 });
 
+const VLLM_UP = `window.__pre = { ok: true, provider: 'vllm', server: { up: true, url: 'http://localhost:8000', provider: 'vllm', models: [{ id: 'org/model-8b', status: 'loaded' }], loaded_id: 'org/model-8b', slots_idle: 4, slots_total: 4, spec: null, build: '0.30.0' }, runtime: { python: '/p', script: '/s', script_status: 'ok' }, datasets: {}, benches: [], busy: false };
+  window.toolsTarget = () => ({ provider: 'vllm', agent: 'V1' });
+  window.toolsUrl = (p) => p + (p.indexOf('?') >= 0 ? '&' : '?') + 'provider=vllm&agent=V1';`;
+
 describe('BL vLLM target (#894)', () => {
-  it('renders vLLM preflight and hides Offline for a vLLM target', async () => {
+  it('renders vLLM preflight and offers Offline (vllm bench serve) for a vLLM target', async () => {
     const win = boot(`window.__pre = { ok: true, provider: 'vllm', server: { up: false, url: 'http://localhost:8000', provider: 'vllm', models: [], loaded_id: null, slots_idle: 0, slots_total: 0 }, runtime: { python: '/p', script: '/s', script_status: 'ok' }, datasets: {}, benches: [] };
       window.toolsTarget = () => ({ provider: 'vllm', agent: 'V1' });
       window.toolsUrl = (p) => p + (p.indexOf('?') >= 0 ? '&' : '?') + 'provider=vllm&agent=V1';`);
     await win.BL.onOpen();
     await flush();
-    expect(win.document.querySelector('#benchModeSeg button[data-mode="offline"]').style.display).toBe('none');
+    expect(win.document.querySelector('#benchModeSeg button[data-mode="offline"]').style.display).toBe('');
     expect(win.document.getElementById('blPreflight').textContent).toContain('vLLM server is down.');
     expect(win.document.getElementById('blStartBtn').style.display).toBe('');
+  });
+
+  it('offline vLLM mode shows the switch list, not the llama-bench rail', async () => {
+    const win = boot(VLLM_UP);
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    const d = win.document;
+    expect(d.getElementById('benchOfflineLlama').style.display).toBe('none');
+    expect(d.getElementById('blVllmOffline').style.display).toBe('');
+    expect(d.getElementById('benchModeNote').textContent).toContain('vllm bench serve');
+    const rows = [...d.querySelectorAll('#blVllmSwitches .bl-switch')];
+    expect(rows.map(r => r.querySelector('input').value)).toEqual(['--dataset-name', '--random-input-len', '--random-output-len', '--num-prompts']);
+    d.getElementById('blVllmAddFlag').value = '--request-rate'; d.getElementById('blVllmAddVal').value = '4';
+    win.BL.addVllmSwitch();
+    expect(win.BL._vllmSwitches().map(s => s.flag)).toEqual(['--dataset-name', '--random-input-len', '--random-output-len', '--num-prompts', '--request-rate']);
+    rows[0] && d.querySelectorAll('#blVllmSwitches .bl-switch button')[3].click();
+    expect(win.BL._vllmSwitches().map(s => s.flag)).toEqual(['--dataset-name', '--random-input-len', '--random-output-len', '--request-rate']);
+  });
+
+  it('offline vLLM mode posts vllm bench serve switches and renders the result', async () => {
+    const win = boot(VLLM_UP);
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    await win.BL.runVllm();
+    await flush();
+    const [url, opts] = win.__fetches.find(([u]) => String(u).startsWith('/api/benchmark/run'));
+    expect(url).toBe('/api/benchmark/run?provider=vllm&agent=V1');
+    expect(JSON.parse(opts.body)).toEqual({ model: 'org/model-8b', switches: [{ flag: '--dataset-name', value: 'random' }, { flag: '--random-input-len', value: '1024' }, { flag: '--random-output-len', value: '128' }, { flag: '--num-prompts', value: '200' }] });
+    expect(win.__sse.url).toBe('/api/benchmark/stream?provider=vllm&agent=V1');
+    const d = win.document;
+    expect(d.getElementById('blVllmRunBtn').disabled).toBe(true);
+    expect(d.getElementById('blVllmCancelBtn').style.display).toBe('');
+    win.__sse.onEvent({ type: 'model_start', model: 'org/model-8b', cmd: 'vllm bench serve --model org/model-8b' });
+    win.__sse.onEvent({ type: 'line', text: 'Traffic request rate: inf' });
+    win.__sse.onEvent({ type: 'result', model_id: 'org/model-8b', run_id: 'r1', switches: [{ flag: '--num-prompts', value: '200' }], extra: { request_throughput: 3.12, output_throughput: 1063.9, total_token_throughput: 4900.5, median_ttft_ms: 120, p99_ttft_ms: 300, median_tpot_ms: 9.1, p99_tpot_ms: 14.2, median_itl_ms: 8.8, p99_itl_ms: 13.9 } });
+    expect(d.getElementById('blVllmLog').textContent).toContain('$ vllm bench serve');
+    expect(d.getElementById('blVllmTiles').textContent).toContain('1063.9');
+    expect(d.getElementById('blVllmActions').style.display).toBe('');
+    expect(win.__runs).toEqual([['benchmark', { model_id: 'org/model-8b', provider: 'vllm', agent_id: 'V1', gen_tps: 1063.9, pg_tps: 4900.5, bench_tool: 'vllm-bench-serve', ok: true, run_id: 'r1' }]]);
+    win.__sse.onEvent({ type: 'done', ok: true, cancelled: false });
+    expect(d.getElementById('blVllmStatus').textContent).toBe('complete');
+    expect(d.getElementById('blVllmRunBtn').disabled).toBe(false);
+    expect(win.BL.running()).toBe(false);
+    await win.BL.saveVllm();
+    const [surl, sopts] = win.__fetches.find(([u, o]) => String(u).startsWith('/api/benchmark/store') && o && o.method === 'POST');
+    expect(surl).toBe('/api/benchmark/store?provider=vllm&agent=V1');
+    expect(JSON.parse(sopts.body)).toMatchObject({ model_id: 'org/model-8b', provider: 'vllm', avg_gen_tps: 1063.9, avg_pg_tps: 4900.5, bench_tool: 'vllm-bench-serve' });
+  });
+
+  it('offline vLLM Clear saved shows after save and hides after clear', async () => {
+    const win = boot(VLLM_UP);
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    await win.BL.runVllm();
+    await flush();
+    win.__sse.onEvent({ type: 'result', model_id: 'org/model-8b', run_id: 'r1', extra: { output_throughput: 10 } });
+    win.__sse.onEvent({ type: 'done', ok: true, cancelled: false });
+    const cb = win.document.getElementById('blVllmClearBtn');
+    expect(cb.style.display).toBe('none');
+    await win.BL.saveVllm();
+    expect(cb.style.display).toBe('');
+    await win.BL.clearVllm();
+    expect(cb.style.display).toBe('none');
+  });
+
+  it('a llama target keeps the llama-bench Offline rail', async () => {
+    const win = boot('BL.onOpen();');
+    await flush();
+    win.BL.setMode('offline');
+    expect(win.document.getElementById('benchOfflineLlama').style.display).toBe('');
+    expect(win.document.getElementById('blVllmOffline').style.display).toBe('none');
+    expect(win.document.getElementById('benchModeNote').textContent).toContain('llama-bench');
+  });
+
+  it('offline vLLM run queues on its own slot, attaches to the vLLM stream, and drops cleanly', async () => {
+    const win = bootGated(VLLM_UP + ' window.__vllmRunReply = ' + JSON.stringify(QUEUED) + ';');
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    const d = win.document;
+    const liveStatus = d.getElementById('blStatus').textContent, liveRunDisabled = d.getElementById('blRunBtn').disabled;
+    await win.BL.runVllm();
+    await flush();
+    const vs = win.__slots.find(s => s.id === 'benchmark:vllm');
+    expect(vs.jobId()).toBe('j1');
+    expect(d.getElementById('blVllmStatus').textContent).toContain('queued');
+    expect(d.getElementById('blVllmRunBtn').disabled).toBe(true);
+    expect(d.getElementById('blStatus').textContent).toBe(liveStatus);
+    expect(d.getElementById('blRunBtn').disabled).toBe(liveRunDisabled);
+    expect(win.__slots.filter(s => s.id !== 'benchmark:vllm').every(s => !s.queued())).toBe(true);
+    vs.startHeld();
+    expect(win.__sse.url).toBe('/api/benchmark/stream?provider=vllm&agent=V1');
+    expect(d.getElementById('blVllmCancelBtn').style.display).toBe('');
+    win.__sse.onEvent({ type: 'done', ok: true, cancelled: false });
+    await win.BL.runVllm();
+    await flush();
+    expect(vs.queued()).toBe(true);
+    win.BL.cancelVllm();
+    expect(d.getElementById('blVllmStatus').textContent).toBe('queued run dropped');
+    expect(d.getElementById('blVllmRunBtn').disabled).toBe(false);
+    expect(vs.queued()).toBe(false);
+  });
+
+  it('a Live run is refused while an offline vLLM run streams', async () => {
+    const win = boot(VLLM_UP);
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    await win.BL.runVllm();
+    await flush();
+    const n = win.__fetches.length;
+    await win.BL.run({ model_id: 'org/model-8b' });
+    expect(win.document.getElementById('blStatus').textContent).toBe('an offline benchmark is running on this host');
+    expect(win.__fetches.length).toBe(n);
+  });
+
+  it('retargeting clears a finished offline vLLM result', async () => {
+    const win = boot(VLLM_UP);
+    await win.BL.onOpen();
+    await flush();
+    win.BL.setMode('offline');
+    await win.BL.runVllm();
+    await flush();
+    win.__sse.onEvent({ type: 'result', model_id: 'org/model-8b', run_id: 'r1', extra: { output_throughput: 10 } });
+    win.__sse.onEvent({ type: 'done', ok: true, cancelled: false });
+    await win.BL.onOpen(null, { retarget: true });
+    await flush();
+    const d = win.document;
+    expect(d.getElementById('blVllmTiles').innerHTML).toBe('');
+    expect(d.getElementById('blVllmActions').style.display).toBe('none');
+    expect(d.getElementById('blVllmStatus').textContent).toBe('');
+    const before = win.__fetches.length;
+    await win.BL.saveVllm();
+    expect(win.__fetches.length).toBe(before);
   });
 });
 

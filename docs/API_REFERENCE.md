@@ -233,6 +233,8 @@ Removes the alias for the specified model.
 ### `POST /api/benchmark/run`
 Starts a benchmark run against the currently loaded model. The benchmark measures prompt processing throughput (tokens/sec) and generation throughput at various context sizes. Results are streamed via `/api/benchmark/stream`.
 
+With `?provider=vllm` it starts `vllm bench serve` on the picked vLLM host (body `{model, switches}`); `/api/vllm/bench/*` remain as direct proxies.
+
 ---
 
 ### `GET /api/benchmark/stream`
@@ -568,18 +570,8 @@ Unloads a LoRA adapter from the running vLLM server.
 
 ---
 
-### `POST /api/vllm/autotune/run`
-Starts the `--max-model-len` Auto-Tune wizard for vLLM, which finds the largest context length the currently loaded model can sustain. Progress is streamed via `/api/vllm/autotune/stream`.
-
----
-
-### `GET /api/vllm/autotune/stream`
-Opens an SSE stream reporting vLLM Auto-Tune progress.
-
----
-
-### `POST /api/vllm/autotune/cancel`
-Cancels an in-progress vLLM Auto-Tune run.
+### vLLM Auto-Tune
+vLLM auto-tune is driven through `/api/llm/autotune/{preflight,run,stream,stream-info,cancel,status}?provider=vllm`, with the same body and events as the LM Studio tuner (`model_ids`, `objective`, `dims`, `apply`, `gpu_memory_utilization`).
 
 ---
 

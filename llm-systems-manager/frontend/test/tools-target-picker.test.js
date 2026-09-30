@@ -108,7 +108,7 @@ describe('tool target picker (#916)', () => {
     expect(win.toolsGateBusy('lms', 'M1')).toBeNull();
   });
 
-  it('lists vLLM hosts as agent-scoped targets on the benchmark picker only (#894)', async () => {
+  it('lists vLLM hosts as agent-scoped targets on both pickers (#894)', async () => {
     const win = boot(WITH_VLLM);
     await flush();
     const sel = win.document.getElementById('toolsTargetBench');
@@ -116,8 +116,8 @@ describe('tool target picker (#916)', () => {
     expect([...sel.options].map(o => o.value)).toEqual(['llama|', 'vllm|V1']);
     expect([...sel.options].map(o => o.textContent)).toEqual(['llama.cpp · gpu-01', 'vLLM · vllm-01']);
     const at = win.document.getElementById('toolsTargetAt');
-    expect([...at.options].map(o => o.value)).toEqual(['llama|']);
-    expect(at.style.display).toBe('none');
+    expect([...at.options].map(o => o.value)).toEqual(['llama|', 'vllm|V1']);
+    expect(at.style.display).toBe('');
     win.toolsSetTarget('vllm', null);
     expect(win.toolsTarget()).toEqual({ provider: 'vllm', agent: 'V1' });
     expect(win.toolsTargetQs()).toBe('?provider=vllm&agent=V1');
@@ -126,12 +126,12 @@ describe('tool target picker (#916)', () => {
     expect(win.toolsTarget()).toEqual({ provider: 'llama', agent: null });
   });
 
-  it('opening Autotune while a vLLM target is set retargets to llama (#894)', async () => {
+  it('opening Autotune while a vLLM target is set keeps that target (#894)', async () => {
     const win = boot(WITH_VLLM);
     await flush();
     win.toolsSetTarget('vllm', null);
     win.toolsOpenTool('autotune', null);
-    expect(win.toolsTarget()).toEqual({ provider: 'llama', agent: null });
+    expect(win.toolsTarget()).toEqual({ provider: 'vllm', agent: 'V1' });
   });
 
   it('a live run keeps its vLLM target when Autotune opens (#894)', async () => {

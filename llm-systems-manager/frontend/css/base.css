@@ -882,6 +882,7 @@
     .bl-grp-b { padding:11px 13px; display:flex; flex-direction:column; gap:9px; }
     .bl-row { display:flex; align-items:center; gap:8px; font-size:12.5px; }
     .bl-row label { color:var(--fg-muted); flex:1; min-width:0; }
+    .bl-switch { display:flex; gap:6px; align-items:center; } .bl-switch .bl-in:first-child { flex:0 0 150px; } .bl-switch .bl-in { flex:1; min-width:0; }
     .bl-in { height:30px; width:88px; background:var(--bg); border:1px solid var(--border-strong); border-radius:7px; color:var(--fg); font-family:var(--font-mono); font-size:12.5px; padding:0 9px; }
     .bl-in.xs { width:64px; }
     .bl-in.w { width:130px; }

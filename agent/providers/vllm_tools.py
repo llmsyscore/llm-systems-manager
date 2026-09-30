@@ -1,16 +1,17 @@
-"""vLLM benchmark routes (#894): vllm bench serve and the live speed-bench, on llama.py's shared
-bench state so one benchmark or autotune runs per host at a time."""
+"""vLLM benchmark + autotune routes (#894): vllm bench serve, the live speed-bench and the serve-flag tuner, on llama.py's shared bench/autotune state so one tool runs per host at a time."""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import signal
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +25,8 @@ from . import llama as _ll
 from . import llama_bench_live as _bl
 from . import lms_timings_shim as _shim
 from . import vllm as _v
+from . import lms_tools as _lt
+from . import vllm_autotune as _vat
 
 log = logging.getLogger("llm-systems-agent.providers.vllm_tools")
 
@@ -165,7 +168,7 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
 
 
 def _busy() -> bool:
-    return bool(_ll._bench_active or _ll._autotune_active or _v._at_job.active)
+    return bool(_ll._bench_active or _ll._autotune_active)
 
 
 def _claim() -> Optional[dict]:
@@ -224,7 +227,7 @@ def vllm_tools_state(authorization: Optional[str] = Header(default=None)) -> dic
     """Whether a bench/autotune job is running, for the manager Tools view."""
     _ctx().check_bearer(authorization)
     return {"ok": True, "bench_active": bool(_ll._bench_active),
-            "autotune_active": bool(_v._at_job.active or _ll._autotune_active), "quality_active": False}
+            "autotune_active": bool(_ll._autotune_active), "quality_active": False}
 
 
 # ── live benchmark (speed-bench) ───────────────────────────────────────
@@ -369,6 +372,389 @@ def _bench_start_failed(model_id: str, e: Exception) -> None:
         _ll._bench_active = False
 
 
+# ── autotune (#894) ────────────────────────────────────────────────────
+
+_AT_KV_SIZE_RE = re.compile(r"(?:GPU|CPU) KV cache size:\s*([\d,]+)\s*tokens")
+_AT_MAX_CONC_RE = re.compile(r"Maximum concurrency for\s*([\d,]+)\s*tokens per request:\s*([\d.]+)x")
+_AT_EST_MAX_RE = re.compile(r"estimated maximum model length is\s*([\d,]+)")
+_AT_KV_CAP_OLD_RE = re.compile(r"maximum number of tokens that can be stored in KV cache \(([\d,]+)\)")
+_AT_DERIVED_MAX_RE = re.compile(r"derived max_model_len \((\d[\d,]*)\)")
+_AT_FATAL_RE = re.compile(r"EngineCore failed|Engine core initialization failed|ValueError|"
+                          r"RuntimeError|OutOfMemoryError|CUDA out of memory")
+_AT_ERR_MSG_RE = re.compile(r"\b[A-Za-z]+Error: \S")
+# Grace wait for the max-concurrency line after the KV-size line arrives; lines read after a fatal match.
+_AT_CONC_GRACE_S = 8.0
+_AT_FATAL_TAIL_LINES = 20
+READY_WAIT_S = 60.0
+# systemctl restart waits for the stop (TimeoutStopSec, 90 s by default) before the start.
+RESTART_TIMEOUT_S = 180
+_autotune_thread: Optional[threading.Thread] = None
+
+
+def _at_num(s: str) -> int:
+    return int(s.replace(",", ""))
+
+
+def _at_watch_journal(unit: str, timeout_s: float, step: str,
+                      started: Optional[threading.Event] = None, holder: Optional[dict] = None) -> dict:
+    """Follow the unit journal until a KV-capacity answer, engine failure, cancel or timeout;
+    emits line + loading_progress events on the shared autotune stream while waiting."""
+    res: dict[str, Any] = {"outcome": "timeout"}
+    tail = 0
+    proc = subprocess.Popen(["journalctl", "-u", unit, "-n", "0", "-f", "-o", "cat"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    _ll._autotune_track_aux(proc)
+    if holder is not None:
+        holder["proc"] = proc
+    if started is not None:
+        started.set()
+
+    def _kill_local():
+        try:
+            proc.kill()
+        except Exception:
+            log.debug("journal watcher kill failed", exc_info=True)
+
+    killer = threading.Timer(timeout_s, _kill_local)
+    killer.daemon = True
+    killer.start()
+    hb_stop = threading.Event()
+
+    def _hb():
+        start = time.monotonic()
+        ticks = 0
+        while not hb_stop.wait(2.0):
+            ticks += 1
+            _ll._autotune_put({"type": "loading_progress", "step": step,
+                               "elapsed_s": round(time.monotonic() - start, 1), "timeout_s": timeout_s})
+            if time.monotonic() - start > 15 and ticks % 5 == 0:
+                try:
+                    r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, timeout=5)
+                    if (r.stdout or "").strip() == "failed":
+                        res["unit_state"] = "failed"
+                        _kill_local()
+                        return
+                except Exception:
+                    log.debug("is-active poll failed", exc_info=True)
+
+    hb_thread = threading.Thread(target=_hb, daemon=True)
+    hb_thread.start()
+    try:
+        assert proc.stdout is not None
+        for raw in iter(proc.stdout.readline, ""):
+            if _ll._autotune_cancel_event.is_set():
+                res["outcome"] = "cancelled"
+                break
+            line = _shared.ANSI_RE.sub("", raw).rstrip()
+            if not line:
+                continue
+            _ll._autotune_put({"type": "line", "text": line})
+            m = _AT_MAX_CONC_RE.search(line)
+            if m:
+                res["max_conc"] = float(m.group(2))
+            m = _AT_KV_SIZE_RE.search(line)
+            if m and res["outcome"] != "kv":
+                res.update(outcome="kv", kv_tokens=_at_num(m.group(1)))
+                # Quiet journals block readline; a short timer forces EOF.
+                killer.cancel()
+                killer = threading.Timer(_AT_CONC_GRACE_S, _kill_local)
+                killer.daemon = True
+                killer.start()
+            m = _AT_EST_MAX_RE.search(line) or _AT_KV_CAP_OLD_RE.search(line)
+            if m and res["outcome"] != "kv":
+                res.update(outcome="est_max", est_max_len=_at_num(m.group(1)))
+                break
+            if res["outcome"] == "fatal":
+                # A traceback's message line follows its "raise" line; keep the message.
+                if _AT_ERR_MSG_RE.search(line):
+                    res["fatal_line"] = line[:300]
+                    m = _AT_DERIVED_MAX_RE.search(line)
+                    if m:
+                        res["derived_max"] = _at_num(m.group(1))
+                    break
+                tail -= 1
+                if tail <= 0:
+                    break
+                continue
+            if res["outcome"] != "kv" and _AT_FATAL_RE.search(line):
+                res.update(outcome="fatal", fatal_line=line[:300])
+                m = _AT_DERIVED_MAX_RE.search(line)
+                if m:
+                    res["derived_max"] = _at_num(m.group(1))
+                if _AT_ERR_MSG_RE.search(line):
+                    break
+                tail = _AT_FATAL_TAIL_LINES
+                killer.cancel()
+                killer = threading.Timer(_AT_CONC_GRACE_S, _kill_local)
+                killer.daemon = True
+                killer.start()
+                continue
+            if res["outcome"] == "kv" and res.get("max_conc") is not None:
+                break
+        if _ll._autotune_cancel_event.is_set():
+            res["outcome"] = "cancelled"
+        elif res["outcome"] == "timeout" and res.get("unit_state"):
+            res.update(outcome="fatal", fatal_line=f"unit {unit} is {res['unit_state']} after restart")
+    finally:
+        hb_stop.set()
+        killer.cancel()
+        _kill_local()
+        hb_thread.join(timeout=6)
+        _ll._autotune_untrack_aux()
+    return res
+
+
+def _at_wait_ready(timeout_s: float = READY_WAIT_S) -> Optional[dict]:
+    """Poll /v1/models until it lists a model; that row, or None on timeout / cancel."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and not _ll._autotune_cancel_event.is_set():
+        try:
+            r = _v._get_session().get(f"{_url()}/v1/models", timeout=3)
+            if r.ok:
+                data = (r.json() or {}).get("data") or []
+                if data:
+                    return data[0]
+        except Exception:
+            log.debug("vllm readiness poll failed", exc_info=True)
+        time.sleep(2)
+    return None
+
+
+def _at_restart_and_watch(unit: str, timeout_s: float, step: str) -> dict:
+    """Start the journal watcher in a thread, then restart the unit."""
+    holder: dict[str, Any] = {}
+    started = threading.Event()
+    t = threading.Thread(target=lambda: holder.update(_at_watch_journal(unit, timeout_s, step, started=started, holder=holder)),
+                         daemon=True)
+    t.start()
+    started.wait(timeout=5)
+    r = _v._vllm_systemctl("restart", timeout=RESTART_TIMEOUT_S)
+    if not r["ok"]:
+        proc = holder.get("proc")
+        if proc is not None:
+            with best_effort("vllm autotune: stop journal watcher", log=log):
+                proc.kill()
+        t.join(timeout=10)
+        return {"outcome": "fatal", "fatal_line": f"systemctl restart failed: {r.get('error')}"}
+    t.join(timeout=timeout_s + 15)
+    out = {k: v for k, v in holder.items() if k != "proc"}
+    return out or {"outcome": "timeout"}
+
+
+def _head_model(head_tokens: list) -> Optional[str]:
+    """The served model from `vllm serve <model> …`."""
+    return head_tokens[2] if len(head_tokens) > 2 else None
+
+
+def _norm(rows: list) -> list:
+    """Order-free (flag, value) pairs of svcconfig arg rows, both flag forms folded."""
+    return sorted((f, None if v is None else str(v)) for f, v in map(_vat._split_flag, rows or []))
+
+
+def _first_model_row() -> dict:
+    """The first /v1/models row, or {} when the server is unreachable."""
+    with best_effort("vllm /v1/models row", log=log):
+        r = _v._get_session().get(f"{_url()}/v1/models", timeout=3)
+        if r.ok:
+            data = (r.json() or {}).get("data") or []
+            if data and isinstance(data[0], dict):
+                return data[0]
+    return {}
+
+
+def _flag_text(a: dict) -> str:
+    return f"{a.get('flag')} {a['value']}" if a.get("value") not in (None, "") else str(a.get("flag"))
+
+
+class _VllmBackend:
+    """Real backend for vllm_autotune._Run: ExecStart edit → restart → journal KV read → /v1/models → speed-bench stick."""
+
+    def __init__(self, model_id: str, run_id: str, unit: str, head_tokens: list, orig_args: list,
+                 bench_url: str, load_timeout_s: float):
+        self.model_id, self.run_id, self.unit = model_id, run_id, unit
+        self.head_tokens, self.orig_args = list(head_tokens), [dict(a) for a in orig_args]
+        self.bench_url, self.load_timeout_s = bench_url, float(load_timeout_s)
+        self._n = 0
+        self.dirty = False
+
+    def drafts(self) -> list:
+        return []
+
+    def current(self) -> dict:
+        served = _served_ids()
+        config = _vat.config_from_args(self.orig_args)
+        max_ctx = None
+        if "max_model_len" not in config:
+            v = _first_model_row().get("max_model_len")
+            max_ctx = int(v) if isinstance(v, int) and v > 0 else None
+        served_id = self.model_id if self.model_id in served else (served[0] if served else _head_model(self.head_tokens))
+        return {"loaded": True, "served": served_id,
+                "config": config, "max_ctx": max_ctx}
+
+    def load(self, config: dict, measure: Optional[dict]) -> dict:
+        t0 = time.monotonic()
+        if _ll._autotune_cancel_event.is_set():
+            return {"ok": False, "error": "cancelled"}
+        args = _vat.args_with_config(self.orig_args, config)
+        _ll._autotune_put({"type": "line", "model_id": self.model_id,
+                           "text": "[autotune] restart with " + " ".join(_flag_text(a) for a in args)})
+        r = _v._svcconfig_write(self.head_tokens, args)
+        if not r.get("ok"):
+            return {"ok": False, "error": str(r.get("error") or "svcconfig write failed")[:300]}
+        self.dirty = _norm(args) != _norm(self.orig_args)
+        watch = _at_restart_and_watch(self.unit, self.load_timeout_s, "load")
+        if watch["outcome"] == "cancelled":
+            return {"ok": False, "error": "cancelled"}
+        if watch["outcome"] == "est_max":
+            return {"ok": False, "rejected": True, "error": f"engine estimates the maximum model length at {watch['est_max_len']:,}"}
+        if watch["outcome"] != "kv":
+            err = watch.get("fatal_line") or f"no KV-capacity answer in the journal ({watch['outcome']})"
+            out = {"ok": False, "rejected": True, "error": str(err)[:300]}
+            if watch.get("derived_max"):
+                out["derived_max"] = watch["derived_max"]
+            return out
+        row = _at_wait_ready(READY_WAIT_S)
+        if row is None:
+            if _ll._autotune_cancel_event.is_set():
+                return {"ok": False, "error": "cancelled"}
+            return {"ok": False, "rejected": True, "error": "the server did not answer /v1/models after the restart"}
+        out = {"ok": True, "error": None, "config": dict(config),
+               "ctx": row.get("max_model_len") or config.get("max_model_len"),
+               "kv_tokens": watch.get("kv_tokens"), "max_conc": watch.get("max_conc"),
+               "load_s": round(time.monotonic() - t0, 1), "stick": None}
+        if measure:
+            self._n += 1
+            out["stick"] = _lt.stick_run(self.bench_url, self.model_id, self.run_id, self._n, measure)
+        return out
+
+
+def _restore(head_tokens: list, orig_args: list) -> None:
+    """Puts the original ExecStart back and restarts the unit."""
+    _ll._autotune_put({"type": "line", "text": "[autotune] restoring the original server flags"})
+    r = _v._svcconfig_write(head_tokens, orig_args, restart=True, restart_timeout=RESTART_TIMEOUT_S)
+    if not r.get("ok"):
+        _ll._autotune_put({"type": "rollback_failed", "error": r.get("error") or "rollback restart failed"})
+
+
+def _autotune_run_all(req: dict, head_tokens: list, orig_args: list) -> None:
+    run_id = _ll._autotune_run_id
+    unit = _ctx().config.VLLM_SYSTEMD_UNIT
+    applied = False
+    dirty = False
+    try:
+        with _shim.Shim(_url(), native=False, label="vLLM") as sh:
+            rt = _ll._bench_live_runtime()
+            env = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]), "provider": "vllm"}
+            try:
+                for mid in req["model_ids"]:
+                    if _ll._autotune_cancel_event.is_set():
+                        break
+                    backend = _VllmBackend(mid, run_id, unit, head_tokens, orig_args, sh.url, req["load_timeout_s"])
+                    done = _vat.run_model(mid, req, backend, _ll._autotune_put, _ll._autotune_cancel_event.is_set, env)
+                    applied = applied or bool(done.get("applied"))
+                    dirty = dirty or backend.dirty
+                    _shared.post_tool_run(_ctx(), "autotune", "vllm", run_id, mid, done["ok"], _vat.ledger_summary(done))
+            finally:
+                # Restore even after a cancel: the cancel flag only stops measuring, not the rollback.
+                was_cancel = _ll._autotune_cancel_event.is_set()
+                _ll._autotune_cancel_event.clear()
+                if not applied and dirty:
+                    with best_effort("vllm autotune: restore ExecStart", log=log):
+                        _restore(head_tokens, orig_args)
+                if was_cancel:
+                    _ll._autotune_cancel_event.set()
+        cancelled = _ll._autotune_cancel_event.is_set()
+        _ll._autotune_put({"type": "done", "ok": not cancelled, "cancelled": cancelled, "count": len(req["model_ids"])})
+    except Exception as e:
+        log.error("vllm autotune run error: %s", e, exc_info=True)
+        _ll._autotune_put({"type": "done", "ok": False, "error": str(e)})
+    finally:
+        with best_effort("vllm autotune: drop run scratch dir", log=log):
+            shutil.rmtree(_bl.bench_dir(_ctx().config.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}", ignore_errors=True)
+        _ll._autotune_untrack_aux()
+        with _ll._autotune_lock:
+            _ll._autotune_active = False
+            _ll._autotune_quality = False
+
+
+def _unit_active() -> bool:
+    try:
+        r = subprocess.run(["systemctl", "is-active", _ctx().config.VLLM_SYSTEMD_UNIT],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (r.stdout or "").strip() == "active"
+
+
+def vllm_autotune_preflight(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """What the tuner can do on this host: server state, the served model with its serve flags, the bench runtime."""
+    _ctx().check_bearer(authorization); _v._vllm_check_enabled()
+    rt = _ll._bench_live_runtime()
+    server = _bench_server()
+    return {"ok": True, "provider": "vllm", "busy": _busy(), "autotune_active": bool(_ll._autotune_active),
+            "quality_active": False, "unit_active": _unit_active(), "server": server,
+            "models": [{"key": m["id"], "loaded": True, "type": "llm"} for m in server["models"]],
+            "config": _vat.config_from_args(_unit_args()), "drafts_for": {},
+            "runtime": {"ok": bool(rt["python"] and rt["script"]), **rt},
+            "ram_total_mb": _ll._ram_total_mb(), "free_mb": None, "vram_total_mb": None}
+
+
+def vllm_autotune_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _ctx().check_bearer(authorization); _v._vllm_check_enabled()
+    body = body or {}
+    served = _served_ids()
+    if _vat.is_legacy(body):
+        if not served:
+            return {"ok": False, "error": "vLLM server is not running — start it before auto-tune"}
+        body = _vat.legacy_body(body, served[0])
+    try:
+        req = _vat.validate_request(body)
+    except (ValueError, TypeError, AttributeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not served:
+        return {"ok": False, "error": "vLLM server is not running — start it before auto-tune"}
+    missing = [m for m in req["model_ids"] if m not in served]
+    if missing:
+        return {"ok": False, "error": f"vLLM does not serve {missing[0]}"}
+    try:
+        head, args = _v._parse_vllm_execstart(Path(_v._vllm_svc_file_path()).read_text())
+    except OSError as e:
+        return {"ok": False, "error": f"service file unreadable: {e}"}
+    if head is None:
+        return {"ok": False, "error": "ExecStart line not found in service file"}
+    with _ll._autotune_lock:
+        if _ll._autotune_active or _ll._bench_active:
+            return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
+        _ll._autotune_cancel_event.clear()
+        _ll._autotune_active = True
+        _ll._autotune_quality = False
+        _ll._autotune_run_id = uuid.uuid4().hex[:12]
+        with _ll._autotune_cond:
+            _ll._autotune_replay.start_run(_ll._autotune_run_id)
+    global _autotune_thread
+    _autotune_thread = threading.Thread(target=_autotune_run_all, args=(req, shlex.split(head), args), daemon=True)
+    _autotune_thread.start()
+    return {"ok": True, "run_id": _ll._autotune_run_id}
+
+
+def shutdown_children() -> None:
+    """Wait for a running vLLM autotune to finish its ExecStart rollback."""
+    t = _autotune_thread
+    if t is not None and t.is_alive():
+        t.join(timeout=45)
+
+
+def vllm_autotune_stream(authorization: Optional[str] = Header(default=None), token: Optional[str] = Query(default=None),
+                         last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID")) -> StreamingResponse:
+    _ctx().check_stream_auth(authorization, token, "/vllm/autotune/stream"); _v._vllm_check_enabled()
+    return _shared.bench_replay_sse(_ll._autotune_replay, _ll._autotune_cond, lambda: _ll._autotune_active, last_event_id)
+
+
+def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _ctx().check_bearer(authorization); _v._vllm_check_enabled()
+    return _ll._autotune_cancel_impl([])
+
+
 _ROUTES: tuple = (
     ("GET",  "/vllm/bench/live/preflight", vllm_bench_live_preflight),
     ("POST", "/vllm/bench/live/setup",     vllm_bench_live_setup),
@@ -376,6 +762,10 @@ _ROUTES: tuple = (
     ("POST", "/vllm/bench/run",    vllm_bench_run),
     ("GET",  "/vllm/bench/stream", vllm_bench_stream),
     ("POST", "/vllm/bench/cancel", vllm_bench_cancel),
+    ("GET",  "/vllm/autotune/preflight", vllm_autotune_preflight),
+    ("POST", "/vllm/autotune/run",       vllm_autotune_run),
+    ("GET",  "/vllm/autotune/stream",    vllm_autotune_stream),
+    ("POST", "/vllm/autotune/cancel",    vllm_autotune_cancel),
     ("GET",  "/vllm/tools/state",  vllm_tools_state),
 )
 

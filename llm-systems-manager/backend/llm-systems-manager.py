@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.29-4"
+__version__ = "v2026.09.29-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2156,9 +2156,15 @@ def _tool_queue_answer(provider: str, agent: dict, tool: str, path: str, cancel:
 
 @app.route("/api/benchmark/run", methods=["POST"])
 def benchmark_run():
-    # Proxy to the primary llama agent — llama-bench lives next to llama-server
-    # on the inference host, never on the manager host.
+    """Offline benchmark start: llama-bench on the llama host, vllm bench serve on a vLLM host."""
+    provider, perr = _tool_provider()
+    if perr:
+        return jsonify({"ok": False, "error": perr}), 400
     body = flask_request.get_json(force=True) or {}
+    if provider == "vllm":
+        return _tool_start("vllm", "benchmark", "/vllm/bench/run", "/vllm/bench/cancel", body)
+    if provider != "llama":
+        return jsonify({"ok": False, "error": f"provider {provider} has no offline benchmark"}), 400
     return _tool_start("llama", "benchmark", "/llama/bench/run", "/llama/bench/cancel", body,
                        pre="/llama/server/stop")
 
@@ -2171,7 +2177,7 @@ def benchmark_stream():
     return proxies.proxy_stream_to_primary(provider, f"/{provider}/bench/stream", long_running=True)
 
 
-AUTOTUNE_PROVIDERS = ("llama", "lms")  # Providers the Tools Autotune module can drive.
+AUTOTUNE_PROVIDERS = ("llama", "lms", "vllm")  # Providers the Tools Autotune module can drive.
 
 
 def _tool_provider(tool: str = "benchmark") -> "tuple[str, str | None]":
@@ -3471,24 +3477,6 @@ def vllm_lora_unload():
                                     json=flask_request.get_json(force=True), timeout=90)
 
 
-# --- vLLM autotune (--max-model-len tuner) — pure proxy, loop runs on the agent ---
-
-@app.route("/api/vllm/autotune/run", methods=["POST"])
-def vllm_autotune_run():
-    body = flask_request.get_json(force=True) or {}
-    return _tool_start("vllm", "autotune", "/vllm/autotune/run", "/vllm/autotune/cancel", body)
-
-
-@app.route("/api/vllm/autotune/stream")
-def vllm_autotune_stream():
-    return proxies.proxy_stream_to_primary("vllm", "/vllm/autotune/stream", long_running=True)
-
-
-@app.route("/api/vllm/autotune/cancel", methods=["POST"])
-def vllm_autotune_cancel():
-    return proxies.proxy_to_primary("vllm", "POST", "/vllm/autotune/cancel", timeout=10)
-
-
 # --- vLLM benchmark (vllm bench serve) — pure proxy, subprocess lives on the agent ---
 
 @app.route("/api/vllm/bench/run", methods=["POST"])
@@ -3909,7 +3897,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/llm/autotune/run$"),                 "tools.autotune",     "tools.run"),
     ("POST",   re.compile(r"^/api/llm/autotune/batch$"),               "autotune.batch",     "tools.run"),
     ("POST",   re.compile(r"^/api/llm/autotune/batch/[^/]+/cancel$"),  "autotune.batch-cancel", "tools.run"),
-    ("POST",   re.compile(r"^/api/vllm/(?:bench|autotune)/run$"),      "tools.vllm-bench",   "tools.run"),
+    ("POST",   re.compile(r"^/api/vllm/bench/run$"),                   "tools.vllm-bench",   "tools.run"),
     ("POST",   re.compile(r"^/api/benchmark/live/baselines/recheck$"), "benchmark.recheck",  "tools.run"),
     ("POST",   re.compile(r"^/api/vllm/server/(?P<v>start|stop|restart)$"), "vllm.server.{v}", "vllm.server"),
     ("POST",   re.compile(r"^/api/vllm/server/svcconfig$"),            "vllm.svcconfig",     "vllm.server"),

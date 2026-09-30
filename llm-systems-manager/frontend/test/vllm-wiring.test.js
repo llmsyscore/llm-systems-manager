@@ -3,9 +3,13 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import OV from '../js/lib/overall-view.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { srcFile, fnSrc as sharedFnSrc, blockSrc, evalGlobal, runHarness, flush } from './helpers/harness.js';
 
 const src = srcFile;
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Same convention as test/overall-adopt.test.js: asserts its own message.
 function fnSrc(name, source) {
@@ -831,5 +835,14 @@ describe('index.html vLLM sub-tab', () => {
     const m = html.match(/<button onclick="(toolsDeepLink\('benchmark'[^"]*)"/);
     expect(m, 'vLLM Benchmark button not found').toBeTruthy();
     expect(m[1]).toContain("provider: 'vllm'");
+  });
+  test('the vLLM sub-tab Autotune entry deep-links into Tools and no overlay code remains', () => {
+    const html = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
+    expect(html).toContain("toolsDeepLink('autotune', null, { provider: 'vllm'");
+    expect(html).not.toContain('openVllmAutotune');
+    expect(html).not.toContain('vllmAtOverlay');
+    expect(html).not.toContain('vllmBenchOverlay');
+    expect(html).not.toContain('vllm-bench-autotune.js');
+    expect(existsSync(resolve(ROOT, 'js/vllm-bench-autotune.js'))).toBe(false);
   });
 });

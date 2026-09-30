@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.29-2"
+VERSION = "v2026.09.29-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2701,7 +2701,7 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
         except (asyncio.CancelledError, Exception) as e:
             logger.warning("bench/autotune shutdown cleanup failed: %r", e)
         try:
-            await asyncio.to_thread(providers.vllm.shutdown_children)
+            await asyncio.to_thread(providers.vllm_tools.shutdown_children)
         except (asyncio.CancelledError, Exception) as e:
             logger.warning("vllm autotune shutdown cleanup failed: %r", e)
         if _metric_client is not None:

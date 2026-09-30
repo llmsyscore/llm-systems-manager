@@ -164,9 +164,6 @@
   .at-wizard .at-result-actions { display:flex; gap:8px; margin-top:13px; flex-wrap:wrap; }
   .at-wizard .at-result-actions .btn { background:var(--bg-card-alt); color:var(--fg-muted); border:1px solid var(--border); border-radius:6px; font-size:0.78em; padding:6px 13px; background-image:none; }
   .at-wizard .at-result-actions .btn:hover { background:var(--border); color:var(--fg); opacity:1; }
-  /* Bench overlay: tighter stat grid + smaller stat values. */
-  #vllmBenchOverlay .at-result-grid { grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); row-gap:12px; }
-  #vllmBenchOverlay .at-stat-v { font-size:clamp(1.0rem,1.4vw,1.35rem); }
   .at-wizard .vbench-input {
     padding:5px 8px; background:var(--bg-elev); color:var(--fg);
     border:1px solid var(--border); border-radius:4px;

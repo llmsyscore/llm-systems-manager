@@ -47,6 +47,7 @@ const STUBS = `
       : u.startsWith('/api/llm/autotune/run') ? (window.__runAnswer || window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
       : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21, peak_active_w: 300.2, active_hours: 12 })
+      : u.startsWith('/api/vllm/server/svcconfig') && !(opts && opts.method) ? (window.__svc || { ok: true, binary: '/opt/vllm/venv/bin/vllm serve org/model-8b', args: [{ flag: '--host', value: '127.0.0.1', bool: false }, { flag: '--max-model-len=8192', value: null, bool: true }, { flag: '--enable-prefix-caching', value: null, bool: true }] })
       : u.startsWith('/api/llm/draft-candidates') ? (window.__draft || { ok: true, candidate: { repo: 'unsloth/Qwen3-0.6B-GGUF', file: 'Qwen3-0.6B-Q4_K_M.gguf', size_bytes: 420e6, params_b: 0.6 }, reason: 'smallest instruct GGUF at ≤ 25 % of the target' })
       : { ok: true };
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)) });
@@ -1204,5 +1205,133 @@ describe('draft discovery (#889)', () => {
     expect(win.__dl.closed).toBe(true);
     expect(win.document.getElementById('atDraftRow').style.display).toBe('none');
     expect([...win.document.getElementById('atDraftSel').options].some(o => o.textContent.includes('m-0.6B-Q4_K_M.gguf'))).toBe(true);
+  });
+});
+
+const VLLM_PRE = {
+  ok: true, provider: 'vllm', busy: false, unit_active: true, quality_active: false, autotune_active: false,
+  server: { up: true, url: 'http://localhost:8000', provider: 'vllm', models: [{ id: 'org/model-8b', status: 'loaded' }], loaded_id: 'org/model-8b', slots_idle: 4, slots_total: 4, spec: null, build: '0.30.0' },
+  models: [{ key: 'org/model-8b', loaded: true, type: 'llm' }],
+  config: { max_model_len: 8192, max_num_seqs: 4, gpu_memory_utilization: 0.85 },
+  runtime: { ok: true, python: '/p', script: '/s' }, drafts_for: {}, ram_total_mb: 8192, free_mb: null, vram_total_mb: null,
+};
+const VLLM_BOOT = `window.__pre = ${JSON.stringify(VLLM_PRE)};
+  window.toolsTarget = () => ({ provider: 'vllm', agent: 'V1' });
+  window.toolsUrl = (p) => p + (p.indexOf('?') >= 0 ? '&' : '?') + 'provider=vllm&agent=V1';`;
+
+async function openedVllm() {
+  const win = boot(VLLM_BOOT);
+  win.AT.onOpen();
+  for (let i = 0; i < 6; i++) await flush();
+  return win;
+}
+
+describe('AT vLLM target (#894)', () => {
+  it('applies the vLLM stage maps, rows and labels', async () => {
+    const win = await openedVllm();
+    const d = win.document;
+    const row = k => d.querySelector(`.at-dim[data-dim="${k}"]`).style.display;
+    expect(row('seqs')).toBe(''); expect(row('kvdtype')).toBe(''); expect(row('prefix')).toBe(''); expect(row('spec')).toBe('');
+    expect(row('flash')).toBe('none'); expect(row('slots')).toBe('none'); expect(row('kv')).toBe('none'); expect(row('sampling')).toBe('none');
+    expect(d.getElementById('atTargetMb').closest('[data-prov]').style.display).toBe('none');
+    expect(d.getElementById('atKvBudget').closest('[data-prov]').style.display).toBe('');
+    expect(d.getElementById('atKvBudget').value).toBe('85');
+    expect(d.getElementById('atKvBudgetVal').textContent).toBe('85 %');
+    expect(d.querySelector('#atObjSeg button[data-obj="quiet"]').style.display).toBe('none');
+    expect(d.getElementById('atRestartLbl').textContent).toBe('Restart server after apply');
+    expect(d.querySelector('.at-dim[data-dim="context"] .n').textContent).toBe('Context length');
+    expect(d.getElementById('atBatchGrp').style.display).toBe('none');
+    expect(d.getElementById('atProfileBtn').style.display).toBe('none');
+    expect(d.getElementById('atCopyArgsBtn').style.display).toBe('none');
+    expect(d.getElementById('atDraftSel').closest('[data-prov]').style.display).toBe('none');
+    expect(d.getElementById('atVllmDraft').closest('[data-prov]').style.display).toBe('');
+    expect([...d.querySelectorAll('#atModelList .mc-toggle[data-model]')].map(b => b.dataset.model)).toEqual(['org/model-8b']);
+    expect(d.getElementById('atPreflight').style.display).toBe('none');
+    expect(d.getElementById('atRunBtn').disabled).toBe(false);
+    expect(d.querySelector('.at-dim[data-dim="seqs"] [data-dim-sum]').textContent).toBe('1 · 4 · 8');
+    expect(d.querySelector('.at-dim[data-dim="context"] [data-dim-sum]').textContent).toBe('probe 4,096 · 1× concurrency · 100 % KV');
+  });
+
+  it('plans the vLLM stages and posts the request body', async () => {
+    const win = await openedVllm();
+    const rows = win.AT.planRows('serve', win.AT.dimsState(), win.__pre);
+    expect(rows.map(r => r.stage)).toEqual(['context', 'seqs', 'kvdtype', 'spec', 'prefix', 'verify']);
+    expect(rows.map(r => r.flag)).toEqual(['--max-model-len', '--max-num-seqs', '--kv-cache-dtype', '--speculative-config', '--enable-prefix-caching', '']);
+    expect(rows.find(r => r.stage === 'seqs').desc).toContain('highest aggregate');
+    expect(rows.every(r => r.on && r.est_s > 0)).toBe(true);
+    win.document.querySelector('#atModelList .mc-toggle[data-model]').classList.add('on');
+    win.document.getElementById('atVllmDraft').value = 'org/draft-1b';
+    await win.AT.run();
+    await flush();
+    const [url, opts] = win.__fetches.find(([u]) => u.startsWith('/api/llm/autotune/run'));
+    expect(url).toBe('/api/llm/autotune/run?provider=vllm&agent=V1');
+    const body = JSON.parse(opts.body);
+    expect(body.model_ids).toEqual(['org/model-8b']);
+    expect(body.gpu_memory_utilization).toBe(0.85);
+    expect(body.power_cap_w).toBeUndefined();
+    expect(body.dims.context).toEqual({ on: true, probe_len: 4096, concurrency: 1, kv_fraction: 1 });
+    expect(body.dims.seqs).toEqual({ on: true, candidates: [1, 4, 8] });
+    expect(body.dims.kvdtype).toEqual({ on: true, candidates: ['auto', 'fp8'] });
+    expect(body.dims.spec).toEqual({ on: true, types: ['auto'], draft_model: 'org/draft-1b' });
+    expect(body.dims.prefix).toEqual({ on: true, candidates: [true, false] });
+    expect(win.__sse.url).toBe('/api/llm/autotune/stream?provider=vllm&agent=V1');
+  });
+
+  it('renders KV capacity, the recommendation and a rejected candidate from the stream', async () => {
+    const win = await openedVllm();
+    const d = win.document;
+    const ev = m => win.AT.onEvent(m);
+    ev({ type: 'model_start', model_id: 'org/model-8b', objective: 'balanced', mode: 'tune', provider: 'vllm', stages: ['context', 'kvdtype', 'verify'] });
+    ev({ type: 'stage_start', model_id: 'org/model-8b', stage: 'context', candidates: [4096], est_s: 120 });
+    ev({ type: 'candidate_start', model_id: 'org/model-8b', stage: 'context', value: 4096 });
+    ev({ type: 'kv_capacity', model_id: 'org/model-8b', tokens: 230528 });
+    ev({ type: 'recommendation', model_id: 'org/model-8b', max_model_len: 230400, kv_tokens: 230528, concurrency: 1, kv_fraction: 1 });
+    ev({ type: 'candidate_result', model_id: 'org/model-8b', stage: 'context', value: 4096, ok: true, ctx: 4096, kv_tokens: 230528, decode_tps: 23.4 });
+    expect(d.getElementById('atStageBody').textContent).toContain('230,528');
+    expect(d.getElementById('atStageBody').textContent).toContain('230,400');
+    ev({ type: 'stage_done', model_id: 'org/model-8b', stage: 'context', choice: '8192', reason: 'kept 8,192', seconds: 100, loads: 1 });
+    ev({ type: 'stage_start', model_id: 'org/model-8b', stage: 'kvdtype', candidates: ['auto', 'fp8'], est_s: 180 });
+    ev({ type: 'candidate_rejected', model_id: 'org/model-8b', stage: 'kvdtype', value: 'fp8', reason: 'ValueError: fp8 KV cache is not supported on CPU' });
+    ev({ type: 'candidate_result', model_id: 'org/model-8b', stage: 'kvdtype', value: 'fp8', ok: false, error: 'ValueError: fp8 KV cache is not supported on CPU' });
+    expect(d.getElementById('atLog').textContent).toContain('fp8 rejected · ValueError');
+    expect(d.getElementById('atStageMeta').textContent).toContain('--kv-cache-dtype');
+    ev({ type: 'rollback_failed', error: 'sudo refused' });
+    expect(d.getElementById('atLog').textContent).toContain('rollback failed · sudo refused');
+  });
+
+  it('apply rewrites ExecStart flags for vLLM', async () => {
+    const win = await openedVllm();
+    const args = [{ flag: '--host', value: '127.0.0.1', bool: false }, { flag: '--max-model-len=8192', value: null, bool: true },
+                  { flag: '--enable-prefix-caching', value: null, bool: true }, { flag: '-sc', value: '{"method":"ngram"}', bool: false }];
+    const rows = [{ key: 'max_model_len', flag: '--max-model-len', value: 230400, recommended: '230400' },
+                  { key: 'enable_prefix_caching', flag: '--enable-prefix-caching', value: false, recommended: 'false' },
+                  { key: 'speculative_config', flag: '--speculative-config', value: null, recommended: '' }];
+    expect(win.AT.vllmArgsWith(args, rows)).toEqual([
+      { flag: '--host', value: '127.0.0.1', bool: false },
+      { flag: '--max-model-len', value: '230400', bool: false },
+      { flag: '--no-enable-prefix-caching', value: null, bool: true }]);
+    // Underscore spellings are the same flag; a null prefix value drops the flag rather than disabling caching.
+    expect(win.AT.vllmArgsWith([{ flag: '--max_model_len', value: '8192', bool: false }, { flag: '--enable-prefix-caching', value: null, bool: true }],
+      [{ key: 'max_model_len', flag: '--max-model-len', value: 4096, recommended: '4096' }, { key: 'enable_prefix_caching', flag: '--enable-prefix-caching', value: null, recommended: '' }]))
+      .toEqual([{ flag: '--max-model-len', value: '4096', bool: false }]);
+    win.AT.onEvent({ type: 'model_start', model_id: 'org/model-8b', objective: 'balanced', mode: 'tune', provider: 'vllm', stages: ['context', 'verify'] });
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/model-8b', ok: true, provider: 'vllm', objective: 'balanced', mode: 'tune', stages: [], verify: { ok: true, seconds: 60 },
+      before: { decode_tps: 20, ctx: 4096 }, after: { decode_tps: 24, ctx: 230400 }, base_config: { max_model_len: 8192 },
+      changes: [{ key: 'max_model_len', flag: '--max-model-len', current: '8192', recommended: '230400', value: 230400, source: 'measured', evidence: 'x', selected: true },
+                { key: 'speculative_config', flag: '--speculative-config', current: '', recommended: '{"method":"ngram","num_speculative_tokens":5,"prompt_lookup_max":4}', value: { method: 'ngram', num_speculative_tokens: 5, prompt_lookup_max: 4 }, source: 'measured', evidence: 'y', selected: true }] });
+    win.AT.onEvent({ type: 'done', ok: true, cancelled: false, count: 1 });
+    await flush();
+    expect(win.document.getElementById('atRecMsg').textContent).toContain('service file');
+    const res = await win.AT.apply();
+    expect(res).toEqual({ ok: true });
+    const [url, opts] = win.__fetches.find(([u, o]) => u.startsWith('/api/vllm/server/svcconfig') && o && o.method === 'POST');
+    expect(url).toBe('/api/vllm/server/svcconfig?provider=vllm&agent=V1');
+    const body = JSON.parse(opts.body);
+    expect(body.restart).toBe(true);
+    expect(body.binary).toBe('/opt/vllm/venv/bin/vllm serve org/model-8b');
+    expect(body.args).toEqual([{ flag: '--host', value: '127.0.0.1', bool: false }, { flag: '--enable-prefix-caching', value: null, bool: true },
+      { flag: '--max-model-len', value: '230400', bool: false },
+      { flag: '--speculative-config', value: '{"method":"ngram","num_speculative_tokens":5,"prompt_lookup_max":4}', bool: false }]);
+    expect(win.document.getElementById('atRecMsg').textContent).toContain('restarted the vLLM server');
   });
 });

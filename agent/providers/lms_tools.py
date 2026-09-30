@@ -303,6 +303,48 @@ def lms_bench_cancel(authorization: Optional[str] = Header(default=None)) -> dic
     return _ll._bench_cancel_impl([])
 
 
+def stick_run(bench_url: str, model_id: str, run_id: str, n: int, measure: dict, label: Optional[str] = None) -> dict:
+    """One short speed-bench run against an OpenAI server at bench_url: single-turn 1k prompts, fixed osl.
+    Runs on llama.py's autotune aux-process slot; memory sampling is the caller's."""
+    cfg = _ll._require_ctx().config
+    rt = _ll._bench_live_runtime()
+    if not rt["python"] or not rt["script"]:
+        return {"ok": False, "error": "speed-bench runtime not installed"}
+    req = {"model_id": model_id, "bench": _at.STICK_BENCH, "categories": "all",
+           "osl": _at.STICK_OSL, "limit": int(measure.get("limit") or _at.STICK_LIMIT),
+           "concurrency": [int(measure.get("concurrency") or 1)], "timeout_s": 300,
+           "extra_inputs": {"temperature": 0}, "baseline_run_id": None}
+    out_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / f"at-{run_id}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    token = re.sub(r"[^A-Za-z0-9_.-]", "_", label or model_id)[:60]
+    out_path = out_dir / f"stick-{n}-{token}.json"
+    out_path.unlink(missing_ok=True)
+    benv = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
+    level = req["concurrency"][0]
+    t0 = time.monotonic()
+    try:
+        rc, cancelled, elapsed = _bl.run_level_subprocess(
+            _bl.build_cmd(rt["python"], rt["script"], bench_url, req, level, str(out_path)),
+            benv, _ll._autotune_put, model_id, level, _ll._autotune_cancel_event,
+            _ll._autotune_track_aux, _ll._autotune_untrack_aux)
+    except Exception as e:
+        return {"ok": False, "error": f"speed-bench did not start: {e}"[:300]}
+    wall = elapsed if elapsed is not None else (time.monotonic() - t0)
+    if cancelled:
+        return {"ok": False, "error": "cancelled"}
+    if rc is None:
+        return {"ok": False, "error": "speed-bench did not start"}
+    try:
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": False, "error": f"speed-bench produced no output (rc={rc})"}
+    s = _bl.level_summary(payload, wall)["all"]
+    return {"ok": rc in (0, 1) and bool(s.get("pred_tps")) and not s.get("failed"), "decode_tps": s.get("pred_tps"),
+            "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
+            "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"),
+            "seconds": round(wall, 1), "failed": s.get("failed"), "error": _bl.stick_error(rc, s)}
+
+
 # ── autotune ───────────────────────────────────────────────────────────
 
 class _LmsBackend:
@@ -423,48 +465,16 @@ class _LmsBackend:
         return out
 
     def _stick(self, instance_id: str, measure: dict) -> dict:
-        """One short speed-bench run against LM Studio: single-turn 1k prompts, fixed osl."""
-        cfg = _ctx().config
-        rt = _ll._bench_live_runtime()
-        if not rt["python"] or not rt["script"]:
-            return {"ok": False, "error": "speed-bench runtime not installed"}
-        req = {"model_id": instance_id, "bench": _at.STICK_BENCH, "categories": "all",
-               "osl": _at.STICK_OSL, "limit": int(measure.get("limit") or _at.STICK_LIMIT),
-               "concurrency": [int(measure.get("concurrency") or 1)], "timeout_s": 300,
-               "extra_inputs": {"temperature": 0}, "baseline_run_id": None}
+        """The shared stick with LM Studio's free-memory sampling through the traffic."""
         self._n += 1
-        out_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / f"at-{self.run_id}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        token = re.sub(r"[^A-Za-z0-9_.-]", "_", self.model_id)[:60]
-        out_path = out_dir / f"stick-{self._n}-{token}.json"
-        out_path.unlink(missing_ok=True)
-        benv = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
-        level = req["concurrency"][0]
-        t0 = time.monotonic()
         got: dict = {}
 
         def work():
-            got["res"] = _bl.run_level_subprocess(
-                _bl.build_cmd(rt["python"], rt["script"], self.bench_url or _url(), req, level, str(out_path)),
-                benv, _ll._autotune_put, self.model_id, level, _ll._autotune_cancel_event,
-                _ll._autotune_track_aux, _ll._autotune_untrack_aux)
-        # Free memory is sampled through the traffic: serving costs more than one warm-up request.
+            got["r"] = stick_run(self.bench_url or _url(), instance_id, self.run_id, self._n, measure, label=self.model_id)
         free = _free_mb_under(work, every=1.0)
-        rc, cancelled, elapsed = got.get("res") or (None, False, None)
-        wall = elapsed if elapsed is not None else (time.monotonic() - t0)
-        if cancelled:
-            return {"ok": False, "error": "cancelled"}
-        if rc is None:
-            return {"ok": False, "error": "speed-bench did not start"}
-        try:
-            payload = json.loads(out_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"ok": False, "error": f"speed-bench produced no output (rc={rc})"}
-        s = _bl.level_summary(payload, wall)["all"]
-        return {"ok": rc in (0, 1) and bool(s.get("pred_tps")) and not s.get("failed"), "decode_tps": s.get("pred_tps"),
-                "prefill_tps": s.get("prompt_tps"), "latency_s": s.get("latency_s"), "agg_tps": s.get("agg_pred_tps"),
-                "accept": s.get("accept_rate"), "completion_tokens": s.get("completion_tokens"), "free_mb": free,
-                "seconds": round(wall, 1), "failed": s.get("failed"), "error": _bl.stick_error(rc, s)}
+        out = dict(got.get("r") or {"ok": False, "error": "speed-bench did not start"})
+        out["free_mb"] = free
+        return out
 
 
 def _snapshot() -> list[tuple[str, dict]]:

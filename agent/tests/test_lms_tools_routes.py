@@ -371,6 +371,29 @@ def test_stick_samples_free_memory_through_the_traffic(env, monkeypatch, tmp_pat
     assert res["free_mb"] == 1700
 
 
+def test_stick_run_is_the_shared_measurement(env, monkeypatch, tmp_path):
+    """stick_run measures without memory sampling; _LmsBackend._stick adds free_mb around it."""
+    t = env.tools
+    monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": "/p", "script": "/s"})
+    seen = {}
+
+    def fake_build(python, script, url, req, level, out):
+        seen.update(url=url, model=req["model_id"], limit=req["limit"], level=level, out=out)
+        return ["x"]
+    monkeypatch.setattr(t._bl, "build_cmd", fake_build)
+
+    def fake_run(cmd, benv, put, mid, level, cancel, track, untrack):
+        (tmp_path / "data" / "bench" / "runs" / "at-run9" / "stick-3-label.json").write_text('{"ok": true}')
+        return 0, False, 12.0
+    monkeypatch.setattr(t._bl, "run_level_subprocess", fake_run)
+    monkeypatch.setattr(t._bl, "level_summary", lambda payload, wall: {"all": {"pred_tps": 20.0, "prompt_tps": 200.0, "agg_pred_tps": 18.0, "latency_s": 3.0}})
+    st = t.stick_run("http://127.0.0.1:1", "inst-1", "run9", 3, {"concurrency": 2, "limit": 8}, label="label")
+    assert st["ok"] and st["decode_tps"] == 20.0 and st["agg_tps"] == 18.0 and st["seconds"] == 12.0 and "free_mb" not in st
+    assert seen == {"url": "http://127.0.0.1:1", "model": "inst-1", "limit": 8, "level": 2, "out": str(tmp_path / "data" / "bench" / "runs" / "at-run9" / "stick-3-label.json")}
+    monkeypatch.setattr(t._bl, "run_level_subprocess", lambda *a, **k: (None, True, None))
+    assert t.stick_run("http://127.0.0.1:1", "inst-1", "run9", 4, {"concurrency": 1, "limit": 4}) == {"ok": False, "error": "cancelled"}
+
+
 def test_free_mb_under_takes_the_lowest_reading_while_the_request_runs(env):
     readings = iter([7300, 7200, 6650, 6700, 7250, 7300])
     ticks = {"n": 0}
