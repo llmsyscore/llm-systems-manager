@@ -2344,6 +2344,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
       <div id="blVllmOffline" style="display:none;">
         <div class="bl-body">
           <div class="bl-rail">
+            <div class="bl-preflight" id="blVllmPreflight"><span class="bl-dot"></span><span class="d">checking server…</span></div>
             <div class="bl-grp"><div class="bl-grp-h">vllm bench serve <span class="r">switches</span></div><div class="bl-grp-b">
               <div id="blVllmSwitches"></div>
               <div class="bl-row bl-switch"><input type="text" id="blVllmAddFlag" class="bl-in" placeholder="--flag"><input type="text" id="blVllmAddVal" class="bl-in" placeholder="value (blank = boolean)"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="BL.addVllmSwitch()">+ Add</button></div>
@@ -2351,6 +2352,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             </div></div>
             <div class="bl-run">
               <button id="blVllmRunBtn" class="mcbtn mcbtn-pri" type="button" onclick="BL.runVllm()">▶ Run benchmark</button>
+              <button id="blVllmStartBtn" class="mcbtn mcbtn-ghost mcbtn-sm" type="button" style="display:none;" onclick="BL.startServer()">Start server</button>
               <button id="blVllmCancelBtn" class="mcbtn mcbtn-ghost warn" type="button" style="display:none;" onclick="BL.cancelVllm()">✕ Cancel</button>
             </div>
           </div>
@@ -2826,7 +2828,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol-models.js?v=2026.09.29-1"></script>
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.29-3"></script>
-<script src="/static/js/bench-live.js?v=2026.09.29-5"></script>
+<script src="/static/js/bench-live.js?v=2026.09.29-6"></script>
 <script src="/static/js/autotune.js?v=2026.09.29-3"></script>
 <script src="/static/js/quality.js?v=2026.09.29-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.28-4"></script>

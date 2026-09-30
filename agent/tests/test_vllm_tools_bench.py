@@ -489,3 +489,28 @@ def test_route_table_covers_live_and_serve(mods):
                      ("GET", "/vllm/autotune/preflight"), ("POST", "/vllm/autotune/run"),
                      ("GET", "/vllm/autotune/stream"), ("POST", "/vllm/autotune/cancel")}
     assert not any("/vllm/bench" in p or "/vllm/autotune" in p or p == "/vllm/tools/state" for _m, p, _h in vllm._ROUTES)
+
+
+def test_live_preflight_reports_the_kind_of_run_holding_the_slot(mods, ctx, monkeypatch):
+    llama, vllm, tools = mods
+    class R:  # /v1/models up
+        ok = True
+        def json(self): return {"data": [{"id": "org/m"}]}
+    class _S:
+        def get(self, *a, **k): return R()
+    monkeypatch.setattr(vllm, "_get_session", _S)
+    monkeypatch.setattr(tools, "_bench_resolve_bin", lambda: ("/bin/true", None))
+    monkeypatch.setattr(tools, "_bench_server", lambda: {"up": True, "models": [{"id": "org/m"}]})
+    monkeypatch.setattr(tools._bl, "read_marker", lambda d: {})
+    assert tools.vllm_bench_live_preflight()["busy_kind"] is None
+    release = threading.Event()
+    monkeypatch.setattr(tools, "_bench_run_one", lambda *a: release.wait())
+    try:
+        assert tools.vllm_bench_run({"switches": []})["ok"] is True
+        p = tools.vllm_bench_live_preflight()
+        assert p["busy"] is True and p["busy_kind"] == "offline"
+    finally:
+        release.set()
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_autotune_active", True)
+    assert tools.vllm_bench_live_preflight()["busy_kind"] == "autotune"
