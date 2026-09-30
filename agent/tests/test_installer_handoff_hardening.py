@@ -240,3 +240,32 @@ def test_both_userdel_sites_are_guarded():
     outside = text.replace(helper, "")
     assert "userdel -r" not in outside and "dscl . -delete" not in outside, \
         "account deletion exists outside the guarded helper"
+
+
+# ── #1139: the transient /tmp handoff must stay owned by the caller ─────────
+
+def _chown_calls(tmp_path, env_dir) -> str:
+    env_file = env_dir / "influxdb.env"
+    func = _extract_func(LIB_COMMON_SH, "write_influx_token_file")
+    log = tmp_path / "chown.log"
+    r = _bash(
+        STUBS + func + "\n"
+        'LLMSYS_RUN_USER=llmsys; LLMSYS_RUN_GROUP=llmsys\n'
+        'id() { return 0; }\n'
+        f'chown() {{ echo "$*" >> "{log}"; }}\n'
+        f'write_influx_token_file "{env_file}" "http://h:8086" "org" "op" "met" "roll"\n')
+    assert r.returncode == 0, r.stderr
+    return log.read_text() if log.exists() else ""
+
+
+def test_writer_skips_chown_in_sticky_tmp_dir(tmp_path):
+    sticky = tmp_path / "sticky"
+    sticky.mkdir()
+    sticky.chmod(0o1777)
+    assert _chown_calls(tmp_path, sticky) == ""
+
+
+def test_writer_chowns_persistent_data_copy(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    assert "llmsys:llmsys" in _chown_calls(tmp_path, data)
