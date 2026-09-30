@@ -69,7 +69,7 @@
         <div class="term-head"><i></i><i></i><i></i>
           <div class="term-tabs" role="tablist" aria-label="Install methods">
             <button class="active" role="tab" aria-selected="true" data-pane="pane-script"
-              data-note="One command installs the full stack. The installer is interactive. It handles prerequisites, InfluxDB, TLS, and agents, and never starts a service without you.">script</button>
+              data-note="One command installs the full stack. The installer is interactive. It handles prerequisites, InfluxDB, TLS, and agents, and asks before it starts a service.">script</button>
             <button role="tab" aria-selected="false" data-pane="pane-pkg"
               data-note="Packages ship with every release for Debian/Ubuntu and RHEL-family distros. They create the service user, start the systemd units, and prompt for the admin login.">.deb / .rpm</button>
             <button role="tab" aria-selected="false" data-pane="pane-docker"
@@ -109,7 +109,7 @@
       </div>
       <p class="term-note" id="term-note">
         One command installs the full stack. The installer is interactive. It handles prerequisites,
-        InfluxDB, TLS, and agents, and never starts a service without you.
+        InfluxDB, TLS, and agents, and asks before it starts a service.
       </p>
 
       <div class="hero-meta" style="margin-top:22px">
@@ -177,11 +177,11 @@
       <div class="arch-link" aria-hidden="true">⇄</div>
       <div class="arch-tile hubtile">
         <h3>manager · control plane</h3>
-        <p>The dashboard, the OpenAI-compatible gateway, model library and profiles, Autopilot routing, users and roles, backups.</p>
+        <p>The dashboard, the OpenAI-compatible gateway, model library and profiles, Autopilot routing, Tower and Forecast, jobs, users and roles, backups.</p>
         <ul>
           <li>web dashboard + admin console</li>
           <li>/v1 inference gateway</li>
-          <li>Model Autopilot</li>
+          <li>Model Autopilot · Tower · Forecast</li>
         </ul>
       </div>
       <div class="arch-link" aria-hidden="true">→</div>
@@ -209,6 +209,16 @@
 
     <div class="grid grid-features">
       <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><path d="M8 20V9l4-5 4 5v11"/><path d="M10 13h4"/><path d="M12 4V2"/></svg></span>
+        <h3>Tower assistant</h3>
+        <p>An AI assistant you can ask about hosts, models, alerts, energy and runs in plain language, from a drawer on every page. It answers through a model the gateway already serves or a dedicated Tower model, proposes actions as approval prompts, and looks into each new alert for you.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-5 4 4 5-7 4 3"/><path d="M3 21h18"/><circle cx="8" cy="12" r="1"/><circle cx="12" cy="16" r="1"/><circle cx="17" cy="9" r="1"/></svg></span>
+        <h3>Forecast</h3>
+        <p>Scheduled trend checks over stored history report disk fill, thermal drift, cost creep, slot pressure and more before they become alarms, as a 30-day Outlook or a per-host Briefing. Every finding can raise an alert and offers Ask Tower.</p>
+      </div>
+      <div class="card">
         <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.2 5.3-5.3 2.2 2.2-5.3z"/></svg></span>
         <h3>Model Autopilot</h3>
         <p>Configure which models should be available. Autopilot places them on hardware that can run them, brings them back when a host drops, and automatically scales with the demand.</p>
@@ -226,12 +236,12 @@
       <div class="card">
         <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></span>
         <h3>Energy &amp; cost intelligence</h3>
-        <p>Measures what inference actually costs in $/Mtok against your electricity price, with savings versus hosted-API pricing and per-host performance profiles that reduce power draw and noise when a system is idle.</p>
+        <p>Measures what inference costs in $/Mtok against your electricity price, with savings versus hosted-API pricing, a per-model breakdown of energy and cost, and per-host performance profiles that cut power draw and noise when a system is idle.</p>
       </div>
       <div class="card">
         <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></svg></span>
         <h3>Benchmarking &amp; autotuning</h3>
-        <p>Run throughput benchmarks across your whole model library, and let the autotuner search out the best context and slot configuration for each model on its own hardware.</p>
+        <p>A Live benchmark measures the running server through its own API, with pinned baselines re-checked on a schedule. Autotune picks a goal and tunes seven settings, from context and KV-cache type to speculative decoding and slots, on llama.cpp, LM Studio and vLLM.</p>
       </div>
       <div class="card">
         <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12 4 7.5M12 12l8-4.5M12 12v9"/></svg></span>
@@ -251,7 +261,12 @@
       <div class="card">
         <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></span>
         <h3>Tools workspace</h3>
-        <p>Report Card, Benchmark, and Autotune in one launcher, backed by a fleet-wide run ledger — a run started in one browser is visible in every session, on any device.</p>
+        <p>Report Card, Benchmark, Autotune and Quality guard in one launcher, backed by a fleet-wide run ledger — a run started in one browser is visible in every session, on any device.</p>
+      </div>
+      <div class="card">
+        <span class="ico"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/><path d="M4 4l2 2"/><path d="M20 4l-2 2"/></svg></span>
+        <h3>Jobs</h3>
+        <p>One scheduler for everything that runs later: tool runs waiting behind a busy host, overnight autotune batches, Tower timers and Forecast runs. Jobs keep running when you close the tab or restart the manager, and show up in Admin › Jobs.</p>
       </div>
     </div>
   </div>
@@ -270,7 +285,7 @@
       <video controls muted playsinline preload="metadata" poster="assets/screenshots/overall.webp">
         <source src="assets/tour.mp4" type="video/mp4">
       </video>
-      <p class="gallery-caption">A guided tour through the platform: sign-in, Overall, every dashboard, LLM Control, the Tools launcher, chat, image generation, the alarm console, every Admin page, and the settings drawer.</p>
+      <p class="gallery-caption">A guided tour through the platform: sign-in, Overall, every dashboard including Forecast, Tower, LLM Control, the Tools launcher with a Live benchmark, chat, image generation, the alarm console, every Admin page including Jobs, and the settings drawer.</p>
     </div>
 
     <figure style="margin:0">
@@ -286,30 +301,35 @@
 
     <div class="thumbs" role="group" aria-label="Choose a screenshot">
       <button class="active" data-full="assets/screenshots/login.webp" data-caption="Sign-in screen"><img loading="lazy" src="assets/screenshots/thumbs/login.webp" alt="Sign-in screen thumbnail"></button>
-      <button data-full="assets/screenshots/overall.webp" data-caption="Overall: fleet throughput, power and energy over the last 24 hours, per-provider rollups, every agent, and pinned cards from any dashboard"><img loading="lazy" src="assets/screenshots/thumbs/overall.webp" alt="Overall: fleet throughput, power and energy over the last 24 hours, per-provider rollups, every agent, and pinned cards from any dashboard thumbnail"></button>
-      <button data-full="assets/screenshots/dashboard-llama.webp" data-caption="llama.cpp dashboard: live server internals beside GPU, CPU, RAM, disk and network cards for the selected host"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-llama.webp" alt="llama.cpp dashboard: live server internals beside GPU, CPU, RAM, disk and network cards for the selected host thumbnail"></button>
-      <button data-full="assets/screenshots/dashboard-lmstudio.webp" data-caption="LM Studio dashboard: loaded models, host metrics, and Apple-silicon powermetrics"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-lmstudio.webp" alt="LM Studio dashboard: loaded models, host metrics, and Apple-silicon powermetrics thumbnail"></button>
-      <button data-full="assets/screenshots/dashboard-energy.webp" data-caption="Energy &amp; cost: measured $/Mtok, monthly savings against hosted-API pricing, per-host coverage, and hourly energy"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-energy.webp" alt="Energy &amp; cost: measured $/Mtok, monthly savings against hosted-API pricing, per-host coverage, and hourly energy thumbnail"></button>
-      <button data-full="assets/screenshots/dashboard-openclaw.webp" data-caption="OpenClaw dashboard: session metrics, task runs, delivery queue, and cost analytics for OpenClaw agents"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-openclaw.webp" alt="OpenClaw dashboard: session metrics, task runs, delivery queue, and cost analytics for OpenClaw agents thumbnail"></button>
-      <button data-full="assets/screenshots/dashboard-manager.webp" data-caption="Manager dashboard: service, database, stream and connection health of the manager itself"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-manager.webp" alt="Manager dashboard: service, database, stream and connection health of the manager itself thumbnail"></button>
-      <button data-full="assets/screenshots/model-control.webp" data-caption="LLM Control — llama.cpp: Model cards with per-model profiles and bench numbers, server controls, and the live server log"><img loading="lazy" src="assets/screenshots/thumbs/model-control.webp" alt="LLM Control — llama.cpp: Model cards with per-model profiles and bench numbers, server controls, and the live server log thumbnail"></button>
-      <button data-full="assets/screenshots/model-control-list.webp" data-caption="LLM Control — list view: the same library as a sortable list; Compact, List and Cards views are one click apart"><img loading="lazy" src="assets/screenshots/thumbs/model-control-list.webp" alt="LLM Control — list view: the same library as a sortable list; Compact, List and Cards views are one click apart thumbnail"></button>
-      <button data-full="assets/screenshots/model-control-lmstudio.webp" data-caption="LLM Control — LM Studio: load and unload LM Studio models, control the server, and tail its log"><img loading="lazy" src="assets/screenshots/thumbs/model-control-lmstudio.webp" alt="LLM Control — LM Studio: load and unload LM Studio models, control the server, and tail its log thumbnail"></button>
-      <button data-full="assets/screenshots/tools.webp" data-caption="Tools launcher: Report Card, Benchmark and Autotune as in-tab modules, with a fleet-wide run ledger underneath"><img loading="lazy" src="assets/screenshots/thumbs/tools.webp" alt="Tools launcher: Report Card, Benchmark and Autotune as in-tab modules, with a fleet-wide run ledger underneath thumbnail"></button>
-      <button data-full="assets/screenshots/report-card.webp" data-caption="GPU Report Card: one standard test per GPU — generation tok/s, prompt processing, first token, power draw, and cost per Mtok"><img loading="lazy" src="assets/screenshots/thumbs/report-card.webp" alt="GPU Report Card: one standard test per GPU — generation tok/s, prompt processing, first token, power draw, and cost per Mtok thumbnail"></button>
-      <button data-full="assets/screenshots/autotune.webp" data-caption="Autotune: search for the largest context each model can run inside the memory you have free"><img loading="lazy" src="assets/screenshots/thumbs/autotune.webp" alt="Autotune: search for the largest context each model can run inside the memory you have free thumbnail"></button>
-      <button data-full="assets/screenshots/benchmark.webp" data-caption="Benchmark: llama-bench and batched runs across the model library, plotted by depth or batch size"><img loading="lazy" src="assets/screenshots/thumbs/benchmark.webp" alt="Benchmark: llama-bench and batched runs across the model library, plotted by depth or batch size thumbnail"></button>
-      <button data-full="assets/screenshots/llm-chat.webp" data-caption="LLM Chat: chat against any model the gateway serves, with file upload and a working directory"><img loading="lazy" src="assets/screenshots/thumbs/llm-chat.webp" alt="LLM Chat: chat against any model the gateway serves, with file upload and a working directory thumbnail"></button>
-      <button data-full="assets/screenshots/image-generation.webp" data-caption="Image generation: native async image and video generation on a local stable-diffusion.cpp server"><img loading="lazy" src="assets/screenshots/thumbs/image-generation.webp" alt="Image generation: native async image and video generation on a local stable-diffusion.cpp server thumbnail"></button>
-      <button data-full="assets/screenshots/alarm-console.webp" data-caption="Alarm console: active alerts, anomalies, suppressions, the 24-hour severity band, and the alert timeline, inside the Events tab"><img loading="lazy" src="assets/screenshots/thumbs/alarm-console.webp" alt="Alarm console: active alerts, anomalies, suppressions, the 24-hour severity band, and the alert timeline, inside the Events tab thumbnail"></button>
-      <button data-full="assets/screenshots/admin-console.webp" data-caption="Admin — System Health &amp; Agents: the live data-flow diagram above the agent roster with capabilities, pool membership, TLS state and version"><img loading="lazy" src="assets/screenshots/thumbs/admin-console.webp" alt="Admin — System Health &amp; Agents: the live data-flow diagram above the agent roster with capabilities, pool membership, TLS state and version thumbnail"></button>
-      <button data-full="assets/screenshots/admin-access.webp" data-caption="Access Control: login policy, trusted networks, users and roles"><img loading="lazy" src="assets/screenshots/thumbs/admin-access.webp" alt="Access Control: login policy, trusted networks, users and roles thumbnail"></button>
-      <button data-full="assets/screenshots/admin-audit.webp" data-caption="Audit Log: a filtered ledger of every admin action with actor, target, source and result"><img loading="lazy" src="assets/screenshots/thumbs/admin-audit.webp" alt="Audit Log: a filtered ledger of every admin action with actor, target, source and result thumbnail"></button>
-      <button data-full="assets/screenshots/admin-backups.webp" data-caption="Backups: Manager and alarm-engine archives, the backup schedule, retained runs, and the mirror state"><img loading="lazy" src="assets/screenshots/thumbs/admin-backups.webp" alt="Backups: Manager and alarm-engine archives, the backup schedule, retained runs, and the mirror state thumbnail"></button>
-      <button data-full="assets/screenshots/gateway.webp" data-caption="Gateway: the inference-gateway flow from clients to hosts, with throughput, latency, in-flight and energy tiles"><img loading="lazy" src="assets/screenshots/thumbs/gateway.webp" alt="Gateway: the inference-gateway flow from clients to hosts, with throughput, latency, in-flight and energy tiles thumbnail"></button>
-      <button data-full="assets/screenshots/autopilot.webp" data-caption="Model Autopilot: placement entries, proposals, pool order and model pins"><img loading="lazy" src="assets/screenshots/thumbs/autopilot.webp" alt="Model Autopilot: placement entries, proposals, pool order and model pins thumbnail"></button>
-      <button data-full="assets/screenshots/admin-settings.webp" data-caption="Settings: every configuration key grouped and searchable, applied hot or flagged as restart-pending"><img loading="lazy" src="assets/screenshots/thumbs/admin-settings.webp" alt="Settings: every configuration key grouped and searchable, applied hot or flagged as restart-pending thumbnail"></button>
-      <button data-full="assets/screenshots/settings-drawer.webp" data-caption="Settings drawer: pinned cards, layout engine, density, themes and refresh cadence for the page you are on"><img loading="lazy" src="assets/screenshots/thumbs/settings-drawer.webp" alt="Settings drawer: pinned cards, layout engine, density, themes and refresh cadence for the page you are on thumbnail"></button>
+      <button data-full="assets/screenshots/overall.webp" data-caption="Overall: fleet throughput, power and energy over the last 24 hours, the Forecast strip, per-provider rollups, every agent, and pinned cards from any dashboard"><img loading="lazy" src="assets/screenshots/thumbs/overall.webp" alt="Overall thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-llama.webp" data-caption="llama.cpp dashboard: live server internals beside GPU, CPU, RAM, disk and network cards for the selected host"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-llama.webp" alt="llama.cpp dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-lmstudio.webp" data-caption="LM Studio dashboard: loaded models, host metrics, and Apple-silicon powermetrics"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-lmstudio.webp" alt="LM Studio dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-energy.webp" data-caption="Energy &amp; cost: measured $/Mtok, monthly savings against hosted-API pricing, per-host coverage, hourly energy, and the by-model breakdown"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-energy.webp" alt="Energy &amp; cost thumbnail"></button>
+      <button data-full="assets/screenshots/forecast-outlook.webp" data-caption="Forecast — Outlook: a 30-day line of dated predictions from sixteen trend checks, with the finding list and a details drawer"><img loading="lazy" src="assets/screenshots/thumbs/forecast-outlook.webp" alt="Forecast — Outlook thumbnail"></button>
+      <button data-full="assets/screenshots/forecast-briefing.webp" data-caption="Forecast — Briefing: the same findings grouped by host or check, each with an Ask Tower button and a jump to the dashboard it came from"><img loading="lazy" src="assets/screenshots/thumbs/forecast-briefing.webp" alt="Forecast — Briefing thumbnail"></button>
+      <button data-full="assets/screenshots/tower.webp" data-caption="Tower assistant: the drawer answering a question about the fleet from live tool reads, with an approval card for a proposed action"><img loading="lazy" src="assets/screenshots/thumbs/tower.webp" alt="Tower assistant thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-openclaw.webp" data-caption="OpenClaw dashboard: session metrics, task runs, delivery queue, and cost analytics for OpenClaw agents"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-openclaw.webp" alt="OpenClaw dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/dashboard-manager.webp" data-caption="Manager dashboard: service, database, stream and connection health of the manager itself"><img loading="lazy" src="assets/screenshots/thumbs/dashboard-manager.webp" alt="Manager dashboard thumbnail"></button>
+      <button data-full="assets/screenshots/model-control.webp" data-caption="LLM Control — llama.cpp: Model cards with per-model profiles, live-bench numbers and autotune state, server controls, and the live server log"><img loading="lazy" src="assets/screenshots/thumbs/model-control.webp" alt="LLM Control — llama.cpp thumbnail"></button>
+      <button data-full="assets/screenshots/model-control-list.webp" data-caption="LLM Control — list view: the same library as a sortable list; Compact, List and Cards views are one click apart"><img loading="lazy" src="assets/screenshots/thumbs/model-control-list.webp" alt="LLM Control — list view thumbnail"></button>
+      <button data-full="assets/screenshots/model-control-lmstudio.webp" data-caption="LLM Control — LM Studio: load and unload LM Studio models, control the server, and tail its log"><img loading="lazy" src="assets/screenshots/thumbs/model-control-lmstudio.webp" alt="LLM Control — LM Studio thumbnail"></button>
+      <button data-full="assets/screenshots/tools.webp" data-caption="Tools launcher: Report Card, Benchmark, Autotune and Quality guard as in-tab modules, with the per-host queue and a fleet-wide run ledger underneath"><img loading="lazy" src="assets/screenshots/thumbs/tools.webp" alt="Tools launcher thumbnail"></button>
+      <button data-full="assets/screenshots/report-card.webp" data-caption="GPU Report Card: one standard test per GPU — generation tok/s, prompt processing, first token, power draw, and cost per Mtok"><img loading="lazy" src="assets/screenshots/thumbs/report-card.webp" alt="GPU Report Card thumbnail"></button>
+      <button data-full="assets/screenshots/autotune.webp" data-caption="Autotune: pick a goal and tune seven settings in order, from context and KV-cache type to speculative decoding and slots, with a before/after recommendation table"><img loading="lazy" src="assets/screenshots/thumbs/autotune.webp" alt="Autotune thumbnail"></button>
+      <button data-full="assets/screenshots/benchmark-live.webp" data-caption="Benchmark — Live: speed-bench against the running server: workload presets, a concurrency sweep, energy per token, and a pinned baseline to re-check on a schedule"><img loading="lazy" src="assets/screenshots/thumbs/benchmark-live.webp" alt="Benchmark — Live thumbnail"></button>
+      <button data-full="assets/screenshots/benchmark.webp" data-caption="Benchmark — Offline: llama-bench and vllm bench serve across the model library, with the KV-cache sweep and the prompt × output heatmap"><img loading="lazy" src="assets/screenshots/thumbs/benchmark.webp" alt="Benchmark — Offline thumbnail"></button>
+      <button data-full="assets/screenshots/llm-chat.webp" data-caption="LLM Chat: chat against any model the gateway serves, with file upload and a working directory"><img loading="lazy" src="assets/screenshots/thumbs/llm-chat.webp" alt="LLM Chat thumbnail"></button>
+      <button data-full="assets/screenshots/image-generation.webp" data-caption="Image generation: native async image and video generation on a local stable-diffusion.cpp server"><img loading="lazy" src="assets/screenshots/thumbs/image-generation.webp" alt="Image generation thumbnail"></button>
+      <button data-full="assets/screenshots/alarm-console.webp" data-caption="Alarm console: active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events tab"><img loading="lazy" src="assets/screenshots/thumbs/alarm-console.webp" alt="Alarm console thumbnail"></button>
+      <button data-full="assets/screenshots/admin-console.webp" data-caption="Admin — System Health &amp; Agents: the live data-flow diagram, the live-jobs strip and the service log viewer above the agent roster with capabilities, pool membership, TLS state and version"><img loading="lazy" src="assets/screenshots/thumbs/admin-console.webp" alt="Admin — System Health &amp; Agents thumbnail"></button>
+      <button data-full="assets/screenshots/admin-access.webp" data-caption="Access Control: login policy, trusted networks, users and roles"><img loading="lazy" src="assets/screenshots/thumbs/admin-access.webp" alt="Access Control thumbnail"></button>
+      <button data-full="assets/screenshots/admin-audit.webp" data-caption="Audit Log: a filtered ledger of every admin action with actor, target, source and result"><img loading="lazy" src="assets/screenshots/thumbs/admin-audit.webp" alt="Audit Log thumbnail"></button>
+      <button data-full="assets/screenshots/admin-jobs.webp" data-caption="Jobs: every scheduled, queued, running and finished job — tool runs, Tower timers, overnight batches, Forecast runs — with filters and a detail panel"><img loading="lazy" src="assets/screenshots/thumbs/admin-jobs.webp" alt="Jobs thumbnail"></button>
+      <button data-full="assets/screenshots/admin-backups.webp" data-caption="Backups: Manager and alarm-engine archives, the backup schedule, retained runs, and the mirror state"><img loading="lazy" src="assets/screenshots/thumbs/admin-backups.webp" alt="Backups thumbnail"></button>
+      <button data-full="assets/screenshots/gateway.webp" data-caption="Gateway: the inference-gateway flow from clients to hosts, with throughput, latency, in-flight and energy tiles"><img loading="lazy" src="assets/screenshots/thumbs/gateway.webp" alt="Gateway thumbnail"></button>
+      <button data-full="assets/screenshots/autopilot.webp" data-caption="Model Autopilot: placement entries, proposals, pool order and model pins"><img loading="lazy" src="assets/screenshots/thumbs/autopilot.webp" alt="Model Autopilot thumbnail"></button>
+      <button data-full="assets/screenshots/admin-settings.webp" data-caption="Settings: every configuration key in a category rail with nested groups, searchable, applied hot or flagged as restart-pending"><img loading="lazy" src="assets/screenshots/thumbs/admin-settings.webp" alt="Settings thumbnail"></button>
+      <button data-full="assets/screenshots/settings-drawer.webp" data-caption="Settings drawer: pinned cards, layout engine, density, themes and refresh cadence for the page you are on"><img loading="lazy" src="assets/screenshots/thumbs/settings-drawer.webp" alt="Settings drawer thumbnail"></button>
     </div>
   </div>
 </section>
