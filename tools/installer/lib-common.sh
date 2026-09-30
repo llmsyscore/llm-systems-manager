@@ -1044,8 +1044,9 @@ write_influx_token_file() {
     $SUDO install -m 0600 /dev/null "$path"
     printf '%s\n' "$body" | $SUDO tee "$path" >/dev/null
   fi
-  # Owned by the run user, not root-locked, so the services can read it (#432).
-  if id "$LLMSYS_RUN_USER" >/dev/null 2>&1; then
+  # Persistent copy is owned by the run user (#432); a handoff in a sticky
+  # temp dir stays with the caller so its EXIT trap can unlink it (#1139).
+  if [[ ! -k "$dir" ]] && id "$LLMSYS_RUN_USER" >/dev/null 2>&1; then
     ${SUDO:-} chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$path" 2>/dev/null || true
   fi
 }
