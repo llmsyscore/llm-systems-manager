@@ -82,7 +82,10 @@ async function fetchOverallMetrics() {
       fetch('/api/fleet/vllm/aggregate').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     _ovPaintBand(llama, lms, vllm);
-    if (typeof ovHeroChart !== 'undefined' && ovHeroChart && (llama || lms || vllm)) {
+    // The hero holds live points until its first 24h backfill has landed.
+    const heroWaiting = typeof _ovHistoryInflight !== 'undefined' && _ovHistoryInflight > 0
+      && !(typeof _ovHeroRows !== 'undefined' && _ovHeroRows);
+    if (typeof ovHeroChart !== 'undefined' && ovHeroChart && !heroWaiting && (llama || lms || vllm)) {
       const tp = (llama && llama.throughput) || {}, vtp = (vllm && vllm.throughput) || {};
       const ltp = (lms && lms.throughput) || {};
       pushDual(ovHeroChart, new Date(),

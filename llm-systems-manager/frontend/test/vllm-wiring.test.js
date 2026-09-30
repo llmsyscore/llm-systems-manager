@@ -291,6 +291,7 @@ describe('vllm history backfill (#358)', () => {
       'window.loadVllmHistory = loadVllmHistory;',
     ].join('\n');
     evalGlobal(code);
+    window._withPushBatch = (fn) => fn();
   }
 
   beforeEach(() => {
