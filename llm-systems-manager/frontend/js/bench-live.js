@@ -228,6 +228,9 @@
     else if (missing) { const st = rt.script_status && rt.script_status !== 'ok' ? ` (${esc(rt.script_status)})` : '';
       dot.className = 'bl-dot warn'; d.innerHTML = `<b>Bench runtime missing.</b> Install it with the button below.${st}`; el.className = 'bl-preflight warn'; }
     else { dot.className = 'bl-dot ok'; d.innerHTML = `<b>${esc(serverName())}</b> · ${esc(s.loaded_id || 'no model loaded')} · ${esc(s.slots_idle)}/${esc(s.slots_total)} slots idle`; el.className = 'bl-preflight ok'; }
+    const vsb = $('blVllmStartBtn'); if (vsb) vsb.style.display = s.up ? 'none' : '';
+    const vp = $('blVllmPreflight');
+    if (vp) { vp.className = 'bl-preflight ' + (s.up ? 'ok' : 'warn'); vp.innerHTML = `<span class="bl-dot ${s.up ? 'ok' : 'warn'}"></span><span class="d">${s.up ? `<b>${esc(serverName())}</b> · ${esc(s.loaded_id || 'no model loaded')}` : `<b>${esc(serverName())} is down.</b> Offline runs need the running server.`}</span>`; }
     if (!_model && s.loaded_id) _model = s.loaded_id;
     const names = ((_pre.datasets || {})[$('blBench').value] || {}).categories || [];
     if (!document.querySelectorAll('#blCats .bl-chip').length) renderCats(names, 'all');
@@ -290,7 +293,9 @@
     // Another tool holding the host (an autotune batch item, say) is gated, not attached to.
     const holder = typeof toolsGateBusy === 'function' ? toolsGateBusy(prov(), tagent()) : null;
     const foreign = !!(holder && !holder.unresolved && holder.tool && holder.tool !== 'benchmark');
-    if (_pre && _pre.busy && !running() && !foreign) attach();
+    if (_pre && _pre.busy && !running() && !foreign) {
+      if (_pre.busy_kind === 'offline' && pd().offline === 'vllm-bench') attachVllm(); else attach();
+    }
     const sl = slot(); if (sl) sl.sync();
     const savedJob = sessionStorage.getItem('bl.fleetJob');
     if (savedJob && !running()) { _fleetJob = { job_id: savedJob, hosts: [] }; busy(true); startFleetPoll(); }
@@ -926,11 +931,11 @@
     _runId = d.run_id || null; openStream();
   }
   async function startServer() {
-    const b = $('blStartBtn'); if (b) b.disabled = true;
+    const bs = [$('blStartBtn'), $('blVllmStartBtn')].filter(Boolean); bs.forEach(b => { b.disabled = true; });
     try { await fetch(prov() === 'llama' ? PROV.llama.start : tq(pd().start), { method: 'POST' }); } catch (_) {}
     await new Promise(r => setTimeout(r, 3000));
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) {}
-    if (b) b.disabled = false;
+    bs.forEach(b => { b.disabled = false; });
     renderPreflight();
   }
   // vLLM Offline (#894): vllm bench serve switches, moved from the retired sub-tab overlay.
@@ -1006,6 +1011,14 @@
     if (d && d.ok && d.queued) { vllmBusy(false); if (rb) rb.disabled = true; if (s) s.hold(d.job_id, d); vllmStatus(`queued${d.position > 1 ? ` · ${d.position - 1} ahead` : ''} · starts when ${d.wait_for || 'the run in progress'} finishes`, 'running'); return; }
     if (!d || !d.ok) { vllmBusy(false); vllmStatus(d && d.error ? d.error : 'failed to start', 'err'); return; }
     _runId = d.run_id; openVllmStream();
+  }
+  // Follows a vllm bench serve run already streaming on the host (a reload mid-run).
+  function attachVllm() {
+    setMode('offline');
+    _vllmResult = null; _runId = null;
+    const t = $('blVllmTiles'); if (t) t.innerHTML = ''; const a = $('blVllmActions'); if (a) a.style.display = 'none'; const lg = $('blVllmLog'); if (lg) lg.innerHTML = '';
+    vllmBusy(true); vllmStatus('running · started elsewhere', 'running');
+    openVllmStream();
   }
   function openVllmStream() {
     if (_es) { try { _es.close(); } catch (_) {} }

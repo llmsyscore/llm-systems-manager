@@ -369,3 +369,34 @@ def test_restore_and_restart_use_the_long_restart_timeout(mods, ctx, monkeypatch
     monkeypatch.setattr(tools, "_at_watch_journal", lambda *a, **k: {"outcome": "timeout"})
     tools._at_restart_and_watch("vllm.service", 5, "load")
     assert calls == [("restart", tools.RESTART_TIMEOUT_S)]
+
+
+# ── #1143: estimate carried to the engine; typed rollback compare ──
+
+def test_backend_load_carries_the_estimated_maximum(mods, ctx, monkeypatch):
+    _llama, vllm, tools = mods
+    monkeypatch.setattr(vllm, "_svcconfig_write", lambda head, args, restart=False, **kw: {"ok": True})
+    monkeypatch.setattr(tools, "_at_restart_and_watch", lambda unit, timeout_s, step: {"outcome": "est_max", "est_max_len": 56736})
+    res = _backend(tools).load({}, None)
+    assert res["rejected"] and res["est_max_len"] == 56736
+
+
+def test_norm_compares_typed_flag_values(mods):
+    tools = mods[2]
+    assert tools._norm([{"flag": "--max-model-len", "value": "32k", "bool": False}]) \
+        == tools._norm([{"flag": "--max-model-len=32768", "value": None, "bool": True}])
+    assert tools._norm([{"flag": "--max-model-len", "value": "32k", "bool": False}]) \
+        != tools._norm([{"flag": "--max-model-len", "value": "16384", "bool": False}])
+    assert tools._norm([{"flag": "--host", "value": "a", "bool": False}]) != tools._norm([{"flag": "--host", "value": "b", "bool": False}])
+
+
+def test_backend_load_is_clean_when_only_the_spelling_differs(mods, ctx, monkeypatch):
+    _llama, vllm, tools = mods
+    monkeypatch.setattr(vllm, "_svcconfig_write", lambda head, args, restart=False, **kw: {"ok": True})
+    monkeypatch.setattr(tools, "_at_restart_and_watch", lambda unit, timeout_s, step: {"outcome": "kv", "kv_tokens": 1})
+    monkeypatch.setattr(tools, "_at_wait_ready", lambda timeout_s=60.0: {"id": "org/model-8b"})
+    be = _backend(tools, args=[{"flag": "--max-model-len", "value": "8k", "bool": False}])
+    be.load({"max_model_len": 8192}, None)
+    assert be.dirty is False
+    be.load({"max_model_len": 4096}, None)
+    assert be.dirty is True

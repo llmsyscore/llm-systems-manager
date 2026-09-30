@@ -167,16 +167,28 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
             _ll._bench_active = False
 
 
+_bench_kind: Optional[str] = None   # "live" | "offline" while _bench_active
+
+
 def _busy() -> bool:
     return bool(_ll._bench_active or _ll._autotune_active)
 
 
-def _claim() -> Optional[dict]:
+def _busy_kind() -> Optional[str]:
+    """Which run holds the slot: autotune, live, offline, or None."""
+    if _ll._autotune_active:
+        return "autotune"
+    return _bench_kind if _ll._bench_active else None
+
+
+def _claim(kind: str = "live") -> Optional[dict]:
     """Take the shared bench slot and open a new replay run; the refusal dict when busy."""
+    global _bench_kind
     with _ll._bench_lock:
         if _busy():
             return {"ok": False, "error": "Another benchmark or autotune is in progress"}
         _ll._bench_active = True
+        _bench_kind = kind
         with _ll._bench_cond:
             _ll._bench_replay.start_run(uuid.uuid4().hex[:12])
     _ll._bench_cancel_event.clear()
@@ -205,7 +217,7 @@ def vllm_bench_run(body: dict, authorization: Optional[str] = Header(default=Non
     binpath, err = _bench_resolve_bin()
     if not binpath:
         return {"ok": False, "error": err}
-    refused = _claim()
+    refused = _claim("offline")
     if refused:
         return refused
     threading.Thread(target=_bench_run_one, args=(binpath, model, switches), daemon=True).start()
@@ -311,7 +323,7 @@ def vllm_bench_live_preflight(authorization: Optional[str] = Header(default=None
     cfg = _ctx().config
     return {"ok": True, "provider": "vllm", "server": _bench_server(), "runtime": _ll._bench_live_runtime(),
             "datasets": _bl.read_marker(cfg.AGENT_INSTALL_DIR), "benches": list(_bl.BENCHES),
-            "busy": _busy()}
+            "busy": _busy(), "busy_kind": _busy_kind()}
 
 
 def vllm_bench_live_setup(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -546,9 +558,14 @@ def _head_model(head_tokens: list) -> Optional[str]:
     return head_tokens[2] if len(head_tokens) > 2 else None
 
 
-def _norm(rows: list) -> list:
-    """Order-free (flag, value) pairs of svcconfig arg rows, both flag forms folded."""
-    return sorted((f, None if v is None else str(v)) for f, v in map(_vat._split_flag, rows or []))
+_TUNED_FLAGS = frozenset(_vat.FLAGS.values()) | frozenset(f for fs in _vat._ALIASES.values() for f in fs)
+
+
+def _norm(rows: list) -> tuple:
+    """Tuned flags as typed config values, the rest as order-free (flag, value) pairs."""
+    cfg = {k: _vat.cfg_str(v) for k, v in _vat.config_from_args(rows or []).items()}
+    rest = sorted((f, None if v is None else str(v)) for f, v in map(_vat._split_flag, rows or []) if f not in _TUNED_FLAGS)
+    return (tuple(sorted(cfg.items())), tuple(rest))
 
 
 def _first_model_row() -> dict:
@@ -606,7 +623,8 @@ class _VllmBackend:
         if watch["outcome"] == "cancelled":
             return {"ok": False, "error": "cancelled"}
         if watch["outcome"] == "est_max":
-            return {"ok": False, "rejected": True, "error": f"engine estimates the maximum model length at {watch['est_max_len']:,}"}
+            return {"ok": False, "rejected": True, "est_max_len": watch["est_max_len"],
+                    "error": f"engine estimates the maximum model length at {watch['est_max_len']:,}"}
         if watch["outcome"] != "kv":
             err = watch.get("fatal_line") or f"no KV-capacity answer in the journal ({watch['outcome']})"
             out = {"ok": False, "rejected": True, "error": str(err)[:300]}

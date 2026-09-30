@@ -378,7 +378,10 @@ class _Run:
             self.ctx_total = max(256, (int(dmax) // 256) * 256)
             self.rec["max_model_len"] = self.ctx_total
             self.ev("max_model_len", f"capped at the model's derived maximum {int(dmax):,}")
-            self.emit("line", text=f"[autotune] max_model_len capped at the model's derived maximum {int(dmax):,}")
+            self.emit("line", text=f"[autotune] max_model_len capped at the model's derived maximum {int(dmax):,} · retrying this candidate")
+            self.check_cancel()
+            self.loads += 1
+            res = self.backend.load(self.config({k: v for k, v in extra.items() if k != "max_model_len"}), measure) or {}
         if res.get("load_s"):
             self.load_s = float(res["load_s"])
         return res
@@ -452,6 +455,14 @@ class _Run:
         self.emit("candidate_start", stage="context", value=probe)
         res, st = self.measure({"max_model_len": probe})
         self.result("context", probe, res)
+        est = res.get("est_max_len")
+        if not res.get("ok") and est and max(256, (int(est) // 256) * 256) < probe:
+            probe = max(256, (int(est) // 256) * 256)
+            self.emit("line", text=f"[autotune] engine estimates the maximum model length at {int(est):,} · retrying the probe at {probe:,}")
+            self.check_cancel()
+            self.emit("candidate_start", stage="context", value=probe)
+            res, st = self.measure({"max_model_len": probe})
+            self.result("context", probe, res)
         if not res.get("ok"):
             self.stop_reason = res.get("error") or "the server did not start at the probe length"
             self.end("context", mark, None, self.stop_reason)

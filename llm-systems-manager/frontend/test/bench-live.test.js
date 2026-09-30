@@ -5,7 +5,7 @@ import { srcFile, runHarness, flush, QUEUE_SLOT_STUB } from './helpers/harness.j
 const BODY = `
   <div class="mc-seg" id="benchModeSeg"><button data-mode="live" class="on">Live</button><button data-mode="offline">Offline</button></div>
   <span id="benchModeNote"></span>
-  <div id="benchOffline"><div id="benchOfflineLlama"></div><div id="blVllmOffline" style="display:none"><div id="blVllmSwitches"></div><input id="blVllmAddFlag"><input id="blVllmAddVal"><button id="blVllmRunBtn"></button><button id="blVllmCancelBtn" style="display:none"></button><span id="blVllmStatus"></span><div id="blVllmTiles"></div><div id="blVllmActions" style="display:none"><button id="blVllmClearBtn"></button></div><div id="blVllmLog"></div></div></div>
+  <div id="benchOffline"><div id="benchOfflineLlama"></div><div id="blVllmOffline" style="display:none"><div id="blVllmPreflight"></div><button id="blVllmStartBtn" style="display:none"></button><div id="blVllmSwitches"></div><input id="blVllmAddFlag"><input id="blVllmAddVal"><button id="blVllmRunBtn"></button><button id="blVllmCancelBtn" style="display:none"></button><span id="blVllmStatus"></span><div id="blVllmTiles"></div><div id="blVllmActions" style="display:none"><button id="blVllmClearBtn"></button></div><div id="blVllmLog"></div></div></div>
   <div id="benchLive" style="display:none">
     <div id="blPreflight"></div><button id="blStartBtn"></button>
     <div id="blPresets"><span class="bl-chip on" data-preset="chat">Chat</span><span class="bl-chip" data-preset="coding">Coding</span><span class="bl-chip" data-preset="rag">RAG</span><span class="bl-chip" data-preset="agentic">Agentic</span><span class="bl-chip" data-preset="longctx">Long context</span><span class="bl-chip" data-preset="custom">Custom</span></div>
@@ -231,6 +231,48 @@ describe('BL vLLM target (#894)', () => {
     expect(d.getElementById('blVllmStatus').textContent).toBe('queued run dropped');
     expect(d.getElementById('blVllmRunBtn').disabled).toBe(false);
     expect(vs.queued()).toBe(false);
+  });
+
+  it('offline pane shows the server-down line and a Start server button (#1143)', async () => {
+    const win = boot(`window.__pre = { ok: true, provider: 'vllm', server: { up: false, url: 'http://localhost:8000', provider: 'vllm', models: [], loaded_id: null, slots_idle: 0, slots_total: 0 }, runtime: { python: '/p', script: '/s', script_status: 'ok' }, datasets: {}, benches: [] };
+      window.toolsTarget = () => ({ provider: 'vllm', agent: 'V1' });
+      window.toolsUrl = (p) => p + (p.indexOf('?') >= 0 ? '&' : '?') + 'provider=vllm&agent=V1';`);
+    await win.BL.onOpen();
+    await flush();
+    const d = win.document;
+    expect(d.getElementById('blVllmPreflight').textContent).toContain('vLLM server is down.');
+    expect(d.getElementById('blVllmStartBtn').style.display).toBe('');
+    win.__pre.server.up = true; win.__pre.server.loaded_id = 'org/model-8b';
+    await win.BL.startServer();
+    expect(win.__fetches.some(f => f[0] === '/api/vllm/server/start?provider=vllm&agent=V1')).toBe(true);
+    expect(d.getElementById('blVllmStartBtn').style.display).toBe('none');
+    expect(d.getElementById('blVllmPreflight').textContent).toContain('org/model-8b');
+  }, 10000);
+
+  it('re-attaches to an offline vLLM run that is already streaming (#1143)', async () => {
+    const win = boot(VLLM_UP.replace('busy: false', "busy: true, busy_kind: 'offline'"));
+    await win.BL.onOpen();
+    await flush();
+    const d = win.document;
+    expect(d.getElementById('benchOffline').style.display).toBe('');
+    expect(win.__sse.url).toBe('/api/benchmark/stream?provider=vllm&agent=V1');
+    expect(d.getElementById('blVllmStatus').textContent).toContain('running');
+    expect(d.getElementById('blVllmCancelBtn').style.display).toBe('');
+    expect(d.getElementById('blNotice').style.display).toBe('none');
+    win.__sse.onEvent({ type: 'model_start', model: 'org/model-8b', cmd: 'vllm bench serve' });
+    win.__sse.onEvent({ type: 'line', text: 'replayed-line' });
+    expect(d.getElementById('blVllmLog').textContent).toContain('replayed-line');
+    win.__sse.onEvent({ type: 'done', ok: true, cancelled: false });
+    expect(d.getElementById('blVllmStatus').textContent).toBe('complete');
+    expect(d.getElementById('blVllmRunBtn').disabled).toBe(false);
+  });
+
+  it('a busy Live run still attaches the Live pane', async () => {
+    const win = boot(VLLM_UP.replace('busy: false', "busy: true, busy_kind: 'live'"));
+    await win.BL.onOpen();
+    await flush();
+    expect(win.document.getElementById('blNotice').style.display).toBe('');
+    expect(win.document.getElementById('benchOffline').style.display).toBe('none');
   });
 
   it('a Live run is refused while an offline vLLM run streams', async () => {

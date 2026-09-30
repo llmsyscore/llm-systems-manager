@@ -354,3 +354,51 @@ def test_gpu_memory_utilization_input_is_written_never_swept(vat):
     _req, done, _events, be = _run(vat, {"model_ids": [MODEL], "gpu_memory_utilization": 0.8, "dims": {"seqs": {"on": False}, "kvdtype": {"on": False}, "spec": {"on": False}, "prefix": {"on": False}}})
     assert all(ld[0].get("gpu_memory_utilization") == 0.8 for ld in be.loads)
     assert "gpu_memory_utilization" not in {c["key"] for c in done["changes"]}
+
+
+# ── #1143: context probe retries at the engine's estimate; a derived-max rejection retries the candidate ──
+
+def test_context_probe_retries_once_at_the_estimated_maximum(vat):
+    class Estimating(FakeBackend):
+        def load(self, config, measure):
+            if config.get("max_model_len") == 230400:
+                self.loads.append((dict(config), dict(measure) if measure else None))
+                return {"ok": False, "rejected": True, "est_max_len": 56736,
+                        "error": "engine estimates the maximum model length at 56,736"}
+            return super().load(config, measure)
+    dims = dict(_CTX_ONLY, context={"probe_len": 230400, "concurrency": 1, "kv_fraction": 0.9})
+    _req, done, events, be = _run(vat, {"model_ids": [MODEL], "objective": "fit", "dims": dims}, backend=Estimating())
+    assert [ld[0]["max_model_len"] for ld in be.loads[:2]] == [230400, 56576]
+    assert done["ok"] is True and done["before"]["ctx"] == 56576
+    assert any(e["type"] == "line" and "56,736" in e["text"] and "retry" in e["text"] for e in events)
+    assert [e["value"] for e in events if e["type"] == "candidate_start" and e["stage"] == "context"] == [230400, 56576]
+
+
+def test_context_probe_gives_up_after_one_estimate_retry(vat):
+    class Always(FakeBackend):
+        def load(self, config, measure):
+            self.loads.append((dict(config), dict(measure) if measure else None))
+            return {"ok": False, "rejected": True, "est_max_len": 2048, "error": "engine estimates the maximum model length at 2,048"}
+    _req, done, _events, be = _run(vat, {"model_ids": [MODEL]}, backend=Always())
+    assert done["ok"] is False and len(be.loads) == 2 and "2,048" in done["stop_reason"]
+    assert [ld[0]["max_model_len"] for ld in be.loads] == [4096, 2048]
+
+
+def test_derived_max_rejection_retries_the_same_candidate_at_the_cap(vat):
+    class Derived(FakeBackend):
+        rejected = False
+
+        def load(self, config, measure):
+            if config.get("kv_cache_dtype") == "auto" and not self.rejected:
+                self.rejected = True
+                self.loads.append((dict(config), dict(measure) if measure else None))
+                return {"ok": False, "rejected": True, "error": "ValueError: greater than the derived max_model_len (40960)",
+                        "derived_max": 40960}
+            return super().load(config, measure)
+    dims = dict(_CTX_ONLY, kvdtype={"on": True})
+    _req, _done, events, be = _run(vat, {"model_ids": [MODEL], "objective": "fit", "dims": dims}, backend=Derived())
+    i = next(i for i, ld in enumerate(be.loads) if ld[0].get("kv_cache_dtype") == "auto")
+    assert be.loads[i + 1][0]["kv_cache_dtype"] == "auto" and be.loads[i + 1][0]["max_model_len"] == 40960
+    auto = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "kvdtype" and e["value"] == "auto"]
+    assert len(auto) == 1 and auto[0]["ok"] is True
+    assert not any(e["type"] == "candidate_rejected" and e["value"] == "auto" for e in events)
