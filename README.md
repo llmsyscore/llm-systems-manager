@@ -96,7 +96,7 @@ Full details for every method, including split installs, offline installs, and u
 
 **Video tour** — sign-in, Overall, every dashboard including Forecast, Tower, LLM Control, the Tools launcher with a Live benchmark, chat, image generation, the alarm console, every Admin page including Jobs, and the settings drawer:
 
-<video src="https://github.com/user-attachments/assets/499a19e5-7224-4b9f-a67c-47df49a6a9a2" controls muted width="900"></video>
+<video src="https://github.com/user-attachments/assets/0fafeb36-b31c-4ce5-9c9c-a85661de7a5d" controls muted width="900"></video>
 
 <img width="1920" height="1080" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
