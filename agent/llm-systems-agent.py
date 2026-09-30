@@ -74,7 +74,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.29-4"
+VERSION = "v2026.09.30-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -330,12 +330,11 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
         else:
             print(f"  ⓘ perf controller prereqs missing (units '{cfg.PERF_TARGET_AWAKE}'={perf_state}, '{cfg.PERF_TARGET_SLEEP}'={sleep_state})")
 
-    if found["llama"] and found["lms"]:
+    providers = [p for p in ("llama", "lms", "vllm") if found.get(p)]
+    if len(providers) > 1:
         cfg.AGENT_ROLE = "mixed"
-    elif found["llama"]:
-        cfg.AGENT_ROLE = "llama_host"
-    elif found["lms"]:
-        cfg.AGENT_ROLE = "lms_host"
+    elif providers:
+        cfg.AGENT_ROLE = f"{providers[0]}_host"
     else:
         cfg.AGENT_ROLE = "system_only"
 
@@ -369,7 +368,7 @@ class AgentConfig:
 
     AGENT_OS: str = "linux"
     AGENT_HOSTNAME: str = ""
-    AGENT_ROLE: str = "auto"  # auto | llama_host | lms_host | mixed
+    AGENT_ROLE: str = "auto"  # auto | llama_host | lms_host | vllm_host | mixed | system_only
     AGENT_BIND_HOST: str = "0.0.0.0"
     AGENT_BIND_PORT: int = 8082
     # When all three files exist+readable, agent serves TLS on AGENT_BIND_PORT (HTTP dropped).
@@ -3433,7 +3432,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
         _claim_self_update()
         return _frozen_self_update_response(asset)
 
-    if not CONFIG.LLAMA_ENABLED and not CONFIG.LMS_ENABLED and CONFIG.AGENT_ROLE == "system_only":
+    if not CONFIG.LLAMA_ENABLED and not CONFIG.LMS_ENABLED and not CONFIG.VLLM_ENABLED and CONFIG.AGENT_ROLE == "system_only":
         logger.info("self-update requested on system-only agent")
 
     repo_dir = CONFIG.AGENT_REPO_DIR
