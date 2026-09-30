@@ -22,6 +22,7 @@ function loadSwitchTab() {
 function loadMakeHistoryBackfill() {
   const code = [fnSrc(charts, '_makeHistoryBackfill'), 'window._makeHistoryBackfill = _makeHistoryBackfill;'].join('\n');
   evalGlobal(code);
+  window._withPushBatch = (fn) => fn();
 }
 
 function switchTabDom() {
@@ -78,7 +79,7 @@ describe('Manager sub-tab entry (#506)', () => {
 });
 
 describe('Overall tab entry (#506)', () => {
-  test('switchTab overall backfills before the live fetch, and resumes it even if the backfill fails', async () => {
+  test('switchTab overall paints the live band at once and backfills alongside it, even if the backfill fails (#1140)', async () => {
     switchTabDom();
     loadSwitchTab();
     window._activeTab = 'dashboard';
@@ -93,9 +94,10 @@ describe('Overall tab entry (#506)', () => {
     window.fetchOverallMetrics = vi.fn(() => order.push('live'));
 
     switchTab('overall');
-    await tick(); await tick();
 
-    expect(order).toEqual(['backfill', 'live']);
+    expect(order).toEqual(['live', 'backfill']);   // both fire synchronously on entry
+    await tick(); await tick();
+    expect(window.fetchOverallMetrics).toHaveBeenCalledTimes(1);
   });
 
   test('re-backfills on every entry — no one-shot latch gates it out', async () => {
@@ -261,6 +263,7 @@ describe('history-backfill callers route through _historyRows, not raw fetch (#5
     const code = [fnSrc(charts, 'loadOverallHistory'), 'window.loadOverallHistory = loadOverallHistory;'].join('\n');
     evalGlobal(code);
     window._ovHistoryGen = 0;
+    window._ovHistoryInflight = 0;
     window.ovHeroChart = {};   // truthy: past the early-return guard
     window._historyRows = vi.fn(async () => []);
     window.fetch = vi.fn();

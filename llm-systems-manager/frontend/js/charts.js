@@ -589,7 +589,7 @@ function pushMulti(chart, ts, values) {
       chart.data.datasets.forEach(ds => ds.data.shift());
     }
   }
-  chart.update('none');
+  _pushUpdate(chart);
 }
 
 function mkDualChart(id, l1, c1, l2, c2) {
@@ -611,6 +611,11 @@ function mkDualChart(id, l1, c1, l2, c2) {
 function _hex6(c) {
   const m = String(c || '').trim().match(/^#([0-9a-fA-F]{3})$/);
   return m ? '#' + [...m[1]].map(ch => ch + ch).join('') : String(c || '').trim();
+}
+
+// Reads a hero overlay toggle's current checked state.
+function _ovOverlayOn(id) {
+  return !!document.getElementById(id)?.checked;
 }
 
 // Overall-tab hero: cross-provider 24h throughput. Gen keeps the fleet
@@ -638,10 +643,10 @@ function _mkHeroChart() {
         pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
       { label: 'Power W', data: [], borderColor: cssVar('--accent-2'),
         borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, pointHoverRadius: 4,
-        tension: 0.25, fill: false, hidden: true, yAxisID: 'y1', spanGaps: true },
+        tension: 0.25, fill: false, hidden: !_ovOverlayOn('ovShowPower'), yAxisID: 'y1', spanGaps: true },
       { label: 'Energy Wh/h', data: [], borderColor: cssVar('--note'),
         borderWidth: 1.5, borderDash: [2, 3], pointRadius: 0, pointHoverRadius: 4,
-        stepped: true, fill: false, hidden: true, yAxisID: 'y1', spanGaps: true },
+        stepped: true, fill: false, hidden: !_ovOverlayOn('ovShowEnergy'), yAxisID: 'y1', spanGaps: true },
     ]},
     options: { animation: false, responsive: true, maintainAspectRatio: false,
       interaction: _sparkInteraction,
@@ -714,6 +719,20 @@ const diskUsageChart = new Chart(diskUsageCtx, {
 });
 
 
+// Backfill batching: inside _withPushBatch the push helpers collect the
+// charts they touched and redraw each once when the batch closes.
+let _pushBatch = null;
+function _withPushBatch(fn) {
+  const outer = _pushBatch;
+  _pushBatch = outer || new Set();
+  try { fn(); } finally {
+    if (!outer) { const b = _pushBatch; _pushBatch = null; b.forEach(ch => ch.update('none')); }
+  }
+}
+function _pushUpdate(chart) {
+  if (_pushBatch) _pushBatch.add(chart); else chart.update('none');
+}
+
 function pushPoint(chart, ts, val) {
   const d = chart.data.datasets[0].data, l = chart.data.labels;
   const t = _bucketDate(ts);
@@ -723,7 +742,7 @@ function pushPoint(chart, ts, val) {
     d.push(val); l.push(t);
     if (d.length > MAX_POINTS) { d.shift(); l.shift(); }
   }
-  chart.update('none');
+  _pushUpdate(chart);
 }
 
 // bucketMs overrides the poll-interval grid for series with their own fixed
@@ -743,7 +762,7 @@ function pushDual(chart, ts, v1, v2, bucketMs, agg) {
     d0.push(v1 || 0); d1.push(v2 || 0); l.push(t);
     if (l.length > MAX_POINTS) { l.shift(); d0.shift(); d1.shift(); }
   }
-  chart.update('none');
+  _pushUpdate(chart);
 }
 
 // Bucket width for gateway-pushed token rates — matches gateway_usage
@@ -1329,7 +1348,7 @@ async function loadHistory() {
     const _peakSeedTs = LMPeaks.rowClock(rows, Date.now());
     _genTokensCarry = 0;
     let _sawIscsiHistory = false;
-    for (const r of rows.slice(-MAX_POINTS)) {
+    _withPushBatch(() => { for (const r of rows.slice(-MAX_POINTS)) {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
       pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
@@ -1359,7 +1378,7 @@ async function loadHistory() {
                  r.disk_root_pct  != null ? r.disk_root_pct  : 0,
                  r.disk_iscsi_pct != null ? r.disk_iscsi_pct : 0);
       }
-    }
+    } });
     _setIscsiSeriesVisible(_sawIscsiHistory);
   } catch(e) { console.error('History error:', e); }
 }
@@ -1396,7 +1415,7 @@ async function loadManagerPerfHistory() {
     const rows = zipByTs([api, hist]);
     if (rows.length) {
       _clearChart(mgrPerfChart);  // discard any racing live point (#137)
-      for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals);
+      _withPushBatch(() => { for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals); });
     }
   }
 
@@ -1412,7 +1431,7 @@ async function loadManagerPerfHistory() {
     const rows = zipByTs(series);
     if (rows.length) {
       _clearChart(aePerfChart);  // discard any racing live point (#137)
-      for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals);
+      _withPushBatch(() => { for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals); });
     }
   }
 }
@@ -1436,7 +1455,7 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
     if (rows && rows.length) {
       resetCharts();
       const clock = LMPeaks.rowClock(rows, Date.now());
-      for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock);
+      _withPushBatch(() => { for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock); });
     }
   };
 }
@@ -1504,13 +1523,18 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
 let _ovHeroRows = null;
 let _ovEnergyRows = null;
 let _ovHistoryGen = 0;
+let _ovHistoryInflight = 0;
 
 // Backfill the Overall-tab hero (cross-provider Gen / Prompt totals) from
 // fleet=all history. Called only from Overall-tab entry and refocus (#506).
 async function loadOverallHistory() {
   if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
   const gen = ++_ovHistoryGen;
-  const rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
+  _ovHistoryInflight++;
+  let rows;
+  try {
+    rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
+  } finally { _ovHistoryInflight--; }
   if (gen !== _ovHistoryGen) return;  // only the newest in-flight call paints
   if (!rows || !rows.length) return;
   _ovHeroRows = rows;

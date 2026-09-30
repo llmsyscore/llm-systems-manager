@@ -86,8 +86,8 @@ describe('Forecast assets (#1031)', () => {
 
   it('bumps the cache-buster of every edited script', () => {
     expect(indexSrc).toContain('/static/js/boot.js?v=2026.09.23-5');
-    expect(indexSrc).toContain('/static/js/overall.js?v=2026.09.19-1');
-    expect(indexSrc).toContain('/static/js/foundation.js?v=2026.09.28-4');
+    expect(indexSrc).toContain('/static/js/overall.js?v=2026.09.29-6');
+    expect(indexSrc).toContain('/static/js/foundation.js?v=2026.09.29-6');
   });
 
   it('wraps long unbroken tokens instead of overflowing the page', () => {
