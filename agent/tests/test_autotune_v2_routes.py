@@ -104,11 +104,11 @@ def _wire(llama, tmp_path, monkeypatch, **ctx_kw):
 
 
 def _write_fake_ppl(path: Path, rc: int = 0, crash: bool = False) -> None:
-    """A stand-in llama-perplexity: exits `rc` normally, or raises SIGSEGV when crash=True."""
+    """A stand-in llama-perplexity: exits `rc` normally, or dies by SIGKILL when crash=True."""
     if crash:
-        path.write_text("#!/usr/bin/env python3\nimport os, signal\nos.kill(os.getpid(), signal.SIGSEGV)\n")
+        path.write_text("#!/bin/sh\n# crash stand-in: die by signal\nkill -KILL $$\n")
     else:
-        path.write_text(f"#!/usr/bin/env python3\nimport sys\nprint('ok')\nsys.exit({rc})\n")
+        path.write_text(f"#!/bin/sh\necho ok\nexit {rc}\n")
     path.chmod(0o755)
 
 
@@ -205,7 +205,7 @@ def test_probe_perplexity_cache_busts_on_a_same_mtime_replacement(llama, tmp_pat
     st = ppl.stat()
     assert llama._autotune_probe_perplexity(ppl) == {"runnable": True, "rc": 0, "reason": None}
     _write_fake_ppl(ppl, crash=True)
-    os.utime(ppl, ns=(st.st_mtime_ns, st.st_mtime_ns))  # same mtime, different (larger) content/size
+    os.utime(ppl, ns=(st.st_mtime_ns, st.st_mtime_ns))  # same mtime, different size
     assert ppl.stat().st_size != st.st_size
     out = llama._autotune_probe_perplexity(ppl)
     assert out["runnable"] is False and out["reason"] == "signal"
@@ -215,7 +215,7 @@ def test_probe_perplexity_not_runnable_on_a_signal_crash(llama, tmp_path):
     ppl = tmp_path / "llama-perplexity"
     _write_fake_ppl(ppl, crash=True)
     out = llama._autotune_probe_perplexity(ppl)
-    assert out == {"runnable": False, "rc": -11, "reason": "signal"}
+    assert out == {"runnable": False, "rc": -9, "reason": "signal"}
 
 
 def test_probe_perplexity_not_runnable_on_exec_failure(llama, tmp_path, monkeypatch):
@@ -255,8 +255,8 @@ def test_preflight_detail_carries_the_crash_hint(llama, tmp_path, monkeypatch):
     assert out["perplexity"] is False
     detail = out["perplexity_detail"]
     assert detail["present"] is True and detail["kl_text"] is True
-    assert detail["runnable"] is False and detail["rc"] == -11
-    assert detail["hint"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+    assert detail["runnable"] is False and detail["rc"] == -9
+    assert detail["hint"] == ("llama-perplexity crashed on startup (signal 9) — it looks stale relative to "
                               "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
 
 
@@ -274,7 +274,7 @@ def test_run_refuses_quality_mode_when_perplexity_is_not_runnable(llama, tmp_pat
     out = llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
                                     "overrides": {"cache-type-k": "q4_0"}})
     assert out["ok"] is False
-    assert out["error"] == ("llama-perplexity crashed on startup (signal 11) — it looks stale relative to "
+    assert out["error"] == ("llama-perplexity crashed on startup (signal 9) — it looks stale relative to "
                             "the installed llama.cpp libraries; reinstall the llama.cpp tools from the same build.")
     assert not started, "a quality run must not be started when the guard binary can't run"
 
