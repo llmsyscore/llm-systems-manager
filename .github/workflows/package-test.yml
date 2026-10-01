@@ -21,6 +21,9 @@ on:
       - "systemd/**"
       - "llm-systems-alarm-engine/systemd/**"
       - "**/requirements*.txt"
+      - "llm-systems-manager/backend/admin_password.py"
+      - "llm-systems-manager/backend/auth.py"
+      - "llm-systems-manager/backend/manager_users.py"
       - ".github/workflows/package-test.yml"
   # Nightly: fpm, the rocky/debian images, and the released v1.0.6 asset drift.
   schedule:
@@ -89,6 +92,9 @@ jobs:
     needs: build
     timeout-minutes: 30
     steps:
+      # The CI oracles are not shipped in the package; take them from the tree.
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           name: packages
@@ -144,6 +150,19 @@ jobs:
           probe https://127.0.0.1:8081/health
           curl -fsS  http://127.0.0.1:5000/health | jq .
           curl -fsSk https://127.0.0.1:8081/health | jq .
+
+      # The package prints the command that creates a temporary admin password,
+      # never a password; that password signs in once and forces a change (#1160).
+      - name: First sign-in with a temporary password from the host tool
+        run: |
+          grep -F 'admin_password.py reset' /tmp/deb-install-fresh.log
+          if grep -F 'Temporary password:' /tmp/deb-install-fresh.log; then
+            echo 'ERROR: the package printed a password into the apt log'; exit 1
+          fi
+          sudo /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3 \
+            /opt/llm-systems-manager/llm-systems-manager/backend/admin_password.py reset --yes | tee /tmp/admin-reset.log
+          sudo stat -c '%U %a' /opt/llm-systems-manager/data/manager_users.json | grep -qx 'llmsys 600'
+          sudo bash tools/installer/ci-first-signin.sh /tmp/admin-reset.log
 
       # Upgrade must keep the live config (marker key survives) and leave
       # both services running.
@@ -416,7 +435,10 @@ jobs:
       # EL9's default python3 is 3.9 — the postinst picker must find 3.11.
       - name: Install .rpm
         run: |
-          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm
+          set -o pipefail
+          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm 2>&1 | tee /tmp/rpm-install.log
+          # No admin exists yet: the scriptlet names the command that creates one (#1160).
+          grep -F 'admin_password.py reset' /tmp/rpm-install.log
 
       - name: Assert install state
         run: |
@@ -447,6 +469,12 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:5000/health
+          # A temporary password from the host tool signs in and is held at the change step (#1160).
+          out="$(runuser -u llmsys -- venv/bin/python3 backend/admin_password.py reset --yes --porcelain)"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -c /tmp/jar --data-urlencode "username=${out%% *}" --data-urlencode "password=${out#* }" http://127.0.0.1:5000/login)"
+          [ "$code" = "302" ] || { echo "sign-in with the temporary password returned $code"; exit 1; }
+          code="$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/jar http://127.0.0.1:5000/api/me)"
+          [ "$code" = "403" ] || { echo "temporary password was not held at the change step ($code)"; exit 1; }
           kill "$MGR_PID"
 
       - name: Erase → generated artifacts removed

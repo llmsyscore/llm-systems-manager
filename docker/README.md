@@ -21,8 +21,15 @@ curl -o .env "$base/.env.example"
 docker compose up -d          # pulls the published multi-arch images
 ```
 
-Then open `http://<docker-host>:5000/` and log in (default `llmadmin` /
-`llmadmin` — change the password from Admin → Authentication).
+Then create the admin sign-in. This prints a temporary password for the
+`llmadmin` account:
+
+```bash
+docker compose exec manager python3 backend/admin_password.py reset
+```
+
+Open `http://<docker-host>:5000/`, sign in with it and set your own password.
+To reset another account later, add `--user <name>` to the same command.
 
 Images are published to ghcr.io on every release tag (amd64 + arm64):
 

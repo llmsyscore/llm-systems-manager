@@ -257,8 +257,8 @@ automatic lockout after repeated failed login attempts to resist brute-force att
 A session created over the HTTPS listener is stored in a separate `__Secure-session` cookie with
 its own signing salt; plain-HTTP sessions keep the `session` cookie. The two are independent — a
 cookie minted on one scheme is not accepted on the other, and upgrading from an earlier release that served
-HTTPS invalidates any existing HTTPS sessions. Separately, an account still holding the shipped
-default password is held on a mandatory change-password form — derived server-side on every
+HTTPS invalidates any existing HTTPS sessions. Separately, an account still holding a
+temporary password is held on a mandatory change-password form — derived server-side on every
 request — until it sets a new one; every other API returns 403 in the meantime.
 
 ---

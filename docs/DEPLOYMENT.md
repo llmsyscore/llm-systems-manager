@@ -112,12 +112,23 @@ Open a browser and go to:
 http://<your-server-address>:5000
 ```
 
-Log in with the default credentials:
+Sign in with the username and password you chose during the install. If you pressed ENTER at the password prompt, the installer created a temporary password and printed it under **Next steps** when it finished:
 
-- **Username:** `llmadmin`
-- **Password:** `llmadmin`
+```
+Sign in as:           llmadmin
+Temporary password:   <shown once>
+```
 
-The first sign-in with the shipped password lands on a mandatory change-password form — the dashboard is unreachable until you set a new one (8 characters minimum). Afterwards, change it any time from the settings cog → **Change my password**.
+The first sign-in with a temporary password opens a change-password form; set your own password there (8 characters minimum) to reach the dashboard. Afterwards, change it any time from the settings cog → **Change my password**.
+
+The temporary password is shown only once. If you lose it, or the login page says the admin password is not set, create a new one on the manager host:
+
+```bash
+sudo /opt/llm-systems-manager/llm-systems-manager/venv/bin/python \
+  /opt/llm-systems-manager/llm-systems-manager/backend/admin_password.py reset
+```
+
+It asks before changing anything, then prints a new temporary password. Add `--user <name>` to reset a different account. After several failed sign-in attempts the account is locked for a while; wait for the lockout to pass or restart the manager before using the new password.
 
 ---
 
@@ -131,7 +142,7 @@ Each GitHub Release also ships `.deb` and `.rpm` packages: **`llm-systems-manage
 sudo apt install ./llm-systems-manager_<version>_all.deb
 ```
 
-The install prompts (via debconf) for the dashboard admin login and SMTP settings; press ENTER to accept defaults. Non-interactive installs (`DEBIAN_FRONTEND=noninteractive`) take the defaults silently.
+The install prompts (via debconf) for the dashboard admin login and SMTP settings; press ENTER to accept defaults. Non-interactive installs (`DEBIAN_FRONTEND=noninteractive`) take the defaults silently. When no admin password is given, the package prints the command that creates a temporary one (the `admin_password.py reset` command in [Step 5](#step-5-open-the-dashboard)).
 
 **RHEL / Rocky / Alma / Fedora:**
 
@@ -139,7 +150,7 @@ The install prompts (via debconf) for the dashboard admin login and SMTP setting
 sudo dnf install ./llm-systems-manager-<version>-1.noarch.rpm
 ```
 
-RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.11 automatically.
+RPM installs are non-interactive: config is generated with detected defaults at `/opt/llm-systems-manager/config/llm-systems.toml` — edit it and `sudo systemctl restart llm-systems-manager` afterwards. The package prints the command that creates a temporary admin password (the `admin_password.py reset` command in [Step 5](#step-5-open-the-dashboard)). EL9's default `python3` is 3.9; install `python3.11` (`sudo dnf install python3.11 python3.11-pip`) first — the package picks the newest Python ≥ 3.11 automatically.
 
 Both manager packages create the `llmsys` runtime user, install and start the two systemd units, and build the Python venvs at configure time (**network access to PyPI is required during install**). On upgrades the live config is preserved (new keys are merged in). `apt purge llm-systems-manager` removes everything — config, data, logs, and the runtime user — when the package created the tree; state it didn't create is kept (see [Mixing install methods](#mixing-install-methods)). `dnf remove` always keeps config/data behind with a notice.
 
@@ -191,6 +202,7 @@ brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cl
 - **Config** is shared at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml`, seeded on first install with generated alarm-engine ingest/management tokens (equivalent to a co-located script install). It is kept across upgrades.
 - **State** (internal CA, agent registry, TLS certs, SQLite DBs) lives under `$(brew --prefix)/var/llm-systems-manager/` and also survives upgrades — the kegs hold only code + venvs.
 - **InfluxDB**: run `llm-systems-influx-setup` (installed by the manager formula) — it starts the `influxdb@2` service, onboards it on first boot, creates the buckets + scoped tokens, and writes them into `[influxdb.tokens]`. It needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships in the separate `influxdb-cli` formula). Manual alternative: `brew services start influxdb@2`, `influx setup`, then create the buckets/tokens per [Configuration](#configuration) and fill `[influxdb]` + `[influxdb.tokens]` yourself. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.
+- **First sign-in**: open the dashboard from the same machine; the login page shows the command that creates a temporary admin password.
 - **Start order**: `brew services start llm-systems-manager` first (first boot creates the internal CA and issues `ae-tls.{crt,key}` for the alarm engine), then `brew services start llm-systems-alarm-engine`.
 - Don't mix with a script/package install on the same host — both would fight over ports 5000/8081.
 
@@ -597,6 +609,8 @@ The update process:
 Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.
 
 You do not need to stop services first — the updater handles restarts.
+
+Releases up to v3.0.0 created the first admin account with a fixed password. If that account still has it, the updater tells you, asks to continue, and replaces it with a temporary password that it shows once. Sign in with it and set your own. If you answer no, or update without the installer (a `git pull`, a package upgrade, a new Docker image), that account cannot sign in until you run the `admin_password.py reset` command from [Step 5](#step-5-open-the-dashboard).
 
 ### Updating a Remote Agent
 

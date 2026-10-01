@@ -30,25 +30,8 @@ fail() { echo "  ✗ FAIL: $*"; exit 1; }
 # accepts the AE's internal-CA cert; a connection failure prints 000 and does
 # not abort, so callers assert on the code.
 code() { curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true; }
-ADMIN_USER="${ADMIN_USER:-llmadmin}"
-ADMIN_PW="${ADMIN_PW:-llmadmin-ci-rotated}"
-SHIPPED_PW="llmadmin"
-# ci_admin_login JAR — admin session; the first login on a fresh install
-# rotates the shipped default password to ADMIN_PW (mandatory-change wall).
-ci_admin_login() {
-  local jar="$1" c
-  rm -f "$jar"
-  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
-  case "$c" in 302|303) return 0 ;; esac
-  rm -f "$jar"
-  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$SHIPPED_PW" "$MGR_URL/login")"
-  case "$c" in 302|303) : ;; *) echo "$c"; return 1 ;; esac
-  code -b "$jar" -X POST -H 'Content-Type: application/json' \
-    -d "{\"current_password\":\"$SHIPPED_PW\",\"new_password\":\"$ADMIN_PW\"}" "$MGR_URL/api/account/password" >/dev/null
-  rm -f "$jar"
-  c="$(code -c "$jar" --data-urlencode "username=$ADMIN_USER" --data-urlencode "password=$ADMIN_PW" "$MGR_URL/login")"
-  case "$c" in 302|303) return 0 ;; *) echo "$c"; return 1 ;; esac
-}
+# shellcheck source=tools/installer/ci-admin-login.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci-admin-login.sh"
 
 # Read a dotted-section string key from a TOML file via stdlib tomllib.
 toml_get() {
@@ -161,12 +144,12 @@ case "$anon_body" in
   *auth_required*) : ;;
   *) fail "anonymous probe: code=${anon_code:-000} body=${anon_body:-<empty>} (want the manager auth-gate 401; 000 = connect/TLS broken)" ;;
 esac
-# Log in with the seeded admin (same helper as ci-agent-tls-smoke.sh), then
+# Log in as the admin (same helper as ci-agent-tls-smoke.sh), then
 # assert the real chain: session auth → proxy → management bearer → AE HTTPS.
 COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
-if ! login_code="$(ci_admin_login "$COOKIE_JAR")"; then
-  fail "manager login returned $login_code (want 302/303) — seeded admin missing, creds changed, or login rate-limited?"
+if ! login_why="$(ci_admin_login "$COOKIE_JAR")"; then
+  fail "manager login failed: $login_why"
 fi
 c="$(code -b "$COOKIE_JAR" "$MGR_URL/api/alarm/rules")"
 if [ "$c" != "200" ]; then fail "authenticated manager → AE proxy = $c (want 200)"; fi

@@ -240,6 +240,26 @@ llmsys_stop_disable() {
   systemctl disable --now $LLMSYS_UNITS >/dev/null 2>&1 || true
 }
 
+# Prints how to create the admin's temporary password when no admin can sign in yet.
+llmsys_admin_signin() {
+  local py="$LLMSYS_INSTALL_DIR/llm-systems-manager/venv/bin/python3"
+  local tool="$LLMSYS_INSTALL_DIR/llm-systems-manager/backend/admin_password.py"
+  if [ ! -x "$py" ] || [ ! -f "$tool" ]; then return 0; fi
+  case "$(runuser -u "$LLMSYS_RUN_USER" -- "$py" "$tool" status 2>/dev/null)" in
+    empty)
+      echo "llm-systems-manager: no admin password is set yet. Create a temporary one with:"
+      echo "llm-systems-manager:   sudo $py $tool reset"
+      echo ""
+      ;;
+    reset-required)
+      echo "llm-systems-manager: an admin account has no password it can sign in with. The password older releases shipped is no longer accepted."
+      echo "llm-systems-manager: create a temporary one with:"
+      echo "llm-systems-manager:   sudo $py $tool reset"
+      echo ""
+      ;;
+  esac
+}
+
 # Full configure pass. $1 empty = fresh install, non-empty = upgrade.
 # Marker backfill: on fresh, a pre-existing config means adoption; on
 # upgrade (pre-#416 packages have no marker) only script units do.
@@ -269,9 +289,11 @@ llmsys_configure() {
     echo ""
     echo "llm-systems-manager: dashboard on port 5000; config: $LLMSYS_CFG (edit + 'systemctl restart llm-systems-manager')"
     echo ""
+    llmsys_admin_signin
     if [ "${LLMSYS_AE_GATED:-0}" = "1" ]; then llmsys_ae_gated_notice; fi
   else
     llmsys_restart_upgraded
+    llmsys_admin_signin
   fi
 }
 

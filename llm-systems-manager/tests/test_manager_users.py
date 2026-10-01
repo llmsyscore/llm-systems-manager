@@ -574,16 +574,16 @@ class TestUserRoutes:
         assert r.get_json()["field"] == "current_password"
 
     def test_admin_auth_is_default_tracks_login_store(self, admin_client):
-        # The Authentication card's "default password" warning must reflect the
+        # The Authentication card's temporary-password warning must reflect the
         # LOGIN store (manager_users.json), and clear only on a REAL password
         # change — not the legacy manager_auth.json (#125 divergence fix).
         import auth
-        manager_users.STORE.set_password("llmadmin", auth.scrypt_hash("llmadmin"))
-        # On the shipped default the session is walled (#866) until the password changes.
+        manager_users.STORE.set_temporary("llmadmin", auth.scrypt_hash("temp-pw-1234"))
+        # On a temporary password the session is walled (#866) until the password changes.
         r0 = admin_client.get("/api/admin/auth")
         assert r0.status_code == 403 and r0.get_json()["password_change_required"] is True
         r = admin_client.post("/api/account/password",
-                              json={"current_password": "llmadmin", "new_password": "a-real-password"})
+                              json={"current_password": "temp-pw-1234", "new_password": "a-real-password"})
         assert r.status_code == 200
         d1 = admin_client.get("/api/admin/auth").get_json()
         assert d1["is_default"] is False

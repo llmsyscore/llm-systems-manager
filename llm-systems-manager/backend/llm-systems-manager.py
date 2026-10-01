@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.01-3"
+__version__ = "v2026.10.01-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -7005,11 +7005,15 @@ manager_users.init(
     window_s=settings.manager.auth.lockout_window_s,
     duration_s=settings.manager.auth.lockout_duration_s,
 )
-# Seed the first admin from the legacy single credential (upgrade path).
+# Seed the first admin from a provisioned credential, then retire the old shipped password.
 # Skipped under pytest so the eager test import never writes the live store.
 if "pytest" not in sys.modules:
     _seed_user, _seed_hash, _ = auth.auth_credential()
-    manager_users.STORE.seed_admin(_seed_user, _seed_hash)
+    _retired, _no_admin = manager_users.bootstrap(_seed_user, _seed_hash, auth.uses_retired_password)
+    if _retired:
+        log.warning("sign-in blocked for %s: the old shipped password is no longer accepted", ", ".join(_retired))
+    if _no_admin:
+        log.warning("the admin password is not set; for a temporary one run: %s", auth.reset_command())
 manager_users.register_routes(app, ctx)
 
 

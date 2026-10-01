@@ -261,11 +261,9 @@ class ManagerAuth(BaseModel):
     # edit wins on restart) and the Admin tab writes mode changes back here.
     mode: str = "auto"
     username: str = "llmadmin"
-    # scrypt hash "scrypt$<salt_b64>$<dk_b64>". Empty → the built-in
-    # llmadmin/llmadmin default applies (so a fresh "required" deploy can't lock
-    # the operator out). Optional here for installer provisioning; the UI
-    # change-password flow writes data/manager_auth.json, which takes
-    # precedence over this value.
+    # scrypt hash "scrypt$<salt_b64>$<dk_b64>". Empty → the first admin gets a
+    # temporary password from the installer (or admin_password.py reset) and
+    # sets their own at first sign-in. Optional here for installer provisioning.
     password_hash: str = ""
     session_lifetime_days: int = 1
     # Role assigned to bypassed sessions (trusted_cidr or disabled mode).

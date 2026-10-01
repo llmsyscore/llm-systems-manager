@@ -1,5 +1,5 @@
 """Security-hardening bundle: scheme-aware Secure cookie (#864), agent re-auth factors (#865),
-forced default-password change (#866), opt-in HSTS + cors_origins removal (#867)."""
+forced temporary-password change (#866, #1160), opt-in HSTS + cors_origins removal (#867)."""
 from __future__ import annotations
 
 import pytest
@@ -12,11 +12,13 @@ import manager_users
 
 # ── shared fixtures ──────────────────────────────────────────────────────────
 
+TEMP_PW = "temp-pw-Zx81q"
+
 @pytest.fixture
 def users(tmp_path, monkeypatch):
-    """Fresh user store seeded with the shipped default admin; auth mode pinned to `required`."""
+    """Fresh user store whose first admin has a temporary password; auth mode pinned to `required`."""
     manager_users.init(tmp_path / "manager_users.json", threshold=5, window_s=60, duration_s=60)
-    manager_users.STORE.seed_admin(auth.DEFAULT_AUTH_USER, auth.DEFAULT_AUTH_HASH)
+    manager_users.STORE.set_temporary(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(TEMP_PW))
     manager_users.STORE.create("alice", auth.scrypt_hash("pw-alice-123"), "admin")
     monkeypatch.setattr(auth, "auth_mode", lambda: "required")
     return manager_users
@@ -233,12 +235,12 @@ class TestAgentReregisterReauth:
             assert "token" not in _status(c, "10.0.0.5", fp=FP)
 
 
-# ── #866 forced password change on default credentials ─────────────────────
+# ── #866 / #1160 forced password change on a temporary password ────────────
 
 class TestForcedPasswordChange:
     def _login_default(self, c):
         return c.post("/login", data={"username": auth.DEFAULT_AUTH_USER,
-                                      "password": auth.DEFAULT_AUTH_PASSWORD})
+                                      "password": TEMP_PW})
 
     def test_default_login_is_walled_until_password_changes(self, users):
         with M.app.test_client() as c:
@@ -250,7 +252,7 @@ class TestForcedPasswordChange:
             page = c.get("/login")
             assert page.status_code == 200 and b"new_password" in page.data
             r = c.post("/api/account/password", json={
-                "current_password": auth.DEFAULT_AUTH_PASSWORD, "new_password": "much-better-pw"})
+                "current_password": TEMP_PW, "new_password": "much-better-pw"})
             assert r.status_code == 200 and r.get_json()["ok"] is True
             assert c.get("/api/me").status_code == 200
 
@@ -258,7 +260,7 @@ class TestForcedPasswordChange:
         with M.app.test_client() as c:
             self._login_default(c)
             r = c.post("/api/account/password", json={
-                "current_password": auth.DEFAULT_AUTH_PASSWORD, "new_password": "short"})
+                "current_password": TEMP_PW, "new_password": "short"})
             assert r.status_code == 400
             assert c.get("/api/me").status_code == 403
 
@@ -290,9 +292,9 @@ class TestForcedPasswordChange:
             assert c.get("/api/me").status_code == 403
 
     def test_renamed_admin_on_default_password_is_walled(self, users):
-        users.STORE.create("ops", auth.DEFAULT_AUTH_HASH, "admin")
+        users.STORE.create("ops", auth.scrypt_hash(TEMP_PW), "admin", must_change=True)
         with M.app.test_client() as c:
-            c.post("/login", data={"username": "ops", "password": auth.DEFAULT_AUTH_PASSWORD})
+            c.post("/login", data={"username": "ops", "password": TEMP_PW})
             assert c.get("/api/me").status_code == 403
             assert b"<b>ops</b>" in c.get("/login").data
 
@@ -305,6 +307,13 @@ class TestForcedPasswordChange:
             assert c.get("/api/me").status_code == 200
             assert c.get("/login").status_code == 302
 
+    def test_the_temporary_password_cannot_be_kept(self, users):
+        with M.app.test_client() as c:
+            self._login_default(c)
+            r = c.post("/api/account/password", json={"current_password": TEMP_PW, "new_password": TEMP_PW})
+            assert r.status_code == 400
+            assert c.get("/api/me").status_code == 403
+
     def test_non_default_login_is_not_walled(self, users):
         with M.app.test_client() as c:
             c.post("/login", data={"username": "alice", "password": "pw-alice-123"})
@@ -315,6 +324,132 @@ class TestForcedPasswordChange:
         with M.app.test_client() as c:
             c.post("/login", data={"username": auth.DEFAULT_AUTH_USER, "password": "rotated-pw-1"})
             assert c.get("/api/me").status_code == 200
+
+
+# ── #1160 no built-in admin password ────────────────────────────────────────
+
+class TestNoBuiltInPassword:
+    OLD = auth.DEFAULT_AUTH_USER   # older releases shipped the admin name as its password
+
+    def test_no_credential_means_no_seed_hash(self, monkeypatch):
+        monkeypatch.setattr(auth, "auth_runtime", lambda: {})
+        monkeypatch.setattr(M.settings.manager.auth, "password_hash", "")
+        assert auth.auth_credential()[1:] == ("", True)
+        assert not hasattr(auth, "DEFAULT_AUTH_PASSWORD") and not hasattr(auth, "DEFAULT_AUTH_HASH")
+
+    def test_old_shipped_password_is_retired_and_cannot_sign_in(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        assert users.STORE.retire(auth.uses_retired_password) == [auth.DEFAULT_AUTH_USER]
+        u = users.STORE.get(auth.DEFAULT_AUTH_USER)
+        assert u["password_hash"] == "" and u["reset_required"] is True
+        assert not users.STORE.needs_reset() and users.STORE.password_pending()   # alice can still sign in
+        assert users.STORE.retire(auth.uses_retired_password) == []
+        with M.app.test_client() as c:
+            r = c.post("/login", data={"username": auth.DEFAULT_AUTH_USER, "password": self.OLD})
+            assert r.status_code == 401
+            assert c.get("/api/me").status_code == 401
+
+    def test_other_accounts_are_untouched_by_the_retirement(self, users):
+        assert users.STORE.retire(auth.uses_retired_password) == []
+        with M.app.test_client() as c:
+            assert c.post("/login", data={"username": "alice", "password": "pw-alice-123"}).status_code == 302
+
+    def test_session_of_a_retired_account_is_signed_out(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        with M.app.test_client() as c:
+            with c.session_transaction() as sess:
+                sess["auth_ok"] = True
+                sess["user"] = auth.DEFAULT_AUTH_USER
+                sess["role"] = "admin"
+            users.STORE.retire(auth.uses_retired_password)
+            assert c.get("/api/me").status_code == 401
+
+    def test_login_page_says_how_to_reset_only_to_admin_addresses(self, users, monkeypatch):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        users.STORE.set_disabled("alice", True)
+        users.STORE.retire(auth.uses_retired_password)
+        with M.app.test_client() as c:
+            monkeypatch.setattr(auth, "_admin_ip_allowed", lambda ip: True)
+            page = c.get("/login").data.decode()
+            assert "admin password is not set" in page and "admin_password.py reset" in page
+            monkeypatch.setattr(auth, "_admin_ip_allowed", lambda ip: False)
+            page = c.get("/login").data.decode()
+            assert "admin password is not set" in page and "admin_password.py" not in page
+
+    def test_login_page_has_no_note_once_an_admin_can_sign_in(self, users):
+        with M.app.test_client() as c:
+            assert b"admin password is not set" not in c.get("/login").data
+
+    def test_empty_store_shows_the_note(self, tmp_path, monkeypatch):
+        manager_users.init(tmp_path / "none.json", threshold=5, window_s=60, duration_s=60)
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+        with M.app.test_client() as c:
+            assert b"admin password is not set" in c.get("/login").data
+
+    def test_no_note_while_another_admin_can_sign_in(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        users.STORE.retire(auth.uses_retired_password)
+        with M.app.test_client() as c:
+            assert b"admin password is not set" not in c.get("/login").data
+
+    def test_the_old_shipped_password_cannot_be_set_again(self, users):
+        with M.app.test_client() as c:
+            c.post("/login", data={"username": "alice", "password": "pw-alice-123"})
+            assert c.post("/api/account/password", json={
+                "current_password": "pw-alice-123", "new_password": self.OLD}).status_code == 400
+            assert c.patch("/api/admin/users/alice", json={"password": self.OLD},
+                           environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 400
+            assert c.post("/api/admin/users", json={"username": "bob", "password": self.OLD, "role": "operator"},
+                          environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 400
+        assert users.STORE.get("bob") is None
+
+    def test_a_retired_admin_does_not_count_as_the_last_admin(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        users.STORE.retire(auth.uses_retired_password)
+        with pytest.raises(ValueError):
+            users.STORE.set_role("alice", "operator")
+        with pytest.raises(ValueError):
+            users.STORE.delete("alice")
+
+    def test_startup_pass_seeds_then_retires_a_provisioned_old_password(self, tmp_path):
+        manager_users.init(tmp_path / "fresh.json", threshold=5, window_s=60, duration_s=60)
+        retired, no_admin = manager_users.bootstrap("llmadmin", auth.scrypt_hash(self.OLD), auth.uses_retired_password)
+        assert retired == ["llmadmin"] and no_admin is True
+        manager_users.init(tmp_path / "fresh2.json", threshold=5, window_s=60, duration_s=60)
+        assert manager_users.bootstrap("llmadmin", "", auth.uses_retired_password) == ([], True)
+        assert manager_users.STORE.is_empty()
+        manager_users.init(tmp_path / "fresh3.json", threshold=5, window_s=60, duration_s=60)
+        assert manager_users.bootstrap("ops", auth.scrypt_hash("a-good-password"), auth.uses_retired_password) == ([], False)
+        assert manager_users.STORE.get("ops")["role"] == "admin"
+
+    def test_account_without_a_hash_still_pays_one_scrypt(self, users, monkeypatch):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        users.STORE.retire(auth.uses_retired_password)
+        seen = []
+        real = auth.scrypt_verify
+        monkeypatch.setattr(auth, "scrypt_verify", lambda pw, h: seen.append(h) or real(pw, h))
+        assert manager_users.authenticate(auth.DEFAULT_AUTH_USER, "x", "10.0.0.9")["ok"] is False
+        assert seen == [manager_users._DECOY_HASH]
+
+    def test_reset_gives_a_temporary_password_that_must_be_changed(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash(self.OLD))
+        users.STORE.set_disabled("alice", True)
+        users.STORE.retire(auth.uses_retired_password)
+        assert users.STORE.needs_reset()
+        users.STORE.set_temporary(auth.DEFAULT_AUTH_USER, auth.scrypt_hash("fresh-temp-1"))
+        assert not users.STORE.needs_reset()
+        with M.app.test_client() as c:
+            assert c.post("/login", data={"username": auth.DEFAULT_AUTH_USER, "password": "fresh-temp-1"}).status_code == 302
+            assert c.get("/api/me").status_code == 403
+            assert c.post("/api/account/password", json={
+                "current_password": "fresh-temp-1", "new_password": "my-own-password"}).status_code == 200
+            assert c.get("/api/me").status_code == 200
+        assert "must_change" not in users.STORE.get(auth.DEFAULT_AUTH_USER)
+
+    def test_admin_reset_of_another_user_clears_the_flags(self, users):
+        users.STORE.set_password(auth.DEFAULT_AUTH_USER, auth.scrypt_hash("x-new-password"))
+        u = users.STORE.get(auth.DEFAULT_AUTH_USER)
+        assert "must_change" not in u and "reset_required" not in u
 
 
 # ── #867 HSTS opt-in + cors_origins removal ─────────────────────────────────

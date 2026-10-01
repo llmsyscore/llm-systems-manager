@@ -10,7 +10,7 @@ The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Al
 
 **Browser / UI sessions** authenticate via a login cookie. After `POST /login` succeeds, your browser holds a signed session cookie that is checked on every subsequent request. Sessions expire based on the configured lifetime (default: several days). A session created over the HTTPS listener is stored in a separate `__Secure-session` cookie with its own signing salt; plain-HTTP sessions keep the `session` cookie. The two are independent — a cookie minted on one scheme is not accepted on the other.
 
-While the signed-in user still holds the shipped default password, **every** API returns `403 {"password_change_required": true}` until `POST /api/account/password` succeeds. Only `/login`, `/logout`, and `/api/account/password` are reachable in the meantime.
+While the signed-in user still holds a temporary password, **every** API returns `403 {"password_change_required": true}` until `POST /api/account/password` succeeds. Only `/login`, `/logout`, and `/api/account/password` are reachable in the meantime.
 
 **Agent-to-Manager calls** authenticate with a bearer token issued at registration: `Authorization: Bearer <token>`. These are internal; you do not need to manage them as an operator.
 
@@ -1426,7 +1426,7 @@ Restarts the Manager or the (co-located) Alarm Engine service. On bare-metal ins
 ---
 
 ### `GET /api/admin/auth`
-Returns the current authentication mode (`required`, `trusted_cidr`, `disabled`, or `auto`) and whether the default credential is still active. Also returns `default_user` — the username of the built-in default admin account, so the UI can name it in the "default password in use" notice.
+Returns the current authentication mode (`required`, `trusted_cidr`, `disabled`, or `auto`) and `is_default`: whether the first admin account still has a temporary password or needs one. Also returns `default_user` — that account's username.
 
 **Access:** [Admin]
 

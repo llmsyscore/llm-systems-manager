@@ -2398,7 +2398,7 @@ async function adminUserResetPw(name) {
   const ok = await _adminUsersApi('/api/admin/users/' + encodeURIComponent(name),
     { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) },
     'Password reset for ' + name);
-  if (ok && name === ((_adminAuthState || {}).default_user || 'llmadmin')) adminAuthLoad();
+  if (ok) adminAuthLoad();
 }
 
 function adminUserUnlock(name) {

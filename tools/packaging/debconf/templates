@@ -7,9 +7,9 @@ Description: Dashboard admin username:
 Template: llm-systems-manager/admin-password
 Type: password
 Description: Dashboard admin password:
- Leave blank to keep the built-in default (llmadmin / llmadmin) and change
- it later under Admin -> Authentication. Custom passwords need at least
- 8 printable characters.
+ Leave blank to create a temporary password after the install, with the
+ command the install prints at the end; you set your own at first sign-in.
+ Custom passwords need at least 8 printable characters.
 
 Template: llm-systems-manager/smtp-server
 Type: string

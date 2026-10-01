@@ -23,6 +23,8 @@ on:
       - "llm-systems-alarm-engine/backend/_archive.py"
       - "llm-systems-alarm-engine/backend/api/auth.py"
       - "tools/installer/ci-backup-restore-smoke.sh"
+      - "tools/installer/ci-admin-login.sh"
+      - "llm-systems-manager/backend/admin_password.py"
       - "tools/installer/ci-split-smoke.sh"
       - ".github/workflows/backup-restore-test.yml"
   schedule:
