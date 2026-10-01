@@ -181,10 +181,21 @@ jobs:
           | Alarm engine | \`${AE_VERSION}\` |
           | Agent | \`${AGENT_VERSION}\` |
           EOF
+          # docs/releases/<tag>.md at the tag becomes the body; otherwise GitHub generates the list.
+          NOTES_ARGS=(--generate-notes)
+          if gh api "repos/${GH_REPO}/contents/docs/releases/${TAG}.md?ref=${TAG}" \
+               -H 'Accept: application/vnd.github.raw' > /tmp/custom-notes.md 2> /tmp/custom-notes.err \
+             && [ -s /tmp/custom-notes.md ]; then
+            echo "using docs/releases/${TAG}.md as the release body"
+            { echo; cat /tmp/custom-notes.md; } >> /tmp/release-notes.md
+            NOTES_ARGS=()
+          else
+            echo "no docs/releases/${TAG}.md at ${TAG}; using generated notes ($(cat /tmp/custom-notes.err))"
+          fi
           gh release create "$TAG" \
             --verify-tag \
             --title "$TAG" \
-            --generate-notes \
+            "${NOTES_ARGS[@]}" \
             --notes-file /tmp/release-notes.md \
             "$ASSET" "$ASSET.sha256"
 
