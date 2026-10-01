@@ -181,7 +181,8 @@ def _proxy_sid(method: str, sid: str, agent_path: str,
                     # backstops a half-closed/ACKing peer, and sessions are few.
                     response = current_app.response_class(
                         proxies.thread_pumped(upstream, agent_path, max_lifetime_s=600.0),
-                        mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+                        mimetype=proxies.agent_reply_ctype(upstream.headers.get("Content-Type"),
+                                                           "text/event-stream"),
                         headers={
                             "Cache-Control": "no-cache",
                             "X-Accel-Buffering": "no",
@@ -221,7 +222,7 @@ def _proxy_sid(method: str, sid: str, agent_path: str,
     log.info("proxy %s %s → agent:%s host=%s rc=%s sid=%s",
              method, agent_path, agent["agent_id"][:8],
              agent.get("hostname"), r.status_code, sid)
-    ctype = r.headers.get("Content-Type", "application/json")
+    ctype = proxies.agent_reply_ctype(r.headers.get("Content-Type"))
     resp = current_app.response_class(r.content, status=r.status_code, mimetype=ctype)
     resp.headers["X-Proxied-To"] = f"{agent['agent_id'][:8]}@{agent.get('hostname','?')}"
     return resp

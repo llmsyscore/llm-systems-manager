@@ -8,7 +8,7 @@ import math
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -32,6 +32,8 @@ class Tool:
     summary: Optional[Callable[[dict, Any], str]] = None
     options: Optional[Callable[[dict], list]] = None    # act tools: option chips the approval card offers
     precheck: Optional[Callable[[dict], Optional[str]]] = None    # act tools: a reason to skip the action, else None
+    admin_args: Optional[dict] = None    # arg name -> the values only an admin may pass
+    gated: bool = False    # a non-admin's copy: admin_args values are refused
 
 
 def _obj(props: dict, required: "list[str]" = ()) -> dict:
@@ -69,6 +71,15 @@ def cap_result(obj: Any, limit: int = RESULT_CAP) -> Any:
         if n == 0 or len(json.dumps(out, default=str)) <= limit:
             return out
         n = n * 3 // 4
+
+
+def _admin_only(tool: Tool, args: dict) -> Optional[str]:
+    """The refusal for an admin-only arg value on a non-admin's copy of the tool, else None."""
+    if tool.gated:
+        for key, vals in (tool.admin_args or {}).items():
+            if args.get(key) in vals:
+                return f"{key} {args[key]} needs an admin account"
+    return None
 
 
 def validate_args(tool: Tool, args: Any) -> "tuple[dict, Optional[str]]":
@@ -113,7 +124,7 @@ def validate_args(tool: Tool, args: Any) -> "tuple[dict, Optional[str]]":
         for key in tool.params.get("required") or []:
             if key not in out or out[key] in ("", None):
                 return {}, f"{key} is required"
-        return out, None
+        return out, _admin_only(tool, out)
     except Exception:
         return {}, "invalid arguments"
 
@@ -126,13 +137,28 @@ MONITOR_CARD_S = 1800
 _TURN = threading.local()
 
 
-def turn_begin(emit: Callable[[dict], None], cancelled: Callable[[], bool], heartbeat: Optional[Callable[[], None]] = None) -> None:
-    """Binds this thread's turn so waiting tools can report progress, stop on cancel and keep the model awake."""
+def turn_begin(emit: Callable[[dict], None], cancelled: Callable[[], bool], heartbeat: Optional[Callable[[], None]] = None,
+               user: str = "", role: Optional[str] = None) -> None:
+    """Binds this thread's turn so waiting tools can report progress, stop on cancel and keep the model awake;
+    `user` and `role` are the caller its act tools check ownership against."""
     _TURN.emit, _TURN.cancelled, _TURN.heartbeat = emit, cancelled, heartbeat
+    _TURN.user, _TURN.role = user, role
 
 
 def turn_end() -> None:
     _TURN.emit = _TURN.cancelled = _TURN.heartbeat = None
+    _TURN.user = _TURN.role = None
+
+
+def turn_approved(role: Optional[str]) -> None:
+    """Lowers this turn's caller role to an approver's live role when that ranks below it."""
+    if _ROLE_RANK.get(role, -1) < _ROLE_RANK.get(getattr(_TURN, "role", None), -1):
+        _TURN.role = role
+
+
+def turn_caller() -> "tuple[Optional[str], str]":
+    """(role, user) of this thread's turn; (None, "") when no turn is bound."""
+    return getattr(_TURN, "role", None), getattr(_TURN, "user", None) or ""
 
 
 def wait_for(check: Callable[[], Any], *, timeout_s: float, label: str, every_s: Optional[float] = None) -> "tuple[Any, int, str]":
@@ -183,6 +209,16 @@ def run_tool(tool: Tool, args: dict) -> "tuple[Any, bool]":
         return {"error": f"{tool.name} could not be read"}, False
 
 
+def _for_operator(tool: Tool) -> Tool:
+    """A copy of the tool for a non-admin: its admin-only arg values are refused when validated or run."""
+    gated = replace(tool, gated=True)
+
+    def run(a: dict):
+        err = _admin_only(gated, a)
+        return {"error": err} if err else tool.run(a)
+    return replace(gated, run=run)
+
+
 def catalog(registry: dict, cfg: Any, role: str) -> "list[Tool]":
     cap = str(getattr(cfg, "capabilities", "read") or "read")
     allowed = TIERS[: TIERS.index(cap) + 1] if cap in TIERS else ("read",)
@@ -190,9 +226,10 @@ def catalog(registry: dict, cfg: Any, role: str) -> "list[Tool]":
     rank = _ROLE_RANK.get(role or "operator", 0)
     asks = bool(getattr(cfg, "questions", True))
     timers = bool(getattr(cfg, "timers", True))
-    return [t for t in registry.values()
-            if t.tier in allowed and t.name not in disabled and _ROLE_RANK.get(t.role, 0) <= rank
-            and (t.kind != "ask" or asks) and (t.kind != "timer" or timers)]
+    tools = [t for t in registry.values()
+             if t.tier in allowed and t.name not in disabled and _ROLE_RANK.get(t.role, 0) <= rank
+             and (t.kind != "ask" or asks) and (t.kind != "timer" or timers)]
+    return tools if rank >= _ROLE_RANK["admin"] else [_for_operator(t) if t.admin_args else t for t in tools]
 
 
 def openai_schema(tool: Tool) -> dict:
@@ -873,6 +910,7 @@ def audit_status_clause(status) -> "tuple[Optional[str], list]":
 
 
 LOG_SOURCES = ("llama", "lms", "vllm", "agent", "manager", "alarm_engine")
+LOG_ADMIN_SOURCES = ("agent", "manager", "alarm_engine")
 LOG_LINES_MAX = 200
 # A level token bounded by brackets, whitespace or a colon: "[ERROR]", " ERROR ", "error:", never "severity=critical".
 _LOG_LEVEL_RE = {"error": re.compile(r"(?:^|[\s\[(])(?:ERROR|CRITICAL|FATAL|[Ee]rror|Exception|Traceback)(?=[\]\s:)]|$)"),
@@ -1181,7 +1219,8 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
                    "lines": {"type": "integer", "minimum": 5, "maximum": LOG_LINES_MAX, "default": 40},
                    "search": {"type": "string"}, "level": {"type": "string", "enum": ["error", "warning"]},
                    "since": {"type": "string"}, "before": {"type": "integer", "minimum": 0, "default": 0}}),
-             "read", "read", lambda a: deps["log_tail"](a.get("host"), a.get("provider", "llama"), a["lines"], a)),
+             "read", "read", lambda a: deps["log_tail"](a.get("host"), a.get("provider", "llama"), a["lines"], a),
+             admin_args={"provider": LOG_ADMIN_SOURCES}),
         Tool("config_get", "A manager or alarm-engine setting by dotted path (secrets are masked); "
              "alarm.rules, alarm.channels, alarm.policies and alarm.settings list the alarm engine's rules, notification "
              "channels, notification policies and settings (add .<name or id> for one). Not model configs — use model_profiles.",
@@ -1891,15 +1930,21 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
             str(a.get("hostname")) for a in (agent_registry_agents().values())
             if a.get("status") == "approved" and a.get("hostname") and (a.get("capabilities") or {}).get(_cap_key(provider))]
         names = host_names(host, sorted(known))
+        only = None
         if not names:
-            if str(host or "").strip().lower() == "all":
-                return {"source": provider, "hosts": [], "note": f"no host serves {PROVIDER_LABEL[provider]}"}
-            return {"error": f"host is required for {provider} logs (a name, a comma-separated list, or all)"}
+            label = PROVIDER_LABEL.get(provider, provider)
+            if not known:
+                return {"source": provider, "hosts": [], "note": f"no host serves {label}"}
+            if len(known) > 1:
+                return {"error": f"Which host's {label} log?", "arg": "host", "choices": sorted(known)}
+            names = only = sorted(known)
         per_host = max(5, int(lines) // len(names)) if len(names) > 1 else int(lines)
         rows = []
         for n in names:
             raw, note = _log_lines(provider, n)
             one = {"host": n, "source": provider, **filter_log_lines(raw, count=per_host, **filt)}
+            if only:
+                note = "; ".join(x for x in (note, f"host taken as {n}, the only one for this log") if x)
             if note:
                 one["note"] = note
             rows.append(one)
@@ -2130,10 +2175,21 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         rows = jobs_service.list(status or "live", kind=kind or None, limit=int(count or 10))
         return [jobs_service.view(r, role="admin", user="") for r in rows]
 
+    def _job_denied(row) -> bool:
+        """True when the turn's caller is neither an admin nor the submitter of this live job."""
+        role, user = turn_caller()
+        return not jobs_service.view(row, role=role, user=user)["can_cancel"]
+
     def _cancel_job(job_id):
         if jobs_service is None:
             return False, "jobs are not wired"
-        out = jobs_service.cancel(str(job_id)[:32], actor="tower")
+        row = jobs_service.get(str(job_id)[:32])
+        if not row or row["status"] not in ("queued", "running"):
+            return False, "job is not live"
+        if _job_denied(row):
+            return False, "not your job"
+        user = turn_caller()[1]
+        out = jobs_service.cancel(row["id"], actor=f"tower via {user}" if user else "tower")
         return (True, None) if out else (False, "job is not live")
 
     def _job_precheck(job_id):
@@ -2142,7 +2198,9 @@ def prod_deps(ctx, *, db_path: str, tools_runs: Callable[[Optional[str], int], l
         row = jobs_service.get(str(job_id)[:32])
         if not row:
             return "job not found"
-        return None if row["status"] in ("queued", "running") else f"job is {row['status']}"
+        if row["status"] not in ("queued", "running"):
+            return f"job is {row['status']}"
+        return "not your job" if _job_denied(row) else None
 
     deps_out = {
         "hosts": hosts_overview, "host": host_detail, "host_history": host_history,

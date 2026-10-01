@@ -909,6 +909,115 @@ def issue_stream_token(agent_id: str, path: str, ttl: "int | None" = None) -> st
 
 
 # ── Private: cert build/sign (shared by heartbeat-ack issuer + admin-tab rotation) ──
+def _canon_ip(value: Any) -> "str | None":
+    """Canonical text of an IP literal (no zone, IPv4-mapped IPv6 as IPv4), else None."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(str(value or "").strip().split("%", 1)[0])
+    except ValueError:
+        return None
+    return str(getattr(ip, "ipv4_mapped", None) or ip)
+
+
+def _url_host(url: Any) -> str:
+    """Host part of a URL, "" when the URL does not parse."""
+    try:
+        return urllib.parse.urlparse(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+
+
+def _plain_name(name: Any) -> str:
+    """Lowercase host name without a trailing dot."""
+    return str(name or "").strip().rstrip(".").lower()
+
+
+_HOST_IPS_TTL_S = 300.0
+_host_ips_cache: "tuple[float, frozenset[str]]" = (0.0, frozenset())
+
+
+def _manager_host_ips() -> "frozenset[str]":
+    """Addresses on the manager host's own interfaces, refreshed every _HOST_IPS_TTL_S."""
+    global _host_ips_cache
+    at, ips = _host_ips_cache
+    if ips and time.monotonic() - at < _HOST_IPS_TTL_S:
+        return ips
+    found: "set[str]" = set()
+    with best_effort("manager host ips: list interface addresses", log=log):
+        import psutil
+        import socket
+        for addrs in psutil.net_if_addrs().values():
+            found.update(ip for a in addrs if a.family in (socket.AF_INET, socket.AF_INET6)
+                         and (ip := _canon_ip(a.address)))
+    _host_ips_cache = (time.monotonic(), frozenset(found))
+    return _host_ips_cache[1]
+
+
+def _on_manager_host(agent: dict, src: "str | None") -> bool:
+    """True when the agent connects from the manager's own host or is its designated host agent."""
+    if agent.get("agent_id") and agent.get("agent_id") == designated_host_agent_id():
+        return True
+    return bool(src) and (_remote_is_loopback(src) or src in _manager_host_ips())
+
+
+def _address_taken(agent: dict, ip: str) -> bool:
+    """True when `ip` is loopback, unspecified, or an address of the manager, its public
+    hosts, the alarm engine or another agent."""
+    import ipaddress
+    addr = ipaddress.ip_address(ip)
+    if addr.is_loopback or addr.is_unspecified or ip in _manager_host_ips():
+        return True
+    hosts = [*_deps.manager_public_hosts(), _url_host(_deps.alarm_engine_url())]
+    if ip in {_canon_ip(h) for h in hosts}:
+        return True
+    return any(aid != agent.get("agent_id") and _canon_ip(a.get("registered_from")) == ip
+               for aid, a in (load_agents().get("agents") or {}).items())
+
+
+# A host name a certificate may carry: letters, digits, `_`, `-` and dots; no wildcard.
+_CERT_NAME_RE = _re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?")
+
+
+def _name_taken(name: str, src: "str | None", local: bool) -> bool:
+    """True when `name` is not a plain host name, or names the manager, one of its public
+    hosts or the alarm engine while the agent is not on that host."""
+    if not _CERT_NAME_RE.fullmatch(name.strip().rstrip(".")):
+        return True
+    plain = _plain_name(name).removesuffix(".agents.local")
+    mine = _plain_name(_deps.hostname)
+    own = {"localhost", mine, *(_plain_name(h) for h in _deps.manager_public_hosts())}
+    if plain in own or plain.split(".", 1)[0] in ("localhost", mine.split(".", 1)[0]):
+        return not local
+    ae = _plain_name(_url_host(_deps.alarm_engine_url()))
+    if not ae or plain != ae or _canon_ip(ae):
+        return False
+    import socket
+    ae_ips: "set[str | None]" = set()
+    with best_effort("agent cert: resolve alarm-engine host", log=log):
+        ae_ips = {_canon_ip(i[4][0]) for i in socket.getaddrinfo(ae, None)}
+    return src not in ae_ips
+
+
+def _agent_cert_sans(agent: dict, warn: bool = False) -> "tuple[str, list[str]]":
+    """(DNS name, IP SANs) for this agent's leaf certificate: its observed source address, plus
+    its bind_url address unless another member of the install answers on that address."""
+    note = log.warning if warn else log.debug
+    src = _canon_ip(agent.get("registered_from"))
+    claimed = _canon_ip(_url_host(agent.get("bind_url")))
+    local = _on_manager_host(agent, src)
+    if claimed and claimed != src and not local and _address_taken(agent, claimed):
+        note("agent %s cert: bind_url address %s belongs to another member — left out of the SAN",
+             agent.get("agent_id"), claimed)
+        claimed = None
+    ips = [ip for ip in dict.fromkeys((claimed, src)) if ip]
+    name = str(agent.get("hostname") or agent["agent_id"])
+    if _name_taken(name, src, local):
+        note("agent %s cert: hostname %r is not usable as its DNS name — agent id used instead",
+             agent.get("agent_id"), name)
+        name = agent["agent_id"]
+    return name, ips
+
+
 def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
     """Run SAN derivation + sign + return the {cert_pem, key_pem, ca_pem, expires_at}
     block. Returns None when the PKI module is unavailable.
@@ -916,8 +1025,8 @@ def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
     Both _maybe_issue_tls_bundle (heartbeat-driven) and _agents_issue_cert
     (admin-tab manual rotation) used to open-code this with subtly different
     SAN-derivation rules — same bug fix landed twice and had to stay in lockstep.
-    Centralizing the logic here keeps the SAN coverage rule (bind_url's host IP
-    + registered_from, whichever is an IP) in one place.
+    Centralizing the logic here keeps the SAN coverage rule (_agent_cert_sans)
+    in one place.
 
     The audit-trail write (last_cert_issued_at + clearing force_cert_reissue)
     stays at the callers because admin rotation does NOT clear force_cert_reissue
@@ -928,39 +1037,13 @@ def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
         log.warning("pki_ensure_ca returned None module; cannot sign cert for agent %s",
                     agent.get("agent_id"))
         return None
-    # SAN must cover EVERY IP the manager might dial back on. For local
-    # installs the agent advertises bind_url=<LAN-IP> but its TCP
-    # connection arrives as registered_from=127.0.0.1, and
-    # agent_callback_urls's _safe_bind_host rejects the LAN-IP bind_url
-    # then dials 127.0.0.1 instead — so a cert covering only one of those
-    # mismatches at verify time. Put both in SAN.
-    from urllib.parse import urlparse as _urlparse
-    import ipaddress as _ipaddr
-    bind = agent.get("bind_url") or ""
-    ip_san = ""
-    try:
-        host = _urlparse(bind).hostname
-        if host:
-            _ipaddr.ip_address(host)  # raises if not an IP
-            ip_san = host
-    except (ValueError, TypeError):
-        pass
-    if not ip_san:
-        ip_san = agent.get("registered_from") or ""
-    extra_ips: "list[str]" = []
-    rfrom = (agent.get("registered_from") or "").strip()
-    if rfrom and rfrom != ip_san:
-        try:
-            _ipaddr.ip_address(rfrom)
-            extra_ips.append(rfrom)
-        except (ValueError, TypeError):
-            pass
+    name, ips = _agent_cert_sans(agent, warn=True)
     cert_pem, key_pem = pki.sign_agent_cert(
         ca_cert, ca_key,
         agent_id=agent["agent_id"],
-        hostname=agent.get("hostname") or agent["agent_id"],
-        ip_san=ip_san,
-        extra_ip_sans=extra_ips,
+        hostname=name,
+        ip_san=ips[0] if ips else "",
+        extra_ip_sans=ips[1:],
     )
     ca_pem = pki.ca_bundle_pem(_deps.data_dir)
     from cryptography import x509 as _x509
@@ -1038,6 +1121,7 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
             bind = agent.get("bind_url") or ""
             san_ips = body.get("tls_san_ips") or []
             if isinstance(san_ips, list) and san_ips:
+                san_ips = [_canon_ip(ip) or ip for ip in san_ips]
                 # SAN must cover bind_url's host so direct dials verify, AND
                 # registered_from so the agent_callback_urls loopback-fallback
                 # path verifies. Either missing → reissue.
@@ -1045,7 +1129,8 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
                     bind_host = _urlparse(bind).hostname
                     if bind_host and bind.startswith("https://"):
                         _ipaddr.ip_address(bind_host)
-                        if bind_host not in san_ips:
+                        bind_host = _canon_ip(bind_host)
+                        if bind_host not in san_ips and bind_host in _agent_cert_sans(agent)[1]:
                             needs_new = True
                             reason_hint = "san-mismatch"
                             log.info("agent %s cert SAN=%s lacks bind_url host %s — reissuing",
@@ -1053,7 +1138,7 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
                 except (ValueError, TypeError):
                     pass
                 if not needs_new:
-                    rfrom = (agent.get("registered_from") or "").strip()
+                    rfrom = _canon_ip(agent.get("registered_from")) or ""
                     try:
                         _ipaddr.ip_address(rfrom)
                         if rfrom and rfrom not in san_ips:
@@ -1157,7 +1242,7 @@ def _agents_register():
         if existing:
             agent_id, agent = existing
             # Re-auth before mutating the record or returning the token:
-            # prior bearer token, or the fingerprint/IP policy in _agent_reauth_ok.
+            # prior bearer token, or the fingerprint policy in _agent_reauth_factor.
             auth_header = flask_request.headers.get("Authorization", "")
             supplied_tok = ""
             if auth_header.startswith("Bearer "):
@@ -1165,24 +1250,22 @@ def _agents_register():
             stored_tok = agent.get("token") or ""
             remote = flask_request.remote_addr or ""
             tok_ok = bool(stored_tok) and bool(supplied_tok) and _hmac.compare_digest(supplied_tok, stored_tok)
-            reauth_factor = _agent_reauth_factor(agent, fingerprint, remote)
+            reauth_factor = _agent_reauth_factor(agent, fingerprint)
             authenticated = tok_ok or reauth_factor is not None
 
             if authenticated:
                 agent["bind_url"] = bind_url
                 agent["fingerprint"] = fingerprint or agent.get("fingerprint") or ""
                 agent["version"] = body.get("version", agent.get("version"))
+                if fingerprint:
+                    agent["fp_version"] = agent["version"]
                 agent["description"] = body.get("description", agent.get("description"))
                 agent["capabilities"] = body.get("capabilities", agent.get("capabilities"))
                 agent["agent_user"] = body.get("agent_user", agent.get("agent_user"))
                 agent["role"] = body.get("role", agent.get("role"))
                 agent["image_gen_port"] = body.get("image_gen_port", agent.get("image_gen_port"))
-                # Only refresh registered_from when the source IP itself
-                # already matched (or token/fp re-auth came from the same
-                # subnet). This keeps a host that legitimately changed
-                # IPs working when its prior token is presented, while
-                # preventing an unauthenticated attacker from rewriting
-                # it via hostname guessing.
+                # registered_from follows the source of a token- or
+                # fingerprint-authenticated re-registration.
                 agent["registered_from"] = remote or agent.get("registered_from") or ""
                 agent["last_register"] = datetime.now(timezone.utc).isoformat()
                 data["agents"][agent_id] = agent
@@ -1200,13 +1283,11 @@ def _agents_register():
 
             # Unauthenticated re-registration claim — do not mutate stored
             # bind_url/fingerprint/registered_from, do not return token.
-            # The legitimate agent will recover via /api/agents/<id>/status
-            # (which matches on registered_from) or via admin re-approval.
-            log.warning("agent re-registration rejected: id=%s hostname=%s remote=%s (no matching token/ip/fp)",
+            log.warning("agent re-registration rejected: id=%s hostname=%s remote=%s (no matching token/fp)",
                         agent_id, hostname, remote)
             return jsonify({
                 "ok": False,
-                "error": "re-registration requires matching token, source IP, or fingerprint",
+                "error": "re-registration requires matching token or fingerprint",
                 "agent_id": agent_id,
                 "status": agent.get("status", "pending"),
             }), 403
@@ -1228,6 +1309,7 @@ def _agents_register():
             "capabilities": body.get("capabilities", {}),
             "agent_user": body.get("agent_user", ""),
             "version": body.get("version", ""),
+            "fp_version": body.get("version", ""),
             "image_gen_port": body.get("image_gen_port"),
             "status": "approved" if auto_approve else "pending",
             "token": token,
@@ -1254,24 +1336,25 @@ def _agents_register():
     return jsonify(out)
 
 
-FP_REAUTH_FROM_VERSION = "v2026.09.04-1"
+# First agent version whose fingerprint is a per-install secret.
+FP_REAUTH_FROM_VERSION = "v2026.08.16-1"
 
 
-def _agent_reauth_factor(agent: dict, supplied_fp: str, remote: str) -> "str | None":
-    """Winning re-auth factor ("fp" | "ip") or None. The source-IP fallback is only for
-    records with no stored fingerprint or last written by a pre-FP_REAUTH_FROM_VERSION agent."""
+def _agent_reauth_factor(agent: dict, supplied_fp: str) -> "str | None":
+    """"fp" when the supplied fingerprint matches the stored one, else None. A fingerprint
+    stored by a pre-FP_REAUTH_FROM_VERSION agent never re-authenticates."""
+    key = _version_key(agent["fp_version"] if "fp_version" in agent else agent.get("version"))
+    if key is not None and key < _FP_REAUTH_KEY:
+        return None
     stored_fp = agent.get("fingerprint") or ""
-    if stored_fp and supplied_fp and _hmac.compare_digest(supplied_fp, stored_fp):
-        return "fp"
-    key = _version_key(agent.get("version"))
-    legacy = not stored_fp or (key is not None and key < _FP_REAUTH_KEY)
-    stored_from = agent.get("registered_from") or ""
-    return "ip" if legacy and stored_from and remote == stored_from else None
+    if not (isinstance(stored_fp, str) and isinstance(supplied_fp, str) and stored_fp and supplied_fp):
+        return None
+    return "fp" if _hmac.compare_digest(supplied_fp.encode(), stored_fp.encode()) else None
 
 
 def _agents_get_status(agent_id: str):
     """No-auth endpoint: agents poll this until approved. Returns the token only
-    when the X-Agent-Fingerprint header (or legacy source IP) re-authenticates the caller."""
+    when the X-Agent-Fingerprint header re-authenticates the caller."""
     data = load_agents()
     agent = data.get("agents", {}).get(agent_id)
     if not agent:
@@ -1279,7 +1362,7 @@ def _agents_get_status(agent_id: str):
     out = {"ok": True, "status": agent.get("status")}
     if agent.get("status") == "approved" and agent.get("token"):
         supplied_fp = (flask_request.headers.get("X-Agent-Fingerprint") or "").strip()
-        if _agent_reauth_factor(agent, supplied_fp, flask_request.remote_addr or ""):
+        if _agent_reauth_factor(agent, supplied_fp):
             out["token"] = agent["token"]
     return jsonify(out)
 
@@ -1411,6 +1494,7 @@ def _agents_heartbeat():
             v = body.get("version")
             version_changed = bool(v and isinstance(v, str) and v != prev_version)
             if version_changed:
+                live.setdefault("fp_version", prev_version)
                 live["version"] = v
             # Capabilities ride along too, so a /config/reload that enables a
             # provider is honoured by the ingest gate within one heartbeat.
@@ -1505,7 +1589,7 @@ def _agents_heartbeat():
 
 def _version_key(v: "str | None") -> "tuple[int, int, int, int] | None":
     """Sortable key for vYYYY.MM.DD-N agent versions; None when unparseable."""
-    m = _re.match(r"^v?(\d{4})\.(\d{2})\.(\d{2})-(\d+)$", (v or "").strip())
+    m = _re.match(r"^v?(\d{4})\.(\d{2})\.(\d{2})-(\d+)$", str(v or "").strip())
     if not m:
         return None
     return tuple(int(x) for x in m.groups())  # type: ignore[return-value]

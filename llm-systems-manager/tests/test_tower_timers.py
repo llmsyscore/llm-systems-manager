@@ -127,6 +127,14 @@ def test_timer_spec_rejects_an_unknown_host_and_names_the_fleet():
     spec, err = tm.timer_spec({"tool": "host_detail", "args": {"host": "box"}, "every_s": 60}, reg, _cfg(), "operator")
     assert err is None and spec["kind"] == "tool"
 
+def test_timer_spec_keeps_the_admin_log_sources_from_operators():
+    reg = tt.build_registry(_deps())
+    for src in ("agent", "manager", "alarm_engine"):
+        err = tm.timer_spec({"tool": "log_tail", "args": {"provider": src}, "every_s": 60}, reg, _cfg(), "operator")[1]
+        assert err == f"log_tail: provider {src} needs an admin account"
+    spec, err = tm.timer_spec({"tool": "log_tail", "args": {"provider": "manager"}, "every_s": 60}, reg, _cfg(), "admin")
+    assert err is None and spec["args"]["provider"] == "manager"
+
 def test_pick_path_walks_dicts_and_lists():
     obj = {"live": {"ram": {"used_pct": 41}}, "hosts": [{"hostname": "box"}, {"hostname": "mac"}]}
     assert tm.pick_path(obj, "live.ram.used_pct") == 41

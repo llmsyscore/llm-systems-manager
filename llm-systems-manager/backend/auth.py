@@ -78,6 +78,10 @@ AUTH_OPEN_PATHS = frozenset({
 # PWA app icons (#522) — matched post-normalization in _auth_gate.
 _PWA_ICON_PREFIX = "/static/icons/"
 
+# Agent certificate and status-poll routes — the only paths their gate exemptions admit.
+_CERT_BUNDLE_PATH_RE = re.compile(r"/api/agents/[^/]+/cert-bundle")
+_AGENT_STATUS_PATH_RE = re.compile(r"/api/agents/[^/]+/status")
+
 # Runtime gate behaviours vs. the TOML policy value. "auto" is a policy-only
 # value (not a runtime mode): it hands live control of the mode to the
 # UI-managed data/manager_auth.json. Any other TOML value pins the mode and
@@ -429,9 +433,9 @@ def _auth_gate():
         return None
     if path.startswith("/api/gateway/") and _gateway_key_ok():
         return None
-    if path.endswith("/cert-bundle"):
+    if _CERT_BUNDLE_PATH_RE.fullmatch(path):
         return None
-    if path.startswith("/api/agents/") and path.endswith("/status"):
+    if _AGENT_STATUS_PATH_RE.fullmatch(path):
         return None
     if _agent_by_token(_bearer_from_request() or ""):
         # Machine token: allow only its known infra + read endpoints; deny the

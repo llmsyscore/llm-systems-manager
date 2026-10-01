@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.30-1"
+__version__ = "v2026.10.01-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -8318,7 +8318,8 @@ def agents_log_stream(agent_id: str):
                 agent_registry.note_dial_result(agent, base, True)
                 resp = app.response_class(
                     proxies.thread_pumped(upstream, "/agent/log/stream"),
-                    mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+                    mimetype=proxies.agent_reply_ctype(upstream.headers.get("Content-Type"),
+                                                       "text/event-stream"),
                     headers={
                         "Cache-Control": "no-cache",
                         "X-Accel-Buffering": "no",
@@ -8507,7 +8508,7 @@ def admin_ae_log_stream():
             return jsonify({"ok": False, "error": fail["remedy"], "failure": fail}), 502
         resp = app.response_class(
             proxies.thread_pumped(upstream, route),
-            mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+            mimetype=proxies.agent_reply_ctype(upstream.headers.get("Content-Type"), "text/event-stream"),
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             status=upstream.status_code,
         )
@@ -8658,7 +8659,7 @@ def agents_self_update(agent_id: str):
                          agent["agent_id"][:8], agent.get("hostname"))
                 resp = app.response_class(
                     _gen(),
-                    mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+                    mimetype="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
                         "X-Accel-Buffering": "no",

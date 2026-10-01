@@ -84,7 +84,9 @@ via the compose bridge). Install an agent on the docker host, approve it, then
 in **Admin → Agents** tick **manager host** on that agent's row. This scopes the
 manager-host CPU/RAM/Disk cards to it and shows the manager / alarm-engine /
 InfluxDB version pills. Without it those stay empty — the metrics gap is
-expected until you designate the host agent.
+expected until you designate the host agent. The same setting lets that agent's
+certificate include the docker host's address, which the browser uses for the
+agent's live streams.
 
 ### Restarting the control plane
 

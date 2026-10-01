@@ -426,7 +426,7 @@
     ] : [];
     $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div></div>`).join('');
     const seg = $('blLevelSeg');
-    seg.innerHTML = cur.map(l => `<button type="button" data-level="${l.concurrency}" class="${l.concurrency === (_activeLevel || (cur[0] && cur[0].concurrency)) ? 'on' : ''}">${l.concurrency}</button>`).join('');
+    seg.innerHTML = cur.map(l => `<button type="button" data-level="${esc(l.concurrency)}" class="${l.concurrency === (_activeLevel || (cur[0] && cur[0].concurrency)) ? 'on' : ''}">${esc(l.concurrency)}</button>`).join('');
     seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _activeLevel = parseInt(b.dataset.level, 10); redraw(); }));
     renderTable(cur);
     renderCellSeg(active);
@@ -506,7 +506,7 @@
     if (!lv) { host.innerHTML = '<div class="bl-hint" style="padding:12px">No results yet.</div>'; return; }
     const bl = baselineAt(conc); const brow = c => ((bl && bl.rows) || []).find(r => r.category === c);
     const row = (r, tot) => { const b = tot ? (bl && bl.all) : brow(r.category); const cur = tot ? r.pred_tps : r.avg_pred_t_s; const base = b && (tot ? b.pred_tps : b.avg_pred_t_s); const d = deltaText(cur, base);
-      return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${tot ? r.requests : r.requests}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
+      return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${esc(tot ? r.requests : r.requests)}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
     host.innerHTML = `<table class="bl-rt"><thead><tr><th>Category</th><th class="num">samples</th><th class="num">prompt t/s</th><th class="num">decode t/s</th><th class="num">latency</th><th class="num">accept</th></tr></thead><tbody>${lv.rows.map(r => row(r, false)).join('')}${row(lv.all, true)}</tbody></table>`;
   }
   // Ranks done hosts by decode t/s desc; the rest keep their original order untagged.

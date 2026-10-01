@@ -362,6 +362,21 @@ describe('BL presets and mode', () => {
     win.__sse.onEvent(lvl('r1'));
     expect(d.querySelectorAll('#blLevelSeg button').length).toBe(1);
   });
+  it('renders level-result concurrency and sample counts as text, not markup', async () => {
+    const win = boot('BL.onOpen("org/m:Q4");');
+    await flush();
+    const d = win.document;
+    win.BL.run();
+    await flush();
+    const bad = '"><img src=x>';
+    win.__sse.onEvent({ type: 'level_result', run_id: 'r1', concurrency: bad, rows: [{ category: 'qa', requests: bad }],
+      all: { pred_tps: 1, agg_pred_tps: 1, requests: bad } });
+    expect(d.querySelectorAll('#blLevelSeg img, #blTable img').length).toBe(0);
+    const btn = d.querySelector('#blLevelSeg button');
+    expect(btn.textContent).toBe(bad);
+    expect(btn.dataset.level).toBe(bad);
+    expect([...d.querySelectorAll('#blTable tbody tr')].map(tr => tr.children[1].textContent)).toEqual([bad, bad]);
+  });
   it('run posts the validated body and lists the baseline', async () => {
     const win = boot('BL.onOpen("org/m:Q4");');
     await flush();
