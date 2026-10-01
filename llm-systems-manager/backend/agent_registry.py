@@ -992,9 +992,10 @@ def _name_taken(name: str, src: "str | None", local: bool) -> bool:
     if not ae or plain != ae or _canon_ip(ae):
         return False
     import socket
+    ae_ips: "set[str | None]" = set()
     with best_effort("agent cert: resolve alarm-engine host", log=log):
-        return src not in {_canon_ip(i[4][0]) for i in socket.getaddrinfo(ae, None)}
-    return True
+        ae_ips = {_canon_ip(i[4][0]) for i in socket.getaddrinfo(ae, None)}
+    return src not in ae_ips
 
 
 def _agent_cert_sans(agent: dict, warn: bool = False) -> "tuple[str, list[str]]":
