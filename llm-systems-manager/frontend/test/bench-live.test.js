@@ -63,7 +63,7 @@ const STUBS = `
           runtime: window.__noRt ? { python: '', source: '', script: '', script_status: 'ok' } : { python: '/p', source: 'venv', script: '/s', script_status: 'ok' },
           datasets: { qualitative: { categories: ['coding', 'math', 'qa'] } }, benches: ['qualitative','throughput_1k','throughput_2k','throughput_8k','throughput_16k','throughput_32k'], busy: !!window.__busy })
       : url.indexOf('/api/benchmark/live/runs/') === 0
-      ? { ok: true, run: window.__baseDoc || null }
+      ? ((window.__stored || {})[url.split('/').pop()] || { ok: true, run: window.__baseDoc || null })
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
       : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
@@ -1344,5 +1344,128 @@ describe('BL reopen and failed samples (#1126, #1127)', () => {
     expect(pill.textContent).toBe('complete');
     expect(pill.classList.contains('ok')).toBe(true);
     expect(pill.classList.contains('warn')).toBe(false);
+  });
+});
+
+describe('a past run opens from the ledger (#1162)', () => {
+  const LVL = (c, tps) => ({ concurrency: c, rows: [{ category: 'coding', requests: 4, avg_prompt_t_s: 500, avg_pred_t_s: tps, avg_latency: 4, accept_rate: null }],
+    all: { requests: 4, pred_tps: tps, agg_pred_tps: tps * c, prompt_tps: 500, latency_s: 4, accept_rate: null } });
+  const STORED = { p1: { ok: true, meta: { run_id: 'p1', agent_id: 'a1', ts: '2026-09-30T04:43:00Z', ok: true },
+    run: { type: 'model_done', run_id: 'p1', ok: true, bench: 'qualitative', config: {}, levels: [LVL(1, 69), LVL(2, 60)], failed_samples: 0, elapsed_s: 136 } },
+    gone: { ok: false, error: 'not found' } };
+  const SETUP = 'window.__stored = ' + JSON.stringify(STORED) + '; window.toolsHostName = (id) => id === "a1" ? "loki" : id;';
+  const $ = (win, id) => win.document.getElementById(id);
+
+  it('fills the tiles, level buttons and table from the stored run and names its date and host', async () => {
+    const win = boot(SETUP + 'BL.onOpen("org/m:Q4", { provider: "llama", agent: null, run: "p1", mode: "live" });');
+    await flush(); await flush();
+    expect(win.__fetches.some(([u]) => u === '/api/benchmark/live/runs/p1')).toBe(true);
+    expect($(win, 'blTiles').textContent).toContain('69');
+    expect($(win, 'blLevelSeg').querySelectorAll('button')).toHaveLength(2);
+    expect($(win, 'blTable').textContent).toContain('coding');
+    expect($(win, 'blStatus').textContent).toBe('past run');
+    const strip = $(win, 'blStrip').textContent;
+    expect(strip).toContain(win.BL.fmtTs('2026-09-30T04:43:00Z'));
+    expect(strip).toContain('loki');
+    expect(strip).toContain('2 levels · 136 s');
+    expect($(win, 'benchLive').style.display).toBe('');
+    expect($(win, 'blAttachBtn').style.display).toBe('');
+    expect(win.BL.running()).toBe(false);
+  });
+
+  it('says so when the stored results are gone and leaves the panes empty', async () => {
+    const win = boot(SETUP + 'BL.onOpen("org/m:Q4", { run: "gone" });');
+    await flush(); await flush();
+    expect($(win, 'blStatus').textContent).toContain('no longer stored');
+    expect($(win, 'blTiles').textContent).toBe('');
+    expect($(win, 'blTable').textContent).toContain('No results yet');
+  });
+
+  it('a new run replaces the shown past run', async () => {
+    const win = boot(SETUP + 'BL.onOpen("org/m:Q4", { run: "p1" });');
+    await flush(); await flush();
+    win.BL.run();
+    await flush();
+    expect($(win, 'blStrip').textContent).toBe('');
+    expect($(win, 'blTiles').textContent).toBe('');
+    expect(win.BL.running()).toBe(true);
+    win.BL.cancel();
+  });
+
+  it('a run in progress is not replaced by opening a past run', async () => {
+    const win = boot(SETUP + 'BL.onOpen("org/m:Q4");');
+    await flush();
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r1', bench: 'qualitative', levels: [1] });
+    win.__sse.onEvent({ type: 'level_result', ...LVL(1, 42) });
+    const before = win.__fetches.length;
+    await win.BL.onOpen('org/m:Q4', { run: 'p1' });
+    await flush();
+    expect(win.__fetches.slice(before).some(([u]) => u === '/api/benchmark/live/runs/p1')).toBe(false);
+    expect($(win, 'blTiles').textContent).toContain('42');
+    expect($(win, 'blStatus').textContent).not.toBe('past run');
+    win.BL.cancel();
+  });
+
+  it('a past run\'s baseline that loads late is not applied to a new run', async () => {
+    const base = (tps) => ({ levels: [{ concurrency: 1, rows: [], all: { pred_tps: tps, agg_pred_tps: tps, prompt_tps: 500, latency_s: 4, accept_rate: null } }] });
+    const stored = { p4: { ...STORED.p1, run: { ...STORED.p1.run, run_id: 'p4', baseline_run_id: 'old-base' } } };
+    const win = boot('window.__stored = ' + JSON.stringify(stored) + '; window.__baseDoc = ' + JSON.stringify(base(100)) + ';');
+    const real = win.fetch; let release = null;
+    win.fetch = (url, o) => url === '/api/benchmark/live/runs/old-base'
+      ? new Promise(res => { release = () => res({ ok: true, json: () => Promise.resolve({ ok: true, run: base(50) }) }); })
+      : real(url, o);
+    await win.BL.onOpen('org/m:Q4', { run: 'p4' });
+    await flush();
+    expect(release).not.toBeNull();
+    win.BL.run();
+    await flush(); await flush();
+    release();
+    await flush(); await flush();
+    win.__sse.onEvent({ type: 'model_start', run_id: 'r1', bench: 'qualitative', levels: [1] });
+    win.__sse.onEvent({ type: 'level_result', ...LVL(1, 110) });
+    expect($(win, 'blTiles').textContent).toContain('+10 % vs baseline');
+    win.BL.cancel();
+  });
+
+  it('switching host while a past run loads drops it', async () => {
+    const win = boot(SETUP);
+    const real = win.fetch; let release = null;
+    win.fetch = (url, o) => url === '/api/benchmark/live/runs/p1'
+      ? new Promise(res => { release = () => res({ ok: true, json: () => Promise.resolve(STORED.p1) }); })
+      : real(url, o);
+    const first = win.BL.onOpen('org/m:Q4', { run: 'p1' });
+    const second = win.BL.onOpen(undefined, { retarget: true });
+    release();
+    await first; await second; await flush();
+    expect($(win, 'blStatus').textContent).not.toBe('past run');
+    expect($(win, 'blTiles').textContent).toBe('');
+  });
+
+  it('switching host clears the previous host\'s results', async () => {
+    const win = boot(SETUP + 'BL.onOpen("org/m:Q4", { run: "p1" });');
+    await flush(); await flush();
+    expect($(win, 'blTiles').textContent).toContain('69');
+    await win.BL.onOpen(undefined, { retarget: true });
+    await flush();
+    expect($(win, 'blTiles').textContent).toBe('');
+    expect($(win, 'blLevelSeg').querySelectorAll('button')).toHaveLength(0);
+    expect($(win, 'blTable').textContent).toContain('No results yet');
+    expect($(win, 'blStrip').textContent).toBe('');
+    expect($(win, 'blStatus').textContent).toBe('idle');
+    expect($(win, 'blAttachBtn').style.display).toBe('none');
+    const before = win.__fetches.length;
+    await win.BL.pinBaseline();
+    expect(win.__fetches.slice(before).some(([u]) => /\/baseline$/.test(u))).toBe(false);
+  });
+
+  it('a run started elsewhere takes the view over a past run', async () => {
+    const win = boot(SETUP + 'window.__busy = true; BL.onOpen("org/m:Q4", { run: "p1" });');
+    await flush(); await flush();
+    expect(win.BL.running()).toBe(true);
+    expect($(win, 'blStatus').textContent).toContain('started elsewhere');
+    expect($(win, 'blTiles').textContent).toBe('');
+    win.BL.cancel();
   });
 });

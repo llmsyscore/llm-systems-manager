@@ -137,7 +137,7 @@
     return `<div class="tool-grid">${tools.map(card).join('')}</div>`;
   }
 
-  // r: {icon, tool, toolId?, title?, model, host, result, live?, when?, ts};
+  // r: {icon, tool, toolId?, title?, model, host, result, live?, when?, ts, openRun?};
   // a row without toolId renders inert (no rowlink, no data attributes).
   function ledgerRow(r, nowMs) {
     const attrs = r.toolId
@@ -145,6 +145,7 @@
         (r.model ? ` data-model="${esc(r.model)}"` : '') +
         (r.target && r.target.provider ? ` data-provider="${esc(r.target.provider)}"` +
           (r.target.agent ? ` data-agent="${esc(r.target.agent)}"` : '') : '') +
+        (r.openRun ? ` data-run="${esc(r.openRun)}"` : '') +
         ` title="${esc(r.title || 'Open ' + r.tool)}"`
       : '';
     const pk = r.pick;

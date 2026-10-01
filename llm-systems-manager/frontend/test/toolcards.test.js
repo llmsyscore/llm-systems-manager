@@ -125,6 +125,12 @@ describe('ledger', () => {
     expect(html).toContain('title="Open Report Card"');
   });
 
+  it('names the stored run a row opens (#1162)', () => {
+    expect(TC.ledgerRow({ ...RUN, openRun: 'r"1' })).toContain('data-run="r&quot;1"');
+    expect(TC.ledgerRow(RUN)).not.toContain('data-run');
+    expect(TC.ledgerRow({ ...RUN, toolId: null, openRun: 'r1' })).not.toContain('data-run');
+  });
+
   it('renders a row without toolId as inert', () => {
     const html = TC.ledgerRow({ ...RUN, toolId: null });
     expect(html).not.toContain('rowlink');
