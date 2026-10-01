@@ -41,7 +41,8 @@
     const a2m = !!(a.last_heartbeat_data && a.last_heartbeat_data.control_channel_tls);
     const issued = a.last_cert_issued_at ? String(a.last_cert_issued_at).slice(0, 10) : '';
     if (m2a && a2m) return { mode: 'mutual', glyph: '⇄', cls: 'tls', label: 'tls', issued,
-      title: 'Mutual TLS — both directions encrypted' + (issued ? ' · cert issued ' + issued : '') };
+      title: 'Mutual TLS — both directions encrypted' + (issued ? ' · cert issued ' + issued : '')
+        + (a.tls_role_checked_at ? ' · role checked' : '') };
     if (m2a) return { mode: 'in', glyph: '→', cls: 'tls one', label: 'tls', issued,
       title: 'TLS manager → agent only; control channel is plain' };
     if (a2m) return { mode: 'out', glyph: '←', cls: 'tls one', label: 'tls', issued,

@@ -33,6 +33,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
+from urllib.parse import urlsplit
 
 import psutil
 import requests
@@ -74,7 +75,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.09.30-1"
+VERSION = "v2026.10.01-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -711,6 +712,172 @@ _state: dict[str, Any] = {
 
 _metric_client: Optional[bmc.BufferedMetricClient] = None
 _post_session = requests.Session()
+
+# ── Certificate roles (#1161) ─────────────────────────────────────────
+_ROLE_ZONE = "role.llmsys.internal"
+_ROLE_NAMES = {
+    "manager": f"manager.{_ROLE_ZONE}",
+    "alarm_engine": f"alarm-engine.{_ROLE_ZONE}",
+}
+_tls_roles_cache: dict = {}
+
+
+def _tls_roles_path() -> Path:
+    return Path(CONFIG.AGENT_INSTALL_DIR) / "data" / "tls-roles.json"
+
+
+def _tls_roles_load() -> dict:
+    """Locked peer roles: {} when the file is absent, every role when it is unreadable."""
+    p = _tls_roles_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        return {r: str(data[r]) for r in _ROLE_NAMES if data.get(r)}
+    except Exception as e:
+        logger.error("role lock file %s is unreadable (%s) — every role stays required", p.name, e)
+        return {r: "unreadable" for r in _ROLE_NAMES}
+
+
+def _tls_role_locked(role: str) -> bool:
+    """True once this peer role has been seen in a certificate."""
+    if "roles" not in _tls_roles_cache:
+        _tls_roles_cache["roles"] = _tls_roles_load()
+    return bool(_tls_roles_cache["roles"].get(role))
+
+
+def _tls_role_lock(role: str) -> None:
+    """Records a peer role as required from now on."""
+    if role not in _ROLE_NAMES:
+        raise ValueError(f"unknown role {role!r}")
+    if _tls_role_locked(role):
+        return
+    roles = dict(_tls_roles_cache["roles"])
+    roles[role] = datetime.now(timezone.utc).isoformat()
+    _tls_roles_cache["roles"] = roles
+    try:
+        atomic_write_text(_tls_roles_path(), json.dumps(roles, indent=2), mode=0o600)
+    except OSError as e:
+        logger.warning("could not save the role lock (%s) — %s stays required until the next restart",
+                       e, role.replace("_", " "))
+
+
+def _peer_role_for(url: str) -> "str | None":
+    """Which peer role an https URL belongs to, by the configured manager and alarm-engine URLs."""
+    u = urlsplit(str(url or ""))
+    if u.scheme.lower() != "https":
+        return None
+    for role, base in (("manager", CONFIG.MANAGER_URL), ("alarm_engine", CONFIG.ALARM_ENGINE_URL)):
+        b = urlsplit(str(base or ""))
+        if b.scheme.lower() == "https" and b.netloc.lower() == u.netloc.lower():
+            return role
+    return None
+
+
+def _is_name_mismatch(exc: BaseException) -> bool:
+    """True when the failure is the peer certificate lacking the required name."""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if type(cur).__name__ == "CertificateError":
+            return True
+        inner = [getattr(cur, "reason", None), *getattr(cur, "args", ())]
+        if any(isinstance(x, BaseException) and id(x) not in seen and _is_name_mismatch(x) for x in inner):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+class _RoleAdapter(requests.adapters.HTTPAdapter):
+    """HTTPS adapter that requires one reserved role name in the peer certificate."""
+
+    def __init__(self, role_name: str, quiet: bool = False, **kwargs):
+        self._role_name = role_name
+        self._quiet = quiet
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["assert_hostname"] = self._role_name
+        super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, proxy, **kwargs):
+        kwargs["assert_hostname"] = self._role_name
+        return super().proxy_manager_for(proxy, **kwargs)
+
+    def send(self, request, **kwargs):
+        try:
+            return super().send(request, **kwargs)
+        except Exception as e:
+            if not self._quiet and _is_name_mismatch(e):
+                logger.error("refused %s: its certificate does not carry the required role %s",
+                             urlsplit(request.url).netloc, self._role_name)
+            raise
+
+
+class _RoleRouter(requests.adapters.HTTPAdapter):
+    """Sends manager and alarm-engine requests through a role-requiring adapter once that role is locked."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._by_role = {role: _RoleAdapter(name) for role, name in _ROLE_NAMES.items()}
+
+    def send(self, request, **kwargs):
+        role = _peer_role_for(request.url)
+        if role and _tls_role_locked(role):
+            return self._by_role[role].send(request, **kwargs)
+        return super().send(request, **kwargs)
+
+    def close(self):
+        for adapter in self._by_role.values():
+            adapter.close()
+        super().close()
+
+
+def _new_post_session() -> "requests.Session":
+    """A fresh session with the role router mounted."""
+    s = requests.Session()
+    s.mount("https://", _RoleRouter())
+    return s
+
+
+def _role_get(role: str, url: str, **kwargs):
+    """GET that requires `role` in the peer certificate once that role is locked."""
+    if _tls_role_locked(role):
+        s = requests.Session()
+        s.mount("https://", _RoleAdapter(_ROLE_NAMES[role]))
+        return s.get(url, **kwargs)
+    return requests.get(url, **kwargs)
+
+
+def _maybe_lock_peer_roles() -> None:
+    """Locks the manager's and alarm engine's role the first time their certificate carries it."""
+    ca_path = _ca_bundle_path()
+    if not ca_path.is_file():
+        return
+    for role, base in (("manager", CONFIG.MANAGER_URL), ("alarm_engine", CONFIG.ALARM_ENGINE_URL)):
+        base = str(base or "").rstrip("/")
+        if _tls_role_locked(role) or not base.lower().startswith("https://"):
+            continue
+        try:
+            s = requests.Session()
+            s.mount("https://", _RoleAdapter(_ROLE_NAMES[role], quiet=True))
+            ok = s.get(f"{base}/health", timeout=4, verify=str(ca_path)).ok
+        except Exception as e:
+            if _is_name_mismatch(e):
+                _diag_throttle(f"tls_role_missing_{role}",
+                               "%s certificate has no role yet — it will be required once it appears",
+                               role.replace("_", " "), level=logging.WARNING)
+            continue
+        if ok:
+            _tls_role_lock(role)
+            logger.info("%s: certificate role checked — required from now on", role.replace("_", " "))
+
+
+_post_session.mount("https://", _RoleRouter())
+
 _reload_lock = threading.Lock()
 # _lms_session moved to agent/providers/lms.py (Tier 3 A2).
 
@@ -785,7 +952,7 @@ def _maybe_upgrade_manager_https(ack: dict) -> None:
         )
         return
     try:
-        r = requests.get(f"{https_url}/health", timeout=4, verify=str(ca_path))
+        r = _role_get("manager", f"{https_url}/health", timeout=4, verify=str(ca_path))
         if not r.ok:
             _diag_throttle(
                 "mgr_https_probe_status",
@@ -870,7 +1037,7 @@ def _maybe_sync_ae_url(ack: dict) -> None:
             )
             return
         try:
-            r = requests.get(f"{new_ae}/health", timeout=4, verify=str(ca_path))
+            r = _role_get("alarm_engine", f"{new_ae}/health", timeout=4, verify=str(ca_path))
             if not r.ok:
                 _diag_throttle(
                     "ae_probe_status",
@@ -2121,6 +2288,7 @@ def heartbeat_loop() -> None:
                     logger.info("heartbeat succeeded after re-enable — collection resumed")
                 _maybe_upgrade_manager_https(ack)
                 _maybe_sync_ae_url(ack)
+                _maybe_lock_peer_roles()
                 _maybe_readvertise(tok)
             elif r.status_code in (401, 403):
                 with _runtime_lock:
@@ -3488,7 +3656,7 @@ def agent_self_update(authorization: Optional[str] = Header(default=None)) -> St
         def _fetch_worker() -> None:
             try:
                 for n in _fetch_tarball(tarball_url, {"Authorization": f"Bearer {tok}"}, tarball_path,
-                                        _post_session.verify, fetched):
+                                        _post_session.verify, fetched, session_factory=_new_post_session):
                     fetch_q.put(("note", n))
                 fetch_q.put(("ok", None))
             except Exception as e:  # noqa: BLE001 — reported in the done frame below

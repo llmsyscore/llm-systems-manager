@@ -70,6 +70,10 @@ describe('#793 TLS glyph chip', () => {
   test('pending agent explains the cert is issued on approval', () => {
     expect(V.tlsInfo({ status: 'pending', bind_url: 'http://x:1' }).title).toMatch(/issued on approval/);
   });
+  test('title says when the certificate role is checked (#1161)', () => {
+    expect(V.tlsInfo(approved('a', { tls_role_checked_at: '2026-10-02T10:00:00Z' })).title).toMatch(/role checked/);
+    expect(V.tlsInfo(approved('a')).title).not.toMatch(/role checked/);
+  });
 });
 
 describe('#793 description line only when it adds information', () => {

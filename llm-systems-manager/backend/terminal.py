@@ -29,7 +29,6 @@ import threading
 from collections import OrderedDict
 from types import SimpleNamespace
 
-import requests
 from flask import current_app, jsonify, request as flask_request
 
 import agent_registry  # type: ignore[import-not-found]  # sibling
@@ -166,7 +165,7 @@ def _proxy_sid(method: str, sid: str, agent_path: str,
                 upstream = None
                 handed_off = False
                 try:
-                    upstream = requests.get(
+                    upstream = agent_registry.agent_http(agent).get(
                         full,
                         headers={"Authorization": f"Bearer {agent['token']}"},
                         stream=True, timeout=(5, _STREAM_READ_TIMEOUT_S),

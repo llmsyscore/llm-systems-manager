@@ -453,7 +453,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
                          if has_request_context() else None)
                 if _leid:
                     _hdrs["Last-Event-ID"] = _leid   # SSE resume → agent replay buffer
-                upstream = requests.get(
+                upstream = agent_registry.agent_http(agent).get(
                     full,
                     headers=_hdrs,
                     stream=True, timeout=(5, read_timeout),

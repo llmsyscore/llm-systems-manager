@@ -475,3 +475,21 @@ describe('jobs strip (#915)', () => {
     expect(hj[2].querySelector('[data-cancel-job]')).not.toBeNull();
   });
 });
+
+describe('#1161 certificate role rows', () => {
+  test('agents node counts role-checked agents', () => {
+    const d = { ...HEALTHY, agents: [
+      { id: 'a1', hostname: 'h1', status: 'approved', liveness: 'live', tls_direction: 'both', tls_role_checked: true },
+      { id: 'a2', hostname: 'h2', status: 'approved', liveness: 'live', tls_direction: 'both', tls_role_checked: false },
+      { id: 'a3', hostname: 'h3', status: 'pending', liveness: 'pending' },
+    ] };
+    expect(view().detailRows(d, 'agents')).toContainEqual(['certificate role checked', '1 of 2', '']);
+    const all = { ...d, agents: d.agents.map(a => ({ ...a, tls_role_checked: true })) };
+    expect(view().detailRows(all, 'agents')).toContainEqual(['certificate role checked', '2 of 2', 'ok']);
+  });
+  test('alarm engine node says whether its role is checked', () => {
+    const svc = HEALTHY.services.map(s => s.name === 'alarm_engine' ? { ...s, tls_role_checked: true } : s);
+    expect(view().detailRows({ ...HEALTHY, services: svc }, 'ae')).toContainEqual(['certificate role', 'checked', 'ok']);
+    expect(view().detailRows(HEALTHY, 'ae')).toContainEqual(['certificate role', 'not yet', '']);
+  });
+});
