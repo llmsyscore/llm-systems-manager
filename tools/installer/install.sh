@@ -1339,6 +1339,54 @@ else
   warn "skipping /tmp cleanup — $FAIL service(s) failed health checks; staging at $LLMSYS_CLONE_TMP is preserved"
 fi
 
+# ── First admin sign-in ─────────────────────────────────────────────────────
+# Runs the manager's admin password tool as the run user; prints nothing when absent.
+admin_pw_tool() {
+  local py="$LLMSYS_INSTALL_DIR/llm-systems-manager/venv/bin/python"
+  local tool="$LLMSYS_INSTALL_DIR/llm-systems-manager/backend/admin_password.py"
+  $SUDO test -x "$py" && $SUDO test -f "$tool" || return 0
+  as_run_user "$py" "$tool" "$@" 2>/dev/null || true
+}
+
+# TEMP_ADMIN holds "<user> <password>" lines; ADMIN_RESET_PENDING=1 means the operator still has to run the tool.
+TEMP_ADMIN=""; ADMIN_RESET_PENDING=0
+case "$MODE" in
+  1|2|3)
+    case "$(admin_pw_tool status)" in
+      empty)
+        TEMP_ADMIN="$(admin_pw_tool reset --yes --porcelain)"
+        [[ -n "$TEMP_ADMIN" ]] || ADMIN_RESET_PENDING=1
+        ;;
+      reset-required)
+        warn "an admin account has no password it can sign in with. The password older releases shipped is no longer accepted."
+        if [[ -t 0 ]]; then
+          read -rp "  Replace it with a temporary password now? It is shown below. [Y/n] " _ans
+          case "${_ans:-y}" in
+            y|Y|yes|YES) TEMP_ADMIN="$(admin_pw_tool reset --yes --porcelain)" ;;
+          esac
+        fi
+        [[ -n "$TEMP_ADMIN" ]] || ADMIN_RESET_PENDING=1
+        ;;
+    esac
+    ;;
+esac
+
+# Prints the sign-in lines for the Next steps list.
+signin_step() {
+  local u p
+  if [[ -n "$TEMP_ADMIN" ]]; then
+    while read -r u p; do
+      [[ -n "$p" ]] || continue
+      echo "       Sign in as:           ${u}"
+      echo "       Temporary password:   ${p}"
+    done <<< "$TEMP_ADMIN"
+    echo "       You set your own password at first sign-in. The temporary one is shown only here."
+  elif (( ADMIN_RESET_PENDING )); then
+    echo "       To sign in, create a temporary admin password first:"
+    echo "         sudo ${LLMSYS_INSTALL_DIR}/llm-systems-manager/venv/bin/python ${LLMSYS_INSTALL_DIR}/llm-systems-manager/backend/admin_password.py reset"
+  fi
+}
+
 # ── Closing banner ──────────────────────────────────────────────────────────
 DASHBOARD_URL="http://${PRIMARY_IP}:5000/"
 
@@ -1372,17 +1420,20 @@ echo "  ────────────────────────
 case "$MODE" in
   1)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
+    signin_step
     echo "    2. Approve this host's agent from the Admin tab → Agents"
     echo "    3. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     echo "       (SMTP creds, InfluxDB tokens; file is mode 0600)"
     ;;
   2)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
+    signin_step
     echo "    2. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     echo "       (set real IPs, SMTP creds, InfluxDB tokens; file is mode 0600)"
     ;;
   3)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
+    signin_step
     echo "    2. Confirm the remote alarm-engine URL set in [manager].alarm_engine_url"
     echo "    3. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     ;;

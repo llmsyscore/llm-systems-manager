@@ -267,8 +267,8 @@ proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-
 # Admin dropdown omits "auto" — switching into/out of it is a TOML edit.
 mode = "auto"
 
-# Seed username, matching the built-in fallback credential used while
-# password_hash is blank (llmadmin/llmadmin).
+# Username of the first admin account. While password_hash is blank the
+# installer gives it a temporary password, shown at the end of the install.
 username = "llmadmin"
 
 # ★ Secret. scrypt hash "scrypt$<salt_b64>$<dk_b64>". Leave blank to use the

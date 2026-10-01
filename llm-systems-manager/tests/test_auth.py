@@ -5,7 +5,7 @@ Scope (now lives in the dedicated `auth` module, extracted from the manager
 monolith in Tier 3 / PR M1):
 - scrypt_hash / scrypt_verify — pure crypto, no I/O
 - auth_runtime / auth_write — read/write of data/manager_auth.json
-- auth_credential — precedence (JSON runtime > TOML > built-in default)
+- auth_credential — precedence (JSON runtime > TOML > none)
 - auth_mode / auth_policy — TOML-pinned vs JSON-overridable
 
 We never touch the real data/manager_auth.json — every test monkey-patches
@@ -13,7 +13,7 @@ auth.MANAGER_AUTH_FILE to a tmp_path file so the live install stays untouched.
 
 The conftest loads manager_mod (the Flask app), which in turn calls
 auth.register_auth(...) — so by the time tests run, auth's module-level
-globals (DEFAULT_AUTH_HASH, _settings, MANAGER_AUTH_FILE) are populated.
+globals (_settings, MANAGER_AUTH_FILE) are populated.
 """
 from __future__ import annotations
 
@@ -64,12 +64,6 @@ class TestScrypt:
             "scrypt$bad-b64!!!$alsobad!!!",
         ):
             assert auth.scrypt_verify("any", bad) is False
-
-    def test_default_hash_verifies_default_password(self):
-        # The shipped default ("llmadmin"/"llmadmin") must round-trip via
-        # the auth.DEFAULT_AUTH_HASH populated by register_auth — fresh
-        # installs depend on it.
-        assert auth.scrypt_verify(auth.DEFAULT_AUTH_PASSWORD, auth.DEFAULT_AUTH_HASH) is True
 
 
 # ── auth_runtime / auth_write ────────────────────────────────────────────────
@@ -127,12 +121,12 @@ class TestAuthCredential:
     def test_falls_back_to_default_when_nothing_configured(
         self, temp_auth_file, monkeypatch
     ):
-        # No JSON file, TOML has no password_hash → return built-in default
+        # No JSON file, TOML has no password_hash → no credential at all
         monkeypatch.setattr(M.settings.manager.auth, "password_hash", "")
         monkeypatch.setattr(M.settings.manager.auth, "username", "")
         user, h, is_default = auth.auth_credential()
         assert user == auth.DEFAULT_AUTH_USER
-        assert h == auth.DEFAULT_AUTH_HASH
+        assert h == ""
         assert is_default is True
 
     def test_toml_wins_over_default(self, temp_auth_file, monkeypatch):

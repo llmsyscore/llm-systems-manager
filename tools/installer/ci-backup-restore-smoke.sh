@@ -6,7 +6,7 @@
 #
 # Env: MGR_DIR (manager install root), AE_DIR (AE install root, defaults to
 # MGR_DIR for a co-located install), MGR_URL, AE_URL (probed with -k),
-# PASSPHRASE (set = encrypted archives), ADMIN_USER/ADMIN_PW (seeded admin).
+# PASSPHRASE (set = encrypted archives), ADMIN_USER/ADMIN_PW (admin sign-in).
 #
 # NEVER run against a live deployment: it stops units and deletes state.
 set -euo pipefail
@@ -16,9 +16,8 @@ AE_DIR="${AE_DIR:-$MGR_DIR}"
 MGR_URL="${MGR_URL:-http://127.0.0.1:5000}"
 AE_URL="${AE_URL:-https://127.0.0.1:8081}"
 PASSPHRASE="${PASSPHRASE:-}"
-ADMIN_USER="${ADMIN_USER:-llmadmin}"
-ADMIN_PW="${ADMIN_PW:-llmadmin-ci-rotated}"
-SHIPPED_PW="llmadmin"
+# shellcheck source=tools/installer/ci-admin-login.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci-admin-login.sh"
 MGR_UNIT=llm-systems-manager
 AE_UNIT=llm-systems-alarm-engine
 AGENT_UNIT=llm-systems-agent
@@ -108,18 +107,10 @@ login() {
   rm -f "$3"
   code -c "$3" --data-urlencode "username=$1" --data-urlencode "password=$2" "$MGR_URL/login"
 }
-# admin_login — admin session in $JAR; a first login on a fresh install
-# rotates the shipped default password to ADMIN_PW (mandatory-change wall).
+# admin_login — admin session in $JAR (see ci-admin-login.sh).
 admin_login() {
-  local c
-  c="$(login "$ADMIN_USER" "$ADMIN_PW" "$JAR")"
-  case "$c" in 302|303) return 0 ;; esac
-  c="$(login "$ADMIN_USER" "$SHIPPED_PW" "$JAR")"
-  case "$c" in 302|303) : ;; *) fail "admin login returned $c (want 302/303)" ;; esac
-  code -b "$JAR" -X POST -H 'Content-Type: application/json' \
-    -d "{\"current_password\":\"$SHIPPED_PW\",\"new_password\":\"$ADMIN_PW\"}" "$MGR_URL/api/account/password" >/dev/null
-  c="$(login "$ADMIN_USER" "$ADMIN_PW" "$JAR")"
-  case "$c" in 302|303) : ;; *) fail "admin login after password rotation returned $c (want 302/303)" ;; esac
+  local why
+  if ! why="$(ci_admin_login "$JAR")"; then fail "admin login failed: $why"; fi
 }
 # unit_present UNIT — the unit file is installed on this host.
 unit_present() { systemctl cat "$1" >/dev/null 2>&1; }
@@ -231,7 +222,7 @@ body="$(mgr "$MGR_URL/api/admin/settings")"
 jq_ok "$body" ".values[\"manager.branding.palette\"] != \"$SEED_PALETTE\"" "palette must be back to default"
 body="$(mgr "$MGR_URL/api/admin/backup-status")"
 jq_ok "$body" ".keep_last != $SEED_KEEP_LAST and .encrypted == false" "backup settings must be back to default"
-pass "manager: users file removed, TOML reverted, default admin re-seeded, seeded state gone"
+pass "manager: users file removed, TOML reverted, admin created afresh, seeded state gone"
 
 systemctl stop "$AE_UNIT"
 if [ -f "$WORK/pristine-ae.toml" ]; then

@@ -61,7 +61,7 @@ class UserStore:
     def _enabled_admins(self, users: dict, exclude: str = "") -> int:
         return sum(
             1 for n, u in users.items()
-            if u.get("role") == "admin" and not u.get("disabled") and n != exclude
+            if u.get("role") == "admin" and not u.get("disabled") and not u.get("reset_required") and n != exclude
         )
 
     # ── reads ────────────────────────────────────────────────────
@@ -87,14 +87,28 @@ class UserStore:
         with self._lock:
             return self._enabled_admins(self._load()["users"])
 
-    def is_default_admin(self, default_user: str, verify_default) -> bool:
-        """True when the default admin still has the shipped default password.
-        verify_default(hash) -> bool is auth.scrypt_verify bound to the default pw."""
-        u = self.get(default_user)
-        return bool(u and u.get("role") == "admin" and verify_default(u.get("password_hash", "")))
+    def password_pending(self) -> bool:
+        """True when an enabled admin still has a temporary password or needs a new one."""
+        with self._lock:
+            users = self._load()["users"]
+        return any(u.get("role") == "admin" and not u.get("disabled")
+                   and (u.get("must_change") or u.get("reset_required")) for u in users.values())
+
+    def needs_reset(self) -> bool:
+        """True when no enabled admin has a password to sign in with."""
+        with self._lock:
+            return self._enabled_admins(self._load()["users"]) == 0
+
+    def awaiting_reset(self, is_retired) -> list:
+        """Enabled admins marked reset_required or whose password is_retired(hash) accepts."""
+        with self._lock:
+            users = self._load()["users"]
+        return [n for n, u in sorted(users.items())
+                if u.get("role") == "admin" and not u.get("disabled")
+                and (u.get("reset_required") or is_retired(u.get("password_hash") or ""))]
 
     # ── writes ───────────────────────────────────────────────────
-    def create(self, username: str, password_hash: str, role: str) -> dict:
+    def create(self, username: str, password_hash: str, role: str, must_change: bool = False) -> dict:
         name = self.normalize(username)
         if not self.valid_name(name):
             raise ValueError("invalid username (use a-z 0-9 . _ - up to 32 chars)")
@@ -110,6 +124,8 @@ class UserStore:
                 "created_at": ts, "updated_at": ts, "last_login": None,
                 "password_changed_at": ts,
             }
+            if must_change:
+                data["users"][name]["must_change"] = True
             self._save(data)
             return data["users"][name]
 
@@ -125,11 +141,40 @@ class UserStore:
             self._save(data)
             return u
 
-    def set_password(self, username: str, password_hash: str) -> dict:
+    def set_password(self, username: str, password_hash: str, must_change: bool = False) -> dict:
         def fn(_users, _n, u):
             u["password_hash"] = password_hash
             u["password_changed_at"] = _now_iso()
+            u.pop("reset_required", None)
+            u.pop("must_change", None)
+            if must_change:
+                u["must_change"] = True
         return self._mutate(username, fn)
+
+    def set_temporary(self, username: str, password_hash: str) -> str:
+        """Gives `username` a temporary password it must change at sign-in; a missing user is
+        created as an admin and a disabled one is enabled. Returns the stored name."""
+        name = self.normalize(username)
+        with self._lock:
+            if name not in self._load()["users"]:
+                self.create(name, password_hash, "admin", must_change=True)
+                return name
+            self._mutate(name, lambda _u, _n, u: u.__setitem__("disabled", False))
+            self.set_password(name, password_hash, must_change=True)
+            return name
+
+    def retire(self, is_retired) -> list:
+        """Blanks every password is_retired(hash) accepts and marks the user reset_required;
+        returns their names."""
+        with self._lock:
+            data = self._load()
+            hit = [n for n, u in data["users"].items() if is_retired(u.get("password_hash") or "")]
+            for n in hit:
+                data["users"][n].update(password_hash="", reset_required=True, updated_at=_now_iso())
+                data["users"][n].pop("must_change", None)
+            if hit:
+                self._save(data)
+            return hit
 
     def set_role(self, username: str, role: str) -> dict:
         if role not in ROLES:
@@ -269,9 +314,9 @@ def authenticate(username: str, password: str, remote_ip: str) -> dict:
         return {"ok": False, "locked": True,
                 "retry_after": max(LOCKOUT.retry_after(k) for k in keys)}
     u = STORE.get(name) if STORE else None
-    # Always run one scrypt_verify (decoy when no user) so timing can't enumerate users.
-    pw_ok = auth.scrypt_verify(password, u.get("password_hash", "") if u else _DECOY_HASH)
-    if not u or u.get("disabled") or not pw_ok:
+    # Always run one scrypt_verify (decoy when no user or no hash) so timing can't enumerate users.
+    pw_ok = auth.scrypt_verify(password, (u or {}).get("password_hash") or _DECOY_HASH)
+    if not u or u.get("disabled") or u.get("reset_required") or not pw_ok:
         if LOCKOUT:
             for k in keys:
                 LOCKOUT.record_failure(k)
@@ -286,6 +331,23 @@ def authenticate(username: str, password: str, remote_ip: str) -> dict:
 from flask import g, jsonify, request as flask_request, session  # noqa: E402
 
 MIN_PASSWORD = 8
+
+
+def password_error(password: str) -> "str | None":
+    """Why `password` cannot be set (too short, or the one older releases shipped), else None."""
+    if len(password) < MIN_PASSWORD:
+        return f"password must be at least {MIN_PASSWORD} characters"
+    if password == auth.DEFAULT_AUTH_USER:
+        return "choose a different password; this one is no longer accepted"
+    return None
+
+
+def bootstrap(seed_user: str, seed_hash: str, is_retired) -> "tuple[list, bool]":
+    """Startup pass: seeds the first admin from a provisioned hash, then retires old shipped
+    passwords. Returns (retired names, whether no admin can sign in yet)."""
+    if seed_hash:
+        STORE.seed_admin(seed_user, seed_hash)
+    return STORE.retire(is_retired), STORE.needs_reset()
 
 
 def _bad(msg, code=400):
@@ -315,8 +377,8 @@ def register_routes(app, ctx) -> None:
             return deny
         b = flask_request.get_json(silent=True) or {}
         pw = b.get("password") or ""
-        if len(pw) < MIN_PASSWORD:
-            return _bad(f"password must be at least {MIN_PASSWORD} characters")
+        if (err := password_error(pw)):
+            return _bad(err)
         try:
             STORE.create(b.get("username") or "", auth.scrypt_hash(pw), b.get("role") or "operator")
         except ValueError as e:
@@ -345,8 +407,8 @@ def register_routes(app, ctx) -> None:
                     return _bad("cannot disable yourself", 409)
                 STORE.set_disabled(target, bool(b["disabled"]))
             if b.get("password"):
-                if len(b["password"]) < MIN_PASSWORD:
-                    return _bad(f"password must be at least {MIN_PASSWORD} characters")
+                if (err := password_error(b["password"])):
+                    return _bad(err)
                 STORE.set_password(target, auth.scrypt_hash(b["password"]))
         except ValueError as e:
             log.warning("user update rejected: %s", e)
@@ -411,7 +473,9 @@ def register_routes(app, ctx) -> None:
             return jsonify({"ok": False, "error": "current password is incorrect",
                             "field": "current_password"}), 403
         new = b.get("new_password") or ""
-        if len(new) < MIN_PASSWORD:
-            return _bad(f"password must be at least {MIN_PASSWORD} characters")
+        if (err := password_error(new)):
+            return _bad(err)
+        if u.get("must_change") and new == b.get("current_password"):
+            return _bad("choose a password different from the temporary one")
         STORE.set_password(me, auth.scrypt_hash(new))
         return jsonify({"ok": True})

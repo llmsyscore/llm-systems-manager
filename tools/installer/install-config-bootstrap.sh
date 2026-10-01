@@ -122,18 +122,22 @@ if $PROMPT; then
     read -rp "  admin CIDR (subnet allowed to call admin endpoints) [$DETECTED_SUBNET]: " ADMIN_CIDR
     ADMIN_CIDR="${ADMIN_CIDR:-$DETECTED_SUBNET}"
     echo
-    echo "  Dashboard admin login. Press ENTER on the password to keep the"
-    echo "  built-in default (llmadmin / llmadmin) — change it later in"
-    echo "  Admin → Authentication. Custom passwords must be at least 8"
+    echo "  Dashboard admin login. Press ENTER on the password to get a"
+    echo "  temporary one: it is shown at the end of the install and you set"
+    echo "  your own at first sign-in. Custom passwords must be at least 8"
     echo "  characters, printable only (no control chars / newlines / NUL)."
     read -rp  "  Manager admin username [llmadmin]: " ans; ADMIN_USER="${ans:-llmadmin}"
     while :; do
-      read -rsp "  Manager admin password [llmadmin]: " ADMIN_PW; echo
+      read -rsp "  Manager admin password [temporary]: " ADMIN_PW; echo
       if [[ -z "$ADMIN_PW" ]]; then
         break
       fi
       if (( ${#ADMIN_PW} < 8 )); then
         warn "  password must be at least 8 characters (got ${#ADMIN_PW}) — try again."
+        continue
+      fi
+      if [[ "$ADMIN_PW" == "llmadmin" ]]; then
+        warn "  that password is no longer accepted — choose a different one."
         continue
       fi
       # Reject any control char (incl. NUL, \n, \r, \t, ESC) — printable ASCII
@@ -302,10 +306,10 @@ else
       _pw="$LLMSYS_CFG_ADMIN_PASSWORD"
       _stripped_len=$(LC_ALL=C printf '%s' "$_pw" | LC_ALL=C tr -d '[:cntrl:]' | wc -c)
       _raw_len=$(LC_ALL=C printf '%s' "$_pw" | wc -c)
-      if (( ${#_pw} < 8 )); then
-        warn "LLMSYS_CFG_ADMIN_PASSWORD shorter than 8 chars — ignored (built-in default kept)"
+      if (( ${#_pw} < 8 )) || [[ "$_pw" == "llmadmin" ]]; then
+        warn "LLMSYS_CFG_ADMIN_PASSWORD is shorter than 8 chars or no longer accepted — ignored (a temporary password is created instead)"
       elif (( _stripped_len != _raw_len )); then
-        warn "LLMSYS_CFG_ADMIN_PASSWORD contains control characters — ignored (built-in default kept)"
+        warn "LLMSYS_CFG_ADMIN_PASSWORD contains control characters — ignored (a temporary password is created instead)"
       else
         ADMIN_PW="$_pw"
       fi
@@ -459,7 +463,7 @@ fi
 
 # Hash the admin password (scrypt, matching the manager's _scrypt_hash) so the
 # config stores only the hash — never the plaintext. An empty password leaves
-# the hash blank and the manager falls back to the llmadmin/llmadmin default.
+# the hash blank; the installer then creates a temporary password at the end.
 if (( HAS_MGR )) && [[ -n "$ADMIN_PW" ]]; then
   ADMIN_PW_HASH="$(ADMIN_PW="$ADMIN_PW" python3 - <<'PYH'
 import os, hashlib, base64
@@ -472,7 +476,7 @@ PYH
   if [[ -n "$ADMIN_PW_HASH" ]]; then
     ok "admin password hashed (scrypt) for user '$ADMIN_USER'"
   else
-    warn "admin password hashing failed — built-in default (llmadmin) will apply"
+    warn "admin password hashing failed — a temporary password is created at the end instead"
   fi
 fi
 unset ADMIN_PW
@@ -595,7 +599,7 @@ if has_mgr:
     if ae_url:
         text = sub_in_section(text, "manager", "alarm_engine_url", ae_url)
     # Dashboard admin login. Only the scrypt hash is written — never the
-    # plaintext. Blank hash leaves the built-in llmadmin/llmadmin default.
+    # plaintext. Blank hash leaves the account for the temporary password step.
     if admin_user:
         text = sub_in_section(text, "manager.auth", "username", admin_user)
     if admin_hash:

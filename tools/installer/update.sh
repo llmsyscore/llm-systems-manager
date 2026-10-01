@@ -1255,6 +1255,35 @@ PYEOF
   }
 fi
 
+# ── Admin sign-in: replace a password older releases shipped ──────────────
+TEMP_ADMIN=""
+admin_pw_tool() {
+  local py="$LLMSYS_INSTALL_DIR/llm-systems-manager/venv/bin/python"
+  local tool="$LLMSYS_INSTALL_DIR/llm-systems-manager/backend/admin_password.py"
+  $SUDO test -x "$py" && $SUDO test -f "$tool" || return 0
+  as_run_user "$py" "$tool" "$@" 2>/dev/null || true
+}
+if $HAVE_MANAGER && (( ! DRY_RUN )) && [[ "$(admin_pw_tool status)" == "reset-required" ]]; then
+  banner "Admin sign-in"
+  warn "an admin account has no password it can sign in with. The password older releases shipped is no longer accepted."
+  if prompt_yn "Replace it with a temporary password now? It is shown once, right here." "n"; then
+    TEMP_ADMIN="$(admin_pw_tool reset --yes --porcelain)"
+  fi
+  if [[ -n "$TEMP_ADMIN" ]]; then
+    echo
+    while read -r _u _p; do
+      [[ -n "$_p" ]] || continue
+      echo "    Sign in as:           ${_u}"
+      echo "    Temporary password:   ${_p}"
+    done <<< "$TEMP_ADMIN"
+    echo "    You set your own password at the next sign-in. The temporary one is shown only here."
+    echo
+  else
+    warn "left as-is; to get a temporary password later run:"
+    warn "    sudo $LLMSYS_INSTALL_DIR/llm-systems-manager/venv/bin/python $LLMSYS_INSTALL_DIR/llm-systems-manager/backend/admin_password.py reset"
+  fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────
 banner "Update summary"
 if (( ${#UPDATED_COMPONENTS[@]} > 0 )); then

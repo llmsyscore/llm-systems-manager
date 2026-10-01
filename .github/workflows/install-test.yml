@@ -31,6 +31,9 @@ on:
       - "llm-systems-alarm-engine/systemd/**"
       - ".gitattributes"
       - "**/requirements*.txt"
+      - "llm-systems-manager/backend/admin_password.py"
+      - "llm-systems-manager/backend/auth.py"
+      - "llm-systems-manager/backend/manager_users.py"
       - ".github/workflows/install-test.yml"
   schedule:
     - cron: "17 6 * * *"
@@ -67,7 +70,12 @@ jobs:
       # default, and the local agent installs after the manager is up.
       # --no-self-update pins the run to the PR's installer, not upstream's.
       - name: Run installer (mode 1)
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+
+      # The Next steps banner shows a temporary admin password; it must sign in
+      # once and force a change before anything else works (#1160).
+      - name: First sign-in with the temporary password
+        run: sudo bash tools/installer/ci-first-signin.sh /tmp/install.log
 
       - name: Smoke test
         run: sudo bash tools/installer/ci-smoke.sh
@@ -84,7 +92,17 @@ jobs:
         run: sudo bash tools/installer/ci-plant-stale-fixture.sh tools/installer/removed-paths.manifest
 
       - name: Reinstall over existing tree (mode 1)
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/reinstall.log
+
+      # A reinstall keeps the admin's own password (#1160).
+      - name: Reinstall kept the admin password
+        run: |
+          if grep -F 'Temporary password:' /tmp/reinstall.log; then
+            echo 'ERROR: the reinstall replaced the admin password'; exit 1
+          fi
+          code="$(curl -s -o /dev/null -w '%{http_code}' --data-urlencode username=llmadmin \
+            --data-urlencode password=ci-admin-rotated-pw http://127.0.0.1:5000/login)"
+          [ "$code" = "302" ] || { echo "the password set before the reinstall no longer signs in ($code)"; exit 1; }
 
       - name: Smoke test (post-reinstall)
         run: sudo bash tools/installer/ci-smoke.sh
@@ -144,13 +162,34 @@ jobs:
       - name: Plant stale upstream-removed artifacts
         run: sudo bash head/tools/installer/ci-plant-stale-fixture.sh head/tools/installer/removed-paths.manifest
 
+      # An install that never changed the password older releases shipped: the
+      # update must say so, replace it and show a temporary password (#1160).
+      - name: Plant an admin still on the old shipped password
+        run: |
+          sudo -u llmsys /opt/llm-systems-manager/llm-systems-manager/venv/bin/python - <<'PY'
+          import sys
+          sys.path.insert(0, "/opt/llm-systems-manager/llm-systems-manager/backend")
+          import auth, manager_users
+          store = manager_users.UserStore("/opt/llm-systems-manager/data/manager_users.json")
+          old = auth.scrypt_hash("llmadmin")
+          if store.get("llmadmin"):
+              store.set_password("llmadmin", old)
+          else:
+              store.create("llmadmin", old, "admin")
+          PY
+
       # REPO_SRC points update.sh at the PR-head checkout so it deploys the
       # code under test instead of cloning upstream main. --yes auto-confirms
       # the per-component sync/restart prompts; update.sh then verifies each
       # restarted service self-reports the freshly deployed version and
       # exits non-zero on mismatch or failed units.
       - name: Upgrade to head
-        run: sudo REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes
+        run: sudo REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update.log
+
+      - name: Update replaced the old shipped password with a temporary one
+        run: |
+          grep -F 'The password older releases shipped is no longer accepted' /tmp/update.log
+          sudo bash head/tools/installer/ci-first-signin.sh /tmp/update.log
 
       - name: Smoke test (post-upgrade)
         run: sudo bash head/tools/installer/ci-smoke.sh
@@ -368,7 +407,7 @@ jobs:
       # Approve + full-TLS verification. Admin HTTP calls stay on loopback
       # (127.0.0.1 is always in admin_cidrs); the agent itself dials the LAN IP.
       - name: Verify agent registers, is approved, and upgrades to full TLS
-        run: sudo MGR_URL=http://127.0.0.1:5000 AGENT_HOSTNAME=ci-split-agent bash tools/installer/ci-agent-tls-smoke.sh
+        run: sudo MGR_URL=http://127.0.0.1:5000 MGR_DIR=/opt/llm-systems-manager-mgr AGENT_HOSTNAME=ci-split-agent bash tools/installer/ci-agent-tls-smoke.sh
 
       - name: Wire the two hosts and assert cross-host coupling
         run: |

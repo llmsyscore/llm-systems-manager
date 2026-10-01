@@ -12,6 +12,9 @@ on:
       - ".env.example"
       - ".github/workflows/docker.yml"
       - "llm-systems-manager/backend/requirements.txt"
+      - "llm-systems-manager/backend/admin_password.py"
+      - "llm-systems-manager/backend/auth.py"
+      - "llm-systems-manager/backend/manager_users.py"
       - "llm-systems-alarm-engine/requirements.txt"
   # Nightly: base-image + released-:latest drift the path filter can't see.
   schedule:
@@ -95,23 +98,37 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":42.0,"unit":"%","hostname":"ci-smoke"}]}'
 
-      - name: Dashboard login (llmadmin) + admin route reachable
+      # A fresh container has no admin and prints the command that creates a
+      # temporary password; it must sign in once and force a change (#1160).
+      - name: Dashboard first sign-in (temporary password) + admin route reachable
         run: |
           jar=$(mktemp)
+          docker compose logs manager | grep -F 'admin_password.py reset'
+          if docker compose logs manager | grep -F 'Temporary password:'; then
+            echo "the container log carries a password" >&2; exit 1
+          fi
+          read -r _ temp < <(docker compose exec -T manager python3 backend/admin_password.py reset --yes --porcelain)
+          [ -n "$temp" ] || { echo "the admin password tool gave no temporary password" >&2; exit 1; }
           login=$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
-            --data-urlencode username=llmadmin --data-urlencode password=llmadmin \
+            --data-urlencode username=llmadmin --data-urlencode "password=$temp" \
             http://localhost:5000/login)
           echo "login -> HTTP $login"
           # Successful login always 302-redirects to /; a failed one renders 401.
-          [ "$login" = "302" ] || { echo "llmadmin/llmadmin login failed" >&2; exit 1; }
-          # The shipped default password is walled until changed; rotate it first.
+          [ "$login" = "302" ] || { echo "sign-in with the temporary password failed" >&2; exit 1; }
+          walled=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" \
+            http://localhost:5000/api/admin/audit-log)
+          [ "$walled" = "403" ] || { echo "temporary password was not held at the change step (got $walled)" >&2; exit 1; }
           curl -fsS -X POST http://localhost:5000/api/account/password -b "$jar" \
             -H 'Content-Type: application/json' \
-            -d '{"current_password":"llmadmin","new_password":"llmadmin-ci-rotated"}' | jq -e '.ok'
+            -d "$(jq -n --arg c "$temp" '{current_password: $c, new_password: "ci-admin-rotated-pw"}')" | jq -e '.ok'
           admin=$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" \
             http://localhost:5000/api/admin/audit-log)
           echo "admin route -> HTTP $admin"
           [ "$admin" = "200" ] || { echo "admin route not reachable as llmadmin (got $admin)" >&2; exit 1; }
+          old=$(curl -s -o /dev/null -w '%{http_code}' \
+            --data-urlencode username=llmadmin --data-urlencode password=llmadmin \
+            http://localhost:5000/login)
+          [ "$old" = "401" ] || { echo "the old shipped password signs in (got $old)" >&2; exit 1; }
 
       - name: Manager TLS cert covers LSM_MANAGER_PUBLIC_HOST
         run: |
@@ -213,13 +230,19 @@ jobs:
           { [ -n "$aid" ] && [ "$aid" != "null" ]; } || { echo "agent registration failed" >&2; exit 1; }
           echo "SEED_AGENT_ID=$aid" >> "$GITHUB_ENV"
           # Changed admin password (the #395 users-file re-seed guard).
-          jar="$(mktemp)"; newpw="pw-$(openssl rand -hex 8)"
+          # Releases up to v3.0.0 ship a fixed first password; later ones need one from the host tool.
+          jar="$(mktemp)"; newpw="pw-$(openssl rand -hex 8)"; cur=llmadmin
           code="$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
-            --data-urlencode username=llmadmin --data-urlencode password=llmadmin http://localhost:5000/login)"
+            --data-urlencode username=llmadmin --data-urlencode "password=$cur" http://localhost:5000/login)"
+          if [ "$code" != "302" ]; then
+            read -r _ cur < <(docker compose exec -T manager python3 backend/admin_password.py reset --yes --porcelain)
+            code="$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
+              --data-urlencode username=llmadmin --data-urlencode "password=$cur" http://localhost:5000/login)"
+          fi
           [ "$code" = "302" ] || { echo "baseline llmadmin login failed ($code)" >&2; exit 1; }
           curl -fsS -X POST http://localhost:5000/api/account/password -b "$jar" \
             -H 'Content-Type: application/json' \
-            -d "{\"current_password\":\"llmadmin\",\"new_password\":\"$newpw\"}" | jq -e '.ok'
+            -d "$(jq -n --arg c "$cur" --arg n "$newpw" '{current_password: $c, new_password: $n}')" | jq -e '.ok'
           echo "SEED_NEWPW=$newpw" >> "$GITHUB_ENV"
           # Identity files whose regeneration would betray a wiped volume.
           for _ in $(seq 1 12); do
@@ -259,7 +282,7 @@ jobs:
           [ "$code" = "302" ] || { echo "changed admin password lost in upgrade ($code)" >&2; exit 1; }
           old="$(curl -s -o /dev/null -w '%{http_code}' \
             --data-urlencode username=llmadmin --data-urlencode password=llmadmin http://localhost:5000/login)"
-          [ "$old" = "401" ] || { echo "default llmadmin password works again — users file re-seeded ($old)" >&2; exit 1; }
+          [ "$old" = "401" ] || { echo "the old shipped password signs in again — users file re-seeded ($old)" >&2; exit 1; }
           # Config re-render on the PR image: admin route still reachable.
           admin="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:5000/api/admin/audit-log)"
           [ "$admin" = "200" ] || { echo "admin route broken after upgrade ($admin)" >&2; exit 1; }

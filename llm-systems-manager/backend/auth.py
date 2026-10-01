@@ -4,10 +4,9 @@ Browser sessions are gated per [manager.auth].mode (required | disabled |
 trusted_cidr). Agent (bearer) calls and a small infra allowlist are never
 gated. Password hashing is stdlib scrypt (no extra dependency). Credentials
 resolve from the UI-managed data/manager_auth.json first, then the TOML
-[manager.auth] (installer provisioning), then a built-in default of
-llmadmin / llmadmin so a fresh "required" deploy logs in out of the box —
-the login page nudges the operator to change it, and Admin → Authentication
-edits the username / password / mode.
+[manager.auth] (installer provisioning). With neither, no admin exists until
+admin_password.py creates one with a temporary password on the manager host;
+a temporary password must be changed at first sign-in.
 
 Wired into the Flask app by main via register_auth(app, ctx, ...). The
 before_request gate, /login, /logout, and /api/admin/auth (GET/POST) all
@@ -20,7 +19,6 @@ registration so the hot path doesn't pay an attribute lookup per request.
 from __future__ import annotations
 
 import base64
-import functools
 import hashlib
 import hmac as _hmac
 import html
@@ -29,6 +27,7 @@ import logging
 import os
 import posixpath
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -53,7 +52,8 @@ __all__ = [
     "admin_ip_ok",
     "write_toml_auth_mode",
     "DEFAULT_AUTH_USER",
-    "DEFAULT_AUTH_PASSWORD",
+    "uses_retired_password",
+    "reset_command",
     "AUTH_OPEN_PATHS",
     "AUTH_MODES",
     "AUTH_RUNTIME_MODES",
@@ -61,7 +61,6 @@ __all__ = [
 
 # ── Public constants ──────────────────────────────────────────────────
 DEFAULT_AUTH_USER = "llmadmin"
-DEFAULT_AUTH_PASSWORD = "llmadmin"
 
 # Always reachable without a session: the agent bootstrap (no bearer yet),
 # health, and the auth routes themselves. Other agent endpoints are exempted
@@ -97,12 +96,6 @@ MANAGER_AUTH_FILE: Optional[Path] = None
 
 # ── Private module state (populated by register_auth) ─────────────────
 _AUTH_WRITE_LOCK = threading.Lock()
-
-# Hash of the shipped default password, computed once at register_auth time —
-# auth_credential() falls back to this when nothing is configured, so /login
-# renders and login attempts don't recompute scrypt (~tens of ms) on every
-# unauthenticated hit.
-DEFAULT_AUTH_HASH = ""
 
 _trusted_cidr_deny_last_log = 0.0  # throttle for the trusted_cidr deny diagnostic
 
@@ -216,16 +209,30 @@ def auth_write(updates: dict) -> None:
 
 
 def auth_credential() -> "tuple[str, str, bool]":
-    """(username, password_hash, is_default). UI-managed data/manager_auth.json
+    """(username, password_hash, unset). UI-managed data/manager_auth.json
     wins (admin-tab edits always take effect); then the TOML [manager.auth]
-    (installer provisioning); then the built-in llmadmin/llmadmin default."""
+    (installer provisioning); with neither the hash is "" and unset is True."""
     a = _settings.manager.auth
     rt = auth_runtime()
     if rt.get("password_hash"):
         return (rt.get("username") or a.username or DEFAULT_AUTH_USER), rt["password_hash"], False
     if (a.password_hash or "").strip():
         return (a.username or DEFAULT_AUTH_USER), a.password_hash.strip(), False
-    return (a.username or DEFAULT_AUTH_USER), DEFAULT_AUTH_HASH, True
+    return (a.username or DEFAULT_AUTH_USER), "", True
+
+
+def uses_retired_password(password_hash: str) -> bool:
+    """True when the hash is of the password older releases shipped for the first admin."""
+    return scrypt_verify(DEFAULT_AUTH_USER, password_hash)
+
+
+def reset_command() -> str:
+    """The host command that gives the admin a temporary password."""
+    if os.environ.get("LSM_CONTAINERIZED") == "1":
+        return "docker compose exec manager python3 backend/admin_password.py reset"
+    cfg = os.environ.get("LLM_SYSTEMS_CONFIG")
+    env = f"LLM_SYSTEMS_CONFIG={cfg} " if cfg else ""
+    return f"sudo {env}{sys.executable} {Path(__file__).with_name('admin_password.py')} reset"
 
 
 def auth_policy() -> str:
@@ -321,7 +328,7 @@ def _live_role_for_session() -> "tuple[Optional[str], bool]":
     if manager_users.STORE is None:
         return (session.get("role") or "admin"), True
     u = manager_users.STORE.get(user)
-    if not u or u.get("disabled"):
+    if not u or u.get("disabled") or u.get("reset_required"):
         return None, False
     return (u.get("role") or "operator"), True
 
@@ -476,7 +483,7 @@ def _auth_gate():
         # the login round-trip instead of landing on the desktop dashboard.
         nxt = safe_next(path)
         return redirect(f"/login?next={nxt}" if nxt else "/login")
-    if via_session and _session_password_is_default():
+    if via_session and _session_must_change():
         if path not in _PW_CHANGE_ALLOWED_PATHS:
             if _wants_json(path):
                 return jsonify({"ok": False, "error": "password change required",
@@ -569,7 +576,7 @@ def _render_login(error: str = "", change_next: "str | None" = None) -> str:
             "min_len": manager_users.MIN_PASSWORD})
     else:
         form_html = _LOGIN_FORM_HTML.format_map({
-            "err_html": f'<div class="err">{error}</div>' if error else ""})
+            "err_html": (f'<div class="err">{error}</div>' if error else "") + _setup_note()})
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Systems Manager</title>
@@ -637,7 +644,7 @@ _LOGIN_FORM_HTML = """<form class="card" method="POST" action="/login">
 
 _CHANGE_FORM_HTML = """<form class="card" id="pwc" data-next="{next_path}">
       <div class="err" id="pwc-err" hidden></div>
-      <div class="note">The <b>{user}</b> account still uses the shipped default password. Set a new one to continue.</div>
+      <div class="note">The <b>{user}</b> account has a temporary password. Set a new one to continue.</div>
       <label for="pwc-cur">Current password</label>
       <input id="pwc-cur" name="current_password" type="password" autocomplete="current-password" required autofocus>
       <label for="pwc-new">New password ({min_len}+ characters)</label>
@@ -687,21 +694,26 @@ def _login_page_needed() -> bool:
 # redirect target carries no request-derived data — no open redirect.
 _ALLOWED_NEXT = ("/companion",)
 
-# Paths a session still on the shipped default password may reach.
+# Paths a session still on a temporary password may reach.
 _PW_CHANGE_ALLOWED_PATHS = frozenset({"/login", "/logout", "/api/account/password"})
 
 
-@functools.lru_cache(maxsize=64)
-def _hash_is_default(password_hash: str) -> bool:
-    return scrypt_verify(DEFAULT_AUTH_PASSWORD, password_hash)
-
-
-def _session_password_is_default() -> bool:
-    """True when the logged-in session's user still has the shipped default password."""
+def _session_must_change() -> bool:
+    """True when the logged-in session's user still has a temporary password."""
     import manager_users  # lazy: avoids an import cycle (manager_users imports auth)
     store = manager_users.STORE
     u = store.get(session.get("user") or "") if store is not None else None
-    return bool(u) and _hash_is_default(u.get("password_hash") or "")
+    return bool(u and u.get("must_change"))
+
+
+def _setup_note() -> str:
+    """Login-page note while no admin can sign in; the reset command shows to admin addresses only."""
+    import manager_users  # lazy: avoids an import cycle (manager_users imports auth)
+    if manager_users.STORE is None or not manager_users.STORE.needs_reset():
+        return ""
+    how = (f"run <code>{html.escape(reset_command())}</code> on the manager host"
+           if _admin_ip_allowed(flask_request.remote_addr or "") else "reset it on the manager host")
+    return f'<div class="note">The admin password is not set. To get a temporary one, {how}.</div>'
 
 
 def safe_next(raw: "str | None") -> Optional[str]:
@@ -721,7 +733,7 @@ def _manager_login():
         # be gated anyway (disabled / trusted-from-allowed-IP) — send them in.
         if not _login_page_needed():
             return redirect(nxt or "/")
-        if session.get("auth_ok") is True and _session_password_is_default():
+        if session.get("auth_ok") is True and _session_must_change():
             return _render_login(change_next=nxt or "/")
         return _render_login()
     form = flask_request.form
@@ -764,14 +776,13 @@ def _admin_auth_get():
     if deny is not None:
         return deny
     policy = auth_policy()
-    # is_default reflects the LOGIN store (manager_users.json) — the legacy
-    # auth_credential() store is no longer what /login authenticates against.
+    # is_default: an enabled admin still has a temporary password or needs a new one.
     import manager_users
-    is_default = bool(manager_users.STORE is not None and manager_users.STORE.is_default_admin(
-        DEFAULT_AUTH_USER, lambda h: scrypt_verify(DEFAULT_AUTH_PASSWORD, h)))
+    first_admin = auth_credential()[0]
+    is_default = bool(manager_users.STORE is not None and manager_users.STORE.password_pending())
     return jsonify({"ok": True, "mode": auth_mode(), "policy": policy,
                     "instant": policy == "auto", "is_default": is_default,
-                    "default_user": DEFAULT_AUTH_USER,
+                    "default_user": first_admin,
                     "modes": list(AUTH_MODES), "current_user": session.get("user"),
                     "admin_cidrs": [str(c) for c in (_settings.manager.security.admin_cidrs or [])],
                     "bypass_role": _bypass_role()})
@@ -844,14 +855,13 @@ def register_auth(app, ctx, *,
     changes, and the two agent-token resolvers — all the cross-module
     shared deps come from `ctx`).
     """
-    global MANAGER_AUTH_FILE, DEFAULT_AUTH_HASH
+    global MANAGER_AUTH_FILE
     global _settings, _manager_version, _config_path
     global _agent_by_token, _bearer_from_request, _admin_ip_allowed
     global _require_admin, _brand_palette, _brand_logo_svg
     global _agent_admin_allow, _ae_session, _alarm_engine_url
 
     MANAGER_AUTH_FILE = Path(ctx.data_dir) / "manager_auth.json"
-    DEFAULT_AUTH_HASH = scrypt_hash(DEFAULT_AUTH_PASSWORD)
 
     _settings = ctx.settings
     _manager_version = ctx.version
