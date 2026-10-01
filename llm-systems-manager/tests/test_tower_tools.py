@@ -143,6 +143,23 @@ def test_catalog_honours_disabled_tools_and_tier():
     assert "fake_act" in {t.name for t in tt.catalog(reg, _cfg(capabilities="operate"), "admin")}
 
 
+def test_catalog_keeps_the_admin_log_sources_from_operators():
+    seen = []
+    deps = _deps(); deps["log_tail"] = lambda host, provider="llama", lines=40, a=None: seen.append(provider) or {"source": provider}
+    reg = tt.build_registry(deps)
+    op = {t.name: t for t in tt.catalog(reg, _cfg(), "operator")}["log_tail"]
+    assert op.params == reg["log_tail"].params
+    for src in ("agent", "manager", "alarm_engine"):
+        assert tt.validate_args(op, {"provider": src})[1] == f"provider {src} needs an admin account"
+        assert tt.run_tool(op, {"provider": src, "lines": 5}) == ({"error": f"provider {src} needs an admin account"}, True)
+    assert seen == []
+    assert tt.validate_args(op, {"provider": "vllm"})[1] is None
+    assert tt.run_tool(op, {"host": "box", "provider": "vllm", "lines": 5})[0] == {"source": "vllm"}
+    adm = {t.name: t for t in tt.catalog(reg, _cfg(), "admin")}["log_tail"]
+    assert adm is reg["log_tail"] and tt.validate_args(adm, {"provider": "manager"})[1] is None
+    assert tt.run_tool(adm, {"provider": "manager", "lines": 5})[0] == {"source": "manager"}
+
+
 def test_validate_args_drops_unknown_and_checks_types():
     reg = tt.build_registry(_deps())
     clean, err = tt.validate_args(reg["log_tail"], {"host": "box", "lines": 500, "rm": "-rf"})
@@ -1034,12 +1051,16 @@ def test_prod_log_tail_routes_every_source(monkeypatch, tmp_path):
     assert [h["host"] for h in both["hosts"]] == ["box", "vm"] and len(both["hosts"][0]["lines"]) == 5
     assert both["hosts"][1] == {"host": "vm", "source": "vllm", "lines": [], "matched": 0, "older": 0, "newer": 0, "note": "could not reach the agent on vm"}
     assert deps["log_tail"]("nope", "llama", 5) == {"host": "nope", "source": "llama", "lines": [], "matched": 0, "older": 0, "newer": 0, "note": "unknown host"}
-    assert deps["log_tail"]("", "llama", 5) == {"error": "host is required for llama logs (a name, a comma-separated list, or all)"}
+    only = deps["log_tail"]("", "llama", 5)
+    assert only["host"] == "box" and only["note"] == "host taken as box, the only one for this log"
+    assert deps["log_tail"](None, "vllm", 5) == {"error": "Which host's vLLM log?", "arg": "host", "choices": ["box", "vm"]}
+    assert deps["log_tail"]("", "agent", 5) == {"error": "Which host's agent log?", "arg": "host", "choices": ["box", "mac", "vm"]}
     assert deps["log_tail"](None, "manager", 5)["source"] == "manager"
     agents["A2"]["capabilities"] = {}
     assert deps["log_tail"]("all", "vllm", 10)["host"] == "box"
     agents["A1"]["capabilities"] = {}
     assert deps["log_tail"]("all", "vllm", 10) == {"source": "vllm", "hosts": [], "note": "no host serves vLLM"}
+    assert deps["log_tail"]("", "vllm", 10) == {"source": "vllm", "hosts": [], "note": "no host serves vLLM"}
     assert deps["log_tail"]("-", "manager", 40, {"level": "error"}) == {"source": "manager", "lines": ["m2 error"], "matched": 1, "older": 0, "newer": 0}
     assert deps["log_tail"]("-", "alarm_engine", 40)["lines"] == ["ae one", "ae two error"]
     ae["code"] = 401
@@ -1710,16 +1731,66 @@ def test_prod_jobs_wires_a_real_jobs_service(monkeypatch):
     detail = deps["jobs"](None, None, row["id"], 10)
     assert detail["id"] == row["id"] and "spec" in detail
     assert deps["jobs"](None, None, "nope", 10) == {"error": "job not found"}
-    assert deps["job_precheck"](row["id"]) is None
-    assert deps["cancel_job"](row["id"]) == (True, None)
-    assert deps["job_precheck"](row["id"]) == "job is cancelled"
-    assert deps["cancel_job"](row["id"]) == (False, "job is not live")
+    tt.turn_begin(lambda ev: None, lambda: False, None, user="alice", role="operator")
+    try:
+        assert deps["job_precheck"](row["id"]) is None
+        assert deps["cancel_job"](row["id"]) == (True, None)
+        assert deps["job_precheck"](row["id"]) == "job is cancelled"
+        assert deps["cancel_job"](row["id"]) == (False, "job is not live")
+    finally:
+        tt.turn_end()
 
     unwired = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
                            service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [])
     assert unwired["jobs"]() == {"error": "jobs are not wired"}
     assert unwired["cancel_job"]("x") == (False, "jobs are not wired")
     assert unwired["job_precheck"]("x") == "jobs are not wired"
+
+
+def test_prod_cancel_job_is_limited_to_an_admin_or_the_jobs_submitter(monkeypatch):
+    import discord_bot
+    monkeypatch.setattr(discord_bot, "prod_deps", lambda ctx: {"ack": lambda a: (True, None), "close": lambda a: (True, None)})
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    jobs.init_table(conn)
+    audit = []
+    svc = jobs.Service(jobs.Store(lambda: conn), cfg=lambda: types.SimpleNamespace(workers=4, history_days=30),
+                       audit=audit.append, inline=True)
+    svc.register(jobs.Kind("echo", "Echo", run=lambda j: jobs.ok()))
+    first, second = (svc.submit("echo", {"x": i}, user="alice", role="admin", source="ui")["id"] for i in (1, 2))
+    ctx = types.SimpleNamespace(alarm_engine_url=lambda: "http://ae.local", ae_session=None)
+    deps = tt.prod_deps(ctx, db_path="unused", tools_runs=lambda *a, **k: [], speed_table=lambda *a: [],
+                        service_health=lambda: {}, gateway_entries=lambda: [], audit_rows=lambda *a, **k: [],
+                        jobs_service=svc)
+
+    def live(jid):
+        return svc.get(jid)["status"] == "queued"
+
+    assert tt.turn_caller() == (None, "")
+    assert deps["job_precheck"](first) == "not your job" and deps["cancel_job"](first) == (False, "not your job")
+    tt.turn_begin(lambda ev: None, lambda: False, None, user="bob", role="operator")
+    try:
+        assert tt.turn_caller() == ("operator", "bob")
+        assert deps["job_precheck"](first) == "not your job" and deps["cancel_job"](first) == (False, "not your job")
+    finally:
+        tt.turn_end()
+    assert tt.turn_caller() == (None, "") and live(first)
+    tt.turn_begin(lambda ev: None, lambda: False, None, user="bob", role="admin")
+    try:
+        assert deps["job_precheck"](first) is None and deps["cancel_job"](first) == (True, None)
+        tt.turn_approved("admin")
+        assert tt.turn_caller() == ("admin", "bob") and deps["job_precheck"](second) is None
+        tt.turn_approved("operator")
+        assert tt.turn_caller() == ("operator", "bob")
+        assert deps["cancel_job"](second) == (False, "not your job")
+        tt.turn_approved("admin")
+        assert tt.turn_caller() == ("operator", "bob")
+        tt.turn_approved(None)
+        assert tt.turn_caller() == (None, "bob") and deps["cancel_job"](second) == (False, "not your job")
+    finally:
+        tt.turn_end()
+    assert live(second) and not live(first)
+    cancels = [a for a in audit if a["action"] == "jobs.cancel"]
+    assert [(a["actor"], a["detail"]["job_id"]) for a in cancels] == [("tower via bob", first)]
 
 
 # --- #1039 host resolution ---

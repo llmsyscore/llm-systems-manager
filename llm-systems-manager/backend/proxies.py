@@ -339,6 +339,17 @@ def _default_agent(pk: str) -> "dict | None":
     return a or agent_registry.primary_agent(pk)
 
 
+# Media types an agent reply may carry to the browser; none renders as a document.
+_AGENT_REPLY_TYPES = frozenset({"application/json", "application/x-ndjson", "application/octet-stream",
+                                "text/event-stream", "text/plain"})
+
+
+def agent_reply_ctype(upstream_ctype: "str | None", default: str = "application/json") -> str:
+    """The agent's Content-Type when it is one of _AGENT_REPLY_TYPES, else `default`."""
+    base = (upstream_ctype or "").split(";", 1)[0].strip().lower()
+    return upstream_ctype if base in _AGENT_REPLY_TYPES else default
+
+
 def proxy_to_primary(kind: str, method: str, path: str,
                      *, primary_kind: "str | None" = None,
                      timeout: float = 30,
@@ -385,7 +396,7 @@ def proxy_to_primary(kind: str, method: str, path: str,
         # pool round-robin makes impossible to recompute afterwards.
         with best_effort("proxy on_target", log):
             on_target(agent, r)
-    ctype = r.headers.get("Content-Type", "application/json")
+    ctype = agent_reply_ctype(r.headers.get("Content-Type"))
     resp = current_app.response_class(r.content, status=r.status_code, mimetype=ctype)
     resp.headers["X-Proxied-To"] = f"{agent['agent_id'][:8]}@{agent.get('hostname','?')}"
     if override == "pin":
@@ -455,7 +466,7 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
                          upstream.status_code)
                 response = current_app.response_class(
                     thread_pumped(upstream, path, max_lifetime_s=max_lifetime),
-                    mimetype=upstream.headers.get("Content-Type", "text/event-stream"),
+                    mimetype=agent_reply_ctype(upstream.headers.get("Content-Type"), "text/event-stream"),
                     headers={
                         "Cache-Control": "no-cache",
                         "X-Accel-Buffering": "no",
@@ -495,8 +506,19 @@ def proxy_stream_to_primary(kind: str, path: str, *, primary_kind: "str | None" 
 _FORWARD_SKIP = (_PROXY_HOP_BY_HOP - {"content-encoding", "content-security-policy", "x-frame-options"}) | {"host", "accept-encoding"}
 
 
+def _upstream_cookie(value: str) -> str:
+    """Cookie header value with the manager's own session cookies removed."""
+    name = current_app.config["SESSION_COOKIE_NAME"]
+    own = {name, f"__Secure-{name}"}
+    return "; ".join(c.strip() for c in value.split(";")
+                     if c.strip() and c.partition("=")[0].strip() not in own)
+
+
 def _forward_headers() -> dict:
     out = {k: v for k, v in flask_request.headers if k.lower() not in _FORWARD_SKIP}
+    cookie = _upstream_cookie(out.pop("Cookie", ""))
+    if cookie:
+        out["Cookie"] = cookie
     out["Accept-Encoding"] = "gzip, deflate"
     return out
 
@@ -768,6 +790,14 @@ _ALARM_RETIRE_PATHS = ("alerts/close-all", "alerts/ignore-all")
 _ALARM_RETIRE_ACTIONS = {"close", "ignore"}
 
 
+def _alarm_path_ambiguous(path: str) -> bool:
+    """True for a path with a leading slash, a `%`, `?`, `#` or backslash,
+    or a `.` / `..` segment."""
+    if path.startswith("/") or any(c in path for c in "%?#\\"):
+        return True
+    return any(seg in (".", "..") for seg in path.split("/"))
+
+
 def _alarm_admin_required(path: str) -> bool:
     """True when this proxied alarm-engine call needs the admin gate."""
     if path.startswith("admin/") or path.startswith("dbstats"):
@@ -800,13 +830,13 @@ def _proxy_alarm_engine(path: str):
     url = f"{ae_url.rstrip('/')}/api/alarm/" + path.lstrip("/")
     params = _resolve_alarm_agent_param(path, flask_request.args)
     try:
-        # authorization is excluded from the forwarded headers; the
+        # authorization and cookie are excluded from the forwarded headers; the
         # ae_session's session-level AE bearer applies instead.
         upstream = _deps.ctx.ae_session.request(
             method=flask_request.method,
             url=url,
             headers={k: v for k, v in flask_request.headers if k.lower() not in
-                     ("host", "content-length", "transfer-encoding", "authorization")},
+                     ("host", "content-length", "transfer-encoding", "authorization", "cookie")},
             data=flask_request.get_data(),
             params=params,
             allow_redirects=True,
@@ -905,6 +935,15 @@ def _inject_alarm_ws_url(html_bytes: bytes) -> bytes:
     return html_bytes.replace(b"</head>", snippet, 1)
 
 
+# js/ and css/ asset paths the split-install frontend fallback may fetch.
+_ALARM_FRONTEND_ASSET_RE = re.compile(r"(?:js|css)(?:/[A-Za-z0-9_-][A-Za-z0-9_.-]*)+")
+
+
+def _alarm_frontend_path_allowed(path: str) -> bool:
+    """True when `path` is the health probe or a js/ or css/ asset path."""
+    return path == "health" or bool(_ALARM_FRONTEND_ASSET_RE.fullmatch(path))
+
+
 # ── Route registration ───────────────────────────────────────────────
 
 def register_routes(app, ctx, *,
@@ -978,6 +1017,8 @@ def register_routes(app, ctx, *,
         """Catch-all proxy for /api/alarm/... → alarm engine. admin/* and
         dbstats (DB internals) get the same IP gate as native admin routes
         before forwarding (security #124), as does retiring an alert."""
+        if _alarm_path_ambiguous(path):
+            return _proxy_error("Invalid alarm engine path", 400)
         if _alarm_admin_required(path):
             deny = _deps.ctx.require_admin()
             if deny is not None:
@@ -1030,9 +1071,13 @@ def register_routes(app, ctx, *,
             return Response("alarm engine frontend not deployed locally and "
                             "[manager].alarm_engine_url is not set", status=502)
         upstream_path = "" if is_index else filename.lstrip("/")
+        if upstream_path and not _alarm_frontend_path_allowed(upstream_path):
+            return jsonify({"error": "not found"}), 404
         try:
+            # Authorization=None drops the session-level AE bearer for this fetch.
             upstream = _deps.ctx.ae_session.get(
                 f"{ae_url.rstrip('/')}/{upstream_path}",
+                headers={"Authorization": None},
                 timeout=settings.manager.timeouts.generic_http,
                 stream=not is_index,   # buffer index so we can inject the WS URL
             )

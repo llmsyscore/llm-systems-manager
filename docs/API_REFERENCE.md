@@ -829,7 +829,7 @@ Returns the list of all registered agents with their status, capabilities, and l
 ---
 
 ### `POST /api/agents/register`
-Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint. For a re-registration (same hostname + OS as an existing record), an agent at `v2026.09.04-1` or newer must present its `fingerprint` body field (or a prior bearer token) to re-authenticate; source-IP alone is accepted only for records last written by an older agent.
+Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint. For a re-registration (same hostname + OS as an existing record), the agent must present its prior bearer token or its `fingerprint` body field to re-authenticate. Records last written by an agent older than `v2026.08.16-1` re-authenticate with the bearer token only.
 
 **Access:** (Agent-facing)
 
@@ -994,7 +994,7 @@ Pushes the current internal CA certificate to all approved agents so they can ve
 ---
 
 ### `GET /api/agents/<agent_id>/status`
-No-auth endpoint an agent polls to learn whether it has been approved yet. Returns `{"ok": true, "status": "pending"|"approved"|...}`, and includes the agent's bearer token in the response once approved — but only when the caller re-authenticates as that agent. Agents at `v2026.09.04-1` or newer must present the `X-Agent-Fingerprint` header (or a prior bearer token) to receive the token; older agents keep re-authenticating by source IP.
+No-auth endpoint an agent polls to learn whether it has been approved yet. Returns `{"ok": true, "status": "pending"|"approved"|...}`, and includes the agent's bearer token in the response once approved — but only when the caller re-authenticates as that agent. The caller must present the `X-Agent-Fingerprint` header to receive the token. Agents older than `v2026.09.04-1` do not send it; restart such an agent after approving it and it collects its token when it registers again. Agents older than `v2026.08.16-1` need an update before they can be approved.
 
 **Access:** (Agent-facing, unauthenticated by path — never gated by the login flow)
 

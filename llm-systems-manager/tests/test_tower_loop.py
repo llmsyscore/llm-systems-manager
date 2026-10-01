@@ -1860,6 +1860,29 @@ def test_read_only_view_pins_the_read_tier():
     assert v.capabilities == "read" and v.max_tokens == 99
 
 
+def test_an_approved_action_runs_as_the_lower_of_the_turn_role_and_the_approvers(monkeypatch):
+    monkeypatch.setattr(tower, "_gateway_entries", None)
+    callers = []
+    deps = {**_deps(), "job_precheck": lambda jid: callers.append(("check", tt.turn_caller())),
+            "cancel_job": lambda jid: (callers.append(("cancel", tt.turn_caller())), (True, None))[1]}
+    script = [{"content": '```tool\n{"name": "cancel_job", "args": {"job_id": "j1"}}\n```'}, {"content": "Cancelled."}]
+    runs, st = _runs(script, cfg=_cfg(capabilities="operate"))
+    monkeypatch.setattr(runs, "_registry_factory", lambda: tt.build_registry(deps))
+    tid = st.create_thread("alice", "t", {})
+    rid, err = runs.start(user="alice", role="admin", thread_id=tid, text="cancel job j1", page={})
+    assert err is None
+    run = runs.get(rid, "alice")
+    deadline = time.time() + 5
+    while not run["awaiting"] and not run["done"] and time.time() < deadline:
+        time.sleep(0.02)
+    out, err = runs.approve(run["awaiting"], user="alice", role="operator", decision="approved")
+    assert err is None and out["tool"] == "cancel_job"
+    while not run["done"] and time.time() < deadline:
+        time.sleep(0.02)
+    assert run["done"]
+    assert callers == [("check", ("admin", "alice")), ("cancel", ("operator", "alice"))]
+
+
 # ── #1002 approval with option picks ──
 
 def _approve_with(approvals, options, delay=0.05, actor="adriel"):
@@ -2099,6 +2122,37 @@ def test_ambiguous_host_raises_the_question_card_and_retries_with_the_answer(mon
     assert len(seen["payloads"]) == 2
     roles = [r["role"] for r in st.messages(tid)]
     assert roles == ["user", "action", "user", "tool", "assistant"]
+
+
+def test_log_tail_without_a_host_raises_the_host_card_and_retries_with_the_answer(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    _answer_later(ap, "mac-mini")
+    d = _deps()
+    d["hosts"] = lambda *a, **k: [{"hostname": h, "online": True} for h in ("box-1.local", "mac-mini")]
+    d["log_tail"] = lambda host, provider="llama", lines=40, a=None: (
+        {"host": host, "source": provider, "lines": ["up"]} if host
+        else {"error": "Which host's llama.cpp log?", "arg": "host", "choices": ["box-1.local", "mac-mini"]})
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"log_tail","args":{}}\n```'},
+        {"content": "mac-mini is up."}], registry=tt.build_registry(d), approvals=ap)
+    q = next(e for e in events if e["event"] == "question")
+    assert q["question"] == "Which host's llama.cpp log?" and q["choices"] == ["box-1.local", "mac-mini"]
+    t = _tool_events(events)[0]
+    assert t["result"]["host"] == "mac-mini" and t["result"]["lines"] == ["up"]
+    assert t["result"]["note"] == "host taken from the operator's answer: mac-mini"
+    assert len(seen["payloads"]) == 2
+
+
+def test_operator_asking_for_an_admin_log_gets_the_refusal_not_a_host_card(monkeypatch):
+    monkeypatch.setattr(tower, "_APPROVAL_TTL_S", 2.0)
+    ap = tower.Approvals()
+    out, events, seen, st, tid = _run([
+        {"content": '```tool\n{"name":"log_tail","args":{"provider":"manager"}}\n```'},
+        {"content": "That log needs an admin account."}], approvals=ap, role="operator")
+    t = _tool_events(events)[0]
+    assert not t["ok"] and t["result"] == {"error": "provider manager needs an admin account"}
+    assert not [e for e in events if e["event"] == "question"]
 
 
 def test_dismissed_host_question_leaves_the_refusal_to_the_model(monkeypatch):

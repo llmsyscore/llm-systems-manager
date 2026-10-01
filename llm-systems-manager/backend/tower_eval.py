@@ -33,6 +33,7 @@ CLEANUP_TRIES = 6
 SERVER_WAIT_S = 180.0
 SERVER_POLL_S = 5.0
 PROVIDER_LABEL = {"llama": "llama.cpp", "lms": "LM Studio"}
+NOT_ADMIN = "admin role required"   # the message of a job row that an admin route did not submit
 TOWER_PROFILE = "tower"
 TOWER_ALIAS = "Tower Model"
 # config.ini values a downloaded llama.cpp Tower model starts with (the "tower" profile)
@@ -373,10 +374,10 @@ class Evaluator:
         self._profile_put, self._alias_set = profile_put, alias_set
         self._now = now
         if service is not None:
-            service.register(jobs.Kind(KIND_EVAL, "Tower eval", run=self._run_eval_job, api=True, resume="fail",
+            service.register(jobs.Kind(KIND_EVAL, "Tower eval", run=self._run_eval_job, resume="fail",
                                        max_run_s=EVAL_MAX_RUN_S, exclusive=lambda spec: [KIND_EVAL],
                                        label=lambda spec: f"Tower eval · {spec.get('model') or 'model'}"[:80]))
-            service.register(jobs.Kind(KIND_GET, "Download Tower model", run=self._run_get_job, api=True, resume="fail",
+            service.register(jobs.Kind(KIND_GET, "Download Tower model", run=self._run_get_job, resume="fail",
                                        max_run_s=GET_MAX_RUN_S, exclusive=lambda spec: [KIND_EVAL, KIND_GET],
                                        label=lambda spec: f"Download Tower model · {spec.get('name') or spec.get('key') or ''}"[:80]))
 
@@ -393,7 +394,7 @@ class Evaluator:
         if self._svc is None:
             return None
         for k in ([kind] if kind else (KIND_EVAL, KIND_GET)):
-            rows = self._svc.list("live", kind=k, limit=5)
+            rows = [r for r in self._svc.list("live", kind=k, limit=5) if r.get("role") == "admin"]
             if rows:
                 return rows[0]
         return None
@@ -412,6 +413,8 @@ class Evaluator:
         return row, None
 
     def _run_eval_job(self, job) -> jobs.Outcome:
+        if job.role != "admin":
+            return jobs.fail(NOT_ADMIN, alert=False)
         spec = job.spec or {}
         m = self.resident(spec.get("model"))
         if m is None:
@@ -631,11 +634,15 @@ class Evaluator:
         return "no response"
 
     def _run_get_job(self, job) -> jobs.Outcome:
+        if job.role != "admin":
+            return jobs.fail(NOT_ADMIN, alert=False)
         spec = job.spec or {}
         agent = self._agent(spec)
         if agent is None:
             return jobs.fail("the download host is no longer registered", alert=False)
         provider = str(spec.get("provider") or "llama")
+        if provider not in PROVIDER_LABEL:
+            return jobs.fail("unknown provider", alert=False)
         host, model_id = str(spec.get("host") or agent.get("hostname") or ""), str(spec.get("model_id") or "")
 
         def progress(**state) -> None:

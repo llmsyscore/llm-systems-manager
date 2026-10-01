@@ -355,7 +355,7 @@ class Timers:
         if state.get("phase") == "reporting":
             return self._report(job, row, state)
         registry = self._registry_factory()
-        allowed = {t.name for t in tower_tools.catalog(registry, cfg, job.role)}
+        allowed = {t.name: t for t in tower_tools.catalog(registry, cfg, job.role)}
         spec = job.spec
         name = "host_detail" if spec["kind"] == "metric" else spec["tool"]
         if TOOL_NAME not in allowed or name not in allowed:
@@ -364,7 +364,7 @@ class Timers:
         if self.runs is not None and not self.runs.count_tick(job.user):
             samples.append({"t": now, "error": "rate limited"})
         else:
-            value, err = self._read(registry[name], spec)
+            value, err = self._read(allowed[name], spec)
             samples.append({"t": now, "value": value} if err is None else {"t": now, "error": err})
         state["samples"] = samples
         if len(samples) >= EARLY_FAIL_TICKS and all("error" in s for s in samples):

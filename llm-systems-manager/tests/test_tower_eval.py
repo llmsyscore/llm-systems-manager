@@ -412,6 +412,30 @@ def test_get_model_job_fails_cleanly_on_a_download_error(monkeypatch):
     assert ev.start_get("qwen35-9b-q4", "alice") == (None, "no llama.cpp or LM Studio host to download to")
 
 
+def test_rows_an_admin_route_did_not_submit_never_run_or_count_as_busy(monkeypatch):
+    log = []
+    agent = {"agent_id": "a1", "hostname": "box", "token": "t", "status": "approved"}
+    ev, svc = _evaluator([], agent_request=lambda method, agent_, path, **kw: log.append(path))
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "resolve_agent_by_id", lambda aid, capability=None: agent)
+    spec = {"agent_id": "a1", "repo": "some/repo", "file": "x.gguf", "model_id": "qwen3-14b", "provider": "llama"}
+    rows = [svc.submit(te.KIND_GET, spec, user="mallory", role="operator", source="api"),
+            svc.submit(te.KIND_EVAL, {"model": "qwen3-14b"}, user="mallory", role="operator", source="api")]
+    later = svc.submit(te.KIND_GET, spec, user="mallory", role="operator", source="api", not_before=4e9)
+    assert ev.live() is None
+    svc.tick()
+    assert [(svc.get(r["id"])["status"], svc.get(r["id"])["message"]) for r in rows] == [("failed", te.NOT_ADMIN)] * 2
+    assert svc.get(later["id"])["status"] == "queued" and ev.live() is None
+    assert log == [] and ev.store.latest() == []
+    # an admin row whose provider is not a known one stops before any agent call
+    row = svc.submit(te.KIND_GET, {**spec, "provider": "agent/restart?x="}, user="alice", role="admin", source="api")
+    svc.tick()
+    assert (svc.get(row["id"])["status"], svc.get(row["id"])["message"]) == ("failed", "unknown provider") and log == []
+    # the queued leftover does not block an admin start
+    started, err = ev.start("qwen3-14b", "alice")
+    assert err is None and ev.live()["id"] == started["id"]
+
+
 def test_lm_studio_download_reports_a_failed_job_at_once():
     ev, _svc = _evaluator([], agent_request=lambda *a, **k: (_Resp({"ok": True, "response": {"status": "failed", "error": "no space"}}), [], None))
     assert ev._download_lms({"token": "t"}, {"repo": "org/repo", "quant": "Q4_K_M"}, lambda: False, lambda **k: None) == ("", "no space")
@@ -504,7 +528,7 @@ def test_a_stopped_llama_download_is_removed_from_the_cache_unless_the_repo_has_
     ev, svc = _evaluator([], agent_request=_stopped_llama_agent(log, [], [409, 200]), download_hosts=hosts)
     row, err = ev.start_get("qwen35-9b-q4", "alice")
     assert err is None
-    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice"))
+    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice", role="admin"))
     assert out.message == "stopped; the partial download was removed from the cache" and out.alert is False
     paths = [p for _m, p, _j in log]
     assert paths == ["/llama/download", "/llama/download/stream", "/llama/download/cancel", "/llama/cache/gguf", "/llama/cache/rm", "/llama/cache/rm"]
@@ -514,7 +538,7 @@ def test_a_stopped_llama_download_is_removed_from_the_cache_unless_the_repo_has_
     ev, svc = _evaluator([], agent_request=_stopped_llama_agent(log, [{"repo": "unsloth/Qwen3.5-9B-GGUF", "file": "Qwen3.5-9B-Q6_K.gguf"}], []),
                          download_hosts=hosts)
     row, _err = ev.start_get("qwen35-9b-q4", "alice")
-    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice"))
+    out = ev._run_get_job(_t.SimpleNamespace(id=row["id"], spec=row["spec"], cancelled=lambda: True, user="alice", role="admin"))
     assert out.message.startswith("stopped; unsloth/Qwen3.5-9B-GGUF keeps its finished files")
     assert "/llama/cache/rm" not in [p for _m, p, _j in log]
     # the note lands on the cancelled row
@@ -784,6 +808,13 @@ def test_routes_are_gated(client):
     with client.session_transaction() as s:
         s["role"] = "operator"
     assert client.post("/api/tower/models/get", json={"key": "qwen35-9b-q4"}).status_code == 403
+    # neither kind is submittable through the generic job route, whatever the role
+    for role in ("operator", "admin"):
+        with client.session_transaction() as s:
+            s["role"] = role
+        for kind in (te.KIND_EVAL, te.KIND_GET):
+            r = client.post("/api/jobs", json={"kind": kind, "spec": {"model": "qwen3-14b"}})
+            assert r.status_code == 409 and r.get_json()["error"] == "kind not submittable", (role, kind)
     M.ctx.settings.manager.tower.enabled = False
     assert client.get("/api/tower/eval").status_code == 404
     assert client.get("/api/tower/models").status_code == 404

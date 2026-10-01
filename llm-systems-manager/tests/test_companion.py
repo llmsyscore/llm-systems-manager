@@ -1346,6 +1346,54 @@ class TestAlarmProxyAdminGate:
         r = operator.post("/api/alarm/alerts/abc-123/acknowledge")
         assert r.status_code == 200
 
+    @pytest.mark.parametrize("path", [
+        "x/../admin/config",
+        "./admin/config",
+        "alerts/../dbstats/sqlite",
+        "../../health",
+        "alerts/abc-123/close/x/..",
+        "admin%2Fconfig",
+        "admin%2fconfig",
+        "%61dmin/config",
+        "x/%2e%2e/admin/config",
+        "alerts/abc-123%2Fclose",
+        "alerts/abc-123/close?x",
+        "alerts/close-all#x",
+        "x\\..\\admin\\config",
+        "/admin/config",
+    ])
+    def test_a_path_the_engine_would_resolve_differently_is_ambiguous(self, path):
+        import proxies
+        assert proxies._alarm_path_ambiguous(path) is True
+
+    @pytest.mark.parametrize("path", [
+        "", "alerts/", "alerts/abc-123/acknowledge", "rules",
+        "metrics/system/liquidctl_psu_Total power output_value",
+        "metrics/system/cpu.total", "admin/log/tail", "dbstats/sqlite",
+    ])
+    def test_plain_paths_are_not_ambiguous(self, path):
+        import proxies
+        assert proxies._alarm_path_ambiguous(path) is False
+
+    # %25 reaches the route as a literal %, the form Cheroot leaves %2F in.
+    @pytest.mark.parametrize("url", [
+        "/api/alarm/x/../admin/config",
+        "/api/alarm/alerts/../admin/self-restart",
+        "/api/alarm/admin%252Fconfig",
+        "/api/alarm/x/%252e%252e/admin/config",
+        "/api/alarm/alerts/abc-123/close%23x",
+        "/api/alarm/alerts/close-all%3Fx",
+    ])
+    def test_an_ambiguous_path_is_refused_before_it_is_relayed(
+            self, operator, monkeypatch, url):
+        import proxies
+        relayed = []
+        monkeypatch.setattr(proxies, "_proxy_alarm_engine",
+                            lambda path: relayed.append(path) or ("relayed", 200))
+        for method in ("get", "post", "put"):
+            assert getattr(operator, method)(url).status_code == 400, method
+        assert relayed == []
+
 
 class TestPushDeviceRoster:
     def test_admins_get_the_full_endpoint_and_identifying_metadata(

@@ -69,7 +69,7 @@ class TestSessionCookieSecure:
 # ── #865 agent re-auth factors ──────────────────────────────────────────────
 
 FP = "sha256:" + "ab" * 32
-LEGACY_VERSION = "v2026.09.02-1"
+LEGACY_VERSION = "v2026.08.15-3"
 AGENT_ID = "11111111-2222-3333-4444-555555555555"
 
 
@@ -119,28 +119,37 @@ class TestAgentStatusReauth:
         with M.app.test_client() as c:
             assert "token" not in _status(c, "10.0.0.5", fp="sha256:" + "00" * 32)
 
-    def test_legacy_agent_keeps_ip_match(self, registry):
+    def test_legacy_agent_gets_no_token_by_ip_or_fingerprint(self, registry):
         registry(_agent(LEGACY_VERSION))
         with M.app.test_client() as c:
-            assert _status(c, "10.0.0.5")["token"] == "tok-secret"
-            assert "token" not in _status(c, "10.0.0.99")
+            assert "token" not in _status(c, "10.0.0.5")
+            assert "token" not in _status(c, "10.0.0.5", fp=FP)
 
-    def test_legacy_record_keeps_any_of_semantics(self, registry):
-        registry(_agent(LEGACY_VERSION))
-        with M.app.test_client() as c:
-            assert _status(c, "10.0.0.5", fp="sha256:" + "00" * 32)["token"] == "tok-secret"
-            assert "token" not in _status(c, "10.0.0.99", fp="sha256:" + "00" * 32)
-
-    def test_current_record_without_stored_fp_still_accepts_ip(self, registry):
+    def test_record_without_stored_fp_gets_no_token(self, registry):
         registry(_agent(agent_registry.FP_REAUTH_FROM_VERSION, fingerprint=""))
         with M.app.test_client() as c:
-            assert _status(c, "10.0.0.5")["token"] == "tok-secret"
-            assert "token" not in _status(c, "10.0.0.99", fp=FP)
+            assert "token" not in _status(c, "10.0.0.5")
+            assert "token" not in _status(c, "10.0.0.5", fp=FP)
 
-    def test_legacy_record_without_fp_lets_new_agent_use_ip(self, registry):
-        registry(_agent(LEGACY_VERSION, fingerprint=""))
+    def test_unparseable_version_still_reauths_by_fingerprint(self, registry):
+        registry(_agent("dev-build"))
         with M.app.test_client() as c:
-            assert _status(c, "10.0.0.5", fp=FP)["token"] == "tok-secret"
+            assert _status(c, "10.0.0.99", fp=FP)["token"] == "tok-secret"
+            assert "token" not in _status(c, "10.0.0.5")
+
+    def test_fingerprint_stored_by_a_legacy_agent_stays_refused_after_a_version_bump(self, registry):
+        a = _agent(agent_registry.FP_REAUTH_FROM_VERSION)
+        a["fp_version"] = LEGACY_VERSION
+        registry(a)
+        with M.app.test_client() as c:
+            assert "token" not in _status(c, "10.0.0.5", fp=FP)
+
+    def test_non_text_fingerprint_or_version_gets_no_token(self, registry):
+        a = _agent(20260816)
+        a["fingerprint"] = 12345
+        registry(a)
+        with M.app.test_client() as c:
+            assert "token" not in _status(c, "10.0.0.5", fp="12345")
 
     def test_pending_agent_never_gets_a_token(self, registry):
         registry(_agent(LEGACY_VERSION, status="pending"))
@@ -199,11 +208,29 @@ class TestAgentReregisterReauth:
             assert r.status_code == 200
             assert registry.saved["agents"][AGENT_ID]["fingerprint"] == FP
 
-    def test_legacy_record_ip_only_reregister_still_works(self, registry):
-        registry(_agent(LEGACY_VERSION, fingerprint=""))
+    def test_legacy_record_reregisters_only_with_its_token(self, registry):
+        registry(_agent(LEGACY_VERSION))
         with M.app.test_client() as c:
             r = _register(c, "10.0.0.5", fp=FP, version=LEGACY_VERSION)
+            assert r.status_code == 403 and "token" not in r.get_json()
+            assert not registry.saved
+            r = _register(c, "10.0.0.5", fp=FP, token="tok-secret")
             assert r.status_code == 200 and r.get_json()["token"] == "tok-secret"
+            assert registry.saved["agents"][AGENT_ID]["version"] == agent_registry.FP_REAUTH_FROM_VERSION
+            assert registry.saved["agents"][AGENT_ID]["fp_version"] == agent_registry.FP_REAUTH_FROM_VERSION
+
+    def test_heartbeat_version_bump_pins_the_stored_fingerprint_version(self, registry, monkeypatch):
+        store = registry(_agent(LEGACY_VERSION))
+        monkeypatch.setattr(agent_registry, "agent_by_token", lambda t: store["agents"][AGENT_ID])
+        monkeypatch.setattr(auth, "_agent_by_token", lambda t: store["agents"][AGENT_ID])
+        monkeypatch.setattr(agent_registry, "_maybe_issue_tls_bundle", lambda agent, body: None)
+        with M.app.test_client() as c:
+            r = c.post("/api/agents/heartbeat", json={"version": agent_registry.FP_REAUTH_FROM_VERSION},
+                       headers={"Authorization": "Bearer tok-secret"})
+            assert r.status_code == 200
+            assert store["agents"][AGENT_ID]["version"] == agent_registry.FP_REAUTH_FROM_VERSION
+            assert store["agents"][AGENT_ID]["fp_version"] == LEGACY_VERSION
+            assert "token" not in _status(c, "10.0.0.5", fp=FP)
 
 
 # ── #866 forced password change on default credentials ─────────────────────

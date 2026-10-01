@@ -1,6 +1,8 @@
 """#878: pure parsers for generation_config.json, model cards, repo resolution."""
 from __future__ import annotations
 
+import time
+
 import model_meta as mm
 
 QWEN_CARD = """---
@@ -82,6 +84,31 @@ def test_card_first_match_wins_and_prose_without_number_is_ignored():
     got = mm.parse_card(text)
     assert got["values"] == {"temperature": 0.5}
     assert got["context"] == "A"
+
+
+def test_card_long_whitespace_run_after_key_parses_in_linear_time():
+    pad = " " * 20000
+    t0 = time.process_time()
+    got = mm.parse_card("temp" + pad + "x\ntop_p" + pad + "=" + pad + "x\n")
+    assert time.process_time() - t0 < 1.0
+    assert got["values"] == {}
+
+
+def test_card_heading_forms():
+    assert mm._heading_text("## Best Practices ##") == "Best Practices"
+    assert mm._heading_text("  ###### Deep   ") == "Deep"
+    assert mm._heading_text("# C# notes") == "C# notes"
+    for line in ("#NoSpace", "####### seven", "##", "## ##", "plain text", ""):
+        assert mm._heading_text(line) is None
+
+
+def test_card_long_whitespace_run_in_heading_parses_in_linear_time():
+    pad = " " * 20000
+    t0 = time.process_time()
+    got = mm.parse_card("## Settings" + pad + "x" + pad + "\ntemperature: 0.5\n")
+    assert time.process_time() - t0 < 1.0
+    assert got["values"] == {"temperature": 0.5}
+    assert got["context"] == ("Settings" + pad + "x")[:120]
 
 
 def test_resolve_repo_prefers_section_then_model_id():

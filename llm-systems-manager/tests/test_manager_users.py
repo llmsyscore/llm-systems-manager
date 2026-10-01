@@ -385,6 +385,36 @@ class TestExemptedAdminRouteRoleGate:
         assert r.status_code != 403  # admin passes the role+IP gate
 
 
+class TestCertBundleGateExemption:
+    # The gate's cert-bundle exemption admits only /api/agents/<id>/cert-bundle;
+    # any other path ending in that segment takes the normal auth check.
+    @pytest.fixture(autouse=True)
+    def _required_mode(self, monkeypatch):
+        import auth
+        monkeypatch.setattr(auth, "auth_mode", lambda: "required")
+
+    def test_agent_cert_route_is_exempt(self):
+        import manager_mod as M
+        import auth
+        with M.app.test_request_context("/api/agents/a1/cert-bundle", method="POST"):
+            assert auth._auth_gate() is None
+
+    @pytest.mark.parametrize("path", [
+        "/api/benchmark/live/runs/cert-bundle",
+        "/api/agents/cert-bundle",
+        "/api/agents/a1/x/cert-bundle",
+        "/api/agents//cert-bundle",
+        "/proxy/openclaw/cert-bundle",
+        "/x/api/agents/a1/cert-bundle",
+    ])
+    def test_other_cert_bundle_suffixes_are_gated(self, path):
+        import manager_mod as M
+        import auth
+        with M.app.test_request_context(path):
+            deny = auth._auth_gate()
+        assert deny is not None
+
+
 class TestSessionRevocation:
     # Disabling / deleting / demoting a user takes effect on the NEXT request —
     # the gate re-derives role + validity from the store, not the signed cookie.

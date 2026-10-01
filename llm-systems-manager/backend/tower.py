@@ -485,12 +485,14 @@ class Approvals:
             p = self._pending.get(action_id)
             return bool(p and p["decision"] is None)
 
-    def resolve(self, action_id: str, decision: str, actor: str, options: Optional[dict] = None) -> bool:
+    def resolve(self, action_id: str, decision: str, actor: str, options: Optional[dict] = None,
+                role: Optional[str] = None) -> bool:
         with self._lock:
             p = self._pending.get(action_id)
             if not p or p["decision"] is not None:
                 return False
-            p["decision"] = {"status": decision, "actor": actor, "options": dict(options) if isinstance(options, dict) else {}}
+            p["decision"] = {"status": decision, "actor": actor, "role": role,
+                             "options": dict(options) if isinstance(options, dict) else {}}
             p["event"].set()
             return True
 
@@ -794,6 +796,7 @@ def _run_action(store, approvals: "Approvals", thread_id: str, run_id: str, acto
         args = {**args, **picks}
         _trace("running", decision["actor"])
         t0 = time.monotonic()
+        tower_tools.turn_approved(decision.get("role"))
         result, ran = tower_tools.run_tool(tool, args)
         ms = int((time.monotonic() - t0) * 1000)
         ok = ran and isinstance(result, dict) and bool(result.get("ok"))
@@ -856,7 +859,8 @@ def heartbeat_fn(complete_stream: Callable, model: dict) -> Callable[[], None]:
 
 def run_turn(*, complete_stream: Callable, emit: Callable[[dict], None], model: dict, cancelled: Callable[[], bool], **kw) -> dict:
     """One user turn with the waiting-tool context bound for its thread; see _run_turn."""
-    tower_tools.turn_begin(emit, cancelled, heartbeat_fn(complete_stream, model))
+    tower_tools.turn_begin(emit, cancelled, heartbeat_fn(complete_stream, model),
+                           user=kw.get("user") or "", role=kw.get("role"))
     try:
         return _run_turn(complete_stream=complete_stream, emit=emit, model=model, cancelled=cancelled, **kw)
     finally:
@@ -1219,8 +1223,8 @@ def _run_turn(*, thread_id: str, user_text: str, page: Optional[dict], cfg, role
                 summary = f"{name} · not available"
             else:
                 result, ok, summary, acted = _execute(tool, raw_args, t0)
-                if (not ok and not acted and isinstance(result, dict) and result.get("choices") and result.get("arg")
-                        and (answer := _ask_for(result))):
+                if (not acted and isinstance(result, dict) and result.get("error") and result.get("choices")
+                        and result.get("arg") and (answer := _ask_for(result))):
                     arg = str(result["arg"])
                     raw_args = {**(raw_args if isinstance(raw_args, dict) else {}), arg: answer}
                     t0 = time.monotonic()
@@ -1911,7 +1915,7 @@ class Runs:
             allowed = {t.name for t in tower_tools.catalog(self._registry_factory(), self._cfg(), role)}
             if a["tool"] not in allowed:
                 return None, (403, "not allowed")
-        if not self._approvals.resolve(aid, decision, user, options):
+        if not self._approvals.resolve(aid, decision, user, options, role):
             if self._approvals.known(aid):
                 return None, (409, "not pending")
             self._store.resolve_action(aid, "expired", result={"ok": False, "message": "approval expired"})

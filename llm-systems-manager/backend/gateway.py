@@ -556,7 +556,7 @@ def _handle_completion(sub: str, provider=None) -> Response:
                           int((time.perf_counter() - t0) * 1000),
                           (u or ("-", "-"))[0], (u or ("-", "-"))[1], "-")
             return Response(r.content, status=r.status_code,
-                            mimetype=r.headers.get("content-type") or "application/json",
+                            mimetype=proxies.agent_reply_ctype(r.headers.get("content-type")),
                             headers=_proxied_to_header(agent))
         log.warning("gateway %s: no usable %s agent (%s)",
                     sub, provider, "; ".join(errors) or "no candidates")
@@ -612,7 +612,7 @@ def _stream_from(agent: dict, path: str, body: dict, errors: list,
         if status >= 400:
             gateway_usage.record_error()
         return Response(content, status=status,
-                        mimetype=ctype or "application/json")
+                        mimetype=proxies.agent_reply_ctype(ctype))
     if not stream_pool.POOL.try_acquire():
         upstream.close()
         log.warning("gateway: stream pool at capacity, rejecting %s: %s",

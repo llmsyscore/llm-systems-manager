@@ -957,8 +957,8 @@ def test_approve_route_passes_option_picks_to_the_pending_action(act_client):
     aid = confirm["action_id"]
     seen = {}
     orig = M._tower_approvals.resolve
-    def spy(a, decision, actor, options=None):
-        seen.update({"aid": a, "decision": decision, "options": options}); return orig(a, decision, actor, options)
+    def spy(a, decision, actor, options=None, role=None):
+        seen.update({"aid": a, "decision": decision, "options": options}); return orig(a, decision, actor, options, role)
     M._tower_approvals.resolve = spy
     try:
         r = c.post(f"/api/tower/actions/{aid}/approve", json={"options": {"bench": "throughput_1k"}, "junk": 1})

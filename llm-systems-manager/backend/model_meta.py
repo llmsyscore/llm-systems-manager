@@ -34,13 +34,12 @@ _ALIASES = {
     "presence-penalty": ("presence_penalty", "presence-penalty"),
 }
 _NUM = r"(-?\d+(?:\.\d+)?)(?!\.?\d)"
-_SEP = r"[`\"']?\s*(?:[=:|]\s*|\s+)[`\"']?"
+_SEP = r"[`\"']?(?:\s*[=:|]\s*|\s+)[`\"']?"
 _KEY_RE = {
     key: re.compile(r"(?<![\w-])(?:--)?(?:" + "|".join(re.escape(a) for a in aliases) + r")" + _SEP + _NUM,
                     re.IGNORECASE)
     for key, aliases in _ALIASES.items()
 }
-_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,95}/[A-Za-z0-9][A-Za-z0-9._\-]{0,95}$")
 
 
@@ -110,6 +109,15 @@ def _frontmatter_base_model(fm: str) -> Optional[str]:
     return None
 
 
+def _heading_text(line: str) -> Optional[str]:
+    """Text of a markdown `#` heading line without its closing hashes, else None."""
+    s = line.strip()
+    hashes = len(s) - len(s.lstrip("#"))
+    if not 1 <= hashes <= 6 or not s[hashes:hashes + 1].isspace():
+        return None
+    return s[hashes:].strip().rstrip("#").rstrip() or None
+
+
 def parse_card(text: str) -> dict:
     """values (config keys), the heading above the first hit, frontmatter base_model."""
     fm, body = _split_frontmatter(text or "")
@@ -125,9 +133,9 @@ def parse_card(text: str) -> dict:
     context = None
     if first_pos is not None:
         for line in reversed(body[:first_pos].splitlines()):
-            h = _HEADING_RE.match(line.strip())
+            h = _heading_text(line)
             if h:
-                context = h.group(1).strip()[:120]
+                context = h[:120]
                 break
     return {"values": values, "context": context, "base_model": _frontmatter_base_model(fm)}
 

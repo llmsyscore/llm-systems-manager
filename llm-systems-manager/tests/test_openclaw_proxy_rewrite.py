@@ -60,10 +60,10 @@ def test_forward_headers_pin_accept_encoding_to_what_urllib3_decodes():
     app = Flask(__name__)
     with app.test_request_context("/proxy/openclaw/", headers={
             "Host": "manager:5000", "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Cookie": "session=abc", "Content-Length": "0", "Transfer-Encoding": "chunked"}):
+            "Cookie": "theme=dark", "Content-Length": "0", "Transfer-Encoding": "chunked"}):
         out = proxies._forward_headers()
     assert out["Accept-Encoding"] == "gzip, deflate"
-    assert out.get("Cookie") == "session=abc"
+    assert out.get("Cookie") == "theme=dark"
     for k in out:
         assert k.lower() not in ("host", "content-length", "transfer-encoding")
 
