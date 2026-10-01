@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Tuple
 
@@ -42,6 +43,7 @@ __all__ = [
     "ca_bundle_pem",
     "validate_cert_against_ca",
     "AKI_FIX_TS",
+    "ROLE_ZONE", "ROLE_MANAGER", "ROLE_ALARM_ENGINE", "ROLE_AGENT", "role_name", "in_role_zone",
 ]
 
 # ── PKI format invariant ──────────────────────────────────────────────
@@ -72,6 +74,35 @@ _CA_KEY_NAME  = "internal-ca.key"
 _CA_VALIDITY_DAYS = 365 * 10
 # Leaf certs are issued per-agent; default lifetime in days.
 _LEAF_VALIDITY_DAYS = 365
+
+# Reserved zone for role names; only this module writes names into it.
+ROLE_ZONE = "role.llmsys.internal"
+ROLE_MANAGER = "manager"
+ROLE_ALARM_ENGINE = "alarm_engine"
+ROLE_AGENT = "agent"
+_ROLE_ORG = {
+    ROLE_MANAGER: "LLM Systems Manager",
+    ROLE_ALARM_ENGINE: "LLM Systems Alarm Engine",
+    ROLE_AGENT: "LLM Systems Agent",
+}
+_DNS_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def role_name(role: str, agent_id: str = "") -> str:
+    """Reserved DNS name a certificate of this role carries."""
+    if role == ROLE_MANAGER:
+        return f"manager.{ROLE_ZONE}"
+    if role == ROLE_ALARM_ENGINE:
+        return f"alarm-engine.{ROLE_ZONE}"
+    if role == ROLE_AGENT and _DNS_LABEL_RE.fullmatch(agent_id or ""):
+        return f"{agent_id.lower()}.agent.{ROLE_ZONE}"
+    raise ValueError(f"no role name for role={role!r} agent_id={agent_id!r}")
+
+
+def in_role_zone(name: object) -> bool:
+    """True when a host name lies inside the reserved role zone."""
+    n = str(name or "").strip().rstrip(".").lower()
+    return n == ROLE_ZONE or n.endswith("." + ROLE_ZONE)
 
 
 def _generate_rsa_key() -> rsa.RSAPrivateKey:
@@ -159,18 +190,14 @@ def sign_agent_cert(
     days: int = _LEAF_VALIDITY_DAYS,
     extra_dns_sans: "list[str] | None" = None,
     extra_ip_sans:  "list[str] | None" = None,
+    role: str = ROLE_AGENT,
 ) -> Tuple[str, str]:
-    """Sign a leaf cert for one agent. Returns (cert_pem, key_pem) — both
-    strings ready for JSON transport.
-
-    SAN includes the agent's hostname (as DNS) and registered IP (as
-    IPAddress) so manager-side verification works regardless of how the
-    agent's bind_url is expressed.
-
-    Manager-side callers pass extra_dns_sans=["localhost"] +
-    extra_ip_sans=["127.0.0.1"] so curl/openssl against localhost works
-    without a -k flag.
-    """
+    """Sign a leaf cert for one member; the SAN gains that role's reserved name.
+    Returns (cert_pem, key_pem)."""
+    supplied = [hostname, *(extra_dns_sans or [])]
+    if any(in_role_zone(n) for n in supplied):
+        raise ValueError("caller-supplied name lies in the reserved role zone")
+    role_dns = role_name(role, agent_id)
     leaf_key = _generate_rsa_key()
     now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -182,6 +209,7 @@ def sign_agent_cert(
     for dns in (extra_dns_sans or []):
         if dns and dns not in (hostname, f"{hostname}.agents.local"):
             san_entries.append(x509.DNSName(dns))
+    san_entries.append(x509.DNSName(role_dns))
     try:
         san_entries.append(x509.IPAddress(ipaddress.ip_address(ip_san)))
     except (ValueError, TypeError):
@@ -199,7 +227,7 @@ def sign_agent_cert(
             continue
 
     subject = x509.Name([
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LLM Systems Agent"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, _ROLE_ORG[role]),
         x509.NameAttribute(NameOID.COMMON_NAME, agent_id),
     ])
     builder = (

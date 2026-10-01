@@ -543,6 +543,32 @@ influx delete --org <org> --bucket alarm_engine_metrics        --start 1970-01-0
 influx delete --org <org> --bucket alarm_engine_metrics_rollup --start 1970-01-01T00:00:00Z --stop $(date -u +%Y-%m-%dT%H:%M:%SZ) --predicate 'source="openclaw-gateway"'
 ```
 
+### Internal Certificate Roles
+
+The manager signs a certificate for itself, for the alarm engine and for each agent. Each certificate names what it belongs to: the manager, the alarm engine, or one agent. Each side checks that name when it connects. An agent checks the manager and the alarm engine; the manager checks each agent and the alarm engine.
+
+After updating to a version with certificate roles:
+
+1. Restart the manager. It issues new certificates for itself and for the alarm engine.
+2. Restart the alarm engine. On a split install, first copy `ae-tls.crt` and `ae-tls.key` from the manager's `data/` directory to the alarm engine's `data/` directory.
+3. Update the agents with **Update all** under **Admin → Agents → Manage ▾**. Each agent receives its new certificate on its next heartbeat and starts using it when it restarts.
+
+**Admin → System Health** shows the progress. The Agents node lists `certificate role checked` with a count, and the Alarm engine node lists `certificate role`.
+
+**Admin → Agents** shows each agent. Its TLS chip reads `tls ✓` once its role is checked, and the Connection details list `certificate role` with one of:
+
+- `checked` and the date.
+- `restart the agent to finish` — the agent has its new certificate and uses it after a restart.
+- `new certificate not received yet` — the manager sends it again on a later heartbeat.
+- `not yet` — nothing to report so far, or the agent runs a version from before certificate roles.
+
+The first time one side sees a certificate with a role, it requires the role on every later connection to that peer.
+
+- To clear what an agent remembers about the manager and the alarm engine, delete `data/tls-roles.json` on that agent's host and restart the agent.
+- To clear what the manager remembers about the alarm engine, delete `data/tls-roles.json` on the manager host and restart the manager.
+- To clear what the manager remembers about one agent, delete that agent under **Admin → Agents**. It registers again as a new agent and needs approval.
+- System Health lists a warning for an agent that has not stored its new certificate after 15 minutes, and for one that serves it but is still not checked. **Push CA** under **Manage ▾** sends every agent its certificate again.
+
 ### Operator-Provided TLS Certificate
 
 By default the HTTPS port (`[manager].tls_port`, 5443) serves a certificate from the manager's internal CA, which browsers on other devices do not trust. To serve a certificate they do trust — a Let's Encrypt cert for your domain, or one from a corporate CA:

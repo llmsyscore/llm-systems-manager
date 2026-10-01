@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.01-5"
+__version__ = "v2026.10.01-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -192,6 +192,7 @@ from _best_effort import best_effort  # type: ignore[import-not-found]  # noqa: 
 from _safe_js import safe_js  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import providers       # type: ignore[import-not-found]  # noqa: E402,F401  # side-effect: registers specs
 import stream_pool     # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
+import tls_roles       # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import stream_health   # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle
 import rate_counter    # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import sse_daemon     # type: ignore[import-not-found]  # noqa: E402  # leaf, lazy-aiohttp
@@ -697,6 +698,69 @@ _ae_session.mount("http://", _ae_adapter)
 _ae_session.mount("https://", _ae_adapter)
 if bool(settings.alarm_engine.tls_enabled):
     _ae_session.verify = _AE_CA_PATH
+# Alarm-engine role lock (#1161): once its role certificate is seen, the role is required.
+_TLS_ROLE_LOCKS = DATA_DIR / "tls-roles.json"
+_AE_ROLES = ("alarm_engine",)
+_AE_ROLE_NAME = "alarm-engine.role.llmsys.internal"
+_ae_role_state = {"locked": False}
+
+
+def _ae_role_locked() -> bool:
+    return bool(_ae_role_state["locked"])
+
+
+def _ae_require_role() -> None:
+    """Mounts the role-requiring adapter on the alarm-engine session."""
+    adapters = type(_ae_session.adapters)(_ae_session.adapters)
+    adapters["https://"] = tls_roles.RoleAdapter(
+        _AE_ROLE_NAME, pool_connections=4, pool_maxsize=_AE_POOL_MAXSIZE, max_retries=_AE_RETRY)
+    _ae_session.adapters = adapters
+    _ae_role_state["locked"] = True
+
+
+def _ae_ws_tls_extra(up_ssl) -> dict:
+    """websockets.connect arguments that make a TLS upstream prove the alarm-engine role once locked."""
+    return {"server_hostname": _AE_ROLE_NAME} if (up_ssl is not None and _ae_role_locked()) else {}
+
+
+def _ae_require_role_if_locked() -> None:
+    if tls_roles.load_locks(_TLS_ROLE_LOCKS, _AE_ROLES).get("alarm_engine"):
+        _ae_require_role()
+
+
+def _ae_role_probe() -> bool:
+    """Locks the alarm engine's role when its certificate carries it; True once locked."""
+    if _ae_role_locked():
+        return True
+    base = (_alarm_engine_url or "").rstrip("/")
+    if not base.startswith("https://"):
+        return False
+    try:
+        ok = tls_roles.role_session(_AE_ROLE_NAME, quiet=True).get(f"{base}/health", timeout=3, verify=_AE_CA_PATH).ok
+    except Exception as e:
+        if tls_roles.is_name_mismatch(e) and not _ae_role_state.get("warned"):
+            _ae_role_state["warned"] = True
+            log.warning("alarm engine has no role yet in the certificate it serves — "
+                        "restart it (split install: copy ae-tls.* across first)")
+        return False
+    if not ok:
+        return False
+    try:
+        tls_roles.lock_role(_TLS_ROLE_LOCKS, "alarm_engine", _AE_ROLES)
+    except OSError as e:
+        log.warning("alarm engine: could not save the role lock (%s) — required until the next restart", e)
+    _ae_require_role()
+    log.info("alarm engine: certificate role checked — required from now on")
+    return True
+
+
+def _ae_role_watcher() -> None:
+    """Probes once a minute until the alarm engine's role is locked."""
+    while not _ae_role_probe():
+        time.sleep(60)
+
+
+_ae_require_role_if_locked()
 # Session-level bearer for the AE's token-gated routes; "" when unset.
 import ae_auth  # noqa: E402  # sibling
 _AE_BEARER = ae_auth.effective_bearer(settings)
@@ -1407,7 +1471,7 @@ def _pull_llama_state_if_stale(agent_id: str) -> None:
         return
     for url in agent_registry.agent_callback_urls(agent):
         try:
-            r = requests.get(f"{url.rstrip('/')}/llama/state", timeout=4,
+            r = agent_registry.agent_http(agent).get(f"{url.rstrip('/')}/llama/state", timeout=4,
                              headers={"Authorization": f"Bearer {agent.get('token', '')}"},
                              **agent_registry.agent_tls_kwargs(url))
             if not r.ok:
@@ -5341,6 +5405,7 @@ def admin_system_health():
                 "latency_ms": round(dur, 1),
                 "status_code": r.status_code,
                 "tls": _tls_info,
+                "tls_role_checked": _ae_role_locked(),
                 "version": info.get("version") if isinstance(info, dict) else None,
                 "uptime_s": info.get("uptime_s") if isinstance(info, dict) else None,
                 # Passed through from the AE /health payload.
@@ -5486,8 +5551,11 @@ def admin_system_health():
             "tls_direction": tls_direction,
             "control_channel_tls": agent_to_mgr_tls,
             "cert_issued_at": cert_issued,
+            "tls_role_checked": bool(agent.get("tls_role_checked_at")),
             "bind_url": bind or None,
         })
+
+    health["warnings"].extend(agent_registry.role_warnings(list(data.get("agents", {}).values())))
 
     # ── Data flow ──
     host_last_seen = _primary_llama_last_seen()
@@ -6109,7 +6177,7 @@ def _batch_stream_on_agent(agent_id: str, last_id: "str | None" = None):
         url = f"{base}/llama/autotune/stream"
         r = None
         try:
-            r = requests.get(url, stream=True, timeout=(5, 120), headers=headers,
+            r = agent_registry.agent_http(agent).get(url, stream=True, timeout=(5, 120), headers=headers,
                              **agent_registry.agent_tls_kwargs(url))
             r.raise_for_status()
         except requests.exceptions.RequestException:
@@ -8313,7 +8381,7 @@ def agents_log_stream(agent_id: str):
         for base in urls:
             full = f"{base}/agent/log/stream"
             try:
-                upstream = requests.get(
+                upstream = agent_registry.agent_http(agent).get(
                     full,
                     headers={"Authorization": f"Bearer {agent['token']}"},
                     stream=True, timeout=(10, 60),  # agent keepalive 15s; reap a silent stream
@@ -8604,7 +8672,7 @@ def agents_self_update(agent_id: str):
         for base in urls:
             full = f"{base}/agent/self-update"
             try:
-                upstream = requests.post(
+                upstream = agent_registry.agent_http(agent).post(
                     full,
                     headers={"Authorization": f"Bearer {agent['token']}"},
                     stream=True, timeout=(10, 60),  # agent emits a keepalive ≤10s during quiet pip phases
@@ -8769,6 +8837,14 @@ def _cert_san_hostnames(crt_path: Path) -> "list[str]":
         return []
 
 
+def _cert_has_role(path: Path, role: str) -> bool:
+    """True when the certificate at `path` carries the reserved name of `role`."""
+    try:
+        return _pki_ensure_ca()[2].role_name(role) in _cert_san_hostnames(path)
+    except Exception:
+        return False
+
+
 def _sni_matches(servername: "str | None", san_hosts: "list[str]") -> bool:
     """True when a TLS SNI hostname matches a SAN entry
     (wildcard covers exactly one leftmost label)."""
@@ -8821,6 +8897,9 @@ def _ensure_manager_server_cert() -> None:
                 if missing:
                     log.info("  Manager TLS cert: missing public-host SAN %s — reissuing",
                              ", ".join(missing))
+                    need_new = True
+                if not _cert_has_role(crt_path, "manager"):
+                    log.info("  Manager TLS cert: no role name — reissuing")
                     need_new = True
             except Exception:
                 # If SAN can't be parsed, safer to reissue than to keep.
@@ -8904,6 +8983,7 @@ def _ensure_manager_server_cert() -> None:
         ip_san=routable_ip,
         extra_dns_sans=extra_dns,
         extra_ip_sans=extra_ips,
+        role="manager",
     )
     log.info("  Manager TLS cert: SAN IPs = %s DNS = %s",
              ", ".join(extra_ips), ", ".join(extra_dns))
@@ -8996,6 +9076,8 @@ def _ensure_ae_server_cert() -> None:
                         except ValueError:
                             if ph not in dns_names:
                                 missing.append(f"DNS:{ph}")
+                    if not _cert_has_role(crt_path, "alarm_engine"):
+                        missing.append("role name")
                     if missing:
                         log.info(
                             "  Alarm-engine TLS cert: SAN missing %s — reissuing "
@@ -9057,6 +9139,7 @@ def _ensure_ae_server_cert() -> None:
         ip_san=routable_ip,
         extra_dns_sans=dns_sans,
         extra_ip_sans=ip_sans,
+        role="alarm_engine",
     )
     for path, content, mode in (
         (key_path, key_pem, 0o600),
@@ -9384,8 +9467,10 @@ def _maybe_start_alarm_ws_proxy() -> None:
             if _ws_bridge_path(req_target) == "/ws/openclaw":
                 up_url, up_ssl, up_headers = _openclaw_ws_url(), None, None
                 origin = getattr(req, "headers", {}).get("Origin") or None
+                ws_extra = {}
             else:
                 up_url, up_ssl, origin = ae_ws_url, ae_ssl, None
+                ws_extra = _ae_ws_tls_extra(up_ssl)
                 up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
             if not up_url:
                 await client_ws.close(code=1011, reason="upstream unavailable")
@@ -9393,13 +9478,16 @@ def _maybe_start_alarm_ws_proxy() -> None:
             try:
                 async with websockets.connect(up_url, ssl=up_ssl, open_timeout=4, origin=origin,
                                               additional_headers=up_headers,
-                                              max_size=_WS_BRIDGE_MAX_SIZE) as up:
+                                              max_size=_WS_BRIDGE_MAX_SIZE, **ws_extra) as up:
                     await asyncio.gather(
                         _pipe(client_ws, up),
                         _pipe(up, client_ws),
                         return_exceptions=True,
                     )
             except Exception as e:
+                if ws_extra and isinstance(e, ssl.SSLCertVerificationError):
+                    log.error("WS proxy: refused the alarm engine — its certificate does not carry the required role %s",
+                              _AE_ROLE_NAME)
                 log.warning("WS proxy: upstream connect failed: %s", e)
                 with best_effort("ws proxy: close client after upstream fail", log=log):
                     await client_ws.close(code=1011, reason="upstream unavailable")
@@ -9817,6 +9905,8 @@ if __name__ == "__main__":
         _ensure_ae_server_cert()
     except Exception as _e:
         log.warning("alarm-engine cert issuance failed: %s", _e)
+    if bool(settings.alarm_engine.tls_enabled):
+        threading.Thread(target=_ae_role_watcher, daemon=True, name="ae-role-watcher").start()
 
     # Warn when alarm_engine_url is a non-self hostname (split install): agents
     # must resolve it — the co-located rewrite only helps when the AE is here.

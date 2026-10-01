@@ -251,14 +251,14 @@ PROVIDERS = ("llama", "vllm", "lms")
 LMS_OPENAI_PORT = 1235
 
 
-def _probe_agent(base: str) -> bool:
+def _probe_agent(base: str, agent: "dict | None" = None) -> bool:
     """True when the agent answers /health at this base URL."""
     import requests
     import agent_registry
     url = f"{base}/health"
     try:
-        return requests.get(url, timeout=(3, 5),
-                            **agent_registry.agent_tls_kwargs(url)).ok
+        return agent_registry.agent_http(agent).get(url, timeout=(3, 5),
+                                                    **agent_registry.agent_tls_kwargs(url)).ok
     except requests.exceptions.RequestException:
         return False
 
@@ -279,7 +279,7 @@ def bench_base_url(provider: str, agent: dict, probe=None) -> "tuple[str, dict]"
     if not urls:
         raise ValueError("no callback URL recorded for agent")
     # Probes candidates in order; benches the first that answers.
-    check = probe or _probe_agent
+    check = probe or (lambda u: _probe_agent(u, agent))
     base = next((u for u in urls if check(u)), None)
     if base is None:
         raise ValueError("agent is not reachable on any callback URL")
@@ -668,7 +668,7 @@ def _agent_download_lines(agent: dict):
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}/llama/download/stream"
         try:
-            r = requests.get(url, stream=True, timeout=(5, 120),
+            r = agent_registry.agent_http(agent).get(url, stream=True, timeout=(5, 120),
                              headers={"Authorization": f"Bearer {token}"},
                              **agent_registry.agent_tls_kwargs(url))
             r.raise_for_status()
@@ -1028,7 +1028,9 @@ def _run_job(job_id: str, req: dict) -> None:
             emit(ev)
 
         import requests as _requests
-        sess = _requests.Session()
+        import agent_registry
+        dialed = agent_registry.agent_http(agent) if provider != "lms" else _requests
+        sess = dialed if isinstance(dialed, _requests.Session) else _requests.Session()
         try:
             bench = run_bench(
                 base, model,

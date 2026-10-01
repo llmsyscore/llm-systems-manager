@@ -114,7 +114,7 @@ def test_ipv4_mapped_forms_are_compared_as_ipv4(install):
 
 
 def test_reissue_check_ignores_an_address_left_out_of_the_san(install, monkeypatch):
-    a = _agent(bind_url="https://10.0.0.2:8082")
+    a = _agent(bind_url="https://10.0.0.2:8082", cert_role_sent_at="2026-09-01T00:00:00+00:00")
     install["agents"][AID] = a
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
@@ -124,7 +124,7 @@ def test_reissue_check_ignores_an_address_left_out_of_the_san(install, monkeypat
 
 
 def test_reissue_check_still_fires_for_a_missing_own_address(install, monkeypatch):
-    a = _agent()
+    a = _agent(cert_role_sent_at="2026-09-01T00:00:00+00:00")
     install["agents"][AID] = a
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
@@ -135,10 +135,15 @@ def test_reissue_check_still_fires_for_a_missing_own_address(install, monkeypatc
 
 
 def test_reissue_check_reads_ipv6_sans_in_any_spelling(install, monkeypatch):
-    a = _agent(bind_url="https://[2001:db8::5]:8082", registered_from="2001:db8::5")
+    a = _agent(bind_url="https://[2001:db8::5]:8082", registered_from="2001:db8::5", cert_role_sent_at="2026-09-01T00:00:00+00:00")
     install["agents"][AID] = a
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
     monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
     body = {"has_tls_cert": True, "tls_san_ips": ["2001:DB8:0:0:0:0:0:5"]}
     assert ar._maybe_issue_tls_bundle(a, body) is None
+
+
+@pytest.mark.parametrize("name", ["manager.role.llmsys.internal", "x.agent.ROLE.llmsys.internal.", "role.llmsys.internal"])
+def test_reserved_zone_hostname_falls_back_to_agent_id(install, name):
+    assert _sans(install, _agent(hostname=name))[0] == AID

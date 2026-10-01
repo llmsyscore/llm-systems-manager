@@ -235,6 +235,7 @@
       const stale = approved.filter(a => a.liveness === 'stale').length;
       const down = approved.filter(a => a.liveness === 'down');
       const bothTls = approved.filter(a => a.tls_direction === 'both').length;
+      const roleOk = approved.filter(a => a.tls_role_checked).length;
       const age = k => {
         const p = df[k] || {};
         if (!p.has_agent) return 'no agent';
@@ -251,6 +252,7 @@
         ['metrics to engine', flow.ae_ingest_points_per_s != null ? `${num(flow.ae_ingest_points_per_s)} /s` : '—',
           flow.ae_ingest_points_per_s === 0 ? 'crit' : ''],
         ['TLS both ways', `${bothTls} of ${approved.length}`, bothTls === approved.length && approved.length ? 'ok' : ''],
+        ['certificate role checked', `${roleOk} of ${approved.length}`, roleOk === approved.length && approved.length ? 'ok' : ''],
       ];
     }
     if (node === 'manager') {
@@ -301,6 +303,7 @@
         ['version', dash(ae.version)],
         ['up', dash(upStr(ae.uptime_s))],
         ['serving', serving, serving === 'https' ? 'ok' : (serving.indexOf('cert') === 0 ? 'crit' : '')],
+        ['certificate role', ae.tls_role_checked ? 'checked' : 'not yet', ae.tls_role_checked ? 'ok' : ''],
         ['auth', auth ? auth.text : 'unknown', auth ? auth.k : ''],
         ['ingest', ae.ingest_points_per_s != null ? `${num(ae.ingest_points_per_s)} points/s` : '—'],
         ['rules eval', ae.rule_eval_ms != null ? ms(ae.rule_eval_ms) : '—'],

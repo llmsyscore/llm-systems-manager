@@ -51,6 +51,7 @@ from flask import Response, jsonify, request as flask_request
 
 import provider_state  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
 import providers  # type: ignore[import-not-found]  # sibling — leaf package, no cycle
+import tls_roles  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.agent_registry")
@@ -69,6 +70,9 @@ __all__ = [
     "note_dial_result",
     "note_dial_error",
     "agent_tls_kwargs",
+    "agent_http",
+    "agent_role_locked",
+    "role_warnings",
     "agent_request",
     "primary_agent",
     "pick_agent",
@@ -517,6 +521,100 @@ def agent_tls_kwargs(url: str) -> dict:
     return {"verify": str(ca_path)} if ca_path.is_file() else {}
 
 
+# Agent ids already warned about a missing role, so the log line is not repeated.
+_role_warned: "set[str]" = set()
+
+
+def _agent_role_name(agent: dict) -> str:
+    return f"{str(agent['agent_id']).lower()}.agent.{_ROLE_ZONE}"
+
+
+def _older_than(iso: Any, seconds: float) -> bool:
+    """True when an ISO timestamp lies more than `seconds` in the past; False when absent or unreadable."""
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() > seconds
+
+
+def _hb_role_fields(body: dict) -> dict:
+    """The agent's stored/served role flags from a heartbeat; anything but a real boolean becomes None."""
+    def flag(key: str):
+        v = body.get(key)
+        return v if isinstance(v, bool) else None
+    return {"tls_cert_has_role": flag("tls_cert_has_role"), "tls_serves_role": flag("tls_serves_role")}
+
+
+def role_warnings(agents: list) -> "list[str]":
+    """System Health lines for live agents whose certificate role is overdue."""
+    out = []
+    for a in agents:
+        if a.get("status") != "approved" or agent_role_locked(a) or agent_liveness(a) != "live":
+            continue
+        sent = a.get("cert_role_sent_at")
+        hb = a.get("last_heartbeat_data") or {}
+        host = a.get("hostname") or str(a.get("agent_id") or "")[:8]
+        if hb.get("tls_serves_role") is True and _older_than(sent, 300):
+            out.append(f"agent {host}: certificate role not checked although the agent serves its new "
+                       "certificate — check that the manager can reach it")
+        elif hb.get("tls_cert_has_role") is False and _older_than(sent, 900):
+            out.append(f"agent {host}: has not stored its new certificate — use Push CA under "
+                       "Admin → Agents → Manage")
+    return out
+
+
+def agent_role_locked(agent: "dict | None") -> bool:
+    """True once this agent's certificate role has been seen."""
+    return bool(agent and agent.get("tls_role_checked_at"))
+
+
+def agent_http(agent: "dict | None"):
+    """HTTP client for dialing this agent: a role-requiring session once locked, else `requests`."""
+    if agent_role_locked(agent):
+        return tls_roles.role_session(_agent_role_name(agent))
+    return requests
+
+
+def _role_probe_tick(data: dict) -> None:
+    """Locks every live approved agent whose served certificate carries its role."""
+    for agent_id, agent in list((data.get("agents") or {}).items()):
+        if (agent.get("status") != "approved" or agent_role_locked(agent)
+                or not agent.get("cert_role_sent_at")
+                or not str(agent.get("bind_url") or "").startswith("https://")
+                or agent_liveness(agent) != "live"):
+            continue
+        name = _agent_role_name(agent)
+        for base in agent_callback_urls(agent):
+            if not base.startswith("https://"):
+                continue
+            url = f"{base}/health"
+            try:
+                ok = tls_roles.role_session(name, quiet=True).get(url, timeout=(3, 5), **agent_tls_kwargs(url)).ok
+            except Exception as e:
+                if tls_roles.is_name_mismatch(e) and agent_id not in _role_warned:
+                    _role_warned.add(agent_id)
+                    log.warning("agent %s (%s) has no role yet in the certificate it serves — "
+                                "it takes the new certificate at its next restart",
+                                agent_id, agent.get("hostname"))
+                continue
+            if not ok:
+                continue
+            with _agents_lock:
+                fresh = load_agents()
+                rec = (fresh.get("agents") or {}).get(agent_id)
+                if rec is not None and not rec.get("tls_role_checked_at"):
+                    rec["tls_role_checked_at"] = datetime.now(timezone.utc).isoformat()
+                    save_agents(fresh)
+            agent["tls_role_checked_at"] = datetime.now(timezone.utc).isoformat()
+            _role_warned.discard(agent_id)
+            log.info("agent %s (%s): certificate role checked — required from now on",
+                     agent_id, agent.get("hostname"))
+            break
+
+
 class RequestError(str):
     """agent_request failure text; timed_out marks a read timeout on a callback URL."""
     timed_out = False
@@ -553,7 +651,7 @@ def agent_request(method: str, agent: dict, path: str, **kwargs
         if "verify" not in call_kwargs:
             call_kwargs.update(agent_tls_kwargs(full))
         try:
-            resp = requests.request(method, full, **call_kwargs)
+            resp = agent_http(agent).request(method, full, **call_kwargs)
             note_dial_result(agent, base, True)
             return resp, tried, None
         except Exception as e:
@@ -976,12 +1074,15 @@ def _address_taken(agent: dict, ip: str) -> bool:
 
 # A host name a certificate may carry: letters, digits, `_`, `-` and dots; no wildcard.
 _CERT_NAME_RE = _re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?")
+_ROLE_ZONE = "role.llmsys.internal"
 
 
 def _name_taken(name: str, src: "str | None", local: bool) -> bool:
     """True when `name` is not a plain host name, or names the manager, one of its public
     hosts or the alarm engine while the agent is not on that host."""
     if not _CERT_NAME_RE.fullmatch(name.strip().rstrip(".")):
+        return True
+    if _plain_name(name) == _ROLE_ZONE or _plain_name(name).endswith("." + _ROLE_ZONE):
         return True
     plain = _plain_name(name).removesuffix(".agents.local")
     mine = _plain_name(_deps.hostname)
@@ -1044,6 +1145,7 @@ def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
         hostname=name,
         ip_san=ips[0] if ips else "",
         extra_ip_sans=ips[1:],
+        role=pki.ROLE_AGENT,
     )
     ca_pem = pki.ca_bundle_pem(_deps.data_dir)
     from cryptography import x509 as _x509
@@ -1109,6 +1211,15 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
         if not needs_new and agent.get("force_cert_reissue"):
             needs_new = True
             reason_hint = "admin-rotation"
+        # One-time send of a certificate that carries the agent's role name.
+        if not needs_new and not agent.get("cert_role_sent_at"):
+            needs_new = True
+            reason_hint = "role-upgrade"
+        # Send again when the agent says its stored certificate has no role; at most every 10 minutes.
+        if (not needs_new and body.get("tls_cert_has_role") is False
+                and _older_than(agent.get("cert_role_sent_at"), 600)):
+            needs_new = True
+            reason_hint = "role-resend"
         # Belt-and-suspenders: if the agent's current bind_url is
         # https:// but the IP in it isn't the one we'd put in a new
         # cert's SAN, the existing cert almost certainly has a stale
@@ -1165,6 +1276,7 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
             a = (data.get("agents") or {}).get(agent["agent_id"])
             if a is not None:
                 a["last_cert_issued_at"] = datetime.now(timezone.utc).isoformat()
+                a["cert_role_sent_at"] = a["last_cert_issued_at"]
                 # Clear the admin-rotation flag once the fresh bundle has
                 # actually been built; otherwise every subsequent heartbeat
                 # would keep issuing.
@@ -1189,6 +1301,8 @@ def _agent_liveness_watcher() -> None:
         try:
             time.sleep(_deps.settings.manager.agents.liveness_watch_interval_s)
             data = load_agents()
+            with best_effort("agent role probe", log=log):
+                _role_probe_tick(data)
             for agent_id, agent in (data.get("agents") or {}).items():
                 if agent.get("status") != "approved":
                     continue
@@ -1487,6 +1601,7 @@ def _agents_heartbeat():
                 # with bind_url scheme in /api/admin/system-health to drive the
                 # admin tab's bidirectional-TLS indicator.
                 "control_channel_tls": bool(body.get("control_channel_tls")),
+                **_hb_role_fields(body),
             }
             # Refresh the version from each heartbeat so the admin tab
             # reflects post-self-update reality without waiting for the

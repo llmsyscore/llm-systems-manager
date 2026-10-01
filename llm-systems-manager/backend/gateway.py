@@ -197,7 +197,7 @@ def _dial_stream(agent: dict, path: str, body: dict, read_timeout: "float | None
     for base in agent_registry.agent_callback_urls(agent):
         url = f"{base}{path}"
         try:
-            r = requests.post(
+            r = agent_registry.agent_http(agent).post(
                 url, json=body, stream=True,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=(5, read_timeout or _read_timeout_s()),

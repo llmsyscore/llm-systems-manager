@@ -45,6 +45,9 @@ def _fake_requests(monkeypatch, *, get=None, post=None):
                                 get=get or (lambda *a, **k: _Resp()),
                                 post=post or (lambda *a, **k: _Resp()))
     monkeypatch.setitem(__import__("sys").modules, "requests", mod)
+    # Agent dials go through agent_registry.agent_http(), which hands back its own `requests`.
+    import agent_registry
+    monkeypatch.setattr(agent_registry, "requests", mod)
     return mod
 
 

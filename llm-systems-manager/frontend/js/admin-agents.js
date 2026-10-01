@@ -40,8 +40,9 @@
     const m2a = (a.bind_url || '').startsWith('https://');
     const a2m = !!(a.last_heartbeat_data && a.last_heartbeat_data.control_channel_tls);
     const issued = a.last_cert_issued_at ? String(a.last_cert_issued_at).slice(0, 10) : '';
-    if (m2a && a2m) return { mode: 'mutual', glyph: '⇄', cls: 'tls', label: 'tls', issued,
-      title: 'Mutual TLS — both directions encrypted' + (issued ? ' · cert issued ' + issued : '') };
+    if (m2a && a2m) return { mode: 'mutual', glyph: '⇄', cls: 'tls', label: a.tls_role_checked_at ? 'tls ✓' : 'tls', issued,
+      title: 'Mutual TLS — both directions encrypted' + (issued ? ' · cert issued ' + issued : '')
+        + (a.tls_role_checked_at ? ' · certificate role checked' : '') };
     if (m2a) return { mode: 'in', glyph: '→', cls: 'tls one', label: 'tls', issued,
       title: 'TLS manager → agent only; control channel is plain' };
     if (a2m) return { mode: 'out', glyph: '←', cls: 'tls one', label: 'tls', issued,
@@ -236,6 +237,10 @@
     else if (t.mode === 'out') tls = 'agent → manager only';
     else { tls = 'http' + (t.issued ? ` · cert issued ${t.issued}, restart pending` : ''); tlsCls = 'warn'; }
     const hb = a.last_heartbeat_data || {};
+    let role = 'not yet', roleCls = '';
+    if (a.tls_role_checked_at) { role = 'checked ' + String(a.tls_role_checked_at).slice(0, 10); roleCls = 'ok'; }
+    else if (hb.tls_cert_has_role === true && hb.tls_serves_role === false) { role = 'restart the agent to finish'; roleCls = 'warn'; }
+    else if (hb.tls_cert_has_role === false) { role = 'new certificate not received yet'; roleCls = 'warn'; }
     let collector = '—';
     if (a.status === 'approved') {
       if (hb.collection_enabled === false) collector = 'paused';
@@ -246,6 +251,7 @@
       ['last seen', a.last_heartbeat ? `<span class="ag-seen" data-seen="${esc(a.last_heartbeat)}">${fmtAgo(a.last_heartbeat)}</span>` : '—', seenCls, true],
       ['bind', a.bind_url || '—', ''],
       ['tls', tls, tlsCls],
+      ['certificate role', role, roleCls],
       ['registered from', a.registered_from || '—', ''],
       ['fingerprint', fingerprintShort(a.fingerprint), ''],
       ['runs as', a.agent_user || '—', ''],
