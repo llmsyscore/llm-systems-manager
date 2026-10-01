@@ -181,3 +181,19 @@ def test_a_wildcard_outside_the_zone_does_not_satisfy_a_role(tmp_path):
         assert tls_roles.role_session(_pki.role_name("agent", A)).get(url + "/health", verify=pki.ca_file, timeout=5).ok
     finally:
         stop()
+
+
+def test_helper_servers_refuse_old_tls_versions(net):
+    import socket
+    import ssl
+    from urllib.parse import urlsplit
+    pki, urls = net
+    u = urlsplit(urls["mgr"])
+    ctx = ssl.create_default_context(cafile=pki.ca_file)
+    ctx.check_hostname = False
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    with ctx.wrap_socket(socket.create_connection((u.hostname, u.port), timeout=5)) as s:
+        assert s.version() in ("TLSv1.2", "TLSv1.3")
+    import inspect
+    import tests.tls_servers as helper
+    assert "minimum_version = ssl.TLSVersion.TLSv1_2" in inspect.getsource(helper.serve)

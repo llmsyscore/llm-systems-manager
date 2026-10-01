@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.01-6"
+__version__ = "v2026.10.01-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5554,6 +5554,8 @@ def admin_system_health():
             "tls_role_checked": bool(agent.get("tls_role_checked_at")),
             "bind_url": bind or None,
         })
+
+    health["warnings"].extend(agent_registry.role_warnings(list(data.get("agents", {}).values())))
 
     # ── Data flow ──
     host_last_seen = _primary_llama_last_seen()

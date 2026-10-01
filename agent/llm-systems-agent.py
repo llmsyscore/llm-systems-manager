@@ -75,7 +75,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.10.01-1"
+VERSION = "v2026.10.01-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1769,6 +1769,8 @@ def _tls_enabled() -> bool:
 
 # True iff the RUNNING uvicorn was bound with TLS (vs cert files merely on disk).
 _SERVED_WITH_TLS = False
+# Whether the certificate this process started with carries the agent role name; None when unknown.
+_SERVED_ROLE: Optional[bool] = None
 
 
 def _tls_cert_san_ips() -> list[str]:
@@ -1796,6 +1798,30 @@ def _tls_cert_san_ips() -> list[str]:
         return ips
     except Exception:
         return []
+
+
+def _tls_cert_has_role() -> Optional[bool]:
+    """True when the stored cert carries an agent role name; None when there is no cert or it cannot be read."""
+    crt, _ = _tls_paths()
+    if not crt.is_file():
+        return None
+    try:
+        st = crt.stat()
+        cache_key = (st.st_mtime, st.st_size)
+        if getattr(_tls_cert_has_role, "_cache_key", None) == cache_key:
+            return _tls_cert_has_role._cache_val  # type: ignore[attr-defined]
+        out = subprocess.check_output(
+            ["openssl", "x509", "-in", str(crt), "-noout", "-text"],
+            text=True, timeout=2,
+        )
+    except Exception:
+        return None
+    names = [t.strip()[4:].strip().lower() for t in out.replace("\n", ",").split(",")
+             if t.strip().lower().startswith("dns:")]
+    has = any(n.endswith(".agent." + _ROLE_ZONE) for n in names)
+    _tls_cert_has_role._cache_key = cache_key   # type: ignore[attr-defined]
+    _tls_cert_has_role._cache_val = has         # type: ignore[attr-defined]
+    return has
 
 
 def _tls_cert_expiry_iso() -> Optional[str]:
@@ -2237,6 +2263,8 @@ def heartbeat_loop() -> None:
                 "tls_expires_at": _tls_cert_expiry_iso(),
                 "tls_san_ips": _tls_cert_san_ips(),
                 "control_channel_tls": (CONFIG.MANAGER_URL or "").lower().startswith("https://"),
+                "tls_cert_has_role": _tls_cert_has_role(),
+                "tls_serves_role": _SERVED_ROLE,
                 "providers": _provider_specs(),
             }
             # Wall clock stamped last, right before the POST (#1091).
@@ -4351,6 +4379,7 @@ def main() -> None:
         uv_kwargs["ssl_certfile"] = str(crt)
         uv_kwargs["ssl_keyfile"]  = str(key)
         globals()["_SERVED_WITH_TLS"] = True
+        globals()["_SERVED_ROLE"] = _tls_cert_has_role()
         logger.info("TLS enabled: serving https://%s:%d (cert=%s)",
                     CONFIG.AGENT_BIND_HOST, CONFIG.AGENT_BIND_PORT, crt)
     else:

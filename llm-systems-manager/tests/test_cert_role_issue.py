@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import socket
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -116,3 +117,73 @@ def test_agent_sign_call_asks_for_the_agent_role(registry, monkeypatch, tmp_path
 def test_fixture_certificates_are_not_signed_by_the_live_ca(data):
     M._ensure_manager_server_cert()
     assert (data / "internal-ca.crt").is_file()
+
+
+def _signer(monkeypatch, calls):
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert",
+                        lambda agent: calls.append(1) or {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
+                                                          "expires_at": "2099-01-01T00:00:00+00:00"})
+
+
+def _ago(**kw) -> str:
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
+
+
+def test_agent_that_reports_no_role_cert_is_sent_one_again(registry, monkeypatch):
+    calls = []
+    _signer(monkeypatch, calls)
+    agent = registry["agents"][AID]
+    agent["cert_role_sent_at"] = sent = _ago(minutes=30)
+    out = ar._maybe_issue_tls_bundle(agent, {**BODY, "tls_cert_has_role": False})
+    assert out and out["reason"] == "role-resend"
+    assert registry["agents"][AID]["cert_role_sent_at"] != sent
+    assert calls == [1]
+
+
+def test_resend_waits_between_attempts(registry, monkeypatch):
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    agent = registry["agents"][AID]
+    agent["cert_role_sent_at"] = _ago(minutes=2)
+    assert ar._maybe_issue_tls_bundle(agent, {**BODY, "tls_cert_has_role": False}) is None
+
+
+@pytest.mark.parametrize("extra", [{"tls_cert_has_role": True}, {}, {"tls_cert_has_role": None}, {"tls_cert_has_role": 0}])
+def test_no_resend_unless_the_agent_says_it_lacks_the_certificate(registry, monkeypatch, extra):
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    agent = registry["agents"][AID]
+    agent["cert_role_sent_at"] = _ago(minutes=30)
+    assert ar._maybe_issue_tls_bundle(agent, {**BODY, **extra}) is None
+
+
+@pytest.mark.parametrize("body,want", [
+    ({}, {"tls_cert_has_role": None, "tls_serves_role": None}),
+    ({"tls_cert_has_role": True, "tls_serves_role": False}, {"tls_cert_has_role": True, "tls_serves_role": False}),
+    ({"tls_cert_has_role": "yes", "tls_serves_role": 1}, {"tls_cert_has_role": None, "tls_serves_role": None}),
+])
+def test_heartbeat_role_fields_are_kept_only_as_booleans(body, want):
+    assert ar._hb_role_fields(body) == want
+
+
+def _live(aid, host, **over):
+    a = {"agent_id": aid, "hostname": host, "status": "approved", "bind_url": "https://10.0.0.5:8082",
+         "cert_role_sent_at": _ago(minutes=30), "last_heartbeat_data": {}}
+    a.update(over)
+    return a
+
+
+def test_role_warnings(monkeypatch):
+    monkeypatch.setattr(ar, "agent_liveness", lambda a: a.get("_live", "live"))
+    agents = [
+        _live("1", "checked", tls_role_checked_at=_ago(minutes=1), last_heartbeat_data={"tls_serves_role": True}),
+        _live("2", "stuck", last_heartbeat_data={"tls_cert_has_role": True, "tls_serves_role": True}),
+        _live("3", "nocert", last_heartbeat_data={"tls_cert_has_role": False}),
+        _live("4", "needs-restart", last_heartbeat_data={"tls_cert_has_role": True, "tls_serves_role": False}),
+        _live("5", "old-agent"),
+        _live("6", "just-sent", cert_role_sent_at=_ago(minutes=1), last_heartbeat_data={"tls_serves_role": True}),
+        _live("7", "down", _live="down", last_heartbeat_data={"tls_serves_role": True}),
+        _live("8", "pending", status="pending", last_heartbeat_data={"tls_cert_has_role": False}),
+    ]
+    out = ar.role_warnings(agents)
+    assert len(out) == 2
+    assert any(w.startswith("agent stuck:") and "not checked" in w for w in out)
+    assert any(w.startswith("agent nocert:") and "Push CA" in w for w in out)

@@ -70,9 +70,28 @@ describe('#793 TLS glyph chip', () => {
   test('pending agent explains the cert is issued on approval', () => {
     expect(V.tlsInfo({ status: 'pending', bind_url: 'http://x:1' }).title).toMatch(/issued on approval/);
   });
-  test('title says when the certificate role is checked (#1161)', () => {
-    expect(V.tlsInfo(approved('a', { tls_role_checked_at: '2026-10-02T10:00:00Z' })).title).toMatch(/role checked/);
-    expect(V.tlsInfo(approved('a')).title).not.toMatch(/role checked/);
+  test('chip shows when the certificate role is checked (#1161)', () => {
+    const on = V.tlsInfo(approved('a', { tls_role_checked_at: '2026-10-02T10:00:00Z' }));
+    expect(on.label).toBe('tls ✓');
+    expect(on.title).toMatch(/certificate role checked/);
+    expect(V.capsHtml(approved('a', { tls_role_checked_at: '2026-10-02T10:00:00Z' }))).toContain('⇄ tls ✓');
+    const off = V.tlsInfo(approved('a'));
+    expect(off.label).toBe('tls');
+    expect(off.title).not.toMatch(/role checked/);
+  });
+  test('detail window has a certificate role row (#1161)', () => {
+    const row = (a) => {
+      const m = V.connectionHtml(a).match(/<dt>certificate role<\/dt><dd([^>]*)>([^<]*)<\/dd>/);
+      return m ? [m[2], /class="(\w+)"/.test(m[1]) ? RegExp.$1 : ''] : null;
+    };
+    expect(row(approved('a', { tls_role_checked_at: '2026-10-02T10:00:00Z' }))).toEqual(['checked 2026-10-02', 'ok']);
+    expect(row(approved('a'))).toEqual(['not yet', '']);
+    const hb = (x) => ({ last_heartbeat_data: { collection_enabled: true, control_channel_tls: true, ...x } });
+    expect(row(approved('a', hb({ tls_cert_has_role: true, tls_serves_role: false }))))
+      .toEqual(['restart the agent to finish', 'warn']);
+    expect(row(approved('a', hb({ tls_cert_has_role: false }))))
+      .toEqual(['new certificate not received yet', 'warn']);
+    expect(row({ status: 'pending', bind_url: 'http://x:1' })).toEqual(['not yet', '']);
   });
 });
 

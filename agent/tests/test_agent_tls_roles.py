@@ -116,3 +116,47 @@ def test_session_and_probes_use_the_router():
     assert '_role_get("manager", f"{https_url}/health"' in SRC
     assert '_role_get("alarm_engine", f"{new_ae}/health"' in SRC
     assert SRC.count("_maybe_lock_peer_roles()") >= 2
+
+
+def _cert_ns(tmp_path, openssl_out=None, exists=True, fail=False):
+    crt = tmp_path / "tls-cert.pem"
+    if exists:
+        crt.write_text("x")
+
+    def check_output(cmd, **kw):
+        if fail or "-ext" in cmd:
+            raise OSError("no openssl, or one without the -ext option")
+        return openssl_out
+
+    ns: dict = {"_tls_paths": lambda: (crt, tmp_path / "tls-key.pem"), "Optional": __import__("typing").Optional,
+                "subprocess": SimpleNamespace(check_output=check_output), "_ROLE_ZONE": "role.llmsys.internal"}
+    exec(_extract("_tls_cert_has_role"), ns)
+    return ns["_tls_cert_has_role"]
+
+
+SAN = ("Certificate:\n    Data:\n        Subject: O=LLM Systems Agent, CN=11111111-2222-3333-4444-555555555555\n"
+       "        X509v3 extensions:\n            X509v3 Subject Alternative Name: \n"
+       "                DNS:box.agents.local, DNS:box, {extra}IP Address:10.0.0.5\n"
+       "            X509v3 Authority Key Identifier: \n                AB:CD\n")
+
+
+def test_stored_certificate_with_an_agent_role_is_reported(tmp_path):
+    has = _cert_ns(tmp_path, SAN.format(extra="DNS:11111111-2222-3333-4444-555555555555.agent.role.llmsys.internal, "))
+    assert has() is True
+
+
+def test_stored_certificate_without_a_role_is_reported(tmp_path):
+    assert _cert_ns(tmp_path, SAN.format(extra=""))() is False
+    assert _cert_ns(tmp_path, SAN.format(extra="DNS:manager.role.llmsys.internal, "))() is False
+
+
+def test_no_certificate_or_no_openssl_reports_unknown(tmp_path):
+    assert _cert_ns(tmp_path, exists=False)() is None
+    assert _cert_ns(tmp_path, fail=True)() is None
+
+
+def test_heartbeat_reports_stored_and_served_role():
+    assert '"tls_cert_has_role": _tls_cert_has_role(),' in SRC
+    assert '"tls_serves_role": _SERVED_ROLE,' in SRC
+    assert 'globals()["_SERVED_ROLE"] = _tls_cert_has_role()' in SRC
+    assert "_SERVED_ROLE: Optional[bool] = None" in SRC

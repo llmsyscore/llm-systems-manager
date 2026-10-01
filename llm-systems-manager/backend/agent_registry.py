@@ -72,6 +72,7 @@ __all__ = [
     "agent_tls_kwargs",
     "agent_http",
     "agent_role_locked",
+    "role_warnings",
     "agent_request",
     "primary_agent",
     "pick_agent",
@@ -526,6 +527,43 @@ _role_warned: "set[str]" = set()
 
 def _agent_role_name(agent: dict) -> str:
     return f"{str(agent['agent_id']).lower()}.agent.{_ROLE_ZONE}"
+
+
+def _older_than(iso: Any, seconds: float) -> bool:
+    """True when an ISO timestamp lies more than `seconds` in the past; False when absent or unreadable."""
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() > seconds
+
+
+def _hb_role_fields(body: dict) -> dict:
+    """The agent's stored/served role flags from a heartbeat; anything but a real boolean becomes None."""
+    def flag(key: str):
+        v = body.get(key)
+        return v if isinstance(v, bool) else None
+    return {"tls_cert_has_role": flag("tls_cert_has_role"), "tls_serves_role": flag("tls_serves_role")}
+
+
+def role_warnings(agents: list) -> "list[str]":
+    """System Health lines for live agents whose certificate role is overdue."""
+    out = []
+    for a in agents:
+        if a.get("status") != "approved" or agent_role_locked(a) or agent_liveness(a) != "live":
+            continue
+        sent = a.get("cert_role_sent_at")
+        hb = a.get("last_heartbeat_data") or {}
+        host = a.get("hostname") or str(a.get("agent_id") or "")[:8]
+        if hb.get("tls_serves_role") is True and _older_than(sent, 300):
+            out.append(f"agent {host}: certificate role not checked although the agent serves its new "
+                       "certificate — check that the manager can reach it")
+        elif hb.get("tls_cert_has_role") is False and _older_than(sent, 900):
+            out.append(f"agent {host}: has not stored its new certificate — use Push CA under "
+                       "Admin → Agents → Manage")
+    return out
 
 
 def agent_role_locked(agent: "dict | None") -> bool:
@@ -1177,6 +1215,11 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
         if not needs_new and not agent.get("cert_role_sent_at"):
             needs_new = True
             reason_hint = "role-upgrade"
+        # Send again when the agent says its stored certificate has no role; at most every 10 minutes.
+        if (not needs_new and body.get("tls_cert_has_role") is False
+                and _older_than(agent.get("cert_role_sent_at"), 600)):
+            needs_new = True
+            reason_hint = "role-resend"
         # Belt-and-suspenders: if the agent's current bind_url is
         # https:// but the IP in it isn't the one we'd put in a new
         # cert's SAN, the existing cert almost certainly has a stale
@@ -1558,6 +1601,7 @@ def _agents_heartbeat():
                 # with bind_url scheme in /api/admin/system-health to drive the
                 # admin tab's bidirectional-TLS indicator.
                 "control_channel_tls": bool(body.get("control_channel_tls")),
+                **_hb_role_fields(body),
             }
             # Refresh the version from each heartbeat so the admin tab
             # reflects post-self-update reality without waiting for the
