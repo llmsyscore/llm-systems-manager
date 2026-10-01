@@ -517,9 +517,11 @@
         if (s.bench_tool) bits.push(TC.esc(s.bench_tool));
         if (!r.ok) bits.push('<span style="color:var(--crit)">failed</span>');
         else if (s.failed_samples) bits.push('<span style="color:var(--warn)">' + TC.esc(String(s.failed_samples)) + ' sample' + (s.failed_samples === 1 ? '' : 's') + ' failed</span>');
-        rows.push({ icon: '◷', tool: 'Benchmark', run: r,
+        // A stored live run opens with its own results (#1162).
+        const openRun = clickable && s.bench_tool === 'speed-bench' && r.run_id ? r.run_id : null;
+        rows.push({ icon: '◷', tool: 'Benchmark', run: r, openRun,
           toolId: clickable ? 'benchmark' : null, target,
-          title: clickable ? 'Open Benchmark' : null, model: r.model_id || '',
+          title: clickable ? (openRun ? "Open this run's results" : 'Open Benchmark') : null, model: r.model_id || '',
           host: _tHost(r.agent_id),
           result: bits.join(' · ') || '—', tps: s.gen_tps, ts: r.ts });
       } else if (r.tool === 'autotune') {
@@ -811,6 +813,7 @@
       const tr = ev.target.closest('tr.rowlink');
       if (tr && tr.dataset.tool) {
         const opts = tr.dataset.provider ? { provider: tr.dataset.provider, agent: tr.dataset.agent || null } : undefined;
+        if (opts && tr.dataset.run) { opts.run = tr.dataset.run; opts.mode = 'live'; }
         toolsOpenTool(tr.dataset.tool, tr.dataset.model || null, opts);
       }
     });
@@ -933,6 +936,7 @@
   window.toolsUrl = toolsUrl;
   window.toolsSetTarget = toolsSetTarget;
   window.toolsDefaultAgentFor = toolsDefaultAgentFor;
+  window.toolsHostName = _tHost;
   window.toolsQueueSlot = toolsQueueSlot;
   window.toolsQueueText = toolsQueueText;
   window.toolsQueuedCount = toolsQueuedCount;

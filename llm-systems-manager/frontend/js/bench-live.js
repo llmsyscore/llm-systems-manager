@@ -27,7 +27,7 @@
   let _levels = [], _baseline = null, _lastDoc = null, _runId = null, _activeLevel = null, _lastTps = null, _cell = null;
   let _attached = false, _elapsedIv = null, _runStart = 0, _sweepLevels = [], _curLevel = null, _curCell = null, _busyOn = false, _lastCfg = null, _attachedRun = null;
   let _fleetHosts = [], _fleetJob = null, _fleetPoll = null, _fleetSel = null;
-  let _base = null, _baseTimer = null, _baseAutoAttached = null, _slot = null, _baselineFor = null;
+  let _base = null, _baseTimer = null, _baseAutoAttached = null, _slot = null, _baselineFor = null, _storedReq = 0;
   // Chart metric (#906): the y-value drawn on whichever chart shape the run produced.
   const METRICS = {
     decode:  { label: 'decode t/s', all: 'pred_tps', row: 'avg_pred_t_s', agg: 'agg_pred_tps' },
@@ -251,7 +251,8 @@
   async function onOpen(modelId, opts) {
     // A new target host benchmarks its own loaded model, not the last host's (#916).
     if (opts && opts.retarget && !running()) {
-      _model = null; _fleetJob = null; _fleetSel = null; _levels = []; _lastDoc = null; _baseline = null; renderFleet(); syncPinBtn();
+      _model = null; _fleetJob = null; _fleetSel = null; _runId = null; renderFleet();
+      resetRunView(); setStatus('idle'); const el = $('blElapsed'); if (el) el.textContent = '';
       _vllmResult = null; const vt = $('blVllmTiles'), vl = $('blVllmLog'), va = $('blVllmActions');
       if (vt) vt.innerHTML = ''; if (vl) vl.innerHTML = ''; if (va) va.style.display = 'none'; vllmStatus('');
     }
@@ -263,6 +264,8 @@
     if (off) off.style.display = pd().offline ? '' : 'none';
     setMode(wantFleet || !pd().offline ? 'live' : ((opts && opts.mode) || (typeof layout !== 'undefined' && layout && layout.benchMode) || 'live'));
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
+    // Any other open drops a stored run that is still loading.
+    if (opts && opts.run) showStoredRun(opts.run); else _storedReq++;
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     // Reopened without a model: the host's loaded model replaces a stale earlier target (#1126).
     const loaded = ((_pre && _pre.server) || {}).loaded_id;
@@ -628,6 +631,29 @@
     renderFleet();
     syncAttachBtn(); syncPinBtn();
   }
+  // Shows a stored run in the Live panes (#1162); a run in progress keeps the view.
+  async function showStoredRun(runId) {
+    if (running() || _busyOn) { log('a run is in progress, so the past run was not opened', 'dim'); return; }
+    const req = ++_storedReq;
+    let d;
+    try { d = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(res => res.json()); }
+    catch (_) { d = null; }
+    if (req !== _storedReq || running() || _busyOn) return;
+    _fleetJob = null; _fleetSel = null; renderFleet();
+    resetRunView();
+    const el = $('blElapsed'); if (el) el.textContent = '';
+    if (!d) { setStatus('could not load this run', 'err'); return; }
+    if (!d.ok || !d.run) { setStatus("this run's results are no longer stored", 'warn'); return; }
+    const meta = d.meta || {}, when = fmtTs(meta.ts);
+    const host = typeof toolsHostName === 'function' ? toolsHostName(meta.agent_id) : (meta.agent_id || '');
+    _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: runId };
+    _matrixRun = !!(d.run.config && d.run.config.matrix);
+    redraw();
+    setStatus('past run');
+    $('blStrip').textContent = [when, host, doneStrip(d.run)].filter(Boolean).join(' · ');
+    log(['showing run ' + runId, when, host].filter(Boolean).join(' · '), 'dim');
+    if (d.run.baseline_run_id) loadBaselineDoc(d.run.baseline_run_id);
+  }
   function setProgress(done, total) { const bar = $('blProgress') && $('blProgress').querySelector('i'); if (bar) bar.style.width = (total ? Math.round(done / total * 100) : 0) + '%'; }
   // Logs every host whose status changed between two polls of the autopilot job.
   function logFleetChanges(prev, next) {
@@ -674,6 +700,14 @@
   function log(text, cls) { const el = $('blLog'); if (!el) return; const t = new Date().toTimeString().slice(0, 8); el.innerHTML += `<div><span class="dim">${t}</span> ${cls ? `<span class="${cls}">` : ''}${esc(text)}${cls ? '</span>' : ''}</div>`; el.scrollTop = el.scrollHeight; }
   function setStatus(text, state) { const el = $('blStatus'); el.textContent = text; el.classList.remove('running', 'ok', 'err', 'warn'); if (state) el.classList.add(state); }
   function failedText(n) { return `${n} sample${n === 1 ? '' : 's'} failed`; }
+  // Strip summary of a finished run: levels or cells, duration, energy, draft window, failed samples.
+  function doneStrip(doc) {
+    const e = doc.wh_per_ktok != null ? ` · ${fmt(doc.wh_per_ktok, 2)} Wh / 1k tokens` : '';
+    const sp = (doc.spec && doc.spec.n_max != null) ? ` · draft window ${doc.spec.n_min}–${doc.spec.n_max}` : '';
+    const prefix = (doc.config && doc.config.matrix) ? `${cells().length} cells · ` : `${(doc.levels || []).length} levels · `;
+    const nf = failedSamples(doc);
+    return `${prefix}${fmt(doc.elapsed_s, 0)} s${e}${sp}${nf ? ` · ${failedText(nf)}` : ''}`;
+  }
   // Failed-sample count of a run: the event's own field, else summed from the levels seen (older agents).
   function failedSamples(msg) {
     if (msg && msg.failed_samples != null) return Number(msg.failed_samples) || 0;
@@ -798,8 +832,10 @@
   async function loadBaselineDoc(runId) {
     if (!runId || _baselineFor === runId) return;
     _baselineFor = runId;
-    try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(r => r.json()); _baseline = (r && r.run) || null; } catch (_) { _baseline = null; }
-    if (_baselineFor === runId) redraw();
+    let doc = null;
+    try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(r => r.json()); doc = (r && r.run) || null; } catch (_) {}
+    if (_baselineFor !== runId) return;
+    _baseline = doc; redraw();
   }
   async function run(cfg) {
     if (_vllmBusyOn && _es) { setStatus('an offline benchmark is running on this host', 'err'); return; }
@@ -825,7 +861,7 @@
       _fleetJob = { job_id: d.job_id, hosts: [] };
       sessionStorage.setItem('bl.fleetJob', d.job_id);
       busy(true); startElapsed(); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetSel = null; _baseline = null;
-      $('blLog').innerHTML = ''; setProgress(0, 0); syncAttachBtn(); syncPinBtn();
+      $('blLog').innerHTML = ''; $('blStrip').textContent = ''; setProgress(0, 0); syncAttachBtn(); syncPinBtn();
       log(`autopilot job ${d.job_id} · ${agents.length} host${agents.length === 1 ? '' : 's'} · ${config.bench || ''}`);
       redraw(); renderFleet(); startFleetPoll();
       return;
@@ -835,7 +871,7 @@
     const quiet = _attached;
     if (!quiet) {
       _lastCfg = c;
-      busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; setProgress(0, 0);
+      busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; $('blStrip').textContent = ''; setProgress(0, 0);
       syncAttachBtn(); syncPinBtn();
       _baseline = null; _baselineFor = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
       if (c.baseline_run_id) await loadBaselineDoc(c.baseline_run_id);
@@ -890,12 +926,9 @@
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
           leaveAttached(); stopElapsed();
           setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
-        else if (msg.type === 'model_done') { _lastDoc = msg; const e = msg.wh_per_ktok != null ? ` · ${fmt(msg.wh_per_ktok, 2)} Wh / 1k tokens` : '';
+        else if (msg.type === 'model_done') { _lastDoc = msg;
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
-          const sp = (msg.spec && msg.spec.n_max != null) ? ` · draft window ${msg.spec.n_min}–${msg.spec.n_max}` : '';
-          const prefix = (msg.config && msg.config.matrix) ? `${cells().length} cells · ` : `${(msg.levels || []).length} levels · `;
-          const nf = failedSamples(msg);
-          $('blStrip').textContent = `${prefix}${fmt(msg.elapsed_s, 0)} s${e}${sp}${nf ? ` · ${failedText(nf)}` : ''}`;
+          $('blStrip').textContent = doneStrip(msg);
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
