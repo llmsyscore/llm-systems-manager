@@ -160,3 +160,24 @@ def test_heartbeat_reports_stored_and_served_role():
     assert '"tls_serves_role": _SERVED_ROLE,' in SRC
     assert 'globals()["_SERVED_ROLE"] = _tls_cert_has_role()' in SRC
     assert "_SERVED_ROLE: Optional[bool] = None" in SRC
+
+
+def test_certificate_addresses_are_read_without_the_ext_option(tmp_path):
+    crt = tmp_path / "tls-cert.pem"
+    crt.write_text("x")
+
+    def check_output(cmd, **kw):
+        if "-ext" in cmd:
+            raise OSError("unknown option -ext")
+        return SAN.format(extra="IP Address:2001:DB8:0:0:0:0:0:5, ")
+
+    ns: dict = {"_tls_paths": lambda: (crt, tmp_path / "tls-key.pem"),
+                "subprocess": SimpleNamespace(check_output=check_output)}
+    exec(_extract("_tls_cert_san_ips"), ns)
+    assert ns["_tls_cert_san_ips"]() == ["2001:DB8:0:0:0:0:0:5", "10.0.0.5"]
+
+
+def test_certificate_addresses_are_empty_without_a_certificate(tmp_path):
+    ns: dict = {"_tls_paths": lambda: (tmp_path / "absent.pem", None), "subprocess": SimpleNamespace()}
+    exec(_extract("_tls_cert_san_ips"), ns)
+    assert ns["_tls_cert_san_ips"]() == []

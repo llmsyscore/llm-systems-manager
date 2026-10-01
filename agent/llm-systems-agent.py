@@ -75,7 +75,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.10.01-3"
+VERSION = "v2026.10.01-4"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1785,7 +1785,7 @@ def _tls_cert_san_ips() -> list[str]:
         if cached == cache_key:
             return _tls_cert_san_ips._cache_val  # type: ignore[attr-defined]
         out = subprocess.check_output(
-            ["openssl", "x509", "-in", str(crt), "-noout", "-ext", "subjectAltName"],
+            ["openssl", "x509", "-in", str(crt), "-noout", "-text"],
             text=True, timeout=2,
         )
         ips: list[str] = []

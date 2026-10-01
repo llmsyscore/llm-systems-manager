@@ -195,5 +195,4 @@ def test_helper_servers_refuse_old_tls_versions(net):
     with ctx.wrap_socket(socket.create_connection((u.hostname, u.port), timeout=5)) as s:
         assert s.version() in ("TLSv1.2", "TLSv1.3")
     import inspect
-    import tests.tls_servers as helper
-    assert "minimum_version = ssl.TLSVersion.TLSv1_2" in inspect.getsource(helper.serve)
+    assert "minimum_version = ssl.TLSVersion.TLSv1_2" in inspect.getsource(serve)
