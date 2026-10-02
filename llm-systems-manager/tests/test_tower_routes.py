@@ -294,7 +294,7 @@ def test_stop_during_the_first_token_wait_frees_the_slot_and_ends_the_stream(cli
 def test_model_pin_is_admin_only_and_writes_through_settings(client, monkeypatch):
     written = {}
     monkeypatch.setattr(M.settings_toml_io, "apply_patches", lambda sets, removals=(): written.update(sets))
-    monkeypatch.setattr(M, "_tower_reload_config", lambda: None)
+    monkeypatch.setitem(M._HOT_RELOADERS, "manager.tower.", lambda: None)
     assert client.put("/api/tower/model", json={"model": "qwen3-14b"}).status_code == 403
     with client.session_transaction() as s:
         s["role"] = "admin"
