@@ -97,6 +97,16 @@ def test_locked_agent_request_succeeds_with_its_own_certificate(net):
     assert err is None and resp.ok
 
 
+def test_locked_agent_is_not_dialed_over_plain_http(net, caplog):
+    store, url_a, _ = net
+    plain = url_a.replace("https://", "http://")
+    a = _agent(store, A, plain, registered_from="127.0.0.1", tls_role_checked_at="2026-10-01T00:00:00+00:00")
+    with caplog.at_level(logging.WARNING):
+        resp, tried, err = ar.agent_request("GET", a, "/health", timeout=5)
+    assert resp is None and err and tried == [plain + "/health"]
+    assert any("plain HTTP" in r.getMessage() for r in caplog.records)
+
+
 def test_registry_role_name_matches_the_signer():
     import _pki
     assert ar._agent_role_name({"agent_id": A.upper()}) == _pki.role_name("agent", A.upper())

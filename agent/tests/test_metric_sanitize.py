@@ -8,9 +8,10 @@ import json
 import sys
 import types
 
-# The agent runtime ships `requests`; the test venv doesn't. The client only
-# needs requests.Session to exist (no POST is made here), so stub it.
-if "requests" not in sys.modules:
+# Use the real `requests` when it is installed; otherwise stub the one attribute the import touches.
+try:
+    import requests  # noqa: F401
+except ImportError:
     _fake = types.ModuleType("requests")
     _fake.Session = type("Session", (), {})
     sys.modules["requests"] = _fake

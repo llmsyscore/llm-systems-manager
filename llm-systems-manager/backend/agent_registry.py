@@ -72,6 +72,7 @@ __all__ = [
     "agent_tls_kwargs",
     "agent_http",
     "agent_role_locked",
+    "plain_http_refusal",
     "role_warnings",
     "agent_request",
     "primary_agent",
@@ -552,11 +553,16 @@ def role_warnings(agents: list) -> "list[str]":
     """System Health lines for live agents whose certificate role is overdue."""
     out = []
     for a in agents:
-        if a.get("status") != "approved" or agent_role_locked(a) or agent_liveness(a) != "live":
+        if a.get("status") != "approved" or agent_liveness(a) != "live":
             continue
         sent = a.get("cert_role_sent_at")
         hb = a.get("last_heartbeat_data") or {}
         host = a.get("hostname") or str(a.get("agent_id") or "")[:8]
+        if agent_role_locked(a):
+            refused = plain_http_refusal(a)
+            if refused:
+                out.append(refused)
+            continue
         if hb.get("tls_serves_role") is True and _older_than(sent, 300):
             out.append(f"agent {host}: certificate role not checked although the agent serves its new "
                        "certificate — check that the manager can reach it")
@@ -571,8 +577,17 @@ def agent_role_locked(agent: "dict | None") -> bool:
     return bool(agent and agent.get("tls_role_checked_at"))
 
 
+def plain_http_refusal(agent: "dict | None") -> "str | None":
+    """Message for a role-checked agent that reports a plain-HTTP address; None for any other agent."""
+    if not agent_role_locked(agent) or not str(agent.get("bind_url") or "").lower().startswith("http://"):
+        return None
+    host = agent.get("hostname") or str(agent.get("agent_id") or "")[:8]
+    return (f"agent {host}: reports a plain-HTTP address although its certificate role is checked, "
+            "so the manager does not connect to it — restart the agent")
+
+
 def agent_http(agent: "dict | None"):
-    """HTTP client for dialing this agent: a role-requiring session once locked, else `requests`."""
+    """HTTP client for dialing this agent: once locked, a session that requires its role and refuses plain HTTP."""
     if agent_role_locked(agent):
         return tls_roles.role_session(_agent_role_name(agent))
     return requests
@@ -2129,6 +2144,9 @@ def _agents_stream_token(agent_id: str):
     agent = data["agents"].get(agent_id)
     if not agent or agent.get("status") != "approved":
         return jsonify({"ok": False, "error": "unknown or unapproved agent"}), 404
+    refused = plain_http_refusal(agent)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
     token = issue_stream_token(agent_id, path, ttl)
     return jsonify({
         "ok": True,

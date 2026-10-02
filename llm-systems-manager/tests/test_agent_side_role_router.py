@@ -77,6 +77,7 @@ def probe_ns(tmp_path):
           "CONFIG": SimpleNamespace(MANAGER_URL=mgr, ALARM_ENGINE_URL=ae),
           "_ca_bundle_path": lambda: Path(pki.ca_file),
           "_tls_role_locked": lambda role: role in locked, "_tls_role_lock": locked.add,
+          "remembered": {}, "_tls_role_remember_url": lambda role, url: ns["remembered"].__setitem__(role, url),
           "_diag_throttle": lambda key, msg, *a, **k: warned.append(key)}
     for kind, name in (("class", "_RoleAdapter"), ("def", "_is_name_mismatch"), ("def", "_role_get"),
                        ("def", "_maybe_lock_peer_roles")):
@@ -91,6 +92,7 @@ def test_probe_locks_both_peers_that_carry_their_role(probe_ns):
     ns, locked, warned, pki, fake = probe_ns
     ns["_maybe_lock_peer_roles"]()
     assert locked == {"manager", "alarm_engine"} and warned == []
+    assert ns["remembered"] == {"manager": ns["CONFIG"].MANAGER_URL, "alarm_engine": ns["CONFIG"].ALARM_ENGINE_URL}
 
 
 def test_probe_leaves_a_manager_without_role_unlocked_and_warns(probe_ns):
