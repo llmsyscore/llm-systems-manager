@@ -270,11 +270,15 @@ jobs:
       - name: Assert every seeded piece of state survived the upgrade
         if: env.SKIP_UPGRADE != '1'
         run: |
-          # CA + AE cert byte-identical (a regenerated pair = wiped volume).
+          # CA byte-identical; AE cert identical, or re-issued by the same CA when the baseline lacked a role.
           docker compose cp manager:/opt/llm-systems-manager/data/internal-ca.crt /tmp/ca-after.crt
           docker compose cp alarm-engine:/opt/llm-systems-manager/llm-systems-alarm-engine/data/ae-tls.crt /tmp/ae-after.crt
           cmp /tmp/ca-before.crt /tmp/ca-after.crt
-          cmp /tmp/ae-before.crt /tmp/ae-after.crt
+          if openssl x509 -in /tmp/ae-before.crt -noout -ext subjectAltName | grep -qF 'DNS:alarm-engine.role.llmsys.internal'; then
+            cmp /tmp/ae-before.crt /tmp/ae-after.crt
+          else
+            openssl verify -CAfile /tmp/ca-after.crt /tmp/ae-after.crt
+          fi
           # Admin password: new one works, seeded default must NOT be back.
           jar="$(mktemp)"
           code="$(curl -s -o /dev/null -w '%{http_code}' -c "$jar" \
