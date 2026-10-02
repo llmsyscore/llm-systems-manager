@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 AGENT_PY = Path(__file__).resolve().parents[1] / "llm-systems-agent.py"
 
 
@@ -221,8 +223,6 @@ def test_first_heartbeat_follows_the_token_within_a_second():
     ns = {"CONFIG": Cfg(), "time": SimpleNamespace(sleep=sleep), "_runtime_lock": threading.Lock(),
           "_state": state, "logger": logging.getLogger("test")}
     exec(_extract("heartbeat_loop"), ns)
-    try:
+    with pytest.raises(Stop):
         ns["heartbeat_loop"]()
-    except Stop:
-        pass
     assert sleeps == [1, 1]

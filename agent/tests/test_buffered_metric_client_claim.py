@@ -3,13 +3,12 @@
 deferred spills while a claim is open, emergency valve past 2x the bound."""
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
 # Use the real `requests` when it is installed; otherwise stub the one attribute the import touches.
-try:
-    import requests  # noqa: F401
-except ImportError:
+if "requests" not in sys.modules and importlib.util.find_spec("requests") is None:
     _fake = types.ModuleType("requests")
     _fake.Session = type("Session", (), {})
     sys.modules["requests"] = _fake
