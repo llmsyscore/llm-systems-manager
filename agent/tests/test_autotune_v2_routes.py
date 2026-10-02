@@ -75,6 +75,12 @@ def llama():
     return _load_llama()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_ppl_probe_cache(llama):
+    """Empties the perplexity probe cache so a reused tmp path can't return another test's result."""
+    llama._autotune_ppl_probe_cache.clear()
+
+
 class _Ctx:
     def __init__(self, tmp, llama_bin=""):
         self.config = types.SimpleNamespace(LLAMA_API_URL="http://127.0.0.1:9931", AGENT_INSTALL_DIR=str(tmp),
