@@ -270,12 +270,15 @@ def test_reload_reapplies_tls_verify_and_ae_url(tmp_path):
           "_state": {"ae_url_applied": "http://old-ae:8081"},
           "_now_iso": None, "_metric_client": client, "Path": Path,
           "_agent_fingerprint": SimpleNamespace(cache_clear=lambda: None),
+          "_apply_role_checked_urls": lambda: applied.append(ns["CONFIG"].MANAGER_URL),
           "logger": logging.getLogger("test"), "Header": lambda default=None: default}
+    applied: list = []
     for fn in ("_ca_bundle_path", "_configure_manager_tls_verify", "_configure_ae_tls_verify",
                "_reload_config_locked", "reload_config"):
         _exec(fn, ns)
     out = ns["reload_config"](authorization=None)
     assert out["ok"] is True
+    assert applied == ["https://mgr:5000"]
     assert session.verify == str(ca)
     assert client.endpoint_url == "http://new-ae:8081/ingest"
     assert ns["_state"].get("ae_url_applied") in (None, "", "http://new-ae:8081")

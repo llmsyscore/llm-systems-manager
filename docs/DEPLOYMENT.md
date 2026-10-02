@@ -564,7 +564,10 @@ After updating to a version with certificate roles:
 
 The first time one side sees a certificate with a role, it requires the role on every later connection to that peer.
 
-- To clear what an agent remembers about the manager and the alarm engine, delete `data/tls-roles.json` on that agent's host and restart the agent.
+An agent that has checked the manager keeps using the manager's HTTPS address, including after a restart, even when its configuration names an `http://` address. The same applies to the alarm engine's address. The manager does not connect to a checked agent over plain HTTP and gives the browser no direct link to it. System Health lists a warning for a checked agent that reports a plain-HTTP address.
+
+- If the manager moves to a new address, set the new `https://` address in the agent's configuration and restart the agent. A new alarm-engine HTTPS address reaches the agent from the manager.
+- To clear what an agent remembers about the manager and the alarm engine, including their HTTPS addresses, delete `data/tls-roles.json` on that agent's host and restart the agent. Do this on each agent after turning HTTPS off for the manager or the alarm engine.
 - To clear what the manager remembers about the alarm engine, delete `data/tls-roles.json` on the manager host and restart the manager.
 - To clear what the manager remembers about one agent, delete that agent under **Admin → Agents**. It registers again as a new agent and needs approval.
 - System Health lists a warning for an agent that has not stored its new certificate after 15 minutes, and for one that serves it but is still not checked. **Push CA** under **Manage ▾** sends every agent its certificate again.

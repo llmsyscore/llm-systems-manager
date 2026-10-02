@@ -3,12 +3,13 @@
 (#586) and endpoint-path preservation on AE retarget (#587)."""
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import types
 
-# Stub `requests` with the one attribute the module import touches.
-if "requests" not in sys.modules:
+# Use the real `requests` when it is installed; otherwise stub the one attribute the import touches.
+if "requests" not in sys.modules and importlib.util.find_spec("requests") is None:
     _fake = types.ModuleType("requests")
     _fake.Session = type("Session", (), {})
     sys.modules["requests"] = _fake

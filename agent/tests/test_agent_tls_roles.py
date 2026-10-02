@@ -181,3 +181,155 @@ def test_certificate_addresses_are_empty_without_a_certificate(tmp_path):
     ns: dict = {"_tls_paths": lambda: (tmp_path / "absent.pem", None), "subprocess": SimpleNamespace()}
     exec(_extract("_tls_cert_san_ips"), ns)
     assert ns["_tls_cert_san_ips"]() == []
+
+
+# ── #1167: a checked role keeps its HTTPS address ─────────────────────
+def _url_ns(tmp_path, **kw) -> dict:
+    ns = _ns(tmp_path, **kw)
+    for fn in ("_tls_role_url", "_tls_role_remember_url", "_apply_role_checked_urls"):
+        exec(_extract(fn), ns)
+    return ns
+
+
+def test_address_is_stored_with_the_lock_and_survives_a_restart(tmp_path):
+    ns = _url_ns(tmp_path)
+    ns["_tls_role_lock"]("manager")
+    ns["_tls_role_remember_url"]("manager", "https://10.0.0.1:5443/")
+    assert ns["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+    assert _url_ns(tmp_path)["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+    assert set(json.loads((tmp_path / "data" / "tls-roles.json").read_text())) == {"manager", "manager_url"}
+
+
+def test_address_is_not_stored_for_an_unlocked_role_or_plain_http(tmp_path):
+    ns = _url_ns(tmp_path)
+    ns["_tls_role_remember_url"]("manager", "https://10.0.0.1:5443")
+    assert ns["_tls_role_url"]("manager") == ""
+    ns["_tls_role_lock"]("manager")
+    ns["_tls_role_remember_url"]("manager", "http://10.0.0.1:5000")
+    assert ns["_tls_role_url"]("manager") == ""
+
+
+def test_a_later_lock_keeps_the_stored_address(tmp_path):
+    ns = _url_ns(tmp_path)
+    ns["_tls_role_lock"]("manager")
+    ns["_tls_role_remember_url"]("manager", "https://10.0.0.1:5443")
+    ns["_tls_role_lock"]("alarm_engine")
+    assert _url_ns(tmp_path)["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+
+
+def test_a_stored_address_that_is_not_https_is_ignored(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "tls-roles.json").write_text(json.dumps(
+        {"manager": "2026-10-01T00:00:00+00:00", "manager_url": "http://10.0.0.1:5000",
+         "alarm_engine": "2026-10-01T00:00:00+00:00", "alarm_engine_url": 7}))
+    ns = _url_ns(tmp_path)
+    assert ns["_tls_role_url"]("manager") == "" and ns["_tls_role_url"]("alarm_engine") == ""
+
+
+def test_a_failed_address_write_keeps_it_for_this_run(tmp_path, caplog):
+    ns = _url_ns(tmp_path)
+    ns["_tls_role_lock"]("manager")
+
+    def boom(path, content, mode=None, encoding="utf-8"):
+        raise OSError("read-only file system")
+    ns["atomic_write_text"] = boom
+    with caplog.at_level(logging.WARNING, logger="test"):
+        ns["_tls_role_remember_url"]("manager", "https://10.0.0.1:5443")
+    assert ns["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+    assert any("could not save" in r.getMessage() for r in caplog.records)
+
+
+def _stored(tmp_path, **entries):
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "tls-roles.json").write_text(json.dumps(entries))
+
+
+def test_a_checked_role_starts_on_its_stored_https_address(tmp_path):
+    _stored(tmp_path, manager="t", manager_url="https://10.0.0.1:5443",
+            alarm_engine="t", alarm_engine_url="https://10.0.0.1:8081")
+    ns = _url_ns(tmp_path, manager="http://10.0.0.1:5000", ae="HTTP://10.0.0.1:8081")
+    ns["_apply_role_checked_urls"]()
+    assert ns["CONFIG"].MANAGER_URL == "https://10.0.0.1:5443"
+    assert ns["CONFIG"].ALARM_ENGINE_URL == "https://10.0.0.1:8081"
+
+
+def test_a_configured_https_address_is_used_as_written(tmp_path):
+    _stored(tmp_path, manager="t", manager_url="https://10.0.0.1:5443")
+    ns = _url_ns(tmp_path, manager="https://10.0.0.9:5443", ae="")
+    ns["_apply_role_checked_urls"]()
+    assert ns["CONFIG"].MANAGER_URL == "https://10.0.0.9:5443"
+    assert ns["CONFIG"].ALARM_ENGINE_URL == ""
+
+
+def test_an_unchecked_role_keeps_its_configured_address(tmp_path):
+    _stored(tmp_path, manager_url="https://10.0.0.1:5443")
+    ns = _url_ns(tmp_path, manager="http://10.0.0.1:5000", ae="http://10.0.0.1:8081")
+    ns["_apply_role_checked_urls"]()
+    assert ns["CONFIG"].MANAGER_URL == "http://10.0.0.1:5000"
+    assert ns["CONFIG"].ALARM_ENGINE_URL == "http://10.0.0.1:8081"
+
+
+def test_the_stored_address_is_applied_at_start_and_after_a_config_reload():
+    assert SRC.count("_apply_role_checked_urls()") >= 3
+
+
+def _lock_tick_ns(tmp_path, **kw) -> dict:
+    ns = _url_ns(tmp_path, **kw)
+    ca = tmp_path / "ca.crt"
+    ca.write_text("x")
+    ns["_ca_bundle_path"] = lambda: ca
+    ns["requests"] = SimpleNamespace(Session=lambda: (_ for _ in ()).throw(AssertionError("probed")))
+    exec(_extract("_maybe_lock_peer_roles"), ns)
+    return ns
+
+
+def test_a_checked_role_stores_the_https_address_in_use(tmp_path):
+    _stored(tmp_path, manager="t", alarm_engine="t")
+    ns = _lock_tick_ns(tmp_path, manager="https://10.0.0.1:5443/", ae="https://10.0.0.1:8081")
+    ns["_maybe_lock_peer_roles"]()
+    assert ns["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+    assert ns["_tls_role_url"]("alarm_engine") == "https://10.0.0.1:8081"
+
+
+def test_a_checked_role_on_plain_http_stores_nothing(tmp_path):
+    _stored(tmp_path, manager="t", alarm_engine="t")
+    ns = _lock_tick_ns(tmp_path, manager="http://10.0.0.1:5000", ae="http://10.0.0.1:8081")
+    ns["_maybe_lock_peer_roles"]()
+    assert ns["_tls_role_url"]("manager") == "" and ns["_tls_role_url"]("alarm_engine") == ""
+
+
+def _sync_ns(tmp_path, **kw) -> dict:
+    ns = _url_ns(tmp_path, **kw)
+    diag: list = []
+    ns.update({
+        "_runtime_lock": __import__("threading").Lock(), "_state": {"ae_url_applied": ""}, "logging": logging,
+        "_configure_ae_tls_verify": lambda: None, "_metric_client": None, "_post_session": SimpleNamespace(),
+        "_diag_throttle": lambda key, *a, **k: diag.append(key), "diag": diag,
+    })
+    exec(_extract("_maybe_sync_ae_url"), ns)
+    return ns
+
+
+def test_a_checked_alarm_engine_is_not_moved_back_to_plain_http(tmp_path):
+    _stored(tmp_path, alarm_engine="t")
+    ns = _sync_ns(tmp_path, ae="https://10.0.0.1:8081")
+    ns["_maybe_sync_ae_url"]({"alarm_engine_url": "http://10.0.0.1:8081"})
+    assert ns["CONFIG"].ALARM_ENGINE_URL == "https://10.0.0.1:8081"
+    assert ns["_state"]["ae_url_applied"] == ""
+    assert ns["diag"] == ["ae_http_refused"]
+
+
+def test_an_unchecked_alarm_engine_still_follows_a_plain_http_address(tmp_path):
+    ns = _sync_ns(tmp_path, ae="http://10.0.0.1:8081")
+    ns["_maybe_sync_ae_url"]({"alarm_engine_url": "http://10.0.0.2:8081"})
+    assert ns["CONFIG"].ALARM_ENGINE_URL == "http://10.0.0.2:8081"
+    assert ns["diag"] == []
+
+
+def test_an_unreadable_lock_file_is_not_overwritten_by_an_address(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "tls-roles.json").write_text("{broken")
+    ns = _url_ns(tmp_path)
+    ns["_tls_role_remember_url"]("manager", "https://10.0.0.1:5443")
+    assert ns["_tls_role_url"]("manager") == "https://10.0.0.1:5443"
+    assert (tmp_path / "data" / "tls-roles.json").read_text() == "{broken"

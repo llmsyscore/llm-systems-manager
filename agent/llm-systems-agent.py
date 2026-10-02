@@ -75,7 +75,7 @@ except ImportError:
                 fh.write(content)
         tmp.replace(p)
 
-VERSION = "v2026.10.01-4"
+VERSION = "v2026.10.01-6"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -735,7 +735,12 @@ def _tls_roles_load() -> dict:
         data = json.loads(p.read_text())
         if not isinstance(data, dict):
             raise ValueError("not an object")
-        return {r: str(data[r]) for r in _ROLE_NAMES if data.get(r)}
+        roles = {r: str(data[r]) for r in _ROLE_NAMES if data.get(r)}
+        for r in _ROLE_NAMES:
+            url = data.get(f"{r}_url")
+            if isinstance(url, str) and url.lower().startswith("https://"):
+                roles[f"{r}_url"] = url
+        return roles
     except Exception as e:
         logger.error("role lock file %s is unreadable (%s) — every role stays required", p.name, e)
         return {r: "unreadable" for r in _ROLE_NAMES}
@@ -762,6 +767,42 @@ def _tls_role_lock(role: str) -> None:
     except OSError as e:
         logger.warning("could not save the role lock (%s) — %s stays required until the next restart",
                        e, role.replace("_", " "))
+
+
+def _tls_role_url(role: str) -> str:
+    """The HTTPS address stored for a locked peer role; "" when there is none."""
+    if not _tls_role_locked(role):
+        return ""
+    return str(_tls_roles_cache["roles"].get(f"{role}_url") or "")
+
+
+def _tls_role_remember_url(role: str, url: str) -> None:
+    """Stores the HTTPS address in use for a locked peer role."""
+    url = str(url or "").rstrip("/")
+    if not _tls_role_locked(role) or not url.lower().startswith("https://") or _tls_role_url(role) == url:
+        return
+    roles = dict(_tls_roles_cache["roles"])
+    roles[f"{role}_url"] = url
+    _tls_roles_cache["roles"] = roles
+    # An unreadable lock file is left as it is; the address is kept for this run only.
+    if "unreadable" in roles.values():
+        return
+    try:
+        atomic_write_text(_tls_roles_path(), json.dumps(roles, indent=2), mode=0o600)
+    except OSError as e:
+        logger.warning("could not save the %s address (%s) — the next start uses the configured one",
+                       role.replace("_", " "), e)
+
+
+def _apply_role_checked_urls() -> None:
+    """Replaces a configured http:// manager or alarm-engine address with the stored HTTPS one of a locked role."""
+    for role, attr in (("manager", "MANAGER_URL"), ("alarm_engine", "ALARM_ENGINE_URL")):
+        stored = _tls_role_url(role)
+        configured = str(getattr(CONFIG, attr, "") or "")
+        if stored and configured.lower().startswith("http://"):
+            setattr(CONFIG, attr, stored)
+            logger.info("%s: certificate role checked — using %s in place of the configured %s",
+                        role.replace("_", " "), stored, configured)
 
 
 def _peer_role_for(url: str) -> "str | None":
@@ -859,7 +900,10 @@ def _maybe_lock_peer_roles() -> None:
         return
     for role, base in (("manager", CONFIG.MANAGER_URL), ("alarm_engine", CONFIG.ALARM_ENGINE_URL)):
         base = str(base or "").rstrip("/")
-        if _tls_role_locked(role) or not base.lower().startswith("https://"):
+        if not base.lower().startswith("https://"):
+            continue
+        if _tls_role_locked(role):
+            _tls_role_remember_url(role, base)
             continue
         try:
             s = requests.Session()
@@ -873,6 +917,7 @@ def _maybe_lock_peer_roles() -> None:
             continue
         if ok:
             _tls_role_lock(role)
+            _tls_role_remember_url(role, base)
             logger.info("%s: certificate role checked — required from now on", role.replace("_", " "))
 
 
@@ -1025,6 +1070,13 @@ def _maybe_sync_ae_url(ack: dict) -> None:
         return
     if new_ae == last_applied and new_ae == CONFIG.ALARM_ENGINE_URL:
         _configure_ae_tls_verify()
+        return
+    if not new_ae.lower().startswith("https://") and _tls_role_locked("alarm_engine"):
+        _diag_throttle(
+            "ae_http_refused",
+            "AE push: plain-HTTP URL %s advertised but the alarm engine's certificate role is checked — keeping %s",
+            new_ae, CONFIG.ALARM_ENGINE_URL, level=logging.WARNING,
+        )
         return
     if new_ae.lower().startswith("https://"):
         ca_path = _ca_bundle_path()
@@ -2251,6 +2303,9 @@ def heartbeat_loop() -> None:
                 tok = _state.get("token")
                 aid = _state.get("agent_id")
             if not (tok and aid):
+                # Registration has not finished: look again in a second.
+                first = True
+                time.sleep(1)
                 continue
             body = {
                 "agent_id": aid,
@@ -3119,6 +3174,7 @@ def _reload_config_locked() -> dict[str, Any]:
         sudo_list_fn=power_arbiter.read_sudo_list, unit_exists_fn=power_arbiter.unit_file_exists,
         governor_reader=_read_cpu_governor_safe, logger=logger,
         dwell_ticks=int(CONFIG.POWER_DWELL_TICKS), readback_factory=_power_readback_factory)
+    _apply_role_checked_urls()
     _configure_manager_tls_verify()
     _configure_ae_tls_verify()
     if _metric_client is not None and CONFIG.ALARM_ENGINE_URL:
@@ -4330,6 +4386,7 @@ def main() -> None:
         sudo_list_fn=power_arbiter.read_sudo_list, unit_exists_fn=power_arbiter.unit_file_exists,
         governor_reader=_read_cpu_governor_safe, logger=logger,
         dwell_ticks=int(CONFIG.POWER_DWELL_TICKS), readback_factory=_power_readback_factory)
+    _apply_role_checked_urls()
     _configure_manager_tls_verify()
     _configure_ae_tls_verify()
 

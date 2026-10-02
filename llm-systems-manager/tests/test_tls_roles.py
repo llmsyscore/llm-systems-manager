@@ -69,6 +69,34 @@ def test_connection_error_is_not_a_name_mismatch():
     assert not tls_roles.is_name_mismatch(e.value)
 
 
+def test_role_session_refuses_plain_http():
+    import http.server
+    import threading
+    hits = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/health"
+        assert requests.get(url, timeout=5).ok
+        with pytest.raises(requests.exceptions.ConnectionError, match="plain HTTP"):
+            tls_roles.role_session("manager.role.llmsys.internal").get(url, timeout=5)
+        assert hits == ["/health"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_wrong_ca_is_not_a_name_mismatch(net, tmp_path):
     pki, urls = net
     other = Pki(tmp_path)

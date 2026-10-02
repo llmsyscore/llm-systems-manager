@@ -3,12 +3,12 @@
 deferred spills while a claim is open, emergency valve past 2x the bound."""
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
-# The agent runtime ships `requests`; the test venv doesn't. Only
-# requests.Session needs to exist for the module import.
-if "requests" not in sys.modules:
+# Use the real `requests` when it is installed; otherwise stub the one attribute the import touches.
+if "requests" not in sys.modules and importlib.util.find_spec("requests") is None:
     _fake = types.ModuleType("requests")
     _fake.Session = type("Session", (), {})
     sys.modules["requests"] = _fake

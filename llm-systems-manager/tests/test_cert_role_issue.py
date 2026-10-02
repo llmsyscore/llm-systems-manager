@@ -182,8 +182,11 @@ def test_role_warnings(monkeypatch):
         _live("6", "just-sent", cert_role_sent_at=_ago(minutes=1), last_heartbeat_data={"tls_serves_role": True}),
         _live("7", "down", _live="down", last_heartbeat_data={"tls_serves_role": True}),
         _live("8", "pending", status="pending", last_heartbeat_data={"tls_cert_has_role": False}),
+        _live("9", "plain", tls_role_checked_at=_ago(minutes=1), bind_url="http://10.0.0.5:8082"),
+        _live("10", "plain-down", _live="down", tls_role_checked_at=_ago(minutes=1), bind_url="http://10.0.0.5:8082"),
     ]
     out = ar.role_warnings(agents)
-    assert len(out) == 2
+    assert len(out) == 3
+    assert any(w.startswith("agent plain:") and "plain-HTTP" in w for w in out)
     assert any(w.startswith("agent stuck:") and "not checked" in w for w in out)
     assert any(w.startswith("agent nocert:") and "Push CA" in w for w in out)

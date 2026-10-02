@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.01-7"
+__version__ = "v2026.10.01-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1921,6 +1921,9 @@ def llama_log_stream_info():
     agent = _request_agent("llama")
     if not agent:
         return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    refused = agent_registry.plain_http_refusal(agent)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
     path = "/llama/log/stream"
     token = agent_registry.issue_stream_token(agent["agent_id"], path, ttl=300)
     return jsonify({
@@ -2109,6 +2112,9 @@ def llm_download_stream_info():
     agent = _request_agent("llama")
     if not agent:
         return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    refused = agent_registry.plain_http_refusal(agent)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
     path = "/llama/download/stream"
     token = agent_registry.issue_stream_token(agent["agent_id"], path, ttl=900)  # downloads can be long
     return jsonify({
@@ -2128,6 +2134,9 @@ def llm_build_stream_info():
     agent = _request_agent("llama")
     if not agent:
         return jsonify({"ok": False, "error": "no primary llama agent set"}), 503
+    refused = agent_registry.plain_http_refusal(agent)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
     path = "/llama/build/stream"
     # 30-minute TTL because llama.cpp rebuilds can take >10 min on slower hosts.
     token = agent_registry.issue_stream_token(agent["agent_id"], path, ttl=1800)
@@ -2607,6 +2616,9 @@ def llm_autotune_stream_info():
     agent = _request_agent(provider)
     if not agent:
         return jsonify({"ok": False, "error": f"no primary {provider} agent set"}), 503
+    refused = agent_registry.plain_http_refusal(agent)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
     path = f"/{provider}/autotune/stream"
     token = agent_registry.issue_stream_token(agent["agent_id"], path, ttl=1800)
     return jsonify({

@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 AGENT_PY = Path(__file__).resolve().parents[1] / "llm-systems-agent.py"
 
 
@@ -194,3 +196,33 @@ def test_heartbeat_loop_stamps_ts_right_before_the_post():
     post = body.find("_post_session.post(")
     specs = body.find("_provider_specs()")
     assert 0 <= specs < stamp < post, "ts must be stamped after the body build and before the POST"
+
+
+def test_first_heartbeat_follows_the_token_within_a_second():
+    """A heartbeat pass that finds no token yet looks again after one second, not a full interval."""
+    import threading
+
+    class Stop(BaseException):
+        pass
+
+    class Cfg:
+        HEARTBEAT_INTERVAL_S = 60
+
+        @property
+        def COLLECTION_ENABLED(self):
+            raise Stop()
+
+    sleeps: list = []
+    state: dict = {}
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            state.update(token="t", agent_id="a")
+
+    ns = {"CONFIG": Cfg(), "time": SimpleNamespace(sleep=sleep), "_runtime_lock": threading.Lock(),
+          "_state": state, "logger": logging.getLogger("test")}
+    exec(_extract("heartbeat_loop"), ns)
+    with pytest.raises(Stop):
+        ns["heartbeat_loop"]()
+    assert sleeps == [1, 1]

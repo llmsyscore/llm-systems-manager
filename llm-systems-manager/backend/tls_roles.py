@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
-from requests.adapters import HTTPAdapter
+from requests.adapters import BaseAdapter, HTTPAdapter
 
 log = logging.getLogger("llm-systems-manager.tls_roles")
 
@@ -41,10 +41,23 @@ class RoleAdapter(HTTPAdapter):
             raise
 
 
+class PlainRefused(BaseAdapter):
+    """Refuses every request; mounted on http:// where a certificate role is required."""
+
+    def send(self, request, **kwargs):
+        raise requests.exceptions.ConnectionError(
+            f"refused {urlsplit(request.url).netloc}: plain HTTP where a certificate role is required",
+            request=request)
+
+    def close(self):
+        pass
+
+
 def role_session(role_name: str, quiet: bool = False) -> requests.Session:
-    """A fresh session whose HTTPS connections require `role_name`; `quiet` skips the refusal log."""
+    """A fresh session that requires `role_name` over HTTPS and refuses plain HTTP; `quiet` skips the refusal log."""
     s = requests.Session()
     s.mount("https://", RoleAdapter(role_name, quiet=quiet))
+    s.mount("http://", PlainRefused())
     return s
 
 

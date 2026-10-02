@@ -27,7 +27,15 @@ def shim():
     spec = importlib.util.spec_from_file_location("lms_timings_shim_real", _AGENT_ROOT / "providers" / "lms_timings_shim.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["lms_timings_shim_real"] = mod
-    spec.loader.exec_module(mod)
+    # Load against the real package even when an earlier test left a stub in sys.modules.
+    stub = sys.modules.get("requests")
+    if HAVE_REQUESTS:
+        sys.modules["requests"] = requests
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if stub is not None:
+            sys.modules["requests"] = stub
     return mod
 
 
@@ -137,7 +145,6 @@ class _FakeLmStudio(BaseHTTPRequestHandler):
 
 @pytest.mark.skipif(not HAVE_REQUESTS, reason="needs requests")
 def test_shim_proxies_and_answers_non_streamed(shim):
-    import requests
     up = ThreadingHTTPServer(("127.0.0.1", 0), _FakeLmStudio)
     threading.Thread(target=up.serve_forever, daemon=True).start()
     try:
