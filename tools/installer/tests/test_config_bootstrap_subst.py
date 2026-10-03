@@ -107,9 +107,30 @@ def test_ae_side_still_substitutes(tmp_path):
         "AE_HOST": "0.0.0.0",
         "AE_PORT": "8081",
         "MGR_IP": "192.0.2.10",
+        "LOCAL_IP": "192.0.2.20",
         "MANAGER_URL": "http://192.0.2.10:5000",
     })
     assert cfg["alarm_engine"]["manager_url"] == "http://192.0.2.10:5000"
     assert cfg["alarm_engine"]["cors_origins"] == (
-        "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"
+        "http://192.0.2.10:5000,https://192.0.2.10:5443,"
+        "http://localhost:5000,https://localhost:5443,"
+        "http://192.0.2.20:8081,https://192.0.2.20:8081"
+    )
+
+
+def test_colocated_cors_uses_browser_facing_ip(tmp_path):
+    cfg = run_bootstrap_python(tmp_path, {
+        "HAS_MGR": "1",
+        "HAS_AE": "1",
+        "MGR_HOST": "0.0.0.0",
+        "MGR_PORT": "5000",
+        "AE_HOST": "0.0.0.0",
+        "AE_PORT": "8081",
+        "MGR_IP": "192.0.2.10",
+        "LOCAL_IP": "192.0.2.20",
+    })
+    assert cfg["alarm_engine"]["cors_origins"] == (
+        "http://192.0.2.10:5000,https://192.0.2.10:5443,"
+        "http://localhost:5000,https://localhost:5443,"
+        "http://192.0.2.10:8081,https://192.0.2.10:8081"
     )

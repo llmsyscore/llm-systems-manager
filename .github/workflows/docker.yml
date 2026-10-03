@@ -58,6 +58,12 @@ jobs:
       - name: Manager health
         run: curl -fsS http://localhost:5000/health
 
+      - name: Alarm engine allowed origins carry the https entry
+        run: |
+          docker compose exec -T alarm-engine grep -F \
+            'cors_origins = "http://localhost:5000,https://localhost:5443"' \
+            /opt/llm-systems-manager/config/llm-systems.toml
+
       - name: Alarm engine health (HTTPS via manager-issued cert, HTTP fallback)
         run: |
           if curl -fsSk https://localhost:8081/health; then
@@ -287,6 +293,10 @@ jobs:
           old="$(curl -s -o /dev/null -w '%{http_code}' \
             --data-urlencode username=llmadmin --data-urlencode password=llmadmin http://localhost:5000/login)"
           [ "$old" = "401" ] || { echo "the old shipped password signs in again — users file re-seeded ($old)" >&2; exit 1; }
+          # Config re-render on the PR image: allowed origins gain the https entry.
+          docker compose exec -T alarm-engine grep -F \
+            'cors_origins = "http://localhost:5000,https://localhost:5443"' \
+            /opt/llm-systems-manager/config/llm-systems.toml
           # Config re-render on the PR image: admin route still reachable.
           admin="$(curl -s -o /dev/null -w '%{http_code}' -b "$jar" http://localhost:5000/api/admin/audit-log)"
           [ "$admin" = "200" ] || { echo "admin route broken after upgrade ($admin)" >&2; exit 1; }

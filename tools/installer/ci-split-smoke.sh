@@ -158,13 +158,13 @@ pass "auth gate 401s anonymous probes; logged-in proxy reaches the AE (200)"
 echo "── 7. AE CORS allow-list carries the manager origin ──────────────────"
 AE_CORS="$(toml_get "$AE_TOML" alarm_engine cors_origins)"
 case "$AE_CORS" in
-  *"$DETECTED_IP:5000"*"$DETECTED_IP:8081"*) : ;;
+  *"http://$DETECTED_IP:5000,https://$DETECTED_IP:5443"*"http://$DETECTED_IP:8081,https://$DETECTED_IP:8081"*) : ;;
   *) fail "AE CORS missing expected origins: [$AE_CORS]" ;;
 esac
 if python3 -c 'import sys,tomllib; sys.exit(0 if "cors_origins" in tomllib.load(open(sys.argv[1],"rb")).get("manager",{}) else 1)' "$MGR_TOML"; then
   fail "manager TOML still carries the removed [manager].cors_origins key"
 fi
-pass "AE CORS contains both manager + AE origins; manager key absent"
+pass "AE CORS contains the manager + AE origins on http and https; manager key absent"
 
 echo "── 8. AE TLS cert SAN covers the detected IP ─────────────────────────"
 if ! openssl x509 -in "$AE_CERT" -noout -text | grep -A1 'Subject Alternative Name' | grep -qF "$DETECTED_IP"; then

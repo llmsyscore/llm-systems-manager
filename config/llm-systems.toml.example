@@ -360,7 +360,7 @@ evaluation_interval = 15                                 # rule eval cadence (s)
 metric_max_age_s = 600                                   # skip a rule whose newest point is older (s)
 keepalive_interval = 30                                  # WebSocket keepalive (s)
 manager_url = "http://localhost:5000"                    # back-channel to the manager
-cors_origins = "http://localhost:5000,http://localhost:8081"
+cors_origins = "http://localhost:5000,https://localhost:5443,http://localhost:8081,https://localhost:8081"
 log_level = "INFO"                                       # per-service override
 
 # ★ Secret. Bearer token required on the ingest surface (agent metric POSTs

@@ -130,9 +130,10 @@ llmsys_build_venvs() {
   llmsys_build_one_venv "$py" "$LLMSYS_INSTALL_DIR/llm-systems-alarm-engine" requirements.txt
 }
 
-# Merges new example keys into an existing live config via toml_reconcile.py.
+# Merges new example keys into an existing live config via toml_reconcile.py,
+# then corrects the alarm engine's allowed-origin list.
 llmsys_reconcile_config() {
-  local py merged tmp grp
+  local py merged fixed tmp grp
   py="$(llmsys_pick_python)" || return 0
   if ! merged="$("$py" "$LLMSYS_INSTALL_DIR/tools/installer/toml_reconcile.py" merge \
                  "$LLMSYS_CFG" "$LLMSYS_INSTALL_DIR/config/llm-systems.toml.example" 2>/dev/null)"; then
@@ -141,6 +142,10 @@ llmsys_reconcile_config() {
   fi
   tmp="$(mktemp "$LLMSYS_CFG.XXXXXX")"
   printf '%s\n' "$merged" > "$tmp"
+  if fixed="$("$py" "$LLMSYS_INSTALL_DIR/tools/installer/toml_reconcile.py" origins \
+                "$tmp" "" 0 2>/dev/null)" && [ -n "$fixed" ]; then
+    printf '%s\n' "$fixed" > "$tmp"
+  fi
   grp="$(llmsys_run_group)"
   chown "$LLMSYS_RUN_USER:$grp" "$tmp"
   chmod 0600 "$tmp"

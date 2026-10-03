@@ -170,9 +170,15 @@ jobs:
         run: |
           STARTED_BEFORE="$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)"
           echo '# ci-upgrade-marker' | sudo tee -a /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
+          # An older install's allowed-origin list: http only.
+          sudo sed -i -E 's|^(cors_origins[[:space:]]*=[[:space:]]*)"[^"]*"|\1"http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"|' \
+            /opt/llm-systems-manager/config/llm-systems.toml
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
+          sudo grep -qF 'cors_origins = "http://192.0.2.10:5000,https://192.0.2.10:5443,http://localhost:5000,https://localhost:5443,http://192.0.2.10:8081,https://192.0.2.10:8081"' \
+            /opt/llm-systems-manager/config/llm-systems.toml
+          sudo stat -c '%U %a' /opt/llm-systems-manager/config/llm-systems.toml | grep -qx 'llmsys 600'
           if ls /opt/llm-systems-manager/config/llm-systems.toml.bak.* 2>/dev/null; then
             echo 'ERROR: upgrade created a config backup (should reconcile in place)'; exit 1
           fi

@@ -519,7 +519,8 @@ class AlarmEngineConfig(BaseModel):
     keepalive_interval: int = 30
     manager_url: str = "http://localhost:5000"
     cors_origins: str = (
-        "http://localhost:5000,http://localhost:8081"
+        "http://localhost:5000,https://localhost:5443,"
+        "http://localhost:8081,https://localhost:8081"
     )
     log_level: str = "INFO"
     # ★ Secret. Bearer token required on the ingest surface (POST
