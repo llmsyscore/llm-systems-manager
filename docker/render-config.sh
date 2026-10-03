@@ -127,6 +127,13 @@ webhook_url = "$discord_webhook"
 EOF
   fi
 
+  # Adds the https twin of each http origin in [alarm_engine].cors_origins.
+  local fixed
+  if fixed="$(python3 "$(dirname "${BASH_SOURCE[0]}")/../tools/installer/toml_reconcile.py" \
+                origins "$CFG" "" 0 2>/dev/null)" && [ -n "$fixed" ]; then
+    printf '%s\n' "$fixed" > "$CFG"
+  fi
+
   chmod 600 "$CFG"
   echo "[entrypoint] rendered $CFG from environment"
 }

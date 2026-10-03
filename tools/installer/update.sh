@@ -240,6 +240,40 @@ backup_path() {
   echo "$dest"
 }
 
+# Corrects [alarm_engine].cors_origins in <live_toml> via <script>; queues an
+# alarm engine restart when the list changed.
+fix_ae_origins() {
+  local live_toml="$1" script="$2" _tmp _out _count _bak _ip _ae_only=0
+  [[ -f "$live_toml" ]] || return 0
+  log "checking the alarm engine's allowed origins in $(basename "$live_toml")"
+  if (( DRY_RUN )); then
+    log "[dry-run] would correct the alarm engine's allowed-origin list if needed"
+    return 0
+  fi
+  if ! $HAVE_MANAGER; then _ae_only=1; fi
+  _ip="$(detect_primary_ip 2>/dev/null || true)"
+  if [[ "$_ip" == 127.* ]]; then _ip=""; fi
+  _tmp="$(mktemp)"
+  if _out="$($SUDO python3 "$script" origins "$live_toml" "$_ip" "$_ae_only" 2>"$_tmp")"; then
+    _count="$(awk -F= '/^CHANGED=/{print $2}' "$_tmp")"
+    if [[ "${_count:-0}" == "0" ]]; then
+      ok "alarm engine allowed origins already current"
+    else
+      _bak="$(backup_path "$live_toml")"
+      [[ -n "$_bak" ]] && ok "  backed up live TOML → $_bak"
+      printf '%s\n' "$_out" | $SUDO tee "$live_toml" >/dev/null
+      $SUDO chmod 0600 "$live_toml"
+      $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$live_toml"
+      ok "corrected the alarm engine's allowed origins in $live_toml:"
+      grep -E '^  [-+] ' "$_tmp" | sed 's/^/    /' || true
+      RESTART_UNITS+=("llm-systems-alarm-engine.service")
+    fi
+    rm -f "$_tmp"
+  else
+    warn "allowed-origin check failed — live config untouched (see $_tmp)"
+  fi
+}
+
 # md5_of <path> — emits md5 hash of a file (sudo-safe). Empty on missing file.
 md5_of() {
   local p="$1"
@@ -1057,6 +1091,10 @@ if $HAVE_MANAGER || $HAVE_AE; then
   # Restore the example's layout for anything an older merge misplaced (#528).
   reorder_live_toml "$_live_toml" \
     "$REPO_SRC/tools/installer/toml_reconcile.py" "$_example_toml"
+
+  if $HAVE_AE; then
+    fix_ae_origins "$_live_toml" "$REPO_SRC/tools/installer/toml_reconcile.py"
+  fi
 else
   log "skipping config reconcile — no manager or AE on this host"
 fi

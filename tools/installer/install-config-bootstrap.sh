@@ -491,6 +491,7 @@ trap '$SUDO rm -f "${_CB_VALS:-}"' EXIT
   printf 'MGR_HOST=%s\n'                    "$MGR_HOST"
   printf 'MGR_PORT=%s\n'                    "$MGR_PORT"
   printf 'MGR_IP=%s\n'                      "$MGR_IP"
+  printf 'LOCAL_IP=%s\n'                    "$DETECTED_IP"
   printf 'ADMIN_CIDR=%s\n'                  "$ADMIN_CIDR"
   printf 'ADMIN_USER=%s\n'                  "$ADMIN_USER"
   printf 'ADMIN_PW_HASH=%s\n'               "$ADMIN_PW_HASH"
@@ -552,6 +553,7 @@ has_ae      = vals.get("HAS_AE") == "1"
 mgr_host    = vals.get("MGR_HOST", "")
 mgr_port    = vals.get("MGR_PORT", "")
 mgr_ip      = vals.get("MGR_IP", "")
+local_ip    = vals.get("LOCAL_IP", "")
 admin_cidr  = vals.get("ADMIN_CIDR", "")
 admin_user  = vals.get("ADMIN_USER", "")
 admin_hash  = vals.get("ADMIN_PW_HASH", "")
@@ -640,7 +642,13 @@ if has_ae:
 # The AE CORS allow-list and the agent dashboard push URL need the manager's
 # browser-facing IP — whether that's local (Modes 1/2) or remote (Mode 4).
 if mgr_ip:
-    cors_value = f"http://{mgr_ip}:5000,http://localhost:5000,http://{mgr_ip}:8081"
+    # An alarm-engine-only host lists its own address for the :8081 origin.
+    ae_ip = (local_ip if has_ae and not has_mgr else "") or mgr_ip
+    cors_value = ",".join([
+        f"http://{mgr_ip}:5000", f"https://{mgr_ip}:5443",
+        "http://localhost:5000", "https://localhost:5443",
+        f"http://{ae_ip}:8081", f"https://{ae_ip}:8081",
+    ])
     if has_ae:
         text = sub_in_section(text, "alarm_engine", "cors_origins",  cors_value)
     text = sub_in_section(text, "agent", "dashboard_url",

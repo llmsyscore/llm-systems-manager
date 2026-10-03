@@ -2,11 +2,13 @@
 # Shared TOML span-walk for the installer config reconcile: `merge` appends
 # example keys missing from live; `prune` removes upstream-deleted keys.
 
-# Protocol: stdout = resulting TOML; stderr = ADDED=N / PRUNED=N + diagnostic
-# tags (PARSE_FAILED / VALIDATE_FAILED / NOTFOUND); exit 0 / 2 / 3 / 64.
+# Protocol: stdout = resulting TOML; stderr = ADDED=N / PRUNED=N / CHANGED=N +
+# diagnostic tags (PARSE_FAILED / VALIDATE_FAILED / NOTFOUND); exit 0 / 2 / 3 / 64.
+import copy
 import re
 import sys
 import tomllib
+from urllib.parse import urlsplit
 
 # SECTION_RE tolerates a trailing comment after the closing bracket.
 SECTION_RE = re.compile(r'^\s*\[([^\]]+?)\]\s*(?:#.*)?$')
@@ -448,6 +450,110 @@ def prune(live_path, prune_keys):
     sys.stdout.write(result)
 
 
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+ORIGINS_LINE_RE = re.compile(r'^(\s*cors_origins\s*=\s*)"[^"]*"(.*)$')
+
+
+def origin_parts(origin):
+    """(scheme, host, netloc-without-port, port) of a bare scheme://host:port
+    origin; None for anything else."""
+    try:
+        p = urlsplit(origin)
+        port = p.port
+    except ValueError:
+        return None
+    if p.scheme not in ("http", "https") or not p.hostname or port is None:
+        return None
+    if p.path or p.query or p.fragment:
+        return None
+    return p.scheme, p.hostname, p.netloc.rsplit(":", 1)[0], port
+
+
+def corrected_origins(items, cfg, local_ip, ae_only):
+    """Origin list where an alarm-engine-only host names itself on the alarm
+    engine port and every http origin is followed by its https twin."""
+    ae, mgr = cfg.get("alarm_engine", {}), cfg.get("manager", {})
+    ae_port, mgr_port = ae.get("port", 8081), mgr.get("port", 5000)
+    tls_port = mgr.get("tls_port", 5443)
+    mgr_host = urlsplit(str(ae.get("manager_url", ""))).hostname or ""
+    swap = bool(ae_only and local_ip and mgr_host
+                and mgr_host not in LOOPBACK_HOSTS and mgr_host != local_ip)
+
+    fixed = []
+    for o in items:
+        parts = origin_parts(o)
+        if swap and parts and parts[1] == mgr_host and parts[3] == ae_port:
+            o = f"{parts[0]}://{local_ip}:{ae_port}"
+        if o not in fixed:
+            fixed.append(o)
+
+    out = []
+    for o in fixed:
+        if o not in out:
+            out.append(o)
+        parts = origin_parts(o)
+        if not parts or parts[0] != "http":
+            continue
+        if parts[3] == ae_port:
+            twin = f"https://{parts[2]}:{ae_port}"
+        elif parts[3] == mgr_port and isinstance(tls_port, int) and tls_port > 0:
+            twin = f"https://{parts[2]}:{tls_port}"
+        else:
+            continue
+        if twin not in fixed and twin not in out:
+            out.append(twin)
+    return out
+
+
+def origins(live_path, local_ip, ae_only):
+    """Rewrite [alarm_engine].cors_origins in live to its corrected list."""
+    text, live_dict = load_or_die(live_path, "live")
+    cur = live_dict.get("alarm_engine", {}).get("cors_origins")
+    items = [o.strip() for o in cur.split(",") if o.strip()] if isinstance(cur, str) else []
+    new_items = items if (not items or "*" in items) else \
+        corrected_origins(items, live_dict, local_ip, ae_only)
+    if new_items == items:
+        sys.stderr.write("CHANGED=0\n")
+        sys.stdout.write(text)
+        return
+    new_value = ",".join(new_items)
+
+    lines, section, done = text.split('\n'), '', False
+    for i, ln in enumerate(lines):
+        m = SECTION_RE.match(ln) or ARRAY_SECTION_RE.match(ln)
+        if m:
+            section = m.group(1).strip()
+            continue
+        if section == "alarm_engine" and not done:
+            lm = ORIGINS_LINE_RE.match(ln)
+            if lm:
+                lines[i] = f'{lm.group(1)}"{new_value}"{lm.group(2)}'
+                done = True
+    if not done:
+        sys.stderr.write("NOTFOUND: alarm_engine.cors_origins (no single-line string to rewrite)\n")
+        sys.stderr.write("CHANGED=0\n")
+        sys.stdout.write(text)
+        return
+    result = '\n'.join(lines)
+
+    # Refuse to emit output that changes anything besides the one value.
+    expected = copy.deepcopy(live_dict)
+    expected["alarm_engine"]["cors_origins"] = new_value
+    try:
+        post_dict = tomllib.loads(result)
+    except Exception as e:
+        sys.stderr.write(f"VALIDATE_FAILED: corrected TOML doesn't parse: {e}\n")
+        sys.exit(3)
+    if post_dict != expected:
+        sys.stderr.write("VALIDATE_FAILED: corrected TOML changed more than cors_origins\n")
+        sys.exit(3)
+
+    sys.stderr.write("CHANGED=1\n")
+    sys.stderr.write(f'  - cors_origins = "{cur}"\n')
+    sys.stderr.write(f'  + cors_origins = "{new_value}"\n')
+    sys.stdout.write(result)
+
+
 def main():
     argv = sys.argv[1:]
     if len(argv) == 3 and argv[0] == "merge":
@@ -456,11 +562,14 @@ def main():
         reorder(argv[1], argv[2])
     elif len(argv) >= 3 and argv[0] == "prune":
         prune(argv[1], argv[2:])
+    elif len(argv) == 4 and argv[0] == "origins":
+        origins(argv[1], argv[2], argv[3] == "1")
     else:
         sys.stderr.write(
             "usage: toml_reconcile.py merge <live.toml> <example.toml>\n"
             "       toml_reconcile.py reorder <live.toml> <example.toml>\n"
             "       toml_reconcile.py prune <live.toml> <dotted.key> [...]\n"
+            "       toml_reconcile.py origins <live.toml> <local-ip> <ae-only: 0|1>\n"
         )
         sys.exit(64)
 

@@ -532,3 +532,133 @@ class TestUsage:
         r = run(*argv)
         assert r.returncode == 64
         assert "usage:" in r.stderr
+
+
+# ── origins: [alarm_engine].cors_origins correction ─────────────────────────
+OLD_SPLIT_AE = """\
+[manager]
+port = 5000
+tls_port = 5443
+
+[alarm_engine]
+port = 8081
+manager_url = "http://192.0.2.10:5000"
+cors_origins = "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"  # browsers
+log_level = "INFO"
+"""
+FULL_SPLIT = (
+    "http://192.0.2.10:5000,https://192.0.2.10:5443,"
+    "http://localhost:5000,https://localhost:5443,"
+    "http://192.0.2.20:8081,https://192.0.2.20:8081"
+)
+
+
+def origins_of(stdout):
+    return tomllib.loads(stdout)["alarm_engine"]["cors_origins"]
+
+
+def test_origins_split_host_names_itself_and_gains_https(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE)
+    r = run("origins", live, "192.0.2.20", "1")
+    assert r.returncode == 0, r.stderr
+    assert "CHANGED=1" in r.stderr
+    assert origins_of(r.stdout) == FULL_SPLIT
+    assert "# browsers" in r.stdout
+    before, after = tomllib.loads(OLD_SPLIT_AE), tomllib.loads(r.stdout)
+    after["alarm_engine"]["cors_origins"] = before["alarm_engine"]["cors_origins"]
+    assert after == before
+
+
+def test_origins_is_idempotent(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE)
+    once = run("origins", live, "192.0.2.20", "1").stdout
+    again = run("origins", write(tmp_path, "once.toml", once), "192.0.2.20", "1")
+    assert "CHANGED=0" in again.stderr
+    assert again.stdout == once
+
+
+def test_origins_same_host_install_keeps_its_address(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE)
+    r = run("origins", live, "192.0.2.20", "0")
+    assert origins_of(r.stdout) == (
+        "http://192.0.2.10:5000,https://192.0.2.10:5443,"
+        "http://localhost:5000,https://localhost:5443,"
+        "http://192.0.2.10:8081,https://192.0.2.10:8081"
+    )
+
+
+def test_origins_without_a_local_address_only_adds_https(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE)
+    r = run("origins", live, "", "1")
+    assert "http://192.0.2.10:8081,https://192.0.2.10:8081" in origins_of(r.stdout)
+
+
+def test_origins_no_manager_https_twin_when_tls_port_is_zero(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE.replace("tls_port = 5443", "tls_port = 0"))
+    r = run("origins", live, "192.0.2.20", "1")
+    assert origins_of(r.stdout) == (
+        "http://192.0.2.10:5000,http://localhost:5000,"
+        "http://192.0.2.20:8081,https://192.0.2.20:8081"
+    )
+
+
+def test_origins_keeps_operator_entries(tmp_path):
+    custom = "https://alarms.example.com,http://192.0.2.10:8081,http://192.0.2.20:8081"
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE.replace(
+        "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081", custom))
+    r = run("origins", live, "192.0.2.20", "1")
+    assert origins_of(r.stdout) == (
+        "https://alarms.example.com,http://192.0.2.20:8081,https://192.0.2.20:8081"
+    )
+
+
+@pytest.mark.parametrize("value", ["*", ""])
+def test_origins_leaves_open_or_empty_lists_alone(tmp_path, value):
+    text = OLD_SPLIT_AE.replace(
+        "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081", value)
+    live = write(tmp_path, "live.toml", text)
+    r = run("origins", live, "192.0.2.20", "1")
+    assert r.returncode == 0
+    assert "CHANGED=0" in r.stderr
+    assert r.stdout == text
+
+
+def test_origins_missing_key_is_a_no_op(tmp_path):
+    live = write(tmp_path, "live.toml", LIVE_BASIC)
+    r = run("origins", live, "192.0.2.20", "1")
+    assert r.returncode == 0
+    assert "CHANGED=0" in r.stderr
+    assert r.stdout == LIVE_BASIC
+
+
+def test_origins_manager_given_by_hostname(tmp_path):
+    text = OLD_SPLIT_AE.replace("192.0.2.10", "mgr.example")
+    r = run("origins", write(tmp_path, "live.toml", text), "192.0.2.20", "1")
+    assert origins_of(r.stdout) == FULL_SPLIT.replace("192.0.2.10", "mgr.example")
+
+
+def test_origins_manager_on_this_host_is_not_swapped(tmp_path):
+    live = write(tmp_path, "live.toml", OLD_SPLIT_AE)
+    r = run("origins", live, "192.0.2.10", "1")
+    assert "http://192.0.2.10:8081,https://192.0.2.10:8081" in origins_of(r.stdout)
+
+
+def test_origins_existing_https_entry_is_not_duplicated(tmp_path):
+    text = OLD_SPLIT_AE.replace("http://localhost:5000,", "https://192.0.2.20:8081,")
+    r = run("origins", write(tmp_path, "live.toml", text), "192.0.2.20", "1")
+    assert origins_of(r.stdout) == (
+        "http://192.0.2.10:5000,https://192.0.2.10:5443,"
+        "https://192.0.2.20:8081,http://192.0.2.20:8081"
+    )
+
+
+def test_origins_refuses_a_multi_line_value(tmp_path):
+    text = OLD_SPLIT_AE.replace(
+        'cors_origins = "http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"  # browsers',
+        'cors_origins = """\nhttp://192.0.2.10:5000,http://192.0.2.10:8081"""')
+    assert tomllib.loads(text)["alarm_engine"]["cors_origins"] == (
+        "http://192.0.2.10:5000,http://192.0.2.10:8081")
+    r = run("origins", write(tmp_path, "live.toml", text), "192.0.2.20", "1")
+    assert r.returncode == 3
+    assert "VALIDATE_FAILED" in r.stderr
+    assert r.stdout == ""
