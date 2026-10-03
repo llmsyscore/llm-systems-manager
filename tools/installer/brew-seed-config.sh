@@ -14,7 +14,8 @@
 #                     $(brew --prefix)/var/log/llm-systems-manager (required)
 #
 # Does:
-#   - Exits 0 untouched if LSM_BREW_CONFIG already exists (upgrades keep config).
+#   - If LSM_BREW_CONFIG already exists (an upgrade), keeps it and only adds the
+#     https entries to [alarm_engine].cors_origins, then exits 0.
 #   - Copies the example, rewrites [paths].log_dir to LSM_BREW_LOG_DIR, and
 #     generates [alarm_engine] ingest_token + management_token (the co-located
 #     default the script installer also applies).
@@ -35,8 +36,29 @@ LOG_DIR="${LSM_BREW_LOG_DIR:-}"
 [ -n "$LOG_DIR" ] || die "LSM_BREW_LOG_DIR is not set"
 [ -f "$EXAMPLE" ] || die "example config not found: $EXAMPLE"
 
+# Adds the https twin of each http origin to the existing config's
+# [alarm_engine].cors_origins; any failure leaves the config as it is.
+fix_origins() {
+  local here py="" cand tmp
+  here="$(cd "$(dirname "$0")" && pwd)"
+  for cand in "$here/../../venv/bin/python3" python3; do
+    if "$cand" -c 'import tomllib' >/dev/null 2>&1; then py="$cand"; break; fi
+  done
+  [ -n "$py" ] || return 0
+  tmp="$TARGET.seed.$$"
+  if (umask 077; "$py" -B "$here/toml_reconcile.py" origins "$TARGET" "" 0 > "$tmp" 2>/dev/null) \
+     && [ -s "$tmp" ] && ! cmp -s "$tmp" "$TARGET"; then
+    mv "$tmp" "$TARGET"
+    chmod 0600 "$TARGET"
+    echo "brew-seed-config: added https entries to the alarm engine's allowed origins"
+  else
+    rm -f "$tmp"
+  fi
+}
+
 if [ -f "$TARGET" ]; then
   echo "brew-seed-config: $TARGET already exists — keeping it"
+  fix_origins
   exit 0
 fi
 
