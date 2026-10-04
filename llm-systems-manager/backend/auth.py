@@ -37,6 +37,8 @@ from typing import Any, Callable, Optional
 from flask import g, jsonify, redirect, request as flask_request, session
 from flask.sessions import SecureCookieSessionInterface
 
+from durable_io import write_durable  # type: ignore[import-not-found]  # sibling — leaf module
+
 log = logging.getLogger("llm-systems-manager.auth")
 
 __all__ = [
@@ -201,11 +203,7 @@ def auth_write(updates: dict) -> None:
         cur = auth_runtime()
         cur.update(updates)
         cur["updated_at"] = datetime.now(timezone.utc).isoformat()
-        tmp = f"{MANAGER_AUTH_FILE}.{os.getpid()}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(cur, f)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, str(MANAGER_AUTH_FILE))
+        write_durable(MANAGER_AUTH_FILE, json.dumps(cur))
 
 
 def auth_credential() -> "tuple[str, str, bool]":
@@ -383,11 +381,7 @@ def write_toml_auth_mode(mode: str) -> None:
             break
     if not replaced:
         raise RuntimeError("could not locate [manager.auth] mode key in TOML")
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w") as f:
-        f.write("".join(lines))
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, str(path))
+    write_durable(path, "".join(lines))
 
 
 def _operator_denied(path: str) -> bool:

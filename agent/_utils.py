@@ -27,13 +27,17 @@ def atomic_write_text(
     p = Path(path)
     tmp = p.with_suffix(p.suffix + ".tmp")
     if mode is None:
-        tmp.write_text(content, encoding=encoding)
+        fh = open(tmp, "w", encoding=encoding)
     else:
         tmp.unlink(missing_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-        with os.fdopen(fd, "w", encoding=encoding) as fh:
-            os.fchmod(fd, mode)
-            fh.write(content)
+        fh = os.fdopen(fd, "w", encoding=encoding)
+    with fh:
+        if mode is not None:
+            os.fchmod(fh.fileno(), mode)
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
     tmp.replace(p)
 
 

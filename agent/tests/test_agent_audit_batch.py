@@ -185,6 +185,20 @@ def test_atomic_write_text_mode_holds_when_chmod_fails(tmp_path, monkeypatch, um
     assert _no_world_readable(tmp_path)
 
 
+@pytest.mark.parametrize("mode", [None, 0o600])
+def test_atomic_write_text_flushes_before_rename(tmp_path, monkeypatch, mode):
+    utils = _load_utils()
+    events = []
+    real_fsync, real_replace = os.fsync, Path.replace
+    monkeypatch.setattr(utils.os, "fsync",
+                        lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(Path, "replace",
+                        lambda self, t: (events.append("replace"), real_replace(self, t))[1])
+    utils.atomic_write_text(tmp_path / "state.json", "{}", mode=mode)
+    assert events == ["fsync", "replace"]
+    assert (tmp_path / "state.json").read_text() == "{}"
+
+
 def _persist_ns(token_file):
     import logging
     ns = {"CONFIG": SimpleNamespace(TOKEN_FILE=str(token_file)), "Path": Path, "os": os,
