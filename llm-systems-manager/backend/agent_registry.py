@@ -35,6 +35,7 @@ import re as _re
 import hmac as _hmac
 import json
 import logging
+import os
 import secrets as _secrets
 import subprocess
 import threading
@@ -52,6 +53,7 @@ from flask import Response, jsonify, request as flask_request
 import provider_state  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
 import providers  # type: ignore[import-not-found]  # sibling — leaf package, no cycle
 import tls_roles  # type: ignore[import-not-found]  # sibling — leaf module, no cycle
+from durable_io import write_durable  # type: ignore[import-not-found]  # sibling — leaf module
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.agent_registry")
@@ -267,8 +269,7 @@ def load_agents() -> dict:
         except FileNotFoundError:
             data = {"agents": {}, "global": {"auth_disabled": False}, "schema_version": 2}
         except Exception as e:
-            log.warning("agents.json unreadable, starting fresh: %s", e)
-            data = {"agents": {}, "global": {"auth_disabled": False}, "schema_version": 2}
+            data = _recover_unreadable_registry(e)
         # Apply v2 migration + dangling-reference reconcile in-place;
         # persist if anything changed.
         try:
@@ -294,23 +295,71 @@ def load_agents() -> dict:
         return data
 
 
+def _registry_bak_path() -> Path:
+    return AGENTS_FILE.with_name(AGENTS_FILE.name + ".bak")
+
+
+def _read_registry(path: Path) -> dict:
+    """Parses a registry file; raises when it is not a registry."""
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("agents"), dict):
+        raise ValueError("not an agent registry")
+    return data
+
+
+def _keep_previous_registry() -> None:
+    """Hard-links a readable registry file to agents.json.bak before a save."""
+    bak = _registry_bak_path()
+    tmp = bak.with_name(bak.name + ".tmp")
+    try:
+        _read_registry(AGENTS_FILE)
+    except Exception:
+        return
+    try:
+        tmp.unlink(missing_ok=True)
+        os.link(AGENTS_FILE, tmp)
+        os.replace(tmp, bak)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def _recover_unreadable_registry(err: Exception) -> dict:
+    """Sets a damaged registry file aside and loads the previous copy if it parses."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside: "Path | None" = AGENTS_FILE.with_name(f"{AGENTS_FILE.name}.corrupt-{stamp}")
+    try:
+        os.replace(AGENTS_FILE, aside)
+    except OSError:
+        aside = None
+    bak = _registry_bak_path()
+    try:
+        data = _read_registry(bak)
+    except Exception as bak_err:
+        log.error("agents.json unreadable (%s) and no usable previous copy (%s): "
+                  "starting with an empty agent list; damaged file kept at %s",
+                  err, bak_err, aside)
+        return {"agents": {}, "global": {"auth_disabled": False}, "schema_version": 2}
+    log.error("agents.json unreadable (%s): restored the previous copy; "
+              "damaged file kept at %s", err, aside)
+    with _save_io_lock:
+        try:
+            os.link(bak, AGENTS_FILE)
+        except OSError:
+            try:
+                write_durable(AGENTS_FILE, json.dumps(data, indent=2))
+            except OSError as write_err:
+                log.error("could not put the restored agents.json back: %s", write_err)
+    return data
+
+
 def save_agents(data: dict) -> None:
     if AGENTS_FILE is None:
         raise RuntimeError("agent_registry not initialised (call set_deps first)")
-    # One tmp-file writer at a time — in-load reconcile saves don't hold
-    # _agents_lock, so the write+rename itself must be serialized here.
+    # One writer at a time: in-load reconcile saves don't hold _agents_lock.
     with _save_io_lock:
         AGENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = AGENTS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        # Bearer tokens for every approved agent live in this file — restrict to
-        # owner-only so a misconfigured shared host doesn't leak them. The chmod
-        # runs on the tmp before os.replace so the rename is atomic AND the
-        # destination's mode lands as 0o600 in one shot, matching auth.auth_write's
-        # convention for data/manager_auth.json.
-        import os as _os
-        _os.chmod(tmp, 0o600)
-        tmp.replace(AGENTS_FILE)
+        _keep_previous_registry()
+        write_durable(AGENTS_FILE, json.dumps(data, indent=2))
     # Refresh the cache eagerly so the next load_agents inside this
     # process sees its own write without paying for another mtime miss
     # → reparse cycle.

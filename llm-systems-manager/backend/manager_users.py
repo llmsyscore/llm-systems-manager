@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from durable_io import write_durable  # type: ignore[import-not-found]  # sibling — leaf module
 
 log = logging.getLogger("llm-systems-manager.users")
 
@@ -43,11 +44,7 @@ class UserStore:
         return d
 
     def _save(self, data: dict) -> None:
-        tmp = f"{self._path}.{os.getpid()}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self._path)
+        write_durable(self._path, json.dumps(data, indent=2))
 
     # ── helpers ──────────────────────────────────────────────────
     @staticmethod

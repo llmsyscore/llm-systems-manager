@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import BaseAdapter, HTTPAdapter
+
+from durable_io import write_durable  # type: ignore[import-not-found]  # sibling — leaf module
 
 log = logging.getLogger("llm-systems-manager.tls_roles")
 
@@ -100,7 +101,4 @@ def lock_role(path: Path, role: str, roles: tuple) -> None:
     if locks.get(role):
         return
     locks[role] = datetime.now(timezone.utc).isoformat()
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(locks, indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    write_durable(path, json.dumps(locks, indent=2))

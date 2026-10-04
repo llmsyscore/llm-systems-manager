@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.01-8"
+__version__ = "v2026.10.04-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5830,6 +5830,8 @@ def _mint_manager_secret(replace_empty: bool) -> bytes:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(os.urandom(32))
+            fh.flush()
+            os.fsync(fh.fileno())
         try:
             if replace_empty:
                 os.replace(tmp, MANAGER_SECRET_FILE)
