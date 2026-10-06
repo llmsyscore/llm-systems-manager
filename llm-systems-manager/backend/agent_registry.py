@@ -571,7 +571,7 @@ def agent_tls_kwargs(url: str) -> dict:
     return {"verify": str(ca_path)} if ca_path.is_file() else {}
 
 
-# Agent ids already warned about a missing role, so the log line is not repeated.
+# Agent ids whose served certificate lacks their role: logs once, drives the restart advice.
 _role_warned: "set[str]" = set()
 
 
@@ -612,7 +612,10 @@ def role_warnings(agents: list) -> "list[str]":
             if refused:
                 out.append(refused)
             continue
-        if hb.get("tls_serves_role") is True and _older_than(sent, 300):
+        if str(a.get("agent_id") or "") in _role_warned and _older_than(sent, 300):
+            out.append(f"agent {host}: still serves its old certificate — restart or update the agent "
+                       "so it serves its new one")
+        elif hb.get("tls_serves_role") is True and _older_than(sent, 300):
             out.append(f"agent {host}: certificate role not checked although the agent serves its new "
                        "certificate — check that the manager can reach it")
         elif hb.get("tls_cert_has_role") is False and _older_than(sent, 900):

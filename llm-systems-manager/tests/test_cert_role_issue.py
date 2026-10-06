@@ -190,3 +190,16 @@ def test_role_warnings(monkeypatch):
     assert any(w.startswith("agent plain:") and "plain-HTTP" in w for w in out)
     assert any(w.startswith("agent stuck:") and "not checked" in w for w in out)
     assert any(w.startswith("agent nocert:") and "Push CA" in w for w in out)
+
+
+def test_role_warning_on_name_mismatch_advises_restart(monkeypatch):
+    monkeypatch.setattr(ar, "agent_liveness", lambda a: "live")
+    monkeypatch.setattr(ar, "_role_warned", {"1"})
+    agents = [
+        _live("1", "old-cert", last_heartbeat_data={"tls_cert_has_role": True, "tls_serves_role": True}),
+        _live("2", "stuck", last_heartbeat_data={"tls_cert_has_role": True, "tls_serves_role": True}),
+    ]
+    out = ar.role_warnings(agents)
+    assert len(out) == 2
+    assert any(w.startswith("agent old-cert:") and "restart or update the agent" in w for w in out)
+    assert any(w.startswith("agent stuck:") and "not checked" in w for w in out)
