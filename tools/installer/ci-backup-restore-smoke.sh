@@ -242,7 +242,7 @@ echo "── 4. Restore both components from the archives ───────�
 body="$(mgr -X POST -F "file=@$WORK/$MGR_ARCHIVE" -F "password=$PASSPHRASE" "$MGR_URL/api/admin/import/manager/preview")"
 [ "$(last_code)" = "200" ] || fail "manager preview = $(last_code) — ${body:0:600}"
 jq_ok "$body" ".ok == true and .encrypted == $ENC and .manifest.component == \"manager\"" "manager preview manifest"
-for want in config/llm-systems.toml data/manager_users.json data/internal-ca.crt data/internal-ca.key data/manager_secret \
+for want in config/llm-systems.toml data/manager_users.json data/internal-ca.crt data/internal-ca.key data/manager_signing_key \
             data/manager.db data/audit.db data/energy.db; do
   jq_ok "$body" '[.entries[] | select(.name == $n and .size > 0)] | length == 1' "manager archive lacks $want" --arg n "$want"
 done

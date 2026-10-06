@@ -11,7 +11,7 @@ import sse_daemon
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(M, "_primary_llama_agent_id", lambda: "ag1", raising=False)
-    monkeypatch.setattr(agent_registry, "issue_stream_token",
+    monkeypatch.setattr(agent_registry, "issue_handoff_token",
                         lambda aid, path, ttl=None: "TOKEN123", raising=False)
     monkeypatch.setattr(sse_daemon, "is_running", lambda: True, raising=False)
     monkeypatch.setattr(M, "_request_host_no_port", lambda: "10.0.0.9", raising=False)
