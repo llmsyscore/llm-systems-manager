@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.06-1"
+__version__ = "v2026.10.06-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1755,8 +1755,10 @@ def get_server_svcconfig():
 @app.route("/api/llm/server/svcconfig", methods=["POST"])
 def save_server_svcconfig():
     """Write updated ExecStart args back to llama_server.service, daemon-reload, optionally restart."""
+    if auth.effective_role() != "admin":
+        return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
     return proxies.proxy_to_primary("llama", "POST", "/llama/server/svcconfig",
-                                json=flask_request.get_json(force=True) or {})
+                                json=flask_request.get_json() or {})
 @app.route("/api/config")
 def get_config():
     """Frontend bootstrap: poll interval, mode, proxy-tab visibility,
@@ -3113,7 +3115,7 @@ def stream_llama_state_info():
     if port <= 0 or not sse_daemon.is_running() or flask_request.is_secure or not aid:
         return jsonify({"enabled": False})
     ttl = int(getattr(settings.manager.security, "stream_token_ttl_s", 300) or 300)
-    token = agent_registry.issue_stream_token(aid, sse_daemon.PATH, ttl)
+    token = agent_registry.issue_handoff_token(aid, sse_daemon.PATH, ttl)
     host = _request_host_no_port() or "127.0.0.1"
     url = f"http://{host}:{port}{sse_daemon.PATH}?agent={quote(aid)}&token={token}"
     return jsonify({"enabled": True, "url": url})
@@ -3540,8 +3542,10 @@ def vllm_log_stream():
 @app.route("/api/vllm/server/svcconfig", methods=["GET", "POST"])
 def vllm_svcconfig():
     if flask_request.method == "POST":
+        if auth.effective_role() != "admin":
+            return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
         return proxies.proxy_to_primary("vllm", "POST", "/vllm/server/svcconfig",
-                                        json=flask_request.get_json(force=True), timeout=30)
+                                        json=flask_request.get_json(), timeout=30)
     return proxies.proxy_to_primary("vllm", "GET", "/vllm/server/svcconfig")
 @app.route("/api/vllm/lora/load", methods=["POST"])
 def vllm_lora_load():
@@ -5768,7 +5772,8 @@ def _refresh_infra_versions() -> None:
 # agent proxy infrastructure
 # ---------------------------------------------------------------------------
 
-MANAGER_SECRET_FILE = DATA_DIR / "manager_secret"
+# Manager-only HMAC secret; agents get only a per-agent key derived from it.
+MANAGER_SECRET_FILE = DATA_DIR / "manager_signing_key"
 
 _pki_module = None  # backend._pki module, imported lazily
 _pki_ca = None      # tuple (cert, key) once loaded
@@ -7250,7 +7255,7 @@ _MANAGER_EXPORT_FILES = [
     "data/internal-ca.key",
     "data/layout.json",
     "data/manager_auth.json",
-    "data/manager_secret",
+    "data/manager_signing_key",
     "data/manager_users.json",
     "data/model_aliases.json",
     "data/model_profiles.json",
@@ -7291,7 +7296,7 @@ _MANAGER_EXPORT_CATEGORIES = {
     "identity": frozenset({
         "data/internal-ca.crt",
         "data/internal-ca.key",
-        "data/manager_secret",
+        "data/manager_signing_key",
         "data/agents.json",
         "data/manager_auth.json",
         "data/manager_users.json",

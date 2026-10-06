@@ -417,6 +417,8 @@ Cancels an in-progress Auto-Tune run.
 ### `GET/POST /api/llm/server/svcconfig`
 Reads (GET) or writes (POST) the llama-server systemd unit's `ExecStart` arguments directly, for flags not exposed through `/api/llm/config`. POST daemon-reloads the unit and can restart it.
 
+**Access:** POST requires the admin role and a JSON body (`Content-Type: application/json`).
+
 **Body (POST):** A JSON object of `ExecStart` argument overrides.
 
 ---
@@ -551,6 +553,8 @@ Opens an SSE stream that tails the vLLM server log in real time.
 
 ### `GET/POST /api/vllm/server/svcconfig`
 Reads (GET) or writes (POST) the vLLM systemd unit's `ExecStart` arguments — the vLLM equivalent of `/api/llm/server/svcconfig`.
+
+**Access:** POST requires the admin role and a JSON body (`Content-Type: application/json`).
 
 **Body (POST):** A JSON object of `ExecStart` argument overrides.
 

@@ -7,7 +7,7 @@ so this module always imports — a missing dep just disables the daemon and
 the Cheroot path serves the stream as before.
 
 Auth mirrors the existing browser→agent stream-token model: a session-gated
-Cheroot route mints `agent_registry.issue_stream_token(agent_id, path, ttl)`
+Cheroot route mints `agent_registry.issue_handoff_token(agent_id, path, ttl)`
 and this daemon verifies it (constant-time). The daemon does no authorization.
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ def _dec() -> None:
 
 def _verify_handoff(token: str, agent_id: str, path: str, secret: bytes) -> bool:
     """Verify "<expiry>.<sig>" where sig=HMAC-SHA256(secret, "<agent_id>|<path>|<expiry>"),
-    matching agent_registry.issue_stream_token. agent_id comes from the URL; a
+    matching agent_registry.issue_handoff_token. agent_id comes from the URL; a
     tampered agent_id fails the HMAC."""
     if not token or "." not in token or not agent_id:
         return False

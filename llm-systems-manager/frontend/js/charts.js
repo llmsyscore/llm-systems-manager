@@ -843,8 +843,8 @@ function updateNonZero(key, val) {
 
 function fmtWithPeak(current, key) {
   const p = lastNonZero[key];
-  if (current !== null && current !== 0) return String(current);
-  if (p && p.val !== null) return `0 ${_peakSpan(p.val, p.ts)}`;
+  if (current !== null && current !== 0) return _esc(String(current));
+  if (p && p.val !== null) return `0 ${_peakSpan(_esc(String(p.val)), p.ts)}`;
   return '0';
 }
 
@@ -1812,12 +1812,12 @@ async function fetchMetrics() {
     const fans = sd.fans || [];
     document.getElementById('smartFanTable').innerHTML = fans.map(f =>
       `<tr>
-        <td>Fan ${f.id}</td>
+        <td>Fan ${_esc(String(f.id))}</td>
         <td>${_esc(f.control_mode || '—')}</td>
         <td>${f.duty != null ? _esc(f.duty) : '—'}</td>
         <td>${f.speed ? _esc(f.speed.value) + ' ' + _esc(f.speed.unit) : '—'}</td>
         <td>${f.voltage_v != null ? f.voltage_v.toFixed(2) + ' V' : '—'}</td>
-        <td>${f.current_ma != null ? f.current_ma + ' mA' : '—'}</td>
+        <td>${f.current_ma != null ? _esc(f.current_ma) + ' mA' : '—'}</td>
       </tr>`
     ).join('');
 

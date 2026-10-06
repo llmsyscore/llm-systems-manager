@@ -87,6 +87,7 @@ __all__ = [
     "colocated_infra",
     "approved_agent_caps",
     "issue_stream_token",
+    "issue_handoff_token",
     "ingest_token_for_agent",
     "AGENTS_FILE",
 ]
@@ -1064,13 +1065,29 @@ def ingest_token_for_agent() -> str:
     return "" if tok in _INGEST_TOKEN_UNSET else tok
 
 
-def issue_stream_token(agent_id: str, path: str, ttl: "int | None" = None) -> str:
+def _agent_stream_key(agent_id: str) -> bytes:
+    """Per-agent stream-token key: HMAC(HMAC(manager_secret, "agent-stream-key"), agent_id)."""
+    sub = _hmac.new(_deps.manager_secret(), b"agent-stream-key", hashlib.sha256).digest()
+    return _hmac.new(sub, agent_id.encode(), hashlib.sha256).digest()
+
+
+def _sign_stream_token(key: bytes, agent_id: str, path: str, ttl: "int | None") -> str:
     if ttl is None:
         ttl = _deps.settings.manager.security.stream_token_ttl_s
     expiry = int(time.time()) + ttl
     msg = f"{agent_id}|{path}|{expiry}".encode()
-    sig = _hmac.new(_deps.manager_secret(), msg, hashlib.sha256).hexdigest()
+    sig = _hmac.new(key, msg, hashlib.sha256).hexdigest()
     return f"{expiry}.{sig}"
+
+
+def issue_stream_token(agent_id: str, path: str, ttl: "int | None" = None) -> str:
+    """Browser->agent stream token, signed with that agent's own stream key."""
+    return _sign_stream_token(_agent_stream_key(agent_id), agent_id, path, ttl)
+
+
+def issue_handoff_token(agent_id: str, path: str, ttl: "int | None" = None) -> str:
+    """Manager SSE-daemon hand-off token, signed with the manager-only secret."""
+    return _sign_stream_token(_deps.manager_secret(), agent_id, path, ttl)
 
 
 # ── Private: cert build/sign (shared by heartbeat-ack issuer + admin-tab rotation) ──
@@ -1742,7 +1759,7 @@ def _agents_heartbeat():
     return jsonify({
         "ok": True,
         "auth_disabled": auth_disabled,
-        "manager_secret": _deps.manager_secret().hex(),
+        "manager_secret": _agent_stream_key(agent["agent_id"]).hex(),
         # Agents consume this on first heartbeat after process start and
         # ignore subsequent values — restart picks up later changes.
         "alarm_engine_url": ae_url_for_agent,
