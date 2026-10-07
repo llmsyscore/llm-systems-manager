@@ -73,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.07-2"
+__version__ = "v2026.10.07-3"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,

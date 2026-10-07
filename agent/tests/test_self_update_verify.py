@@ -24,7 +24,7 @@ def _extract_py_func(source: Path, name: str) -> str:
 def _verify_fn():
     ns = {"os": __import__("os"), "subprocess": subprocess,
           "base64": base64, "binascii": binascii,
-          "Path": Path, "Optional": Optional}
+          "Path": Path, "Optional": Optional, "_OPENSSL_TIMEOUT_S": 60}
     exec(compile(_extract_py_func(AGENT_PY, "_verify_tarball_signature"),
                  str(AGENT_PY), "exec"), ns)
     return ns["_verify_tarball_signature"]
@@ -107,3 +107,21 @@ def test_missing_ca_without_optout_fails(tmp_path, monkeypatch):
     ok, reason = _verify_fn()(str(tgz), None, missing_ca, str(verify_dir))
     assert not ok
     assert "cannot verify update signature" in reason
+
+
+def test_a_hung_openssl_refuses_the_update(tmp_path, monkeypatch):
+    """#1195: the signature check times out instead of blocking the update forever."""
+    monkeypatch.delenv("LLMSYS_ALLOW_INSECURE_UPDATE", raising=False)
+    ca = tmp_path / "ca.pem"
+    ca.write_text("not really a cert")
+    tarball = tmp_path / "agent.tgz"
+    tarball.write_bytes(b"x")
+
+    def _hang(cmd, **kw):
+        assert kw.get("timeout") == 60
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    ok, reason = _verify_fn()(str(tarball), base64.b64encode(b"sig").decode(), ca, str(tmp_path))
+    assert ok is False and "did not finish" in reason
+

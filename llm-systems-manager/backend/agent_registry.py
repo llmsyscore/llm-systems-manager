@@ -1705,19 +1705,26 @@ def _agents_whoami():
     })
 
 
+_TARBALL_BUILD_TIMEOUT_S = 120
+
+
 def _build_agent_tarball_bytes() -> bytes:
     """Build a tar.gz of <repo>/agent/ into memory (buffered so it can be signed)."""
     agent_dir = Path(__file__).resolve().parents[2] / "agent"
     if not agent_dir.is_dir():
         raise FileNotFoundError(f"agent/ not found at {agent_dir}")
-    proc = subprocess.run(
-        ["tar", "-czf", "-",
-         "--exclude=__pycache__", "--exclude=*.pyc",
-         "--exclude=venv", "--exclude=.pytest_cache",
-         "agent"],
-        cwd=str(agent_dir.parent),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    try:
+        proc = subprocess.run(
+            ["tar", "-czf", "-",
+             "--exclude=__pycache__", "--exclude=*.pyc",
+             "--exclude=venv", "--exclude=.pytest_cache",
+             "agent"],
+            cwd=str(agent_dir.parent),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=_TARBALL_BUILD_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"tar did not finish within {_TARBALL_BUILD_TIMEOUT_S}s")
     if proc.returncode != 0:
         raise RuntimeError(f"tar failed: {proc.stderr.decode('utf-8', 'replace')[:200]}")
     return proc.stdout
