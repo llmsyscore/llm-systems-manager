@@ -1856,12 +1856,16 @@ Toggles a rule between enabled and disabled without deleting it. Disabled rules 
 ## Alarm Engine — Notifications
 
 ### `GET /api/alarm/notifications/channels`
-Returns all configured notification channels (email, webhook, Discord).
+Returns all configured notification channels (email, webhook, Discord, phone push). Secrets — the phone-push bearer token, the webhook signing secret and webhook header values — are returned as `********`.
+
+**Access (through the manager):** reading channels is open to every signed-in user; adding, changing, testing and deleting them requires the admin role.
 
 ---
 
 ### `POST /api/alarm/notifications/channels`
-Creates a new notification channel.
+Creates a new notification channel. Webhook, Discord and phone-push addresses must start with `http://` or `https://`, must not carry a username or password, and must not point at a link-local, multicast or unspecified address; a rejected address returns `400`.
+
+**Access (through the manager):** admin role.
 
 **Body — email channel:**
 ```json
@@ -1914,14 +1918,18 @@ Returns the configuration for a single notification channel.
 ---
 
 ### `PUT /api/alarm/notifications/channels/<channel_id>`
-Updates a notification channel's configuration.
+Updates a notification channel's configuration. Sending a secret back as `********` keeps the stored value; addresses are checked as on create.
 
 **Body:** The same shape as the create body.
+
+**Access (through the manager):** admin role.
 
 ---
 
 ### `DELETE /api/alarm/notifications/channels/<channel_id>`
 Deletes a notification channel.
+
+**Access (through the manager):** admin role.
 
 ---
 
@@ -1977,12 +1985,16 @@ Sends a notification immediately, bypassing policy evaluation. Useful for testin
 - supply `config_id` (a notification policy) **or** `channel_id` (a single channel)
 - `severity` and `metadata` are optional
 
+**Access (through the manager):** admin role.
+
 ---
 
 ### `POST /api/alarm/notifications/test`
-Sends a test message through a channel to verify it is configured correctly.
+Sends a test message through a channel to verify it is configured correctly. The channel's saved address, token and TLS setting are used.
 
 **Body:** `{"channel_id": "<id>"}`
+
+**Access (through the manager):** admin role.
 
 ---
 

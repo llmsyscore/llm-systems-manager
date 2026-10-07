@@ -402,7 +402,7 @@ const NotificationsManager = {
             </div>
             <div data-ct="webpush">
                 <div class="st-field"><label for="cf-wp-url">Manager notify URL</label><div class="row"><input class="st-in full" id="cf-wp-url" type="url" value="${v(c('webpush').url)}" placeholder="blank = the local manager"></div></div>
-                <div class="st-field"><label for="cf-wp-token">Bearer token</label><div class="row"><input class="st-in full" id="cf-wp-token" type="password" value="${v(c('webpush').token)}" placeholder="blank = the shared alarm-engine token"></div><div class="help">Delivers to every device subscribed in the companion app. The manager holds the push keys and does the send.</div></div>
+                <div class="st-field"><label for="cf-wp-token">Bearer token</label><div class="row"><input class="st-in full" id="cf-wp-token" type="password" value="${v(c('webpush').token)}" placeholder="blank = the alarm engine's own token, sent only to the manager address"></div><div class="help">Delivers to every device subscribed in the companion app. The manager holds the push keys and does the send.</div></div>
             </div>
             <div class="grp tight">${toggleHtml(ch.enabled !== false, ch.enabled !== false ? 'Channel enabled' : 'Channel disabled', 'id="cf-enabled"')}</div>
         </div>`;

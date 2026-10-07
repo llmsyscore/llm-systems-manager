@@ -788,6 +788,7 @@ def _resolve_alarm_agent_param(path: str, args) -> list:
 _ALARM_RETIRE_SUFFIXES = ("/close", "/ignore")
 _ALARM_RETIRE_PATHS = ("alerts/close-all", "alerts/ignore-all")
 _ALARM_RETIRE_ACTIONS = {"close", "ignore"}
+_ALARM_NOTIFY_SEND_PATHS = ("notifications/test", "notifications/send")
 
 
 def _alarm_path_ambiguous(path: str) -> bool:
@@ -805,6 +806,9 @@ def _alarm_admin_required(path: str) -> bool:
     if flask_request.method not in ("POST", "PUT", "PATCH", "DELETE"):
         return False
     p = path.strip("/")
+    # Channels name outside destinations and reach every subscribed phone.
+    if p.startswith("notifications/channels") or p in _ALARM_NOTIFY_SEND_PATHS:
+        return True
     if p in _ALARM_RETIRE_PATHS or p.endswith(_ALARM_RETIRE_SUFFIXES):
         return True
     # DELETE /alerts/<id> retires an alert too, but /alerts alone is a purge
