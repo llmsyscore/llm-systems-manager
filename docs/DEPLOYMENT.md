@@ -244,7 +244,9 @@ launchctl start com.llm-systems-agent
 
 ### Step 3: Approve the Agent
 
-New agents must be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting.
+New machines can register only while enrollment is open. Enrollment is open for 15 minutes after each manager start; after that, open it from **Admin › Agents** with **Open enrollment** before starting the agent (each click adds 15 minutes, and **Close enrollment** sits in the **Manage ▾** menu). The header chip shows whether enrollment is open and how long remains. An agent that registers while enrollment is closed keeps trying on its own and appears as soon as enrollment opens.
+
+New agents must then be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting.
 
 1. Open the dashboard in your browser
 2. Go to the **Admin** tab
@@ -286,6 +288,8 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
 | `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
 | `[manager].hsts_max_age_s` | `Strict-Transport-Security` max-age emitted on HTTPS responses; `0` = off. Leave it off while the plain-HTTP port shares the hostname — HSTS preserves the port | `0` |
+| `[manager.agents].enrollment_mode` | When new machines may register and wait for approval: `auto` opens enrollment for one window after each manager start, `open` keeps it open and `closed` keeps it closed until changed here or on Admin › Agents (in `auto`, a change made on Admin › Agents lasts until the next manager start). Applies without a restart | `auto` |
+| `[manager.agents].enrollment_window_min` | Minutes enrollment stays open after a start in `auto` mode, and per **Open enrollment** click | `15` |
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |

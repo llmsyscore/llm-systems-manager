@@ -40,6 +40,53 @@ const approved = (id, extra = {}) => ({
   last_heartbeat_data: { collection_enabled: true, control_channel_tls: true }, ...extra,
 });
 
+describe('#1218 enrollment window chip + controls', () => {
+  const now = Date.parse('2026-10-07T18:00:00Z');
+  test('closed: warn chip and an Open enrollment button, no Close entry', () => {
+    const t = V.enrollText({ open: false, until: null, mode: 'auto', window_min: 15 }, now);
+    expect(t).toEqual({ chip: 'Enrollment <b>closed</b>', cls: 'closed', btn: 'Open enrollment', close: false });
+  });
+  test('open with a timer: minutes left, Extend button and Close entry', () => {
+    const until = new Date(now + 12.2 * 60000).toISOString();
+    const t = V.enrollText({ open: true, until, mode: 'auto', window_min: 20 }, now);
+    expect(t).toEqual({ chip: 'Enrollment <b>open</b> · 13 min left', cls: 'open', btn: 'Extend 20 min', close: true });
+  });
+  test('always open: chip only, no button, Close entry shown', () => {
+    const t = V.enrollText({ open: true, until: null, mode: 'open', window_min: 15 }, now);
+    expect(t.btn).toBe('');
+    expect(t.close).toBe(true);
+    expect(V.enrollText(null, now).chip).toBe('');
+  });
+  test('a timer that has run out between polls already reads as closed', () => {
+    const t = V.enrollText({ open: true, until: new Date(now - 1000).toISOString(), window_min: 15 }, now);
+    expect(t.btn).toBe('Open enrollment');
+    expect(t.close).toBe(false);
+  });
+  test('header render fills the chip, button and menu entry from the loaded state', () => {
+    const until = new Date(NOW + 5 * 60000).toISOString();
+    const win = harness(`
+      _adminAgentsCache = []; _adminGlobal = {}; Date.now = () => ${NOW};
+      _adminEnrollment = { open: true, until: '${until}', mode: 'auto', window_min: 15, source: 'startup' };
+      AgentsView.render();
+    `);
+    const d = win.document;
+    expect(d.getElementById('agEnrollChip').textContent).toBe('Enrollment open · 5 min left');
+    expect(d.getElementById('agEnrollChip').classList.contains('open')).toBe(true);
+    expect(d.getElementById('agEnrollBtn').hidden).toBe(false);
+    expect(d.getElementById('agEnrollBtn').textContent).toBe('Extend 15 min');
+    expect(d.getElementById('agEnrollClose').hidden).toBe(false);
+    const closed = harness(`
+      _adminAgentsCache = []; _adminGlobal = {}; Date.now = () => ${NOW};
+      _adminEnrollment = { open: false, until: null, mode: 'closed', window_min: 15, source: 'setting' };
+      AgentsView.render();
+    `).document;
+    expect(closed.getElementById('agEnrollChip').textContent).toBe('Enrollment closed');
+    expect(closed.getElementById('agEnrollBtn').textContent).toBe('Open enrollment');
+    expect(closed.getElementById('agEnrollBtn').classList.contains('mcbtn-pri')).toBe(true);
+    expect(closed.getElementById('agEnrollClose').hidden).toBe(true);
+  });
+});
+
 describe('#1201 pending rows show the source address', () => {
   test('a pending row shows registered_from even when bind_url claims another host', () => {
     const a = { status: 'pending', bind_url: 'https://10.9.9.9:8098', registered_from: '192.0.2.77' };

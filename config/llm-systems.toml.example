@@ -242,6 +242,8 @@ generic_http = 30.0                                      # outbound HTTP default
 stale_after_s = 150                                      # heartbeats missed → "stale"
 down_after_s = 600                                       # heartbeats missed → "down"
 liveness_watch_interval_s = 60                           # how often the watcher loop runs
+enrollment_mode = "auto"                                 # when new machines may register: auto = open for one window after each manager start; open / closed = until changed by hand
+enrollment_window_min = 15                               # minutes enrollment stays open after a start (auto) and per "Open enrollment" click
 
 [manager.security]
 # CIDR ranges allowed to call admin-only endpoints (rule/channel CRUD, etc.).

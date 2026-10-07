@@ -42,7 +42,7 @@ import threading
 import time
 import uuid as _uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
@@ -1503,6 +1503,105 @@ def _pending_sweep_loop() -> None:
 
 
 # ── Private route handlers ───────────────────────────────────────────
+# ── Enrollment window (#1218) ────────────────────────────────────────
+_ENROLL_MODES = ("auto", "open", "closed")
+_ENROLL_DEFAULT_WINDOW_MIN = 15
+_ENROLL_RETRY_AFTER_S = 60
+_enroll_boot_at: "datetime | None" = None
+_enroll_boot_until: "datetime | None" = None
+
+
+def _enroll_settings() -> "tuple[str, int]":
+    """(mode, window minutes) from [manager.agents]; bad values fall back to auto / 15."""
+    cfg = getattr(getattr(_deps.settings, "manager", None), "agents", None)
+    mode = str(getattr(cfg, "enrollment_mode", "auto") or "auto").strip().lower()
+    if mode not in _ENROLL_MODES:
+        mode = "auto"
+    try:
+        window = int(getattr(cfg, "enrollment_window_min", _ENROLL_DEFAULT_WINDOW_MIN))
+    except (TypeError, ValueError):
+        window = _ENROLL_DEFAULT_WINDOW_MIN
+    return mode, max(1, window)
+
+
+def _enroll_parse(iso) -> "datetime | None":
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def start_enrollment_boot_window(now: "datetime | None" = None) -> None:
+    """In auto mode, opens enrollment for one window from now; other modes clear the start-up window."""
+    global _enroll_boot_at, _enroll_boot_until
+    mode, window = _enroll_settings()
+    now = now or datetime.now(timezone.utc)
+    _enroll_boot_at = now
+    _enroll_boot_until = now + timedelta(minutes=window) if mode == "auto" else None
+
+
+def clear_enrollment_override() -> None:
+    """Drops a manual open/close so the enrollment_mode setting applies again."""
+    with _agents_lock:
+        data = load_agents()
+        if (data.get("global") or {}).pop("enrollment", None) is not None:
+            save_agents(data)
+
+
+def enrollment_state(data: dict, now: "datetime | None" = None) -> dict:
+    """Whether new machines may register right now, when that ends, and where the state came from."""
+    mode, window = _enroll_settings()
+    now = now or datetime.now(timezone.utc)
+    out = {"open": False, "until": None, "mode": mode, "window_min": window, "source": "setting"}
+    ov = (data.get("global") or {}).get("enrollment") or {}
+    until = _enroll_parse(ov.get("until"))
+    set_at = _enroll_parse(ov.get("set_at"))
+    # In auto mode a manual open/close lasts only until the next manager start.
+    fresh = mode != "auto" or (set_at is not None and _enroll_boot_at is not None and set_at >= _enroll_boot_at)
+    if ov.get("mode") == mode and fresh:
+        if ov.get("state") == "closed":
+            out["source"] = "manual"
+            return out
+        if ov.get("state") == "open" and until is not None and until > now:
+            out.update(open=True, until=until.isoformat(), source="manual")
+            return out
+    if mode == "open":
+        out["open"] = True
+    elif mode == "auto" and _enroll_boot_until is not None and _enroll_boot_until > now:
+        out.update(open=True, until=_enroll_boot_until.isoformat(), source="startup")
+    return out
+
+
+def _agents_enrollment():
+    """Admin: open (or extend by one window) / close enrollment for new machines."""
+    deny = _deps.require_admin()
+    if deny is not None:
+        return deny
+    body = flask_request.get_json(force=True, silent=True) or {}
+    action = body.get("action")
+    if action not in ("open", "close"):
+        return jsonify({"ok": False, "error": "action must be open or close"}), 400
+    mode, window = _enroll_settings()
+    now = datetime.now(timezone.utc)
+    with _agents_lock:
+        data = load_agents()
+        g = data.setdefault("global", {})
+        if action == "close":
+            g["enrollment"] = {"state": "closed", "until": None, "mode": mode, "set_at": now.isoformat()}
+        else:
+            cur = enrollment_state(data, now)
+            base = _enroll_parse(cur["until"]) if cur["open"] else None
+            start = base if base is not None and base > now else now
+            g["enrollment"] = {"state": "open", "mode": mode, "set_at": now.isoformat(),
+                               "until": (start + timedelta(minutes=window)).isoformat()}
+        save_agents(data)
+        state = enrollment_state(data, now)
+    log.info("agent enrollment %s by %s: open=%s until=%s",
+             action, flask_request.remote_addr, state["open"], state["until"])
+    return jsonify({"ok": True, "enrollment": state})
+
+
 def _agents_register():
     """No-auth endpoint: agent posts its identity, gets back agent_id + status."""
     remote = flask_request.remote_addr or ""
@@ -1610,6 +1709,14 @@ def _agents_register():
         # agent); every other caller lands in "pending" for manual approval.
         auto_approve = _remote_is_loopback(remote)
         if not auto_approve:
+            if not enrollment_state(data)["open"]:
+                log.info("agent registration refused: enrollment closed (hostname=%s from=%s)",
+                         hostname, remote)
+                return jsonify({"ok": False,
+                                "error": "enrollment is closed; open it in Admin › Agents "
+                                         "(Open enrollment) and the agent registers on its next try",
+                                "retry_after_s": _ENROLL_RETRY_AFTER_S}), 503, \
+                    {"Retry-After": str(_ENROLL_RETRY_AFTER_S)}
             pending = [a for a in data["agents"].values() if a.get("status") == "pending"]
             same_addr = sum(1 for a in pending if (a.get("registered_from") or "") == remote)
             if len(pending) >= _REG_PENDING_MAX or same_addr >= _REG_PENDING_PER_ADDR:
@@ -1973,6 +2080,7 @@ def _agents_list():
     return jsonify({
         "agents": safe,
         "global": data.get("global", {"auth_disabled": False}),
+        "enrollment": enrollment_state(data),
         "host_auto_detected": host_auto_detected,
         "latest_agent_version": latest,
         "manager_version": _deps.version,
@@ -2524,7 +2632,10 @@ def register_routes(app) -> None:
                      view_func=_agents_collection, methods=["POST"])
     app.add_url_rule("/api/agents/global", endpoint="agents_global",
                      view_func=_agents_global, methods=["POST"])
+    app.add_url_rule("/api/agents/enrollment", endpoint="agents_enrollment",
+                     view_func=_agents_enrollment, methods=["POST"])
 
+    start_enrollment_boot_window()
     threading.Thread(target=_agent_liveness_watcher, daemon=True,
                      name="agent-liveness-watcher").start()
     threading.Thread(target=_pending_sweep_loop, daemon=True,

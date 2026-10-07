@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.07-5"
+__version__ = "v2026.10.07-6"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -7706,6 +7706,25 @@ def _forecast_reload_config() -> None:
 
 
 _HOT_RELOADERS["manager.forecast."] = _forecast_reload_config
+
+
+_AGENTS_HOT_KEYS = ("enrollment_mode", "enrollment_window_min")
+
+
+def _agents_reload_config() -> None:
+    """Re-apply the [manager.agents] enrollment keys from the on-disk config onto the live settings (hot)."""
+    try:
+        snap = settings_catalog._snapshot().manager.agents
+        mode_changed = snap.enrollment_mode != settings.manager.agents.enrollment_mode
+        for k in _AGENTS_HOT_KEYS:
+            setattr(settings.manager.agents, k, getattr(snap, k))
+        if mode_changed:
+            agent_registry.clear_enrollment_override()
+    except Exception as e:
+        log.warning("agents config reload failed (runtime keeps previous values): %s", e)
+
+
+_HOT_RELOADERS["manager.agents."] = _agents_reload_config
 
 
 def _validate_nightly_at(value: str) -> "str | None":
