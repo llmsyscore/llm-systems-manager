@@ -8,12 +8,15 @@ Supports notification channels:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import smtplib
+import socket
 import time
 from email.mime.text import MIMEText
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -23,6 +26,7 @@ from ..models.notification import (
     ChannelType,
     NotificationChannel,
     NotificationChannelCreate,
+    WebPushConfig,
 )
 from config.unified_config import settings  # noqa: E402
 
@@ -114,16 +118,97 @@ def _webpush_url(config) -> str:
     return f"http://127.0.0.1:{port}/api/companion/push/notify"
 
 
+_NOTIFY_PATH = "/api/companion/push/notify"
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _origin(url: str) -> "tuple[str, str, int] | None":
+    """(scheme, host, port) of an http(s) URL, loopback names folded together."""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").rstrip(".").lower()
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not host:
+        return None
+    if host in _LOOPBACK_HOSTS:
+        host = "127.0.0.1"
+    return parts.scheme, host, port or (443 if parts.scheme == "https" else 80)
+
+
+def _is_manager_notify_url(url: str) -> bool:
+    """True for the manager's own notify route: the blank-URL default, or
+    [alarm_engine].manager_url plus the notify path."""
+    url = (url or "").strip()
+    if not url:
+        return True
+    target = _origin(url)
+    manager = _origin((getattr(settings.alarm_engine, "manager_url", "") or "").strip())
+    if target is None or manager is None or target != manager:
+        return False
+    return urlsplit(url).path.rstrip("/") == _NOTIFY_PATH
+
+
 def _webpush_token(config) -> str:
-    """Bearer for the notify endpoint: the channel's own, else the shared
-    alarm-engine token the manager already accepts."""
-    for raw in (getattr(config, "token", None),
-                getattr(settings.alarm_engine, "management_token", ""),
+    """Bearer for the notify endpoint: the channel's own token, else the shared
+    alarm-engine token, which only goes to the manager's notify URL."""
+    own = (getattr(config, "token", None) or "").strip()
+    if own not in _UNSET_TOKENS:
+        return own
+    if not _is_manager_notify_url(getattr(config, "url", "") or ""):
+        return ""
+    for raw in (getattr(settings.alarm_engine, "management_token", ""),
                 getattr(settings.alarm_engine, "ingest_token", "")):
         tok = (raw or "").strip()
         if tok not in _UNSET_TOKENS:
             return tok
     return ""
+
+
+_BLOCKED_ADDR_FLAGS = ("is_link_local", "is_multicast", "is_unspecified", "is_reserved")
+
+
+def destination_error(url: str) -> Optional[str]:
+    """Why a channel URL may not be used, or None when it may."""
+    try:
+        parts = urlsplit((url or "").strip())
+        port = parts.port
+    except ValueError:
+        return "the address is not a valid URL"
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "the address must start with http:// or https:// and name a host"
+    if parts.username is not None or parts.password is not None:
+        return "the address must not contain a username or password"
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port or 0, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return None
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return "the host resolved to a non-IP answer"
+        if ip.is_loopback:
+            continue
+        if any(getattr(ip, flag) for flag in _BLOCKED_ADDR_FLAGS):
+            return f"the host resolves to an unusable address ({ip})"
+    return None
+
+
+def channel_urls(config) -> list[str]:
+    """Destination URLs a channel config names; a blank web-push URL is the local manager."""
+    urls = []
+    webhook = getattr(config, "webhook", None)
+    if webhook is not None and webhook.url:
+        urls.append(webhook.url)
+    discord = getattr(config, "discord", None)
+    if discord is not None and discord.webhook_url:
+        urls.append(discord.webhook_url)
+    webpush = getattr(config, "webpush", None)
+    if webpush is not None and (webpush.url or "").strip():
+        urls.append(webpush.url.strip())
+    return urls
 
 
 class NotificationDispatcher:
@@ -710,8 +795,10 @@ Time: {alert.created_at}
             headers = {"Content-Type": "application/json"}
             if config.webhook.headers:
                 headers.update(config.webhook.headers)
-            err = None
+            err = await asyncio.to_thread(destination_error, config.webhook.url)
             try:
+                if err:
+                    raise ValueError(f"destination refused: {err}")
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
                     resp = await client.post(config.webhook.url, json=payload, headers=headers)
                 if 200 <= resp.status_code < 300:
@@ -752,8 +839,10 @@ Time: {alert.created_at}
             payload = {"embeds": [embed]}
             if config.discord.username:
                 payload["username"] = config.discord.username
-            err = None
+            err = await asyncio.to_thread(destination_error, config.discord.webhook_url)
             try:
+                if err:
+                    raise ValueError(f"destination refused: {err}")
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
                     resp = await client.post(config.discord.webhook_url, json=payload)
                 if 200 <= resp.status_code < 300:
@@ -793,8 +882,10 @@ Time: {alert.created_at}
                 "event": event,
             }
             headers = {"Authorization": f"Bearer {token}"} if token else {}
-            err = None
+            err = await asyncio.to_thread(destination_error, url)
             try:
+                if err:
+                    raise ValueError(f"destination refused: {err}")
                 async with httpx.AsyncClient(
                         timeout=settings.notifications.timeouts.http,
                         verify=bool(getattr(config.webpush, "verify_tls", True))) as client:
@@ -875,6 +966,7 @@ Time: {alert.created_at}
         recipient: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
         config_id: Optional[str] = None,
+        webpush_config: Optional[WebPushConfig] = None,
     ) -> dict[str, Any]:
         """Send a notification directly (used for testing and ad-hoc alerts).
 
@@ -939,8 +1031,12 @@ Time: {alert.created_at}
                     "metadata": metadata or {},
                     "delivery_id": delivery_id,
                 }
+                url = recipient or "http://localhost:9999/webhook"
+                err = await asyncio.to_thread(destination_error, url)
+                if err:
+                    raise ValueError(f"destination refused: {err}")
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
-                    resp = await client.post(recipient or "http://localhost:9999/webhook", json=payload)
+                    resp = await client.post(url, json=payload)
                     response_code = resp.status_code
                     success = 200 <= resp.status_code < 300
 
@@ -954,16 +1050,27 @@ Time: {alert.created_at}
                         {"name": "Delivery ID", "value": delivery_id, "inline": True},
                     ],
                 }
+                url = recipient or "https://discord.com/api/webhooks/fake"
+                err = await asyncio.to_thread(destination_error, url)
+                if err:
+                    raise ValueError(f"destination refused: {err}")
                 async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
-                    resp = await client.post(recipient or "https://discord.com/api/webhooks/fake", json={"embeds": [embed]})
+                    resp = await client.post(url, json={"embeds": [embed]})
                     response_code = resp.status_code
                     success = 200 <= resp.status_code < 300
 
             elif channel_type == ChannelType.WEBPUSH:
-                token = _webpush_token(None)
-                async with httpx.AsyncClient(timeout=settings.notifications.timeouts.http) as client:
+                cfg = webpush_config or WebPushConfig(url=recipient or "")
+                url = _webpush_url(cfg)
+                err = await asyncio.to_thread(destination_error, url)
+                if err:
+                    raise ValueError(f"destination refused: {err}")
+                token = _webpush_token(cfg)
+                async with httpx.AsyncClient(
+                        timeout=settings.notifications.timeouts.http,
+                        verify=bool(cfg.verify_tls)) as client:
                     resp = await client.post(
-                        recipient or _webpush_url(None),
+                        url,
                         json={"title": title, "body": body, "severity": severity,
                               "tag": "lsm-test", "url": "/companion?tab=alerts"},
                         headers={"Authorization": f"Bearer {token}"} if token else {})

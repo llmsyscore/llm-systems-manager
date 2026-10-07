@@ -64,7 +64,7 @@ class WebPushConfig(BaseModel):
     its notify endpoint rather than sending to browsers directly."""
     enabled: bool = True
     url: str = Field(default="", description="Manager notify endpoint; blank = the local manager")
-    token: Optional[str] = Field(default=None, description="Bearer; blank = the shared alarm-engine token")
+    token: Optional[str] = Field(default=None, description="Bearer; blank = the shared alarm-engine token, sent only to the manager address")
     verify_tls: bool = Field(default=True, description="Verify the manager's TLS certificate")
 
 
@@ -336,3 +336,43 @@ class NotificationDelivery(BaseModel):
     error_message: Optional[str]
     delivered_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# Value returned in place of a channel secret; echoed back on update it means "unchanged".
+SECRET_MASK = "********"
+
+
+def mask_channel_secrets(channel: NotificationChannel) -> NotificationChannel:
+    """Copy of the channel with the web-push token, webhook secret and
+    webhook header values replaced by SECRET_MASK."""
+    out = channel.model_copy(deep=True)
+    wp, wh = out.config.webpush, out.config.webhook
+    if wp is not None and wp.token:
+        wp.token = SECRET_MASK
+    if wh is not None:
+        if wh.secret:
+            wh.secret = SECRET_MASK
+        wh.headers = {k: SECRET_MASK for k in wh.headers}
+    return out
+
+
+def keep_masked_secrets(update: NotificationChannelUpdate,
+                        existing: NotificationChannel) -> None:
+    """Puts the stored value back wherever the update echoes SECRET_MASK."""
+    cfg = update.config
+    if cfg is None:
+        return
+    old_wp, old_wh = existing.config.webpush, existing.config.webhook
+    if cfg.webpush is not None and cfg.webpush.token == SECRET_MASK:
+        cfg.webpush.token = old_wp.token if old_wp else None
+    if cfg.webhook is not None:
+        if cfg.webhook.secret == SECRET_MASK:
+            cfg.webhook.secret = old_wh.secret if old_wh else None
+        old_headers = old_wh.headers if old_wh else {}
+        headers = {}
+        for k, v in cfg.webhook.headers.items():
+            if v != SECRET_MASK:
+                headers[k] = v
+            elif k in old_headers:
+                headers[k] = old_headers[k]
+        cfg.webhook.headers = headers

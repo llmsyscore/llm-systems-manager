@@ -3,6 +3,7 @@ Notification configuration and test API routes.
 Provides CRUD for notification channels and test/send capabilities.
 """
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -19,7 +20,10 @@ from ...models.notification import (
     NotificationConfigCreate,
     NotificationConfigUpdate,
     NotificationDelivery,
+    keep_masked_secrets,
+    mask_channel_secrets,
 )
+from ...engine.notification_dispatcher import channel_urls, destination_error
 from ...storage.repositories import ConfigDeserializationError, NotificationRepository
 
 logger = logging.getLogger(__name__)
@@ -74,24 +78,33 @@ def _get_repo() -> NotificationRepository:
     return _repo
 
 
+async def _check_destinations(config) -> None:
+    """400 when any URL the channel config names fails the destination check."""
+    for url in channel_urls(config):
+        err = await asyncio.to_thread(destination_error, url)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Channel address rejected: {err}")
+
+
 # ── Channels ────────────────────────────────────────────────────
 
 @router.get("/channels", response_model=List[NotificationChannel])
 async def list_channels() -> List[NotificationChannel]:
     """List all notification channels."""
     repo = _get_repo()
-    return await repo.list_channels()
+    return [mask_channel_secrets(c) for c in await repo.list_channels()]
 
 
 @router.post("/channels", response_model=NotificationChannel, status_code=201)
 async def create_channel(payload: NotificationChannelCreate) -> NotificationChannel:
     """Create a new notification channel."""
+    await _check_destinations(payload.config)
     repo = _get_repo()
     ch = repo.create(payload)
     logger.info("notification channel created: id=%s name=%s type=%s",
                 getattr(ch, "channel_id", None), getattr(ch, "name", None),
                 getattr(ch, "type", None))
-    return ch
+    return mask_channel_secrets(ch)
 
 
 @router.get("/channels/{channel_id}", response_model=NotificationChannel)
@@ -101,16 +114,22 @@ async def get_channel(channel_id: str) -> NotificationChannel:
     channel = await repo.get_channel(channel_id)
     if not channel:
         raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
-    return channel
+    return mask_channel_secrets(channel)
 
 
 @router.put("/channels/{channel_id}", response_model=NotificationChannel)
 async def update_channel(channel_id: str, payload: NotificationChannelUpdate) -> NotificationChannel:
-    """Update a channel."""
+    """Update a channel; a masked secret echoed back keeps the stored value."""
     repo = _get_repo()
+    existing = await repo.get_channel(channel_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+    keep_masked_secrets(payload, existing)
+    if payload.config is not None:
+        await _check_destinations(payload.config)
     ch = await repo.update_channel(channel_id, payload)
     logger.info("notification channel updated: id=%s", channel_id)
-    return ch
+    return mask_channel_secrets(ch)
 
 
 @router.delete("/channels/{channel_id}")
@@ -239,6 +258,7 @@ async def test_channel(payload: TestPayload) -> dict:
     channel_type = payload.channel_type
     recipient = payload.recipient
     resolved_from_saved_channel = False
+    webpush_cfg = None
 
     if payload.channel_id:
         try:
@@ -261,6 +281,7 @@ async def test_channel(payload: TestPayload) -> dict:
             elif channel_type == NotificationChannelType.WEBPUSH and cfg.webpush:
                 from ...engine.notification_dispatcher import _webpush_url
                 recipient = _webpush_url(cfg.webpush)
+                webpush_cfg = cfg.webpush
             resolved_from_saved_channel = True
 
     # Reject test dispatches whose URL-bearing recipient comes from the request
@@ -284,6 +305,7 @@ async def test_channel(payload: TestPayload) -> dict:
         body=payload.body,
         severity=payload.severity,
         metadata={"test": True},
+        webpush_config=webpush_cfg,
     )
 
     # Record the delivery so it appears in history

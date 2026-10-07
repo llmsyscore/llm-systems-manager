@@ -1315,8 +1315,27 @@ class TestAlarmProxyAdminGate:
         assert self._ctx(path) is False
 
     def test_reads_are_never_gated(self):
-        for path in ("alerts/", "alerts/active", "rules", "metrics/system/cpu_total"):
+        for path in ("alerts/", "alerts/active", "rules", "metrics/system/cpu_total",
+                     "notifications/channels", "notifications/channels/abc"):
             assert self._ctx(path, method="GET") is False, path
+
+    # #1198: channels name outside destinations and reach every subscribed phone.
+    @pytest.mark.parametrize("path,method", [
+        ("notifications/channels", "POST"),
+        ("notifications/channels/abc", "PUT"),
+        ("notifications/channels/abc", "DELETE"),
+        ("notifications/test", "POST"),
+        ("notifications/send", "POST"),
+    ])
+    def test_channel_writes_and_sends_require_admin(self, path, method):
+        assert self._ctx(path, method=method) is True
+
+    @pytest.mark.parametrize("path,method", [
+        ("notifications/configs", "POST"),
+        ("notifications/configs/abc", "PUT"),
+    ])
+    def test_policy_writes_stay_open_to_operators(self, path, method):
+        assert self._ctx(path, method=method) is False
 
     def test_delete_of_an_alert_is_gated(self):
         assert self._ctx("alerts/abc-123", method="DELETE") is True
