@@ -183,6 +183,7 @@ class TestExpirySweep:
 
     def test_the_sweep_runs_on_its_own_thread(self):
         import re
-        src = open(agent_registry.__file__).read()
+        from pathlib import Path
+        src = Path(agent_registry.__file__).read_text()
         assert re.search(r"Thread\(target=_pending_sweep_loop", src)
         assert agent_registry._REG_PENDING_TTL_S == 7 * 86400
