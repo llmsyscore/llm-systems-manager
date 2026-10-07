@@ -89,3 +89,17 @@ def test_agent_tarball_500_when_signing_fails(client, monkeypatch):
     r = client.get("/api/agent-tarball", headers={"Authorization": "Bearer good"})
     assert r.status_code == 500
     assert r.get_json()["ok"] is False
+
+
+def test_build_agent_tarball_times_out_with_a_clear_error(monkeypatch):
+    """#1195: a hung tar is reported instead of blocking the request forever."""
+    import subprocess
+
+    def _hang(cmd, **kw):
+        assert kw.get("timeout") == agent_registry._TARBALL_BUILD_TIMEOUT_S
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(agent_registry.subprocess, "run", _hang)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        agent_registry._build_agent_tarball_bytes()
+

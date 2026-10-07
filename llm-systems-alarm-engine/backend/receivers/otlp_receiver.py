@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Response
+from starlette.requests import ClientDisconnect
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
     ExportLogsServiceRequest,
     ExportLogsServiceResponse,
@@ -534,6 +535,15 @@ def _seed_cache(records: list[dict[str, Any]]) -> None:
             logger.debug(f"OTLP cache add skipped: {e}")
 
 
+
+async def _read_body(request: Request) -> Optional[bytes]:
+    """The request body, or None when the client went away while sending it."""
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        logger.debug("OTLP client disconnected while sending %s", request.url.path)
+        return None
+
 @router.post("/v1/metrics")
 async def receive_metrics(request: Request, _auth: None = Depends(require_ingest_token)) -> Response:
     """OTLP/HTTP metrics endpoint.
@@ -543,7 +553,9 @@ async def receive_metrics(request: Request, _auth: None = Depends(require_ingest
     success reporting is intentionally omitted for Phase 1; we either
     accept the whole batch or fail the request.
     """
-    body = await request.body()
+    body = await _read_body(request)
+    if body is None:
+        return Response(status_code=400)
     if not body:
         return Response(
             content=ExportMetricsServiceResponse().SerializeToString(),
@@ -662,7 +674,9 @@ async def receive_traces(request: Request, _auth: None = Depends(require_ingest_
     (trace_id/span_id) is intentionally dropped — preserving it would require
     a separate trace store and isn't needed for alarm-rule evaluation.
     """
-    body = await request.body()
+    body = await _read_body(request)
+    if body is None:
+        return Response(status_code=400)
     if not body:
         return Response(
             content=ExportTraceServiceResponse().SerializeToString(),
@@ -768,7 +782,9 @@ async def receive_logs(request: Request, _auth: None = Depends(require_ingest_to
     minimum useful translation for alarm rules; anyone needing the actual
     log body should send those to a logs store (Loki, Elasticsearch) instead.
     """
-    body = await request.body()
+    body = await _read_body(request)
+    if body is None:
+        return Response(status_code=400)
     if not body:
         return Response(
             content=ExportLogsServiceResponse().SerializeToString(),

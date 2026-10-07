@@ -559,10 +559,14 @@ class AlertRepository:
                 self.alarms_db.bump_refresh(str(alert.alert_id), current_value, when=ts.isoformat())
             except Exception as e:
                 logger.warning(f"alarms_db bump_refresh failed: {e}")
+        # Only the refreshed fields are copied onto the cached object, so an
+        # acknowledge or close that landed mid-cycle keeps its newer status.
         if self._active_cache is not None:
-            for i, a in enumerate(self._active_cache):
+            for a in self._active_cache:
                 if a.alert_id == alert.alert_id:
-                    self._active_cache[i] = alert
+                    a.current_value = current_value
+                    a.last_evaluated_at = ts
+                    a.trigger_count = alert.trigger_count
                     break
         return alert
 
@@ -590,10 +594,12 @@ class AlertRepository:
         return self.alarms_db.count_by_status_and_severity()
 
     async def close_all_alerts(self) -> int:
+        """Closes every ongoing alert: active, acknowledged and ignored."""
         if self.alarms_db is None:
             return 0
         n = self.alarms_db.bulk_update_status(
-            from_statuses=(AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value),
+            from_statuses=(AlertStatus.ACTIVE.value, AlertStatus.ACKNOWLEDGED.value,
+                           AlertStatus.IGNORED.value),
             to_status=AlertStatus.CLOSED.value,
             closed_at=now_utc().isoformat(),
         )

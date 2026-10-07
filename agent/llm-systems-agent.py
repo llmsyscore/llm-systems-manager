@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.07-2"
+VERSION = "v2026.10.07-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3494,6 +3494,9 @@ def _fetch_tarball(url: str, headers: dict, dest: str, verify: Any, out: dict, a
     raise TarballFetchError(f"{reason} ({attempts} tries)")
 
 
+_OPENSSL_TIMEOUT_S = 60
+
+
 def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
                                ca_path: Path, tmpdir: str) -> tuple[bool, str]:
     """Verify the tarball's X-Agent-Tarball-Sig against ca_path via openssl.
@@ -3519,9 +3522,11 @@ def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
         f.write(sig_bytes)
     try:
         r = subprocess.run(["openssl", "x509", "-in", str(ca_path), "-pubkey", "-noout"],
-                           capture_output=True)
+                           capture_output=True, timeout=_OPENSSL_TIMEOUT_S)
     except FileNotFoundError:
         return False, "openssl not available to verify the update signature — refusing update"
+    except subprocess.TimeoutExpired:
+        return False, f"openssl did not finish within {_OPENSSL_TIMEOUT_S}s — refusing update"
     if r.returncode != 0:
         return False, f"could not extract public key from {ca_path} — refusing update"
     with open(pub_path, "wb") as f:
@@ -3529,9 +3534,11 @@ def _verify_tarball_signature(tarball_path: str, sig_b64: Optional[str],
     try:
         r2 = subprocess.run(
             ["openssl", "dgst", "-sha256", "-verify", pub_path, "-signature", sig_path, tarball_path],
-            capture_output=True)
+            capture_output=True, timeout=_OPENSSL_TIMEOUT_S)
     except FileNotFoundError:
         return False, "openssl not available to verify the update signature — refusing update"
+    except subprocess.TimeoutExpired:
+        return False, f"openssl did not finish within {_OPENSSL_TIMEOUT_S}s — refusing update"
     if r2.returncode != 0:
         return False, ("tarball signature verification FAILED — refusing update "
                        "(tampering, or the manager CA changed: run push-ca-to-agents and retry)")
