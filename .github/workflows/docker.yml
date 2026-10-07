@@ -112,10 +112,14 @@ jobs:
           store=/opt/llm-systems-manager/llm-systems-alarm-engine/data/docker-tokens.env
           ae_tok="$(docker compose exec -T alarm-engine sed -n 's/^management_token = "\(.*\)"/\1/p' /opt/llm-systems-manager/config/llm-systems.toml)"
           mgr_tok="$(docker compose exec -T manager sed -n 's/^management_token = "\(.*\)"/\1/p' /opt/llm-systems-manager/config/llm-systems.toml)"
-          [ -n "$ae_tok" ] && [ "$ae_tok" = "$mgr_tok" ] || { echo "management token not shared: ae=${ae_tok:0:6} mgr=${mgr_tok:0:6}" >&2; exit 1; }
+          if [ -z "$ae_tok" ] || [ "$ae_tok" != "$mgr_tok" ]; then
+            echo "management token not shared: ae=${ae_tok:0:6} mgr=${mgr_tok:0:6}" >&2; exit 1
+          fi
           docker compose exec -T alarm-engine grep -q "^LSM_AE_MANAGEMENT_TOKEN=$ae_tok" "$store"
           docker compose logs alarm-engine manager | grep -q 'generated once into'
-          ! docker compose logs alarm-engine manager | grep -q "$ae_tok"
+          if docker compose logs alarm-engine manager | grep -q "$ae_tok"; then
+            echo "management token value leaked into the container logs" >&2; exit 1
+          fi
           curl -fsSk "$AE_SCHEME://localhost:8081/health" | grep -q '"management": *"management_token"'
 
       # A fresh container has no admin and prints the command that creates a
