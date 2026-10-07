@@ -104,6 +104,20 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":42.0,"unit":"%","hostname":"ci-smoke"}]}'
 
+      # .env sets only the ingest token: the management token is generated into
+      # the shared volume, both containers render the same value, and the
+      # engine enforces it (#1200).
+      - name: Generated management token is shared and enforced
+        run: |
+          store=/opt/llm-systems-manager/llm-systems-alarm-engine/data/docker-tokens.env
+          ae_tok="$(docker compose exec -T alarm-engine sed -n 's/^management_token = "\(.*\)"/\1/p' /opt/llm-systems-manager/config/llm-systems.toml)"
+          mgr_tok="$(docker compose exec -T manager sed -n 's/^management_token = "\(.*\)"/\1/p' /opt/llm-systems-manager/config/llm-systems.toml)"
+          [ -n "$ae_tok" ] && [ "$ae_tok" = "$mgr_tok" ] || { echo "management token not shared: ae=${ae_tok:0:6} mgr=${mgr_tok:0:6}" >&2; exit 1; }
+          docker compose exec -T alarm-engine grep -q "^LSM_AE_MANAGEMENT_TOKEN=$ae_tok" "$store"
+          docker compose logs alarm-engine manager | grep -q 'generated once into'
+          ! docker compose logs alarm-engine manager | grep -q "$ae_tok"
+          curl -fsSk "$AE_SCHEME://localhost:8081/health" | grep -q '"management": *"management_token"'
+
       # A fresh container has no admin and prints the command that creates a
       # temporary password; it must sign in once and force a change (#1160).
       - name: Dashboard first sign-in (temporary password) + admin route reachable

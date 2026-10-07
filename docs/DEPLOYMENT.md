@@ -186,7 +186,7 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 ## Installing with Docker (control plane)
 
-Multi-arch images for the manager and alarm engine are published to ghcr.io on every release. No repo checkout is needed: download [`docker-compose.yml`](https://github.com/llmsyscore/llm-systems-manager/blob/main/docker-compose.yml) and [`.env.example`](https://github.com/llmsyscore/llm-systems-manager/blob/main/.env.example), fill in the secrets, and `docker compose up -d` brings up the manager + alarm engine + InfluxDB together. See [docker/README.md](../docker/README.md) for the full walkthrough. Agents still install natively on each monitored host (they need sensor/GPU/systemd access).
+Multi-arch images for the manager and alarm engine are published to ghcr.io on every release. No repo checkout is needed: download [`docker-compose.yml`](https://github.com/llmsyscore/llm-systems-manager/blob/main/docker-compose.yml) and [`.env.example`](https://github.com/llmsyscore/llm-systems-manager/blob/main/.env.example), fill in the InfluxDB password and token (the alarm engine tokens are generated for you when left blank), and `docker compose up -d` brings up the manager + alarm engine + InfluxDB together. See [docker/README.md](../docker/README.md) for the full walkthrough. Agents still install natively on each monitored host (they need sensor/GPU/systemd access).
 
 ---
 
@@ -289,8 +289,8 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
-| `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open | *(set by installer)* |
-| `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
+| `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open. Docker installs generate it on first start when `.env` leaves it blank | *(set by installer)* |
+| `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install and must differ from `ingest_token` (the engine refuses to start when they are equal). Docker installs generate it on first start when `.env` leaves it blank. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
 | `[notifications.smtp].server` | SMTP server hostname for email alarm notifications | *(not set)* |
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
 | `[influxdb].host` | InfluxDB server address | `localhost` |

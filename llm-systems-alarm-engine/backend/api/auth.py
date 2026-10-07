@@ -104,6 +104,17 @@ def auth_state(authorization: Optional[str] = None) -> dict:
     }
 
 
+def tokens_equal() -> bool:
+    """True when management_token is set to the same value as ingest_token."""
+    mgmt = _configured_management_token()
+    return bool(mgmt) and hmac.compare_digest(mgmt, _configured_token())
+
+
+AUTH_TOKENS_EQUAL_ERROR = (
+    "[alarm_engine].management_token is the same value as ingest_token — agents receive "
+    "the ingest token in every heartbeat, so set a different management_token (on the "
+    "manager host too) and restart")
+
 AUTH_OPEN_WARNING = (
     "no management_token or ingest_token configured while bound to %s:%s — rules, "
     "alerts, notifications, metrics reads and dbstats are open to anyone on the "

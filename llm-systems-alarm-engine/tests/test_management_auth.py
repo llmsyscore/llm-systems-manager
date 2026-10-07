@@ -86,3 +86,14 @@ def test_ingest_route_rejects_management_token(monkeypatch):
         ae_auth.require_ingest_token("Bearer mgmt-secret")
     assert getattr(exc.value, "status_code", None) == 401
     assert ae_auth.require_ingest_token("Bearer ingest-secret") is None
+
+
+def test_tokens_equal_only_when_management_matches_ingest(monkeypatch):
+    _set_tokens(monkeypatch, ingest="same", management="same")
+    assert ae_auth.tokens_equal() is True
+    _set_tokens(monkeypatch, ingest="ingest", management="mgmt")
+    assert ae_auth.tokens_equal() is False
+    _set_tokens(monkeypatch, ingest="", management="")
+    assert ae_auth.tokens_equal() is False
+    _set_tokens(monkeypatch, ingest="only-ingest", management="")
+    assert ae_auth.tokens_equal() is False

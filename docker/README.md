@@ -16,8 +16,8 @@ the stack reads and go:
 base=https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main
 curl -O "$base/docker-compose.yml"
 curl -o .env "$base/.env.example"
-# fill in LSM_INFLUX_PASSWORD, LSM_INFLUX_TOKEN, LSM_AE_INGEST_TOKEN
-# (openssl rand -hex 32 makes good tokens)
+# fill in LSM_INFLUX_PASSWORD and LSM_INFLUX_TOKEN (openssl rand -hex 32 makes
+# good tokens); the alarm engine tokens are generated on first start if blank
 docker compose up -d          # pulls the published multi-arch images
 ```
 
@@ -115,8 +115,13 @@ per-rule channels) is configured via a bind-mounted TOML.
   scoped tokens instead — to match that posture, create scoped tokens with
   `influx auth create` inside the influxdb container and supply them via a
   bind-mounted TOML.
-- Set `LSM_AE_MANAGEMENT_TOKEN` so the alarm engine's rule/alert/channel
-  management routes need a different token than the agents' ingest token.
+- The alarm engine always runs with two different tokens: the ingest token
+  agents use to push metrics and the management token the manager uses for the
+  rule/alert/channel routes. Leave either blank in `.env` and it is generated on
+  first start and kept in the `ae-data` volume. Read the values with
+  `docker compose exec alarm-engine cat /opt/llm-systems-manager/llm-systems-alarm-engine/data/docker-tokens.env`.
+  Copy the values into `.env` to pin them; setting both to the same value stops
+  the containers from starting.
 
 ## TLS / internal CA
 
