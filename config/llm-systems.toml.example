@@ -497,6 +497,9 @@ server   = "smtp.mail.example.com"
 port     = 587
 user     = "you@example.com"
 password = "app-specific-password-here"
+# The mail server's certificate is always checked. Point this at a CA
+# certificate file only for a relay with a private certificate.
+ca_file  = ""
 
 [notifications.twilio]
 # ★ Secret (when used). Leave blank to disable SMS.

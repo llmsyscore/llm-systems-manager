@@ -279,6 +279,7 @@ CATALOG: list[dict] = [
     _e("notifications.smtp.port", "int", "SMTP port", "Usually 587.", "notifications", BOTH, min=1, max=65535),
     _e("notifications.smtp.user", "str", "SMTP user", "Mail account username.", "notifications", BOTH),
     _e("notifications.smtp.password", "str", "SMTP password", "App-specific password.", "notifications", BOTH, secret=True),
+    _e("notifications.smtp.ca_file", "str", "Mail server CA file", "Path to a CA certificate file for a mail relay with a private certificate; blank uses the system trust store.", "notifications", BOTH),
     _e("notifications.twilio.account_sid", "str", "Twilio SID", "Blank disables SMS.", "notifications", BOTH, secret=True),
     _e("notifications.twilio.auth_token", "str", "Twilio auth token", "Twilio API token.", "notifications", BOTH, secret=True),
     _e("notifications.twilio.from_number", "str", "Twilio from number", "Sender number for SMS alerts.", "notifications", BOTH),

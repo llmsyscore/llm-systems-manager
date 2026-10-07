@@ -616,6 +616,8 @@ class NotificationsSMTP(BaseModel):
     port: int = 587
     user: Optional[str] = None
     password: Optional[str] = None
+    # CA certificate file for a mail relay with a private certificate; blank = system trust store.
+    ca_file: str = ""
 
 
 class NotificationsTwilio(BaseModel):

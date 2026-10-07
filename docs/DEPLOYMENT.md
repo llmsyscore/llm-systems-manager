@@ -293,6 +293,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install and must differ from `ingest_token` (the engine refuses to start when they are equal). Docker installs generate it on first start when `.env` leaves it blank. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
 | `[notifications.smtp].server` | SMTP server hostname for email alarm notifications | *(not set)* |
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
+| `[notifications.smtp].ca_file` | The mail server's certificate is always checked against the system trust store. Set this to a CA certificate file when the relay uses a private certificate | *(blank)* |
 | `[influxdb].host` | InfluxDB server address | `localhost` |
 | `[influxdb].port` | InfluxDB port | `8086` |
 | `[manager.gateway].enabled` | OpenAI-compatible inference gateway | `true` |

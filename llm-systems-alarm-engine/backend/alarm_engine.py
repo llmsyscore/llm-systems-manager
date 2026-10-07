@@ -73,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.07-3"
+__version__ = "v2026.10.07-4"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1033,6 +1033,7 @@ _AE_TOPOLOGY_OVERRIDES = {
     "smtp_port":     ("SMTP port", [("notifications.smtp", "port")]),
     "smtp_user":     ("SMTP user", [("notifications.smtp", "user")]),
     "smtp_password": ("SMTP password", [("notifications.smtp", "password")]),
+    "smtp_ca_file":  ("SMTP CA file", [("notifications.smtp", "ca_file")]),
 }
 
 
