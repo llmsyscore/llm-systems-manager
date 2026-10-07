@@ -27,6 +27,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(manager_mod._ae_session, "get", _ae_unreachable)
     monkeypatch.setattr(manager_mod, "_require_admin", lambda: None)
     manager_mod._SETTINGS_RESTART_PENDING.clear()
+    monkeypatch.setitem(manager_mod._ae_health_state, "restart_pending", None)
     monkeypatch.setattr(manager_mod, "_SETTINGS_AE_PENDING_FILE", tmp_path / "ae_pending.json")
     manager_mod._clear_ae_pending_all()
     manager_mod.app.config["TESTING"] = True
@@ -365,6 +366,35 @@ def test_ae_pending_falls_back_to_inmemory_when_unreachable(client):
     c, _ = client
     manager_mod._SETTINGS_RESTART_PENDING.add("alarm_engine")
     assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["alarm_engine"]
+
+
+def test_ae_pending_uses_the_last_report_while_unreachable(client, monkeypatch):
+    c, cfg = client
+    cfg.write_text("[manager]\nport = 5000\n[alarm_engine]\nevaluation_interval = 45\n")
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == ["alarm_engine"]
+    monkeypatch.setitem(manager_mod._ae_health_state, "restart_pending", False)
+    d = c.get("/api/admin/settings").get_json()
+    assert (d["restart_pending"], d["restart_pending_paths"]) == ([], [])
+    monkeypatch.setitem(manager_mod._ae_health_state, "restart_pending", True)
+    d = c.get("/api/admin/settings").get_json()
+    assert d["restart_pending"] == ["alarm_engine"]
+    assert d["restart_pending_paths"] == ["alarm_engine.evaluation_interval"]
+
+
+def test_ae_report_is_remembered_and_cleared_by_a_restart(client, monkeypatch):
+    c, _ = client
+    _force_split(monkeypatch)
+    monkeypatch.setattr(manager_mod._ae_session, "get",
+                        lambda url, **kw: _FakeResp(payload={
+                            "ok": True, "sections": {}, "restart_pending": True}))
+    c.get("/api/admin/settings")
+    assert manager_mod._ae_health_state["restart_pending"] is True
+    manager_mod._settings_pending_after("alarm_engine", (manager_mod.jsonify({"ok": True}), 200))
+    assert manager_mod._ae_health_state["restart_pending"] is False
+    manager_mod._settings_pending_after("alarm_engine", (manager_mod.jsonify({"ok": False}), 502))
+    assert manager_mod._ae_health_state["restart_pending"] is False
+    monkeypatch.setattr(manager_mod._ae_session, "get", _ae_unreachable)
+    assert c.get("/api/admin/settings").get_json()["restart_pending"] == []
 
 
 # --- shared-section drift + re-sync (#612) ---

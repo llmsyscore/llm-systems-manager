@@ -9,6 +9,7 @@ This is the central processing unit that:
 
 import asyncio
 import logging
+import math
 import time
 from .._time import now_utc
 from typing import Optional
@@ -206,6 +207,18 @@ class RuleEngine:
             self._ok_streak.pop(str(rule.rule_id), None)  # recovery must be re-proven on fresh data
             self._breach_streak.pop(str(rule.rule_id), None)
             self._log_evaluation(rule, current_value, "stale", False)
+            return False
+
+        # Quiet hours and non-finite samples suppress the rule: no firing, no recovery.
+        suppressed = None
+        if not math.isfinite(current_value):
+            suppressed = "invalid"
+        elif self.threshold_evaluator._is_in_quiet_hours(rule):
+            suppressed = "quiet"
+        if suppressed:
+            self._ok_streak.pop(str(rule.rule_id), None)
+            self._breach_streak.pop(str(rule.rule_id), None)
+            self._log_evaluation(rule, current_value, suppressed, False)
             return False
 
         # Evaluate the rule

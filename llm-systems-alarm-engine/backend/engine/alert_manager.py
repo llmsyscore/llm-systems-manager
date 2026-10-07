@@ -220,8 +220,8 @@ class AlertManager:
         reason: Optional[str] = None,
         resolved_value: Optional[float] = None,
     ) -> Optional[Alert]:
-        """Close (resolve) an alert. reason should be 'auto' (threshold
-        recovered) or 'manual' (operator closed); resolved_value is the
+        """Close (resolve) an alert. reason is 'auto' (threshold recovered),
+        'manual' (operator closed), 'rule disabled' or 'rule deleted'; resolved_value is the
         metric value observed at the moment of resolution and shows up in
         the UI's 'cleared' chip."""
         try:
@@ -259,6 +259,16 @@ class AlertManager:
             f"{resolved_value:.2f}" if isinstance(resolved_value, (int, float)) else "—",
         )
         return result
+
+    def close_rule_alerts(self, rule_id: str, reason: str) -> int:
+        """Close the ongoing alerts of one rule; returns how many were closed."""
+        closed = 0
+        for a in list(self.alert_repository.get_active()):
+            if a.status not in ONGOING_STATUSES or str(a.rule_id) != str(rule_id):
+                continue
+            if self.close_alert(str(a.alert_id), reason=reason) is not None:
+                closed += 1
+        return closed
 
     def delete_alert(self, alert_id: str) -> bool:
         """Delete/close an alert (remove entirely)."""

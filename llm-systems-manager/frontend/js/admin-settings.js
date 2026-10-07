@@ -1308,6 +1308,16 @@
     el.style.color = isErr ? 'var(--crit)' : 'var(--fg-dim)';
   }
 
+  // Re-read settings every 4 s until the restarted alarm engine answers again (90 s cap).
+  async function reloadUntilAeBack(deadline = Date.now() + 90000) {
+    if (_dirty.size) return;
+    await load();
+    const topo = _data.topology || {};
+    if (topo.ae_config_reachable === false && Date.now() < deadline) {
+      setTimeout(() => reloadUntilAeBack(deadline), 4000);
+    }
+  }
+
   async function restartService(svc) {
     const label = _LABEL[svc] || svc;
     const okGo = await _themedConfirm({
@@ -1328,7 +1338,7 @@
           setTimeout(() => location.reload(), 6000);
         } else {
           bannerMsg(`✓ ${label} restart requested`);
-          setTimeout(load, 4000);
+          setTimeout(reloadUntilAeBack, 4000);
         }
       } else {
         bannerMsg(`${label} restart failed — ${d.error || `HTTP ${r.status}`}`, true);

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import logging
 import logging.handlers
 import os
@@ -42,7 +43,8 @@ if _REPO_ROOT not in sys.path:
 
 from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from config.unified_config import settings, CONFIG_PATH  # noqa: E402
@@ -71,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.09.22-2"
+__version__ = "v2026.10.06-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -777,6 +779,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_response(_request, exc: RequestValidationError) -> JSONResponse:
+    """422 whose echoed input survives JSON encoding (NaN/Infinity become strings)."""
+    def _safe(v):
+        if isinstance(v, float) and not math.isfinite(v):
+            return str(v)
+        if isinstance(v, dict):
+            return {k: _safe(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_safe(x) for x in v]
+        return v
+    errors = [{k: _safe(v) for k, v in e.items() if k != "ctx"} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 # Body cap sits inside CORS (added first = inner); 0 disables it.
 app.add_middleware(
     BodySizeLimitMiddleware,
@@ -885,6 +904,8 @@ async def health_check(authorization: Optional[str] = Header(default=None)) -> d
         "influx_writes_per_s": round(INFLUX_WRITES.per_s(), 3),
         "active_alerts": await asyncio.to_thread(_active_alert_count),
         "evaluation_interval_s": float(settings.alarm_engine.evaluation_interval),
+        # Saved settings waiting for a restart; the manager's health card reads this.
+        "restart_pending": await asyncio.to_thread(_config_restart_pending),
         "components": {
             "cache": "active" if cache else "inactive",
             "influxdb": influx_status,
@@ -1389,6 +1410,14 @@ def _config_sections_snapshot() -> "dict | None":
 
 # Whitelisted sections as loaded at boot; restart_pending derives from drift.
 _BOOT_CONFIG_SECTIONS = _config_sections_snapshot()
+
+
+def _config_restart_pending() -> "bool | None":
+    """True when the whitelisted config sections on disk differ from those loaded at boot."""
+    if _BOOT_CONFIG_SECTIONS is None:
+        return None
+    sections = _config_sections_snapshot()
+    return None if sections is None else sections != _BOOT_CONFIG_SECTIONS
 
 # Secret leaves under the whitelisted sections (mirrors the manager catalog).
 _AE_SECRET_PATHS = frozenset({
