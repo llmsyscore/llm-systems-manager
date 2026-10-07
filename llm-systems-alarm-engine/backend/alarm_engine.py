@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 import logging
 import logging.handlers
 import os
@@ -784,7 +785,7 @@ app = FastAPI(
 async def _validation_error_response(_request, exc: RequestValidationError) -> JSONResponse:
     """422 whose echoed input survives JSON encoding (NaN/Infinity become strings)."""
     def _safe(v):
-        if isinstance(v, float) and v != v or v in (float("inf"), float("-inf")):
+        if isinstance(v, float) and not math.isfinite(v):
             return str(v)
         if isinstance(v, dict):
             return {k: _safe(x) for k, x in v.items()}
