@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.07-3"
+VERSION = "v2026.10.07-4"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1124,6 +1124,7 @@ def _maybe_sync_ae_url(ack: dict) -> None:
 
 _log_hb = {"last": 0.0}
 _register_403_last = 0.0
+_register_closed_last = 0.0
 _status_poll_warn_last = 0.0
 
 
@@ -2238,6 +2239,16 @@ def registry_register_blocking() -> None:
                             stale_status, CONFIG.AGENT_HOSTNAME, stale_id,
                             stale_id, base, stale_id,
                             CONFIG.TOKEN_FILE,
+                        )
+                elif r.status_code == 503:
+                    # Manager is not taking new registrations yet: one line per 5 min while retrying.
+                    global _register_closed_last
+                    _now = time.time()
+                    if _now - _register_closed_last >= 300:
+                        _register_closed_last = _now
+                        logger.warning(
+                            "registration not accepted yet: %s %s — retrying every 15s, next reminder in 5 min",
+                            r.status_code, r.text[:200],
                         )
                 else:
                     logger.warning(

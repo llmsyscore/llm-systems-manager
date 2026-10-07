@@ -670,6 +670,7 @@ async function adminLoadAgents() {
   }
   try {
     _adminGlobal = d.global || {};
+    _adminEnrollment = d.enrollment || null;
     if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
       _adminPoolProviders = d.pool_providers;
       if (!_adminPoolProviders.some(p => p.name === _adminProvSel)) _adminProvSel = _adminPoolProviders[0].name;
@@ -812,6 +813,7 @@ async function adminDelete(aid) {
 // as a fallback if the agent isn't in the cached list.
 let _adminAgentsCache = [];
 let _adminGlobal = {};
+let _adminEnrollment = null;
 let _adminHostAutoDetected = false;
 let _latestAgentVersion = null;
 let _adminManagerVersion = null;
@@ -2165,6 +2167,21 @@ async function adminToggleAuth(disabled) {
     _adminLog(`✓ agent security ${disabled ? 'off — agents accept unauthenticated control calls' : 'on'}`);
   } else {
     _adminLog(`✗ agent security toggle failed (HTTP ${r.status})`, 'err');
+  }
+  adminLoadAgents();
+}
+
+async function adminEnrollment(action) {
+  try {
+    const r = await fetch('/api/agents/enrollment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    if (r.ok) _adminLog(action === 'open' ? '✓ enrollment open — new machines can register' : '✓ enrollment closed');
+    else _adminLog(`✗ enrollment ${action} failed (HTTP ${r.status})`, 'err');
+  } catch (e) {
+    _adminLog(`✗ enrollment ${action} failed: ${e.message}`, 'err');
   }
   adminLoadAgents();
 }

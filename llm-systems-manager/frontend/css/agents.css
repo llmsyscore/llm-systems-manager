@@ -29,6 +29,8 @@
 #admin-agents .ag-hdr.toolbar { margin: -4px 0 12px; gap: 8px; }
 #admin-agents .ag-vchip { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); border: 1px solid var(--border-strong); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
 #admin-agents .ag-vchip b { color: var(--fg-muted); font-weight: 500; }
+#admin-agents .ag-vchip.ag-enroll.open b { color: var(--ok); }
+#admin-agents .ag-vchip.ag-enroll.closed b { color: var(--warn); }
 #admin-agents .mc-filter { min-width: 280px; }
 
 /* Manage menu extras */

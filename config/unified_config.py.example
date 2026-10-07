@@ -219,6 +219,8 @@ class ManagerAgents(BaseModel):
     stale_after_s: int = 150
     down_after_s: int = 600
     liveness_watch_interval_s: int = 60
+    enrollment_mode: str = "auto"
+    enrollment_window_min: int = 15
 
 
 class ManagerSecurity(BaseModel):

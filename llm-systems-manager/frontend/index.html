@@ -574,7 +574,7 @@ Backend API endpoints consumed:
 <!-- Admin tab -->
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.23-6">
-<link rel="stylesheet" href="/static/css/agents.css?v=2026.09.17-1">
+<link rel="stylesheet" href="/static/css/agents.css?v=2026.10.07-1">
 <link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.09.30-1">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.09.23-5">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
@@ -653,10 +653,12 @@ Backend API endpoints consumed:
           <div class="ag-sum" id="agSummary"><span>—</span></div>
           <span class="ag-vchip" id="agMgrVer" hidden></span>
           <span class="ag-vchip" id="agAgentVer" hidden></span>
+          <span class="ag-vchip ag-enroll" id="agEnrollChip" hidden></span>
         </div>
         <div class="ag-hdr toolbar">
           <div class="ag-gap"></div>
           <label class="mc-filter"><span class="mc-filter-ico">⌕</span><input id="agFilter" type="search" placeholder="Filter agents — name, IP, capability" autocomplete="off" title="Also: needs:update · state:pending · cap:lms"></label>
+          <button type="button" class="mcbtn mcbtn-pri" id="agEnrollBtn" data-act="enroll" hidden>Open enrollment</button>
           <div class="mc-menuwrap">
             <button type="button" class="mcbtn mcbtn-ghost" id="agManageBtn" data-act="menu" aria-haspopup="menu">Manage <span style="font-size:10px;color:var(--fg-dim)">▾</span></button>
             <div class="mc-menu" id="agManageMenu">
@@ -667,6 +669,7 @@ Backend API endpoints consumed:
               <hr>
               <button type="button" class="mi-row" data-act="updateall" title="Update every agent needing an upgrade, one at a time; stops on the first failure"><span class="mi">⇈</span>Update all agents<span class="cnt" id="agUpdateCnt" hidden></span></button>
               <button type="button" class="mi-row" data-act="approveall" id="agApproveAll" hidden><span class="mi">✓</span>Approve all pending<span class="cnt"></span></button>
+              <button type="button" class="mi-row" data-act="enrollclose" id="agEnrollClose" hidden><span class="mi">⦸</span>Close enrollment</button>
               <button type="button" class="mi-row" data-act="pushca" title="Every approved agent fetches the current cert + key + CA bundle on its next heartbeat"><span class="mi">⤴</span>Push CA to agents</button>
             </div>
           </div>
@@ -2816,8 +2819,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.10.01-1"></script>
-<script src="/static/js/admin-agents.js?v=2026.10.07-1"></script>
+<script src="/static/js/admin.js?v=2026.10.07-1"></script>
+<script src="/static/js/admin-agents.js?v=2026.10.07-2"></script>
 <script src="/static/js/admin-health.js?v=2026.10.01-1"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>

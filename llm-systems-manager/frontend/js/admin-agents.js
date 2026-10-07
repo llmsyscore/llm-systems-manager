@@ -140,6 +140,7 @@
   const ctx = () => ({
     agents: (typeof _adminAgentsCache !== 'undefined' && _adminAgentsCache) || [],
     global: (typeof _adminGlobal !== 'undefined' && _adminGlobal) || {},
+    enrollment: (typeof _adminEnrollment !== 'undefined' && _adminEnrollment) || null,
     providers: (typeof _adminProviders !== 'undefined' && _adminProviders) || [],
     poolProviders: (typeof _adminPoolProviders !== 'undefined' && _adminPoolProviders) || [],
     hostAuto: typeof _adminHostAutoDetected !== 'undefined' && !!_adminHostAutoDetected,
@@ -381,6 +382,14 @@
   }
 
   // ── render ───────────────────────────────────────────────────────────────
+  // Chip, button and menu text for the enrollment window (#1218).
+  function enrollText(e, nowMs) {
+    if (!e) return { chip: '', cls: '', btn: '', close: false };
+    const left = e.until ? Math.ceil((Date.parse(e.until) - nowMs) / 60000) : null;
+    if (!e.open || (left !== null && left <= 0)) return { chip: 'Enrollment <b>closed</b>', cls: 'closed', btn: 'Open enrollment', close: false };
+    if (left === null) return { chip: 'Enrollment <b>open</b>', cls: 'open', btn: '', close: true };
+    return { chip: `Enrollment <b>open</b> · ${left} min left`, cls: 'open', btn: `Extend ${e.window_min || 15} min`, close: true };
+  }
   const $ = id => document.getElementById(id);
   function renderHeader(c) {
     const s = summary(c.agents);
@@ -405,6 +414,11 @@
     if (cnt) { cnt.hidden = !s.needsUpdate; cnt.textContent = `${s.needsUpdate} pending`; }
     const aa = $('agApproveAll');
     if (aa) { aa.hidden = s.pending < 2; aa.querySelector('.cnt').textContent = `${s.pending} waiting`; }
+    const en = enrollText(c.enrollment, Date.now());
+    const ch = $('agEnrollChip'), eb = $('agEnrollBtn'), ec = $('agEnrollClose');
+    if (ch) { ch.hidden = !en.chip; ch.innerHTML = en.chip; ch.classList.toggle('open', en.cls === 'open'); ch.classList.toggle('closed', en.cls === 'closed'); }
+    if (eb) { eb.hidden = !en.btn; eb.textContent = en.btn; eb.classList.toggle('mcbtn-pri', en.cls === 'closed'); eb.classList.toggle('mcbtn-ghost', en.cls !== 'closed'); }
+    if (ec) ec.hidden = !en.close;
     return s;
   }
   function renderRoster(c) {
@@ -444,6 +458,7 @@
   }
   function tick() {
     renderStamp();
+    renderHeader(ctx());
     const host = $('agRoster');
     if (!host) return;
     const now = Date.now();
@@ -518,6 +533,8 @@
       case 'updateall': closeMenus(); call('adminUpdateAll'); break;
       case 'pushca': closeMenus(); call('adminPushCaToAgents'); break;
       case 'approveall': closeMenus(); approveAll(); break;
+      case 'enroll': call('adminEnrollment', 'open'); break;
+      case 'enrollclose': closeMenus(); call('adminEnrollment', 'close'); break;
       case 'refresh': refreshNow(); break;
       default: break;
     }
@@ -565,6 +582,7 @@
   }
 
   window.AgentsView = {
+    enrollText,
     FRESH_MS, ipOf, infraList, rowState, tlsInfo, showDesc, fmtAgo, clock, fingerprintShort,
     parseFilter, matches, summary, stampState, capsHtml, rolesHtml, connectionHtml, shortcutsHtml,
     drawerHtml, infraHtml, menuHtml, actionsHtml, rowHtml, render, stamp, init, openIds, refreshNow,
