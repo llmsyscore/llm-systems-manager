@@ -14,7 +14,7 @@ class MetricPoint(BaseModel):
     metric_id: UUID = Field(default_factory=uuid4)
     source: str = Field(description="Metric source (gpu, cpu, ram, disk, network, psu)")
     metric_name: str = Field(description="Metric name (temperature, vram_usage, cpu_usage, etc.)")
-    value: float = Field(description="Metric value")
+    value: float = Field(allow_inf_nan=False, description="Metric value")
     unit: Optional[str] = Field(default=None, description="Metric unit (°C, %, Mbps, etc.)")
     timestamp: datetime = Field(default_factory=now_utc)
     hostname: Optional[str] = Field(default=None, description="Server/device that produced the metric")

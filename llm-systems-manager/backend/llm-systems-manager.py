@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.06-2"
+__version__ = "v2026.10.06-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -496,7 +496,8 @@ def _filter_socket_cleanup_noise(args):
 sys.unraisablehook = _filter_socket_cleanup_noise
 
 # Anti-flap state for /api/admin/system-health's alarm-engine probe.
-_ae_health_state: dict[str, Any] = {"consecutive_failures": 0, "last_ok_at": None}
+_ae_health_state: dict[str, Any] = {"consecutive_failures": 0, "last_ok_at": None,
+                                    "restart_pending": None}
 
 # WS relay (alarm ws proxy) startup state, surfaced as manager.ws_relay.
 _ws_relay_state: dict[str, str] = {"status": "off"}
@@ -4885,9 +4886,11 @@ def _settings_ae_retry_loop() -> None:
 def _settings_restart_pending(file_vals: "dict | None",
                               ae_pending: "bool | None") -> list:
     """Services needing a restart: manager from file drift vs boot; AE from its
-    own report, else local drift + the in-memory flag."""
+    own report (latest known), else local drift + the in-memory flag."""
     derived = settings_catalog.pending_restart_services(file_vals)
     pending = {"manager"} & derived
+    if ae_pending is None:
+        ae_pending = _ae_health_state.get("restart_pending")
     if ae_pending is True:
         pending.add("alarm_engine")
     elif ae_pending is None and (
@@ -4902,6 +4905,8 @@ def _settings_pending_after(svc: str, resp):
     status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 200)
     if 200 <= int(status) < 300:
         _SETTINGS_RESTART_PENDING.discard(svc)
+        if svc == "alarm_engine":
+            _ae_health_state["restart_pending"] = False
     return resp
 
 
@@ -4940,7 +4945,11 @@ def admin_settings_get():
     if topo["split"] and not ae_reachable and ae_reason:
         payload["topology"]["ae_config_error"] = ae_reason
     payload["restart_pending"] = _settings_restart_pending(file_vals, ae_pending)
-    payload["restart_pending_paths"] = settings_catalog.pending_restart_paths(file_vals)
+    # Only paths of a service that still needs the restart.
+    pending_svcs = set(payload["restart_pending"])
+    payload["restart_pending_paths"] = [
+        p for p in settings_catalog.pending_restart_paths(file_vals)
+        if settings_catalog.services_for([p]) & pending_svcs]
     payload["ae_sync_pending"] = _settings_ae_pending_paths()
     payload["ae_sync_retry_s"] = _SETTINGS_AE_RETRY_INTERVAL_S
     return jsonify(payload)
@@ -5280,6 +5289,8 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
                 flat[f"{prefix}{k}"] = v
     _walk(sections, "")
     pending = data.get("restart_pending")
+    if pending is not None:
+        _ae_health_state["restart_pending"] = bool(pending)
     return flat, (bool(pending) if pending is not None else None), secrets, None
 
 
@@ -5403,6 +5414,8 @@ def admin_system_health():
             _ae_health_state["consecutive_failures"] = 0
             if ae_ok and info.get("status") == "ok":
                 _ae_health_state["last_ok_at"] = datetime.now(timezone.utc).isoformat()
+                if isinstance(info.get("restart_pending"), bool):
+                    _ae_health_state["restart_pending"] = info["restart_pending"]
             # AE TLS state surfaces in the admin tab. components.tls is set by
             # the AE launcher: enabled=true + active=true → serving HTTPS;
             # enabled=true + active=false → cert missing (error in payload).
@@ -5708,7 +5721,7 @@ def admin_system_health():
     health["agent_update"] = _agent_update_state(health["agents"])
     # Services whose saved settings only apply after a restart.
     health["restart_pending"] = _settings_restart_pending(
-        settings_catalog.file_catalog_values(), None)
+        settings_catalog.file_catalog_values(), _ae_health_state.get("restart_pending"))
 
     health["overall"] = "ok" if not health["warnings"] else ("warn" if all("stale" not in w and "unreachable" not in w and "down" not in w for w in health["warnings"]) else "down")
     return jsonify(health)

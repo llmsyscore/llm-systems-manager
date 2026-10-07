@@ -122,6 +122,17 @@ def test_get_reports_restart_pending_from_boot_drift(monkeypatch, cfg):
     assert _client().get(PATH, headers=hdr).json()["restart_pending"] is True
 
 
+def test_health_reports_restart_pending(monkeypatch, cfg):
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    monkeypatch.setattr(ae, "_BOOT_CONFIG_SECTIONS", ae._config_sections_snapshot())
+    assert _client().get("/health").json()["restart_pending"] is False
+    _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
+                  json={"changes": {"alarm_engine.evaluation_interval": 45}})
+    assert _client().get("/health").json()["restart_pending"] is True
+    monkeypatch.setattr(ae, "_BOOT_CONFIG_SECTIONS", None)
+    assert _client().get("/health").json()["restart_pending"] is None
+
+
 def test_restart_pending_false_when_boot_snapshot_unavailable(monkeypatch, cfg):
     _set_tokens(monkeypatch, management="mgmt-secret")
     monkeypatch.setattr(ae, "_BOOT_CONFIG_SECTIONS", None)

@@ -268,7 +268,7 @@ const ConsoleView = {
             const d = AlertManager.describe(a);
             let cleared = '—', clearedText = '';
             if (a.status === 'closed') {
-                const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ' @ ' + fmtVal(a.resolved_value, d.unit) : ''}` : a.resolution_reason === 'manual' ? `closed by ${a.acknowledged_by || 'operator'}` : 'cleared';
+                const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ' @ ' + fmtVal(a.resolved_value, d.unit) : ''}` : a.resolution_reason === 'manual' ? `closed by ${a.acknowledged_by || 'operator'}` : (a.resolution_reason || 'cleared');
                 const when = fmtTime(a.closed_at || a.last_evaluated_at);
                 cleared = `${escapeHtml(when)} · <b>${escapeHtml(why)}</b>`;
                 clearedText = `${when} · ${why}`;

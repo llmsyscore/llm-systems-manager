@@ -742,7 +742,7 @@ const AlertsView = {
             if (a.status === 'ignored' && a.ignored_until) tl.push({ cls: '', html: `<b>Ignored</b> until ${escapeHtml(fmtWhen(a.ignored_until))}`, t: '', ts: parseTs(a.ignored_until) });
         }
         if (!logged.length && a.status === 'closed') {
-            const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ` @ ${escapeHtml(fmtVal(a.resolved_value, d.unit))}` : ''}` : a.resolution_reason === 'manual' ? `by ${escapeHtml(a.acknowledged_by || 'operator')}` : 'cleared';
+            const why = a.resolution_reason === 'auto' ? `auto${a.resolved_value != null ? ` @ ${escapeHtml(fmtVal(a.resolved_value, d.unit))}` : ''}` : a.resolution_reason === 'manual' ? `by ${escapeHtml(a.acknowledged_by || 'operator')}` : escapeHtml(a.resolution_reason || 'cleared');
             tl.push({ cls: 'ok', html: `<b>Closed</b> · ${why}`, t: fmtWhen(a.closed_at, true), ts: parseTs(a.closed_at) });
         } else if (stillOn) {
             tl.push({ cls: '', html: `<b>Still triggered</b> · ${escapeHtml(d.value)}`, t: fmtWhen(a.last_evaluated_at || a.created_at, true), ts: parseTs(a.last_evaluated_at || a.created_at) });

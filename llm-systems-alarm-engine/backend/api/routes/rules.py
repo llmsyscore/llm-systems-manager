@@ -44,6 +44,20 @@ def _get_repo() -> RuleRepository:
     return repo
 
 
+def _close_rule_alerts(rule_id, reason: str) -> None:
+    """Close the ongoing alerts of a rule that was deleted or disabled."""
+    manager = _dependency_map.get("alert_manager")
+    if manager is None:
+        return
+    try:
+        closed = manager.close_rule_alerts(str(rule_id), reason)
+    except Exception:
+        logger.exception("closing alerts failed: rule=%s reason=%s", rule_id, reason)
+        return
+    if closed:
+        logger.info("closed %d alert(s): rule=%s reason=%s", closed, rule_id, reason)
+
+
 @router.get("")
 async def list_rules(
     enabled: Optional[bool] = None,
@@ -125,10 +139,13 @@ async def update_rule(rule_id: str, rule_update: AlarmRuleUpdate) -> dict:
     if not existing:
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
 
+    was_enabled = existing.enabled
     updated = repo.update(uid, rule_update)
     if not updated:
         logger.error("rule update failed: id=%s", rule_id)
         raise HTTPException(status_code=500, detail="Failed to update rule")
+    if was_enabled and not updated.enabled:
+        _close_rule_alerts(uid, "rule disabled")
 
     logger.info("rule updated: id=%s name=%s enabled=%s", updated.rule_id, updated.name, updated.enabled)
     return updated.to_dict()
@@ -139,8 +156,11 @@ async def delete_all_rules() -> dict:
     """Admin: delete every rule. Used to recover from legacy duplicate rows
     that came from the old InfluxDB schema where `enabled` was a tag."""
     repo = _get_repo()
+    rule_ids = [r.rule_id for r in repo.get_all(enabled_only=False)]
     if not repo.delete_all():
         raise HTTPException(status_code=500, detail="Failed to delete rules")
+    for rid in rule_ids:
+        _close_rule_alerts(rid, "rule deleted")
     logger.warning("ALL rules deleted via DELETE /api/alarm/rules")
     return {"message": "All rules deleted"}
 
@@ -159,6 +179,7 @@ async def delete_rule(rule_id: str) -> dict:
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
 
+    _close_rule_alerts(uid, "rule deleted")
     logger.info("rule deleted: id=%s", rule_id)
     return {"message": f"Rule {rule_id} deleted"}
 
@@ -184,6 +205,8 @@ async def toggle_rule(rule_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to toggle rule")
 
     new_state = updated.enabled
+    if not new_state:
+        _close_rule_alerts(uid, "rule disabled")
     logger.info("rule toggled: id=%s name=%s enabled=%s", rule_id, updated.name, new_state)
     return {
         "rule_id": str(uid),

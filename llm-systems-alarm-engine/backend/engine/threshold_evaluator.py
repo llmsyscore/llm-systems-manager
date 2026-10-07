@@ -6,6 +6,7 @@ Threshold rules (above/below/range) are handled here. Anomaly rule types
 """
 
 import logging
+import math
 from datetime import datetime, timezone
 from .._time import now_utc
 from typing import Optional
@@ -61,6 +62,8 @@ class ThresholdEvaluator:
         if not rule.enabled:
             return None
         if self._is_in_quiet_hours(rule):
+            return None
+        if not math.isfinite(current_value):
             return None
 
         rule_type = rule.rule_type

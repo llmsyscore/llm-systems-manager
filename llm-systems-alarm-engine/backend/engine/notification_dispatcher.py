@@ -815,8 +815,8 @@ Time: {alert.created_at}
     def _send_sync_email(self, msg: MIMEText, config) -> None:
         """Synchronous email send (run in thread). Reads SMTP host/port/
         user/password from [notifications.smtp] in llm-systems.toml; falls
-        back to localhost:25 only if no SMTP server is configured. STARTTLS
-        + login are used whenever the port isn't 25 (i.e. any real relay)."""
+        back to localhost:25 only if no SMTP server is configured. Port 465
+        connects over TLS, port 25 stays plain, any other port uses STARTTLS."""
         try:
             smtp = settings.notifications.smtp
             host = (smtp.server or "").strip() or "localhost"
@@ -834,9 +834,10 @@ Time: {alert.created_at}
             else:
                 msg["From"] = user
 
-        with smtplib.SMTP(host, port, timeout=settings.notifications.timeouts.smtp) as server:
+        smtp_cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        with smtp_cls(host, port, timeout=settings.notifications.timeouts.smtp) as server:
             server.ehlo()
-            if port != 25:
+            if port not in (25, 465):
                 server.starttls()
                 server.ehlo()
             if user and password:
