@@ -73,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.06-1"
+__version__ = "v2026.10.07-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -355,6 +355,9 @@ async def _on_startup() -> None:
     logger.info("=" * 60)
     if _auth["open_on_network"]:
         logger.warning("ALARM ENGINE AUTH: " + _ae_auth.AUTH_OPEN_WARNING, _ae.host, _ae.port)
+    if _ae_auth.tokens_equal():
+        logger.critical("ALARM ENGINE AUTH: " + _ae_auth.AUTH_TOKENS_EQUAL_ERROR)
+        raise SystemExit(2)
 
     # 1. Initialize cache
     cache = Cache()
