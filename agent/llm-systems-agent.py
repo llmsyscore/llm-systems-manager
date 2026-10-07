@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.07-1"
+VERSION = "v2026.10.07-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2270,6 +2270,12 @@ def registry_register_blocking() -> None:
                             _state["token"] = tok
                         logger.info("approved by admin; agent_id=%s", agent_id)
                         return
+            elif r.status_code == 404:
+                # The manager dropped the pending record (expired or deleted): register again.
+                logger.warning("manager no longer knows agent_id=%s; registering again", agent_id)
+                with _runtime_lock:
+                    _state["agent_id"] = None
+                return registry_register_blocking()
             else:
                 global _status_poll_warn_last
                 _now_warn = time.time()

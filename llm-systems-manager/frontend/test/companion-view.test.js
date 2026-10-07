@@ -506,7 +506,8 @@ describe('CView.admin', () => {
         bind_url: 'https://llm-core:8082', last_heartbeat: new Date((NOW - 3) * 1000).toISOString() },
       { agent_id: 'mac', hostname: 'mac-studio', liveness: 'live', version: 'v2026.07.30-3',
         bind_url: 'https://mac-studio:8082', last_heartbeat: new Date((NOW - 4) * 1000).toISOString() },
-      { agent_id: 'new', hostname: 'mac-mini-m4', liveness: 'pending', status: 'pending' },
+      { agent_id: 'new', hostname: 'mac-mini-m4', liveness: 'pending', status: 'pending',
+        registered_from: '192.0.2.77' },
     ],
     health: {
       manager: { uptime_s: 3600 },
@@ -530,6 +531,8 @@ describe('CView.admin', () => {
     expect(a.agents.map((x) => x.name)).not.toContain('mac-mini-m4');
     expect(a.pending).toHaveLength(1);
     expect(a.pending[0]).toMatchObject({ id: 'new', name: 'mac-mini-m4' });
+    // #1201: the card says where the registration really came from.
+    expect(a.pending[0].detail).toContain('from 192.0.2.77');
   });
 
   it('no pending agents yields an empty list, not a placeholder row', () => {

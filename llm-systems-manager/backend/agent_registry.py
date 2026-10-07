@@ -41,6 +41,7 @@ import subprocess
 import threading
 import time
 import uuid as _uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1413,13 +1414,111 @@ def _agent_liveness_watcher() -> None:
             log.exception("agent liveness watcher tick failed")
 
 
+# ── Registration limits (#1201) ─────────────────────────────────────
+_REG_MAX_BODY = 64 * 1024
+_REG_RATE_PER_MIN = 6
+_REG_PENDING_MAX = 100
+_REG_PENDING_PER_ADDR = 10
+_REG_PENDING_TTL_S = 7 * 86400
+_REG_SWEEP_INTERVAL_S = 3600
+_REG_RATE_TABLE_MAX = 4096
+_REG_STR_FIELDS = {"hostname": 253, "bind_url": 512, "fingerprint": 256, "version": 64,
+                   "description": 1000, "agent_user": 128, "role": 64}
+_reg_rate: "dict[str, deque]" = {}
+_reg_rate_lock = threading.Lock()
+
+
+def _reg_rate_limited(addr: str, now: "float | None" = None) -> bool:
+    """True once addr has sent _REG_RATE_PER_MIN registrations in the last minute."""
+    now = time.time() if now is None else now
+    with _reg_rate_lock:
+        q = _reg_rate.setdefault(addr, deque())
+        while q and q[0] <= now - 60:
+            q.popleft()
+        if len(q) >= _REG_RATE_PER_MIN:
+            return True
+        q.append(now)
+        if len(_reg_rate) > _REG_RATE_TABLE_MAX:
+            for k in [k for k, v in _reg_rate.items() if not v or v[-1] <= now - 60]:
+                _reg_rate.pop(k, None)
+            while len(_reg_rate) > _REG_RATE_TABLE_MAX:
+                _reg_rate.pop(next(iter(_reg_rate)))
+        return False
+
+
+def _validate_registration(body) -> "str | None":
+    """The first field problem in a registration body, or None."""
+    if not isinstance(body, dict):
+        return "JSON object required"
+    for key, limit in _REG_STR_FIELDS.items():
+        val = body.get(key)
+        if val is not None and not isinstance(val, str):
+            return f"{key} must be text"
+        if isinstance(val, str) and len(val) > limit:
+            return f"{key} is too long (max {limit} characters)"
+    bind_url = body.get("bind_url") or ""
+    if bind_url and not bind_url.startswith(("http://", "https://")):
+        return "bind_url must start with http:// or https://"
+    caps = body.get("capabilities")
+    if caps is not None and (not isinstance(caps, dict) or len(caps) > 64
+                             or not all(isinstance(k, str) and len(k) <= 64 for k in caps)):
+        return "capabilities must be an object of named flags"
+    port = body.get("image_gen_port")
+    if port is not None and (isinstance(port, bool) or not isinstance(port, int)
+                             or not 1 <= port <= 65535):
+        return "image_gen_port must be a whole number from 1 to 65535"
+    return None
+
+
+def sweep_expired_pending(now: "datetime | None" = None) -> int:
+    """Removes pending records whose last registration is older than _REG_PENDING_TTL_S."""
+    now = now or datetime.now(timezone.utc)
+    removed = 0
+    with _agents_lock:
+        data = load_agents()
+        for aid, agent in list(data.get("agents", {}).items()):
+            if agent.get("status") != "pending":
+                continue
+            try:
+                ts = datetime.fromisoformat(agent.get("last_register") or agent.get("first_seen") or "")
+            except (TypeError, ValueError):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if (now - ts).total_seconds() > _REG_PENDING_TTL_S:
+                del data["agents"][aid]
+                removed += 1
+                log.info("expired pending registration removed: id=%s hostname=%s from=%s",
+                         aid, agent.get("hostname"), agent.get("registered_from"))
+        if removed:
+            save_agents(data)
+    return removed
+
+
+def _pending_sweep_loop() -> None:
+    while True:
+        time.sleep(_REG_SWEEP_INTERVAL_S)
+        with best_effort("pending registration sweep", log=log):
+            sweep_expired_pending()
+
+
 # ── Private route handlers ───────────────────────────────────────────
 def _agents_register():
     """No-auth endpoint: agent posts its identity, gets back agent_id + status."""
+    remote = flask_request.remote_addr or ""
+    if (flask_request.content_length or 0) > _REG_MAX_BODY \
+            or len(flask_request.get_data(cache=True)) > _REG_MAX_BODY:
+        return jsonify({"ok": False, "error": "request body too large"}), 413
+    if _reg_rate_limited(remote):
+        return jsonify({"ok": False,
+                        "error": "too many registrations from this address; try again in a minute"}), 429
     try:
         body = flask_request.get_json(force=True) or {}
     except Exception:
         return jsonify({"ok": False, "error": "invalid JSON"}), 400
+    problem = _validate_registration(body)
+    if problem:
+        return jsonify({"ok": False, "error": problem}), 400
 
     hostname = (body.get("hostname") or "").strip()
     os_ = (body.get("os") or "").strip()
@@ -1431,56 +1530,58 @@ def _agents_register():
 
     with _agents_lock:
         data = load_agents()
-        # Re-registration: same (hostname, os) replaces but keeps prior status/token if approved.
+        # Re-registration: a record for the same (hostname, os) that the caller
+        # re-authenticates to (prior bearer token or fingerprint) is updated in place.
+        auth_header = flask_request.headers.get("Authorization", "")
+        supplied_tok = ""
+        if auth_header.startswith("Bearer "):
+            supplied_tok = auth_header[len("Bearer "):].strip()
+        matches = [(aid, a) for aid, a in data["agents"].items()
+                   if a.get("hostname") == hostname and a.get("os") == os_]
         existing = None
-        for aid, agent in data["agents"].items():
-            if agent.get("hostname") == hostname and agent.get("os") == os_:
+        tok_ok = False
+        reauth_factor = None
+        for aid, agent in matches:
+            stored_tok = agent.get("token") or ""
+            tok_ok = bool(stored_tok) and bool(supplied_tok) and _hmac.compare_digest(supplied_tok, stored_tok)
+            reauth_factor = _agent_reauth_factor(agent, fingerprint)
+            if tok_ok or reauth_factor is not None:
                 existing = (aid, agent)
                 break
         if existing:
             agent_id, agent = existing
-            # Re-auth before mutating the record or returning the token:
-            # prior bearer token, or the fingerprint policy in _agent_reauth_factor.
-            auth_header = flask_request.headers.get("Authorization", "")
-            supplied_tok = ""
-            if auth_header.startswith("Bearer "):
-                supplied_tok = auth_header[len("Bearer "):].strip()
-            stored_tok = agent.get("token") or ""
-            remote = flask_request.remote_addr or ""
-            tok_ok = bool(stored_tok) and bool(supplied_tok) and _hmac.compare_digest(supplied_tok, stored_tok)
-            reauth_factor = _agent_reauth_factor(agent, fingerprint)
-            authenticated = tok_ok or reauth_factor is not None
+            agent["bind_url"] = bind_url
+            agent["fingerprint"] = fingerprint or agent.get("fingerprint") or ""
+            agent["version"] = body.get("version", agent.get("version"))
+            if fingerprint:
+                agent["fp_version"] = agent["version"]
+            agent["description"] = body.get("description", agent.get("description"))
+            agent["capabilities"] = body.get("capabilities", agent.get("capabilities"))
+            agent["agent_user"] = body.get("agent_user", agent.get("agent_user"))
+            agent["role"] = body.get("role", agent.get("role"))
+            agent["image_gen_port"] = body.get("image_gen_port", agent.get("image_gen_port"))
+            # registered_from follows the source of a token- or
+            # fingerprint-authenticated re-registration.
+            agent["registered_from"] = remote or agent.get("registered_from") or ""
+            agent["last_register"] = datetime.now(timezone.utc).isoformat()
+            data["agents"][agent_id] = agent
+            save_agents(data)
+            log.info("agent re-registered: id=%s hostname=%s status=%s auth=%s",
+                     agent_id, hostname, agent.get("status"),
+                     "tok" if tok_ok else reauth_factor)
+            return jsonify({
+                "ok": True,
+                "agent_id": agent_id,
+                "status": agent.get("status", "pending"),
+                "approval_url": f"/?tab=admin#agent={agent_id}",
+                **({"token": agent["token"]} if agent.get("status") == "approved" and agent.get("token") else {}),
+            })
 
-            if authenticated:
-                agent["bind_url"] = bind_url
-                agent["fingerprint"] = fingerprint or agent.get("fingerprint") or ""
-                agent["version"] = body.get("version", agent.get("version"))
-                if fingerprint:
-                    agent["fp_version"] = agent["version"]
-                agent["description"] = body.get("description", agent.get("description"))
-                agent["capabilities"] = body.get("capabilities", agent.get("capabilities"))
-                agent["agent_user"] = body.get("agent_user", agent.get("agent_user"))
-                agent["role"] = body.get("role", agent.get("role"))
-                agent["image_gen_port"] = body.get("image_gen_port", agent.get("image_gen_port"))
-                # registered_from follows the source of a token- or
-                # fingerprint-authenticated re-registration.
-                agent["registered_from"] = remote or agent.get("registered_from") or ""
-                agent["last_register"] = datetime.now(timezone.utc).isoformat()
-                data["agents"][agent_id] = agent
-                save_agents(data)
-                log.info("agent re-registered: id=%s hostname=%s status=%s auth=%s",
-                         agent_id, hostname, agent.get("status"),
-                         "tok" if tok_ok else reauth_factor)
-                return jsonify({
-                    "ok": True,
-                    "agent_id": agent_id,
-                    "status": agent.get("status", "pending"),
-                    "approval_url": f"/?tab=admin#agent={agent_id}",
-                    **({"token": agent["token"]} if agent.get("status") == "approved" and agent.get("token") else {}),
-                })
-
-            # Unauthenticated re-registration claim — do not mutate stored
-            # bind_url/fingerprint/registered_from, do not return token.
+        # An approved or disabled record owns the hostname; pending ones do not,
+        # so a fresh registration may sit beside them until an admin picks one.
+        blocking = next(((aid, a) for aid, a in matches if a.get("status") != "pending"), None)
+        if blocking:
+            agent_id, agent = blocking
             log.warning("agent re-registration rejected: id=%s hostname=%s remote=%s (no matching token/fp)",
                         agent_id, hostname, remote)
             return jsonify({
@@ -1490,11 +1591,36 @@ def _agents_register():
                 "status": agent.get("status", "pending"),
             }), 403
 
-        agent_id = str(_uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        # The same address registering the same hostname again gets its waiting
+        # record back instead of a second row; nothing on the record changes.
+        repeat = next(((aid, a) for aid, a in matches
+                       if (a.get("registered_from") or "") == remote), None)
+        if repeat:
+            agent_id, agent = repeat
+            log.info("agent registration repeated while pending: id=%s hostname=%s remote=%s",
+                     agent_id, hostname, remote)
+            return jsonify({
+                "ok": True,
+                "agent_id": agent_id,
+                "status": "pending",
+                "approval_url": f"/?tab=admin#agent={agent_id}",
+            })
+
         # Auto-approve only registrations from a loopback source (co-located
         # agent); every other caller lands in "pending" for manual approval.
-        auto_approve = _remote_is_loopback(flask_request.remote_addr or "")
+        auto_approve = _remote_is_loopback(remote)
+        if not auto_approve:
+            pending = [a for a in data["agents"].values() if a.get("status") == "pending"]
+            same_addr = sum(1 for a in pending if (a.get("registered_from") or "") == remote)
+            if len(pending) >= _REG_PENDING_MAX or same_addr >= _REG_PENDING_PER_ADDR:
+                log.warning("agent registration refused: pending cap reached (total=%d from=%s same_addr=%d)",
+                            len(pending), remote, same_addr)
+                return jsonify({"ok": False,
+                                "error": "too many registrations are waiting for approval; "
+                                         "approve or delete some in Admin › Agents"}), 429
+
+        agent_id = str(_uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
         token = _secrets.token_hex(32) if auto_approve else None
         agent = {
             "agent_id": agent_id,
@@ -1516,7 +1642,7 @@ def _agents_register():
             "last_heartbeat": None,
             "approved_at": now if auto_approve else None,
             "approved_by": "auto-local" if auto_approve else None,
-            "registered_from": flask_request.remote_addr,
+            "registered_from": remote,
         }
         data["agents"][agent_id] = agent
         save_agents(data)
@@ -2394,3 +2520,5 @@ def register_routes(app) -> None:
 
     threading.Thread(target=_agent_liveness_watcher, daemon=True,
                      name="agent-liveness-watcher").start()
+    threading.Thread(target=_pending_sweep_loop, daemon=True,
+                     name="agent-pending-sweep").start()
