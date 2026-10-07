@@ -253,7 +253,7 @@ stream_token_ttl_s = 300                                 # short-lived SSE/Event
 # CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw, image-gen).
 # 'unsafe-inline' is required (injected shims); cdn.jsdelivr.net serves the
 # SPAs' Chart.js/date-fns. Set to "" to strip CSP if a proxied UI breaks.
-proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' ws: wss:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
+proxy_html_csp = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' data: ws://{host}:* wss://{host}:*; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; sandbox allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"
 
 [manager.auth]
 # Dashboard login (single shared admin). Browser sessions are gated; agent

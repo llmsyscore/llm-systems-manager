@@ -55,7 +55,7 @@ import stream_pool  # type: ignore[import-not-found]  # sibling
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
 
 # Shared with main; proxies.py and main both reach the same Settings singleton.
-from config.unified_config import settings  # type: ignore[import-not-found]
+from config.unified_config import ManagerSecurity, settings  # type: ignore[import-not-found]
 
 import ae_auth  # type: ignore[import-not-found]  # sibling
 from _safe_js import safe_js  # type: ignore[import-not-found]  # sibling
@@ -86,13 +86,48 @@ _PROXY_HOP_BY_HOP = {
 }
 
 
+# The policy installs wrote into their TOML before 2026-10-07; read as "use the current default".
+_LEGACY_PROXY_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; "
+    "font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' ws: wss:; "
+    "frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'")
+
+
+def _configured_proxy_csp() -> str:
+    csp = (getattr(settings.manager.security, "proxy_html_csp", "") or "").strip()
+    if csp == _LEGACY_PROXY_CSP:
+        return ManagerSecurity().proxy_html_csp
+    return csp
+
+
 def _csp_header_pairs(content_type: str) -> list:
     """Manager-origin CSP header for an HTML response, else []. Replaces the
     stripped upstream CSP with [manager.security].proxy_html_csp (empty = off)."""
-    csp = (getattr(settings.manager.security, "proxy_html_csp", "") or "").strip()
-    if csp and "text/html" in (content_type or "").lower():
-        return [("Content-Security-Policy", csp)]
-    return []
+    csp = _configured_proxy_csp()
+    if not csp or "text/html" not in (content_type or "").lower():
+        return []
+    if "{host}" in csp:
+        try:
+            host = _deps.request_host_no_port() or ""
+        except Exception:
+            host = ""
+        if host:
+            csp = csp.replace("{host}", host)
+        else:
+            csp = re.sub(r"\s*wss?://\{host\}:\*", "", csp)
+    return [("Content-Security-Policy", csp)]
+
+
+def _valid_port(value) -> "int | None":
+    """value as a TCP port (1-65535) when it is one, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, int) and 1 <= value <= 65535:
+        return value
+    return None
 
 # Full HTTP verb list applied to every catch-all proxy decorator so proxied
 # apps see GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS.
@@ -278,7 +313,12 @@ def resolve_proxy_target(name: str) -> "str | None":
                 # Image-gen lets the agent advertise a non-default sd-server
                 # port via agent_config.yaml's IMGGEN_PORT — fall back to
                 # 1234 when the agent didn't report one.
-                port = a.get("image_gen_port") if name == "image_gen" else None
+                port = None
+                if name == "image_gen":
+                    port = _valid_port(a.get("image_gen_port"))
+                    if port is None and a.get("image_gen_port") not in (None, ""):
+                        log.warning("agent %s advertises an unusable image_gen_port %r; using %d",
+                                    a.get("hostname"), a.get("image_gen_port"), default_port)
                 return f"http://{host}:{port or default_port}"
             return None
         return None
