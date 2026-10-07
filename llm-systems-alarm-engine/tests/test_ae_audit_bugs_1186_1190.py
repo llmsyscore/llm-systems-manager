@@ -121,7 +121,7 @@ async def test_non_finite_sample_neither_fires_nor_resolves():
 class _FakeSMTP:
     calls: list = []
 
-    def __init__(self, host, port, timeout=None):
+    def __init__(self, host, port, timeout=None, context=None):
         self.calls.append((type(self).__name__, port))
 
     def __enter__(self):
@@ -133,7 +133,7 @@ class _FakeSMTP:
     def ehlo(self):
         pass
 
-    def starttls(self):
+    def starttls(self, context=None):
         self.calls.append("starttls")
 
     def login(self, user, password):

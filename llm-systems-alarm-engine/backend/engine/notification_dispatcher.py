@@ -13,6 +13,7 @@ import json
 import logging
 import smtplib
 import socket
+import ssl
 import time
 from email.mime.text import MIMEText
 from typing import Any, Callable, Optional
@@ -209,6 +210,15 @@ def channel_urls(config) -> list[str]:
     if webpush is not None and (webpush.url or "").strip():
         urls.append(webpush.url.strip())
     return urls
+
+
+def _smtp_tls_context(ca_file: str) -> ssl.SSLContext:
+    """Verifying TLS context: the system trust store, or [notifications.smtp].ca_file."""
+    ca_file = (ca_file or "").strip()
+    try:
+        return ssl.create_default_context(cafile=ca_file or None)
+    except FileNotFoundError:
+        raise RuntimeError(f"[notifications.smtp].ca_file not found: {ca_file}")
 
 
 class NotificationDispatcher:
@@ -907,13 +917,16 @@ Time: {alert.created_at}
         """Synchronous email send (run in thread). Reads SMTP host/port/
         user/password from [notifications.smtp] in llm-systems.toml; falls
         back to localhost:25 only if no SMTP server is configured. Port 465
-        connects over TLS, port 25 stays plain, any other port uses STARTTLS."""
+        connects over TLS, port 25 stays plain, any other port uses STARTTLS;
+        both TLS paths verify the server certificate."""
+        ca_file = ""
         try:
             smtp = settings.notifications.smtp
             host = (smtp.server or "").strip() or "localhost"
             port = int(smtp.port or 25)
             user = (smtp.user or "").strip() or None
             password = (smtp.password or "").strip() or None
+            ca_file = getattr(smtp, "ca_file", "") or ""
         except Exception:
             host, port, user, password = "localhost", 25, None, None
 
@@ -925,11 +938,16 @@ Time: {alert.created_at}
             else:
                 msg["From"] = user
 
-        smtp_cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
-        with smtp_cls(host, port, timeout=settings.notifications.timeouts.smtp) as server:
+        tls = _smtp_tls_context(ca_file) if port != 25 else None
+        timeout = settings.notifications.timeouts.smtp
+        if port == 465:
+            server_cm = smtplib.SMTP_SSL(host, port, timeout=timeout, context=tls)
+        else:
+            server_cm = smtplib.SMTP(host, port, timeout=timeout)
+        with server_cm as server:
             server.ehlo()
             if port not in (25, 465):
-                server.starttls()
+                server.starttls(context=tls)
                 server.ehlo()
             if user and password:
                 server.login(user, password)
