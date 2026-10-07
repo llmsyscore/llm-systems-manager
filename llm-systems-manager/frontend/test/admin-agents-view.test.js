@@ -40,6 +40,16 @@ const approved = (id, extra = {}) => ({
   last_heartbeat_data: { collection_enabled: true, control_channel_tls: true }, ...extra,
 });
 
+describe('#1201 pending rows show the source address', () => {
+  test('a pending row shows registered_from even when bind_url claims another host', () => {
+    const a = { status: 'pending', bind_url: 'https://10.9.9.9:8098', registered_from: '192.0.2.77' };
+    expect(V.ipOf(a)).toBe('192.0.2.77');
+  });
+  test('an approved row still shows the bind host', () => {
+    expect(V.ipOf(approved('abc'))).toBe('192.0.2.3');
+  });
+});
+
 describe('#793 row state dot', () => {
   test('pending / disabled come from status', () => {
     expect(V.rowState({ status: 'pending', liveness: 'pending' })).toBe('pending');

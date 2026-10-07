@@ -13,6 +13,8 @@
 
   // ── pure helpers (exported on window.AgentsView for tests) ────────────────
   function ipOf(a) {
+    // A pending row shows where the registration really came from, not the address it claims.
+    if (a.status === 'pending' && a.registered_from) return a.registered_from;
     if (typeof window._adminAgentIP === 'function') return window._adminAgentIP(a);
     const m = (a.bind_url || '').match(/^https?:\/\/([^:/]+)/);
     return (m && m[1]) || a.registered_from || '—';

@@ -501,6 +501,7 @@
         id: a.agent_id,
         name: a.hostname || (a.agent_id || '').slice(0, 10) || '?',
         detail: 'registered ' + age(a.first_seen, d.now)
+          + (a.registered_from ? ' from ' + a.registered_from : '')
           + (a.version ? ' · agent ' + a.version : '') + ' · pending approval',
       }));
 
