@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.04-1"
+VERSION = "v2026.10.07-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2286,6 +2286,21 @@ def registry_register_blocking() -> None:
         time.sleep(30)
 
 
+# Consecutive rejected heartbeats before the agent registers again.
+_REREGISTER_AFTER_REJECTS = 3
+_register_thread: Optional[threading.Thread] = None
+
+
+def _start_registration() -> bool:
+    """Run registry_register_blocking in a thread unless one is already running."""
+    global _register_thread
+    if _register_thread is not None and _register_thread.is_alive():
+        return False
+    _register_thread = threading.Thread(target=registry_register_blocking, daemon=True)
+    _register_thread.start()
+    return True
+
+
 def heartbeat_loop() -> None:
     """Posts /api/agents/heartbeat every HEARTBEAT_INTERVAL_S.
 
@@ -2297,6 +2312,7 @@ def heartbeat_loop() -> None:
     pointed at stale URLs. Fire-first collapses that window to ~1s.
     """
     first = True
+    rejected = 0
     while True:
         try:
             if first:
@@ -2335,6 +2351,7 @@ def heartbeat_loop() -> None:
                 timeout=10,
             )
             if r.ok:
+                rejected = 0
                 ack = r.json() or {}
                 # Outside the lock to keep file I/O off it.
                 tls = ack.get("tls")
@@ -2386,6 +2403,14 @@ def heartbeat_loop() -> None:
                         "heartbeat rejected (%s); agent disabled or token revoked — pausing collection",
                         r.status_code,
                     )
+                rejected += 1
+                if rejected >= _REREGISTER_AFTER_REJECTS:
+                    rejected = 0
+                    if _start_registration():
+                        logger.warning(
+                            "heartbeat rejected %d times in a row — registering with the manager again",
+                            _REREGISTER_AFTER_REJECTS,
+                        )
             else:
                 logger.warning("heartbeat HTTP %s: %s", r.status_code, r.text[:200])
         except Exception as e:
@@ -4394,7 +4419,7 @@ def main() -> None:
     _configure_manager_tls_verify()
     _configure_ae_tls_verify()
 
-    threading.Thread(target=registry_register_blocking, daemon=True).start()
+    _start_registration()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
 
     _metric_client = _init_metric_client()
