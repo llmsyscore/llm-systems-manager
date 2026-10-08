@@ -26,6 +26,7 @@ const STUBS = `
   window.openAgentSse = async () => { const s = { close() { s.closed = true; } }; window.__dl = s; return s; };
   window.__alerts = [];
   window._toastErr = function (m) { window.__alerts.push(String(m)); };
+  window._me = { admin_access: true };
   window.__fetches = [];
   window.__syncCalls = [];
   window._syncActiveProfile = function (mid, values) { window.__syncCalls.push([mid, values, window.__fetches.length]); return Promise.resolve(); };
@@ -1333,5 +1334,21 @@ describe('AT vLLM target (#894)', () => {
       { flag: '--max-model-len', value: '230400', bool: false },
       { flag: '--speculative-config', value: '{"method":"ngram","num_speculative_tokens":5,"prompt_lookup_max":4}', bool: false }]);
     expect(win.document.getElementById('atRecMsg').textContent).toContain('restarted the vLLM server');
+  });
+
+  it('an operator sees that applying needs an admin and apply() refuses (#1208)', async () => {
+    const win = await openedVllm();
+    win._me = { admin_access: false };
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/model-8b', ok: true, provider: 'vllm', objective: 'balanced', mode: 'tune', stages: [], verify: { ok: true, seconds: 60 },
+      before: { decode_tps: 20, ctx: 4096 }, after: { decode_tps: 24, ctx: 230400 }, base_config: { max_model_len: 8192 },
+      changes: [{ key: 'max_model_len', flag: '--max-model-len', current: '8192', recommended: '230400', value: 230400, source: 'measured', evidence: 'x', selected: true }] });
+    win.AT.onEvent({ type: 'done', ok: true, cancelled: false, count: 1 });
+    await flush();
+    expect(win.document.getElementById('atRecMsg').textContent).toContain('needs an admin');
+    expect(win.document.getElementById('atApplyBtn').disabled).toBe(true);
+    const posts = win.__fetches.filter(([u, o]) => u.startsWith('/api/vllm/server/svcconfig') && o && o.method === 'POST').length;
+    const res = await win.AT.apply();
+    expect(res).toEqual({ ok: false, step: 'admin role required' });
+    expect(win.__fetches.filter(([u, o]) => u.startsWith('/api/vllm/server/svcconfig') && o && o.method === 'POST').length).toBe(posts);
   });
 });

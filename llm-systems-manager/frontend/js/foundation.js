@@ -1678,6 +1678,9 @@ function applyRoleGating() {
   const isAdmin = !!(window._me && window._me.admin_access);
   const adminBtn = document.getElementById('tabBtnAdmin');
   if (adminBtn) adminBtn.style.display = isAdmin ? '' : 'none';
+  // Admin-only controls are hidden for operators; the matching notes show instead (#1208).
+  document.querySelectorAll('[data-admin-only]').forEach(el => { el.style.display = isAdmin ? '' : 'none'; });
+  document.querySelectorAll('[data-operator-note]').forEach(el => { el.style.display = isAdmin ? 'none' : ''; });
   // Account entries live in the settings drawer and show only for a real
   // logged-in (non-bypass) session.
   _sdRenderAccount();

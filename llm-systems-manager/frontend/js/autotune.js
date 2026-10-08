@@ -801,6 +801,7 @@
   async function run() {
     const ids = selected();
     if (!ids.length) { _toastErr('Select at least one model.'); return; }
+    if (applyNeedsAdmin()) log('Applying the result needs an admin — the tuning run itself works, and the recommendations stay on screen.', 'dim');
     const dims = dimsState();
     if (!isVllm() && (!Number.isFinite(dims.context.target_mb) || dims.context.target_mb < 0)) { _toastErr('Target free VRAM must be a non-negative number.'); return; }
     const problem = dimsProblem(dims);
@@ -1177,13 +1178,16 @@
   }
   function rows() { return _rows; }
   function setMsg(text, cls) { const el = $('atRecMsg'); if (!el) return; el.textContent = text; el.className = 'msg' + (cls ? ' ' + cls : ''); }
+  // vLLM Apply writes the server config, which only an admin may do (#1208).
+  const isAdmin = () => !!(window._me && window._me.admin_access);
+  const applyNeedsAdmin = () => isVllm() && !isAdmin();
   function renderRows() {
     const tb = $('atRecRows'); if (!tb) return;
     tb.innerHTML = _rows.map((r, i) => `<tr class="${r.selected ? '' : 'skip'}"><td class="mono">${esc(r.key)}</td><td class="old">${esc(r.current || '—')}</td><td class="new">${esc(r.recommended)}</td><td class="ev"><span class="at-src ${esc(r.source)}">${esc(SRC_LABEL[r.source] || r.source)}</span>${esc(r.evidence || '')}${r.note ? ` <small>· ${esc(r.note)}</small>` : ''}</td><td><button type="button" class="mc-toggle${r.selected ? ' on' : ''}" data-row="${i}"><span class="track"></span></button></td></tr>`).join('');
     const n = _rows.filter(r => r.selected).length;
     const sel = $('atRecSel'); if (sel) sel.textContent = `${n} of ${_rows.length} changes selected`;
     const btn = $('atApplyBtn');
-    if (btn) { btn.textContent = `Apply ${n} change${n === 1 ? '' : 's'}${restartOn() ? ' + restart' : ''}`; btn.disabled = !n; }
+    if (btn) { btn.textContent = `Apply ${n} change${n === 1 ? '' : 's'}${restartOn() ? ' + restart' : ''}`; btn.disabled = !n || applyNeedsAdmin(); }
     const pb = $('atProfileBtn'); if (pb) { pb.textContent = `Save as profile “tuned ${today()}”`; pb.disabled = !n; }
   }
   function toggleRow(i) { const r = _rows[i]; if (!r) return; r.selected = !r.selected; renderRows(); }
@@ -1303,7 +1307,8 @@
     if (qb) qb.style.display = !lms && (done.changes || []).some(c => QUALITY_KEYS.has(c.key)) ? '' : 'none';
     if (guardCard) guardCard.style.display = lms ? 'none' : '';
     if (!lms) renderGuard(done);
-    setMsg(isVllm() || done.provider === 'vllm' ? 'Apply writes these flags into the vLLM service file on this host; Restart server after apply restarts it with them.'
+    setMsg(applyNeedsAdmin() ? 'Applying these flags needs an admin. Copy them for an admin, or an admin can run Auto-Tune and apply.'
+      : isVllm() || done.provider === 'vllm' ? 'Apply writes these flags into the vLLM service file on this host; Restart server after apply restarts it with them.'
       : lms ? 'Apply keeps these load options for this model on this host and reloads it with them.'
       : `Previous config will be kept as profile “before tune ${today()}” for one-click revert.`);
   }
@@ -1324,6 +1329,7 @@
     const mid = _doneModel, sel = selectedRows();
     if (!mid || !sel.length) { setMsg('Nothing selected.'); return { ok: false, step: 'nothing selected' }; }
     const restart = restartOn(), enc = encodeURIComponent(mid);
+    if (applyNeedsAdmin()) { setMsg('Applying these flags needs an admin.', 'crit'); return { ok: false, step: 'admin role required' }; }
     const btn = $('atApplyBtn'); if (btn) btn.disabled = true;
     let step = 'read config';
     if (isVllm()) {

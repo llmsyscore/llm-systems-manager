@@ -420,7 +420,7 @@ Backend API endpoints consumed:
       <button class="mcbtn mcbtn-ghost mcbtn-sm" id="llamaBtnWake"    onclick="serverWake()" title="POST a tiny chat-completions request to the llama-server to bring it out of idle-sleep"><span class="ic">☀</span> Wakeup</button>
       <span id="serverCtrlStatus"  style="font-size:0.82em;color:var(--fg-dim);margin-left:4px;"></span>
       <span class="status status--crit" id="llamaCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
-      <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleTerminal()"><span class="ic">▣</span> Terminal</button>
+      <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" data-admin-only onclick="toggleTerminal()"><span class="ic">▣</span> Terminal</button>
       <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleServerLog()"><span class="ic">≡</span> Server Log</button>
       <div class="mc-menuwrap">
         <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
@@ -2044,7 +2044,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnRestart" onclick="lmsServerAction('restart')"><span class="ic">↺</span> Restart</button>
         <button class="mcbtn mcbtn-ghost mcbtn-sm" id="lmsBtnStatus"  onclick="lmsServerAction('status')"><span class="ic">ℹ</span> Status</button>
         <span class="status status--crit" id="lmsCtrlBadge"><span class="status__dot"></span>Agent offline</span>
-        <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleLmsTerminal()"><span class="ic">▣</span> Terminal</button>
+        <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" data-admin-only onclick="toggleLmsTerminal()"><span class="ic">▣</span> Terminal</button>
         <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleLmsLog()"><span class="ic">≡</span> Server Log</button>
       </div>
       <!-- LMS Terminal panel — PTY hosted on the primary LMS agent, proxied via SSE -->
@@ -2125,7 +2125,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <button class="mcbtn mcbtn-ghost mcbtn-sm" id="vllmBtnStatus"  onclick="vllmServerAction('status')"><span class="ic">ℹ</span> Status</button>
           <span id="vllmCtrlStatus" class="sub" style="margin-left:2px;"></span>
           <span class="status status--crit" id="vllmCtrlBadge" style="margin-left:4px;"><span class="status__dot"></span>Agent offline</span>
-          <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" onclick="toggleVllmTerminal()"><span class="ic">▣</span> Terminal</button>
+          <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" data-admin-only onclick="toggleVllmTerminal()"><span class="ic">▣</span> Terminal</button>
           <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleVllmLog()"><span class="ic">≡</span> Server Log</button>
           <div class="mc-menuwrap">
             <button class="mcbtn mcbtn-ghost mcbtn-sm mc-menubtn" aria-label="More actions">⋯</button>
@@ -2800,7 +2800,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/layout.js?v=2026.07.10-1"></script>
 <script src="/static/js/lib/settingsdrawer.js?v=2026.09.04-2"></script>
 <script src="/static/js/lib/modelcards.js?v=2026.09.22-1"></script>
-<script src="/static/js/foundation.js?v=2026.09.29-6"></script>
+<script src="/static/js/foundation.js?v=2026.10.07-1"></script>
 <script src="/static/js/lib/series.js?v=2026.08.04-2"></script>
 <script src="/static/js/lib/peaks.js?v=2026.08.29-2"></script>
 <script src="/static/js/lib/dbstats.js?v=2026.09.18-1"></script>
@@ -2832,7 +2832,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/editor-modern.js?v=2026.09.07-1"></script>
 <script src="/static/js/bench-autotune.js?v=2026.09.29-3"></script>
 <script src="/static/js/bench-live.js?v=2026.10.01-2"></script>
-<script src="/static/js/autotune.js?v=2026.09.29-3"></script>
+<script src="/static/js/autotune.js?v=2026.10.07-1"></script>
 <script src="/static/js/quality.js?v=2026.09.29-2"></script>
 <script src="/static/js/lmstudio.js?v=2026.09.28-4"></script>
 <script src="/static/js/vllm.js?v=2026.09.29-1"></script>
@@ -2984,8 +2984,9 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     <div class="svcconfig-actions">
       <span class="svcconfig-status" id="svcConfigStatus"></span>
       <span class="mc-gap"></span>
-      <button type="button" class="mcbtn mcbtn-pri" onclick="saveSvcConfig(false)">Save</button>
-      <button type="button" class="mcbtn mcbtn-ghost" onclick="saveSvcConfig(true)">↺ Save &amp; Restart</button>
+      <span class="svcconfig-status" data-operator-note style="display:none">Saving needs an admin — you can review the flags here.</span>
+      <button type="button" class="mcbtn mcbtn-pri" data-admin-only onclick="saveSvcConfig(false)">Save</button>
+      <button type="button" class="mcbtn mcbtn-ghost" data-admin-only onclick="saveSvcConfig(true)">↺ Save &amp; Restart</button>
       <span class="ef-vsep"></span>
       <button type="button" class="mcbtn mcbtn-ghost" onclick="closeSvcConfig()">Cancel</button>
     </div>
