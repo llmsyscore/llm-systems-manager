@@ -483,7 +483,7 @@ The agent is what pushes all data into the dashboard. Run the installer and use 
 bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
 ```
 
-The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it. Global actions (Approve all pending, Update all, Push CA, the agent-auth slider) live under the **Manage ▾** menu on that same tab.
+The agent registers itself with the manager on first launch. From **Admin → Agents**, click **Approve** — the manager signs a TLS cert for that agent and starts polling it. Global actions (Approve all pending, Update all, Push CA, the Agent security switch) live under the **Manage ▾** menu on that same tab.
 
 ### Homebrew (macOS / Linux)
 

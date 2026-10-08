@@ -2164,7 +2164,7 @@ async function adminToggleAuth(disabled) {
     body: JSON.stringify({auth_disabled: !!disabled})
   });
   if (r.ok) {
-    _adminLog(`✓ agent security ${disabled ? 'off — agents accept unauthenticated control calls' : 'on'}`);
+    _adminLog(`✓ agent security ${disabled ? 'off — status, metrics, config and log reads accept requests without a token; everything else still needs it' : 'on'}`);
   } else {
     _adminLog(`✗ agent security toggle failed (HTTP ${r.status})`, 'err');
   }

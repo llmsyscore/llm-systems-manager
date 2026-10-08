@@ -253,7 +253,7 @@ New agents must then be approved before the manager will accept their data. The 
 3. Click **Agents**
 4. Find the new agent in the list and click **Approve**
 
-Once approved, the agent begins sending metrics and the manager can communicate with it. Fleet-wide actions — **Approve all pending**, **Update all**, **Push CA**, and the agent-auth slider — live under the **Manage ▾** menu on the same tab.
+Once approved, the agent begins sending metrics and the manager can communicate with it. Fleet-wide actions — **Approve all pending**, **Update all**, **Push CA**, and the **Agent security** switch — live under the **Manage ▾** menu on the same tab. Turning Agent security off is for troubleshooting from a browser or script on your network: agents then answer their read-only calls (status, metrics, config and log reads) without a token, while everything else — restart, update, config changes, pausing collection, terminals and server control — always needs the agent's token. The manager's own checks never change.
 
 ---
 

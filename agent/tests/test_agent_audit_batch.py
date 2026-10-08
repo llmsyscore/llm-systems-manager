@@ -279,7 +279,7 @@ def test_reload_reapplies_tls_verify_and_ae_url(tmp_path):
           "_collector_wake": SimpleNamespace(set=lambda: None),
           "_read_cpu_governor_safe": None, "_power_readback_factory": None, "os": os,
           "AgentContext": lambda **kw: kw,
-          "_check_bearer": lambda a: None, "_check_stream_auth": None, "_probe_http": None,
+          "_check_bearer": lambda a, strict=False: None, "_check_stream_auth": None, "_probe_http": None,
           "_post_session": session, "_runtime_lock": threading.Lock(), "_reload_lock": threading.Lock(),
           "_state": {"ae_url_applied": "http://old-ae:8081"},
           "_now_iso": None, "_metric_client": client, "Path": Path,
