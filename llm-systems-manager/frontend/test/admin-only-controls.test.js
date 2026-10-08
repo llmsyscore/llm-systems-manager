@@ -28,9 +28,9 @@ beforeEach(() => {
 
 describe('#1208 markup marks every admin-only control', () => {
   test('the three Terminal buttons and both Server config save buttons carry data-admin-only', () => {
-    for (const fn of ['toggleTerminal()', 'toggleLmsTerminal()', 'toggleVllmTerminal()']) {
-      expect(index).toMatch(new RegExp(`<button[^>]*data-admin-only[^>]*onclick="${fn.replace(/[()]/g, '\\$&')}"`));
-    }
+    expect(index).toMatch(/<button[^>]*data-admin-only[^>]*onclick="toggleTerminal\(\)"/);
+    expect(index).toMatch(/<button[^>]*data-admin-only[^>]*onclick="toggleLmsTerminal\(\)"/);
+    expect(index).toMatch(/<button[^>]*data-admin-only[^>]*onclick="toggleVllmTerminal\(\)"/);
     expect(index).toMatch(/data-admin-only onclick="saveSvcConfig\(false\)"/);
     expect(index).toMatch(/data-admin-only onclick="saveSvcConfig\(true\)"/);
     const start = index.indexOf('<div class="svcconfig-actions">');
