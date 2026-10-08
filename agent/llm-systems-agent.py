@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.07-4"
+VERSION = "v2026.10.07-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3022,8 +3022,9 @@ app.add_middleware(
 )
 
 
-def _check_bearer(authorization: Optional[str]) -> None:
-    if _state.get("auth_disabled_global"):
+def _check_bearer(authorization: Optional[str], relaxed: bool = False) -> None:
+    """Bearer check; only read-only routes pass relaxed=True, which the agent-security switch may waive."""
+    if relaxed and _state.get("auth_disabled_global"):
         return
     expected = _token_provider()
     if not expected:
@@ -3131,7 +3132,7 @@ async def identify() -> dict[str, Any]:
 
 @app.get("/status")
 async def status_(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     with _runtime_lock:
         snap = dict(_state)
     snap.pop("manager_secret", None)
@@ -3172,7 +3173,7 @@ async def status_(authorization: Optional[str] = Header(default=None)) -> dict[s
 
 @app.get("/config")
 async def get_config(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     return CONFIG.to_redacted_dict()
 
 
@@ -3236,7 +3237,7 @@ async def agent_config_file_get(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Return loaded agent_config.yaml text + path + mtime."""
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     path = getattr(CONFIG, "_loaded_from", None)
     if not path:
         return {
@@ -3363,7 +3364,7 @@ async def agent_restart(authorization: Optional[str] = Header(default=None)) -> 
 @app.get("/agent/log/tail")
 def agent_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     """Last ~50KB of the agent log, parsed into lines."""
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     path = CONFIG.LOG_FILE
     TAIL_BYTES = 50 * 1024
     try:
@@ -3436,7 +3437,7 @@ def _tail_stream(f: Any, path: str, keepalive_s: float) -> Iterator[bytes]:
 @app.get("/agent/log/stream")
 def agent_log_stream(authorization: Optional[str] = Header(default=None)) -> StreamingResponse:
     """SSE tail -f of the agent log; bearer-only (proxied through the manager)."""
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     path = CONFIG.LOG_FILE
 
     def generate() -> Iterator[bytes]:
@@ -3956,7 +3957,7 @@ async def agent_collection(
 
 @app.get("/metrics")
 def metrics(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     return collect_system_metrics()
 
 
@@ -4348,7 +4349,7 @@ def _oc_collect_delivery(delivery_dir: Path) -> dict[str, Any]:
 @app.get("/openclaw/aggregate")
 def openclaw_aggregate(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     """Host's OpenClaw snapshot (sessions + flows + tasks + delivery)."""
-    _check_bearer(authorization)
+    _check_bearer(authorization, relaxed=True)
     _oc_check_enabled()
     paths = _oc_data_paths()
     return {

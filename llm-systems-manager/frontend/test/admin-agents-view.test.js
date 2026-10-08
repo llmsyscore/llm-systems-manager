@@ -312,7 +312,7 @@ describe('#793 row + drawer markup', () => {
     const d = win.document;
     expect(d.getElementById('agAuthTg').classList.contains('on')).toBe(false);
     expect(d.getElementById('agAuthRow').classList.contains('warn')).toBe(true);
-    expect(d.getElementById('agAuthSub').textContent).toBe('Secure agent authentication is off');
+    expect(d.getElementById('agAuthSub').textContent).toBe('Status, metrics, config and log reads accept requests without a token; everything else still needs it');
   });
   test('failed refresh turns the stamp amber, unreachable red', () => {
     const win = harness(boot([approved('a1')]));

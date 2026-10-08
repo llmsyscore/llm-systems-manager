@@ -66,7 +66,6 @@ __all__ = [
     "save_agents",
     "agent_by_token",
     "bearer_from_request",
-    "agent_auth_gate",
     "browser_reachable_bind_url",
     "is_local_bind_url",
     "agent_callback_urls",
@@ -395,27 +394,6 @@ def bearer_from_request() -> "str | None":
     if h.startswith("Bearer "):
         return h[len("Bearer "):].strip()
     return None
-
-
-def agent_auth_gate() -> "tuple[bool, dict | None]":
-    """Validate the bearer token against the registry.
-
-    Returns (ok, agent_dict_or_None). Requires a valid Bearer token from an
-    approved agent unless the global `auth_disabled` flag is set.
-    """
-    data = load_agents()
-    if data.get("global", {}).get("auth_disabled"):
-        return True, None
-    h = flask_request.headers.get("Authorization", "")
-    if not h.startswith("Bearer "):
-        return False, None
-    token = h[len("Bearer "):].strip()
-    for agent in data.get("agents", {}).values():
-        if agent.get("token") == token:
-            if agent.get("status") == "approved":
-                return True, agent
-            return False, agent
-    return False, None
 
 
 # ── Public API: bind_url helpers ─────────────────────────────────────

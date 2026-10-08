@@ -409,7 +409,7 @@
     const tg = $('agAuthTg'), row = $('agAuthRow'), sub = $('agAuthSub');
     if (tg) { tg.classList.toggle('on', authOn); tg.setAttribute('aria-pressed', String(authOn)); }
     if (row) row.classList.toggle('warn', !authOn);
-    if (sub) sub.textContent = authOn ? 'Secure agent authentication is on' : 'Secure agent authentication is off';
+    if (sub) sub.textContent = authOn ? 'Agents require their token on every call' : 'Status, metrics, config and log reads accept requests without a token; everything else still needs it';
     const cnt = $('agUpdateCnt');
     if (cnt) { cnt.hidden = !s.needsUpdate; cnt.textContent = `${s.needsUpdate} pending`; }
     const aa = $('agApproveAll');
