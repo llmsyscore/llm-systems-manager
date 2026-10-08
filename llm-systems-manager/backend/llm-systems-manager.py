@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.07-6"
+__version__ = "v2026.10.07-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -7997,21 +7997,25 @@ def _backup_scheduler_loop() -> None:
     boot_due = time.time() + 120.0
     prev = None
     while not _shutting_down:
-        ev = _backup_sched_eval()
-        key = (ev["active"], ev["reason"], ev["interval_h"], ev["keep_last"], bool(ev["passphrase"]))
-        if prev is not None and key != prev:
-            _backup_log_state(ev)
-        prev = key
-        _backup_sched_state.update({"running": ev["active"], "reason": ev["reason"]})
-        if not ev["active"]:
-            _backup_sched_state["next_attempt"] = None
-            time.sleep(5.0)
-            continue
-        due = _backup_due_ts(last_ts, last_ok, ev["interval_s"], boot_due)
-        _backup_sched_state["next_attempt"] = due
-        if time.time() >= due:
-            st = _run_scheduled_backup(ev["passphrase"], ev["keep_last"], ev["mirror_dir"])
-            last_ts, last_ok = time.time(), bool(st.get("ok"))
+        try:
+            ev = _backup_sched_eval()
+            key = (ev["active"], ev["reason"], ev["interval_h"], ev["keep_last"], bool(ev["passphrase"]))
+            if prev is not None and key != prev:
+                _backup_log_state(ev)
+            prev = key
+            _backup_sched_state.update({"running": ev["active"], "reason": ev["reason"]})
+            if not ev["active"]:
+                _backup_sched_state["next_attempt"] = None
+                time.sleep(5.0)
+                continue
+            due = _backup_due_ts(last_ts, last_ok, ev["interval_s"], boot_due)
+            _backup_sched_state["next_attempt"] = due
+            if time.time() >= due:
+                st = _run_scheduled_backup(ev["passphrase"], ev["keep_last"], ev["mirror_dir"])
+                last_ts, last_ok = time.time(), bool(st.get("ok"))
+        except Exception as e:  # noqa: BLE001 — a failed pass is logged and the loop continues
+            log.warning("backup scheduler pass failed (will retry): %s", e)
+            last_ts, last_ok = time.time(), False
         time.sleep(5.0)
 
 
