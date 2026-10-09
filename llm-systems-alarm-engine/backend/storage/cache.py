@@ -49,10 +49,14 @@ class MetricCache:
         metric_ttl_seconds: int = 3600,  # 1 hour
         alert_ttl_seconds: int = 86400,  # 24 hours
         max_entries: int = 100000,
+        max_hosts_per_series: Optional[int] = None,
     ):
         self._metric_ttl = metric_ttl_seconds
         self._alert_ttl = alert_ttl_seconds
         self._max_entries = max_entries
+        self.max_hosts_per_series = max(1, int(max_hosts_per_series or self._MAX_HOSTS_PER_SERIES))
+        # Series that already logged the host-cap warning once.
+        self._host_cap_warned: set[str] = set()
 
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
         # _lock covers the generic key/value LRU below (set/get/delete/clear).
@@ -70,9 +74,9 @@ class MetricCache:
         self._point_timestamps: dict[str, dict[str, list[float]]] = {}
         logger.info(
             "MetricCache initialized: metric_ttl=%ss alert_ttl=%ss "
-            "max_entries=%d shards=%d",
+            "max_entries=%d shards=%d max_hosts_per_series=%d",
             metric_ttl_seconds, alert_ttl_seconds, max_entries,
-            self._N_SHARDS,
+            self._N_SHARDS, self.max_hosts_per_series,
         )
 
     def _shard(self, key: str) -> threading.Lock:
@@ -110,9 +114,9 @@ class MetricCache:
     # ~1800 pts/host, so 2500 leaves headroom for each host independently.
     _MAX_POINTS_PER_SERIES = 2500
 
-    # Hard cap on distinct host sub-buffers per series; the stalest host is
-    # evicted when a new one would exceed it. Bounds hostname cardinality.
-    _MAX_HOSTS_PER_SERIES = 32
+    # Default cap on distinct host sub-buffers per series; the stalest host
+    # is evicted when a new one would exceed it. Overridden per instance.
+    _MAX_HOSTS_PER_SERIES = 256
 
     def add_metric_point(self, point: MetricPoint) -> None:
         """Add a single metric point — convenience wrapper around the bulk
@@ -168,18 +172,26 @@ class MetricCache:
                     series_ts = self._point_timestamps.setdefault(key, {})
                     for host, (new_pts, new_ts) in grouped[key].items():
                         if (host not in series
-                                and len(series) >= self._MAX_HOSTS_PER_SERIES):
+                                and len(series) >= self.max_hosts_per_series):
                             stalest = min(
                                 series_ts,
                                 key=lambda h: series_ts[h][-1] if series_ts[h] else 0.0,
                             )
                             series.pop(stalest, None)
                             series_ts.pop(stalest, None)
-                            logger.warning(
-                                "metric-cache: series %s exceeded %d hosts — "
-                                "evicted stalest host %r",
-                                key, self._MAX_HOSTS_PER_SERIES, stalest,
-                            )
+                            if key not in self._host_cap_warned:
+                                self._host_cap_warned.add(key)
+                                logger.warning(
+                                    "metric-cache: series %s has more than %d hosts; "
+                                    "the stalest host is evicted on each new one "
+                                    "(raise [alarm_engine.caches].max_hosts_per_metric)",
+                                    key, self.max_hosts_per_series,
+                                )
+                            else:
+                                logger.debug(
+                                    "metric-cache: series %s over host cap — "
+                                    "evicted stalest host %r", key, stalest,
+                                )
                         points = series.setdefault(host, [])
                         timestamps = series_ts.setdefault(host, [])
 
@@ -347,6 +359,7 @@ class MetricCache:
         # finalise by wiping the structures.
         self._metric_points.clear()
         self._point_timestamps.clear()
+        self._host_cap_warned.clear()
 
     def cleanup_expired(self) -> int:
         """Remove all expired entries. Returns count of removed entries."""
@@ -390,6 +403,7 @@ class MetricCache:
                     if not by_host:
                         self._metric_points.pop(key, None)
                         self._point_timestamps.pop(key, None)
+                        self._host_cap_warned.discard(key)
                         removed += 1
         if removed:
             logger.info("metric-cache sweep evicted %d idle series", removed)
@@ -454,9 +468,11 @@ class Cache(MetricCache):
         metric_ttl_seconds: int = 3600,
         alert_ttl_seconds: int = 86400,
         max_entries: int = 100000,
+        max_hosts_per_series: Optional[int] = None,
     ):
         super().__init__(
             metric_ttl_seconds=metric_ttl_seconds,
             alert_ttl_seconds=alert_ttl_seconds,
             max_entries=max_entries,
+            max_hosts_per_series=max_hosts_per_series,
         )

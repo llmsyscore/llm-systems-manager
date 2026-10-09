@@ -26,7 +26,7 @@ class _Stop(Exception):
 @pytest.fixture
 def banner_only(monkeypatch, caplog):
     """Runs _on_startup up to the cache init and returns the captured records."""
-    def _boom():
+    def _boom(*a, **k):
         raise _Stop()
     monkeypatch.setattr(ae, "Cache", _boom)
 

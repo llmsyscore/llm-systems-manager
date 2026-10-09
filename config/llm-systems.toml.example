@@ -412,6 +412,7 @@ rule_repo_ttl_s               = 300                      # rule list memoization
 alert_repo_ttl_s              = 300                      # active-alert list memoization (5 min)
 metric_catalog_warmup_days    = 7                        # boot scan depth for the metric dropdown
 websocket_queue_size          = 500                      # WS out-queue depth
+max_hosts_per_metric          = 256                      # hosts kept per metric in the recent-history cache; the stalest host is dropped past this
 
 # ── Alert correlation / incident grouping ────────────────────────────
 [alarm_engine.correlation]
