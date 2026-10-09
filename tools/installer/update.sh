@@ -573,8 +573,18 @@ $HAVE_AGENT   && ok "local agent   installed"  || log "local agent   not install
 if ! $HAVE_MANAGER && ! $HAVE_AE && ! $HAVE_AGENT; then
   if $_AGENT_PKG_SKIPPED; then
     ok "nothing to update — the only component here (the agent) is package-managed; use apt/dnf"
+  fi
+  # An InfluxDB-only host has no code to sync; refresh its host tuning and stop.
+  if $HAVE_INFLUX; then
+    banner "InfluxDB host tuning"
+    _tune_args=()
+    (( DRY_RUN ))     && _tune_args+=(--dry-run)
+    (( SKIP_RESTART )) && _tune_args+=(--no-restart)
+    (( ASSUME_YES && ! SKIP_RESTART )) && _tune_args+=(--restart)
+    bash "$THIS_DIR/tune-influxdb.sh" ${_tune_args[@]+"${_tune_args[@]}"}
     exit 0
   fi
+  $_AGENT_PKG_SKIPPED && exit 0
   die "nothing to update — run install.sh to install components first"
 fi
 

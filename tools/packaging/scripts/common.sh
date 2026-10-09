@@ -232,6 +232,17 @@ llmsys_enable_start() {
     || echo "llm-systems-manager: services failed to start — check 'journalctl -u llm-systems-manager'" >&2
 }
 
+# Refreshes the InfluxDB host tuning (tune-influxdb.sh) when influxdb.service is local.
+llmsys_influx_tune() {
+  local tune="$LLMSYS_INSTALL_DIR/tools/installer/tune-influxdb.sh"
+  llmsys_systemd_ready || return 0
+  [ -f "$tune" ] || return 0
+  systemctl list-unit-files --no-legend --type=service 2>/dev/null | awk '{print $1}' \
+    | grep -qx 'influxdb.service' || return 0
+  bash "$tune" --restart </dev/null \
+    || echo "llm-systems-manager: WARNING — InfluxDB host tuning failed; run: sudo bash $tune --restart" >&2
+}
+
 llmsys_restart_upgraded() {
   llmsys_systemd_ready || return 0
   systemctl daemon-reload
@@ -297,6 +308,7 @@ llmsys_configure() {
     llmsys_admin_signin
     if [ "${LLMSYS_AE_GATED:-0}" = "1" ]; then llmsys_ae_gated_notice; fi
   else
+    llmsys_influx_tune
     llmsys_restart_upgraded
     llmsys_admin_signin
   fi
