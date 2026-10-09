@@ -26,6 +26,12 @@ def _flux_str(value: str) -> str:
             .replace("\n", "\\n").replace("\r", "\\r").replace("${", "\\${"))
 
 
+def _count_accepted_batch(conf: tuple, data: bytes | str) -> None:
+    """Batching-writer success callback: one count per line-protocol row written."""
+    raw = data if isinstance(data, bytes) else str(data).encode()
+    INFLUX_WRITES.add(len([ln for ln in raw.split(b"\n") if ln.strip()]))
+
+
 class InfluxDBClient:
     """InfluxDB v2 client wrapper for alarm engine metric data.
 
@@ -68,6 +74,7 @@ class InfluxDBClient:
         # Metrics: high-volume firehose (~hundreds of series × 2-30s cadence).
         # Batched async writes coalesce many points into one HTTP request,
         # dropping InfluxDB ingest CPU dramatically vs SYNCHRONOUS.
+        # The writes/s counter advances only for batches InfluxDB accepted.
         self._metrics_write = self._metrics_client.write_api(
             write_options=WriteOptions(
                 batch_size=500,
@@ -77,7 +84,8 @@ class InfluxDBClient:
                 max_retries=3,
                 max_retry_delay=30_000,
                 exponential_base=2,
-            )
+            ),
+            success_callback=_count_accepted_batch,
         )
 
         # Synchronous single-point writer for the self-monitor write probe.
@@ -113,9 +121,8 @@ class InfluxDBClient:
             self._rollup_read_bucket = self.metrics_bucket
 
     def write_metric(self, point: dict[str, Any]) -> None:
-        """Write a single metric data point."""
+        """Queue a single metric data point for the batching writer."""
         self._metrics_write.write(bucket=self.metrics_bucket, record=point)
-        INFLUX_WRITES.add(1)
 
     def write_metric_sync(self, point: dict[str, Any]) -> None:
         """Synchronous single-point write; raises on write failure."""
@@ -127,7 +134,6 @@ class InfluxDBClient:
         if not points:
             return
         self._metrics_write.write(bucket=self.metrics_bucket, record=points)
-        INFLUX_WRITES.add(len(points))
 
     def query_metrics(
         self,

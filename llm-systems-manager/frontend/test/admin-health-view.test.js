@@ -88,7 +88,8 @@ describe('services column', () => {
     expect(rows[1].lk).toEqual(['cert missing', 'crit']);
     expect(rows[1].upTxt).toBe('unreachable');
     expect(rows[1].upCls).toBe('crit');
-    expect(rows[2].upTxt).toBe('unknown');
+    expect(rows[2].upTxt).toBe('unreachable');
+    expect(rows[2].upCls).toBe('crit');
   });
 
   test('the AE restart button is always rendered and names the self-restart API', () => {
