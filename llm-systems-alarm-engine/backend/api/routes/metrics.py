@@ -5,6 +5,7 @@ Endpoints:
     POST   /api/alarm/metrics                  - Ingest a single metric point
     POST   /api/alarm/metrics/batch            - Ingest pre-flattened MetricPoints
     POST   /api/alarm/metrics/ingest           - Ingest raw agent payloads (auto-flattens)
+    GET    /api/alarm/metrics/probe            - Time one long-range read (ingest token)
     GET    /api/alarm/metrics/{source}/{name}  - Get metric history
     GET    /api/alarm/metrics/{source}/{name}/summary - Get metric summary
 """
@@ -330,6 +331,29 @@ async def export_metrics(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
+
+
+@router.get("/probe")
+async def probe_history_read(
+    since_minutes: int = Query(1440, ge=1, le=_HIST_SINCE_MAX),
+    _auth: None = Depends(require_ingest_token),
+    metric_repo: MetricRepository = Depends(get_metric_repo),
+) -> dict:
+    """Run the system/cpu_total history read for the agent latency probe;
+    returns only the point count and the read time."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+
+    def _read() -> dict:
+        t0 = time.perf_counter()
+        rows = metric_repo.get_history_rows(
+            "system", "cpu_total", since=since, limit=_HIST_LIMIT_MAX, hostname=None,
+            agg="mean", max_points=_HIST_MAX_POINTS_DEFAULT,
+        )
+        rows = downsample_history(rows, _HIST_MAX_POINTS_DEFAULT, agg="mean")
+        return {"points": len(rows),
+                "read_ms": round((time.perf_counter() - t0) * 1000.0, 2)}
+
+    return await asyncio.get_running_loop().run_in_executor(_READ_POOL, _read)
 
 
 @router.get("/{source}/{metric_name}")
