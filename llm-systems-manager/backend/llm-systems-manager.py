@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.09-2"
+__version__ = "v2026.10.09-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1199,23 +1199,28 @@ def _fetch_history_series(base: str, source: str, metric_name: str, field: str,
             params=params,
             timeout=5,
         )
+        if r.status_code >= 500:
+            return field, None
         if r.status_code != 200:
             return field, []
         return field, r.json()
     except Exception as e:
         log.debug(f"history fetch failed for {source}/{metric_name}: {e}")
-        return field, []
+        return field, None
 
 def _build_history_rows(since_minutes: int, limit: int,
                         hostname: "str | None" = None,
-                        aggregate: bool = False) -> list[dict]:
+                        aggregate: bool = False,
+                        failed: "set[str] | None" = None) -> list[dict]:
     """Fan out parallel reads against the alarm engine and merge into rows.
     When hostname is set, every series is filtered to that one host (the AE's
     /api/alarm/metrics/<source>/<name> endpoint takes a hostname query param).
 
     aggregate=True combines every host reporting a field at the same timestamp
     via _FLEET_FIELD_AGG instead of letting the last one written win. The AE
-    downsamples onto wall-clock boundaries, so all hosts share timestamps."""
+    downsamples onto wall-clock boundaries, so all hosts share timestamps.
+
+    failed, when given, collects the fields whose fetch did not reach the AE."""
     if not _alarm_engine_url:
         return []
     base = _alarm_engine_url.rstrip("/")
@@ -1238,6 +1243,10 @@ def _build_history_rows(since_minutes: int, limit: int,
     accum: dict[str, dict[str, dict]] = {}
     for fut in futures:
         field, points = fut.result()
+        if points is None:
+            if failed is not None:
+                failed.add(field)
+            continue
         for p in points:
             ts = p.get("timestamp")
             if not ts:
@@ -1349,7 +1358,7 @@ def _build_fleet_history_rows(provider: str, since_minutes: int,
     for fut in futures:
         f, points = fut.result()
         hb: dict[str, object] = {}
-        for p in points:
+        for p in points or []:
             ts = p.get("timestamp")
             if not ts:
                 continue
@@ -1542,6 +1551,44 @@ def _offline_sweep_loop():
             slept += 0.5
 
 
+def _carry_forward_fields(rows: list[dict], prior: list[dict],
+                          fields: "set[str]", cutoff: float) -> list[dict]:
+    """Copy prior-ring values for the given fields onto rows, by timestamp,
+    skipping prior rows older than cutoff (epoch seconds)."""
+    by_ts: dict[str, dict] = {r["ts"]: r for r in rows}
+    for p in prior:
+        ts = p.get("ts")
+        if not ts:
+            continue
+        try:
+            if datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() < cutoff:
+                continue
+        except Exception:
+            continue
+        for f in fields:
+            if f in p and f not in by_ts.get(ts, {}):
+                by_ts.setdefault(ts, {"ts": ts})[f] = p[f]
+    return sorted(by_ts.values(), key=lambda r: r["ts"])
+
+
+def _history_refresh_tick() -> "tuple[list[dict], set[str]]":
+    """One ring refill: fetch every field, carry the prior ring's rows forward
+    for fields whose fetch failed, then store. Returns (rows, failed_fields)."""
+    global _history_rows
+    failed: set[str] = set()
+    rows = _build_history_rows(HISTORY_WINDOW_MINUTES, HISTORY_FETCH_LIMIT,
+                               failed=failed)
+    with _history_lock:
+        prior = _history_rows
+    if rows and failed and prior:
+        rows = _carry_forward_fields(
+            rows, prior, failed, time.time() - HISTORY_WINDOW_MINUTES * 60)
+    with _history_lock:
+        if rows or not _history_rows:
+            _history_rows = rows
+    return rows, failed
+
+
 def _history_refresher_loop():
     """Refill the in-memory 60-min ring every HISTORY_REFRESH_INTERVAL_S.
 
@@ -1552,20 +1599,16 @@ def _history_refresher_loop():
     refresh cycle. We now keep the prior ring on empty fetches so a
     transient failure can't blank good data.
     """
-    global _history_rows
     consecutive_empties = 0
     while True:
         try:
-            rows = _build_history_rows(HISTORY_WINDOW_MINUTES, HISTORY_FETCH_LIMIT)
-            with _history_lock:
-                if rows:
-                    _history_rows = rows
-                    consecutive_empties = 0
-                elif not _history_rows:
-                    # Existing ring is also empty (cold start); accept
-                    # the empty so the next-tick race-fix below can flip
-                    # back to populated when the AE recovers.
-                    _history_rows = rows
+            rows, failed = _history_refresh_tick()
+            if rows:
+                consecutive_empties = 0
+            if rows and failed:
+                log.info("history refresher: %d field(s) unreachable this tick; "
+                         "carried prior rows forward: %s",
+                         len(failed), ", ".join(sorted(failed)))
             if not rows:
                 consecutive_empties += 1
                 if consecutive_empties == 1:
