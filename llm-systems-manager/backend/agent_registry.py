@@ -662,6 +662,24 @@ def _role_probe_tick(data: dict) -> None:
             break
 
 
+# Seconds after a first TLS bundle during which the agent is expected to be restarting.
+_TLS_RESTART_WINDOW_S = 90
+
+
+def _in_planned_restart(agent: dict) -> bool:
+    """True while the agent is inside its post-approval restart window."""
+    until = agent.get("tls_restart_until")
+    if not until:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(until).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) < dt
+
+
 class RequestError(str):
     """agent_request failure text; timed_out marks a read timeout on a callback URL."""
     timed_out = False
@@ -703,7 +721,11 @@ def agent_request(method: str, agent: dict, path: str, **kwargs
             return resp, tried, None
         except Exception as e:
             note_dial_error(agent, base, e)
-            log.warning("agent_request %s %s failed: %s: %s", method, full, type(e).__name__, e)
+            if _in_planned_restart(agent):
+                log.info("agent_request %s %s failed while the agent restarts for HTTPS: %s",
+                         method, full, type(e).__name__)
+            else:
+                log.warning("agent_request %s %s failed: %s: %s", method, full, type(e).__name__, e)
             timed_out |= isinstance(e, requests.exceptions.ReadTimeout)
             last_err = f"{full}: request failed"
             continue
@@ -1340,6 +1362,11 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
             if a is not None:
                 a["last_cert_issued_at"] = datetime.now(timezone.utc).isoformat()
                 a["cert_role_sent_at"] = a["last_cert_issued_at"]
+                # An agent on plain HTTP restarts itself to bind HTTPS after this bundle.
+                if reason_hint == "first-issue" or (a.get("bind_url") or "").startswith("http://"):
+                    a["tls_restart_until"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=_TLS_RESTART_WINDOW_S)
+                    ).isoformat()
                 # Clear the admin-rotation flag once the fresh bundle has
                 # actually been built; otherwise every subsequent heartbeat
                 # would keep issuing.
