@@ -14,8 +14,10 @@
 #                     $(brew --prefix)/var/log/llm-systems-manager (required)
 #
 # Does:
-#   - If LSM_BREW_CONFIG already exists (an upgrade), keeps it and only adds the
-#     https entries to [alarm_engine].cors_origins, then exits 0.
+#   - If LSM_BREW_CONFIG already exists (an upgrade), keeps it: adds keys the
+#     example introduced (operator values kept), adds the https entries to
+#     [alarm_engine].cors_origins, keeps the previous file as .bak.<stamp>
+#     next to it when anything changed, then exits 0.
 #   - Copies the example, rewrites [paths].log_dir to LSM_BREW_LOG_DIR, and
 #     generates [alarm_engine] ingest_token + management_token (the co-located
 #     default the script installer also applies).
@@ -36,28 +38,87 @@ LOG_DIR="${LSM_BREW_LOG_DIR:-}"
 [ -n "$LOG_DIR" ] || die "LSM_BREW_LOG_DIR is not set"
 [ -f "$EXAMPLE" ] || die "example config not found: $EXAMPLE"
 
+# Python with tomllib: the keg venv first, then the PATH interpreter.
+find_python() {
+  local here cand
+  here="$(cd "$(dirname "$0")" && pwd)"
+  for cand in "$here/../../venv/bin/python3" python3; do
+    if "$cand" -c 'import tomllib' >/dev/null 2>&1; then printf '%s\n' "$cand"; return 0; fi
+  done
+  return 1
+}
+
+# Copies the config to <config>.bak.<stamp> once per run, before the first rewrite.
+BACKUP_DONE=0
+backup_once() {
+  local bak
+  [ "$BACKUP_DONE" -eq 1 ] && return 0
+  bak="$TARGET.bak.$(date +%Y%m%d-%H%M%S)"
+  (umask 077; cp "$TARGET" "$bak") || return 1
+  chmod 0600 "$bak"
+  BACKUP_DONE=1
+  echo "brew-seed-config: previous config kept at $bak"
+}
+
+# Replaces the config with <tmp> after a backup; keeps the config on any failure.
+install_rewrite() {
+  local tmp="$1"
+  if backup_once && mv "$tmp" "$TARGET"; then
+    chmod 0600 "$TARGET"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Adds keys the example introduced to the existing config, keeping operator
+# values; any failure leaves the config as it is.
+merge_new_keys() {
+  local py here tmp err added
+  py="$(find_python)" || return 0
+  here="$(cd "$(dirname "$0")" && pwd)"
+  tmp="$TARGET.seed.$$"
+  err="$TARGET.seed.$$.err"
+  if (umask 077; "$py" -B "$here/toml_reconcile.py" merge "$TARGET" "$EXAMPLE" > "$tmp" 2> "$err") \
+     && [ -s "$tmp" ]; then
+    added="$(awk -F= '/^ADDED=/{print $2}' "$err")"
+    rm -f "$err"
+    if [ "${added:-0}" = "0" ]; then
+      rm -f "$tmp"
+    elif install_rewrite "$tmp"; then
+      echo "brew-seed-config: merged $added new key(s) from the example into $TARGET"
+    else
+      echo "brew-seed-config: could not write the merged config — $TARGET kept as is; compare it with $EXAMPLE" >&2
+    fi
+  else
+    rm -f "$tmp" "$err"
+    echo "brew-seed-config: could not merge new keys into $TARGET — kept as is; compare it with $EXAMPLE" >&2
+  fi
+}
+
 # Adds the https twin of each http origin to the existing config's
 # [alarm_engine].cors_origins; any failure leaves the config as it is.
 fix_origins() {
-  local here py="" cand tmp
+  local py here tmp
+  py="$(find_python)" || return 0
   here="$(cd "$(dirname "$0")" && pwd)"
-  for cand in "$here/../../venv/bin/python3" python3; do
-    if "$cand" -c 'import tomllib' >/dev/null 2>&1; then py="$cand"; break; fi
-  done
-  [ -n "$py" ] || return 0
   tmp="$TARGET.seed.$$"
   if (umask 077; "$py" -B "$here/toml_reconcile.py" origins "$TARGET" "" 0 > "$tmp" 2>/dev/null) \
      && [ -s "$tmp" ] && ! cmp -s "$tmp" "$TARGET"; then
-    mv "$tmp" "$TARGET"
-    chmod 0600 "$TARGET"
-    echo "brew-seed-config: added https entries to the alarm engine's allowed origins"
+    if install_rewrite "$tmp"; then
+      echo "brew-seed-config: added https entries to the alarm engine's allowed origins"
+    else
+      echo "brew-seed-config: could not write the allowed-origins fix — $TARGET kept as is" >&2
+    fi
   else
     rm -f "$tmp"
   fi
+  return 0
 }
 
 if [ -f "$TARGET" ]; then
   echo "brew-seed-config: $TARGET already exists — keeping it"
+  merge_new_keys
   fix_origins
   exit 0
 fi
