@@ -49,6 +49,11 @@ def read_influx_settings(path_override: str = "") -> Optional[dict]:
         return None
     tokens = influx.get("tokens") if isinstance(influx.get("tokens"), dict) else {}
     metrics_bucket = influx.get("metrics_bucket", "")
+    downsampling: dict = data
+    for key in ("alarm_engine", "history", "downsampling"):
+        downsampling = downsampling.get(key) if isinstance(downsampling, dict) else None
+    if not isinstance(downsampling, dict):
+        downsampling = {}
     return {
         "host": influx.get("host", "localhost"),
         "port": int(influx.get("port", 8086) or 8086),
@@ -57,6 +62,7 @@ def read_influx_settings(path_override: str = "") -> Optional[dict]:
         "metrics_rollup_bucket": influx.get("metrics_rollup_bucket") or metrics_bucket,
         "token": tokens.get("metrics", "") or "",
         "rollup_token": tokens.get("metrics_rollup", "") or "",
+        "rollup_measurement": downsampling.get("rollup_measurement") or "metrics_1m",
     }
 
 

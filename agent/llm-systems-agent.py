@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.09-1"
+VERSION = "v2026.10.09-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1628,6 +1628,21 @@ def _probe_ae_ingest() -> Optional[float]:
         return None
 
 
+def _influx_probe_flux(bucket: str, measurement: str, start: str) -> str:
+    """Flux for one probe read: the newest 10 system/cpu_total points per
+    host in the window, so 5m and 24h probes measure the same kind of read."""
+    return (
+        f'from(bucket: "{bucket}") '
+        f'|> range(start: {start}) '
+        f'|> filter(fn: (r) => r._measurement == "{measurement}") '
+        f'|> filter(fn: (r) => r.source == "system") '
+        f'|> filter(fn: (r) => r.metric_name == "cpu_total") '
+        f'|> filter(fn: (r) => r._field == "value") '
+        f'|> sort(columns: ["_time"], desc: true) '
+        f'|> limit(n: 10)'
+    )
+
+
 def _probe_influxdb() -> dict[str, Optional[float]]:
     """Probe InfluxDB write + 5m/24h query latencies; failed keys stay None."""
     out: dict[str, Optional[float]] = {
@@ -1654,6 +1669,7 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
     rollup_bucket = cfg["metrics_rollup_bucket"]
     token = cfg["token"]
     rollup_token = cfg["rollup_token"]
+    rollup_measurement = cfg.get("rollup_measurement") or "metrics_1m"
 
     if not (host and token):
         _influx_reset_clients()
@@ -1705,12 +1721,7 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
         logger.debug("influx write probe failed: %s", e)
 
     qapi = client.query_api()
-    flux_5m = (
-        f'from(bucket: "{bucket}") '
-        f'|> range(start: -5m) '
-        f'|> filter(fn: (r) => r._measurement == "metrics") '
-        f'|> limit(n: 10)'
-    )
+    flux_5m = _influx_probe_flux(bucket, "metrics", "-5m")
     try:
         t0 = time.perf_counter()
         _ = qapi.query(flux_5m)
@@ -1724,13 +1735,9 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
     use_rollup = bool(rollup_token) and bool(rollup_bucket) and rollup_bucket != bucket
     if not use_rollup:
         _influx_drop_client("rollup")
-    q24_bucket = rollup_bucket if use_rollup else bucket
-    flux_24h = (
-        f'from(bucket: "{q24_bucket}") '
-        f'|> range(start: -24h) '
-        f'|> filter(fn: (r) => r._measurement == "metrics") '
-        f'|> limit(n: 10)'
-    )
+    flux_24h = _influx_probe_flux(
+        rollup_bucket if use_rollup else bucket,
+        rollup_measurement if use_rollup else "metrics", "-24h")
     rollup_ok = True
     try:
         q24_api = _get_client("rollup", rollup_token).query_api() if use_rollup else qapi
