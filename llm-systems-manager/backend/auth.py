@@ -405,7 +405,8 @@ def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
     """The complete set of endpoints an approved agent's machine token may reach,
     beyond /api/remote/*, /status, and /cert-bundle already allowed in the gate."""
     if path in ("/api/agents/heartbeat", "/api/agents/whoami",
-                "/api/agent-tarball", "/api/metrics", "/api/history"):
+                "/api/agent-tarball", "/api/metrics", "/api/history",
+                "/api/manager/request-stats"):
         return True
     # Write-only: an agent records its own finished runs (#772) but must not
     # read or clear the ledger.
@@ -417,6 +418,109 @@ def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
     return path.startswith("/api/agents/") and path.endswith("/llama-state")
 
 
+# ── Anonymous request budget (#1216) ─────────────────────────────────
+_ANON_BUDGET_PATHS = frozenset({"/api/agents/register", "/login"})
+_ANON_BUDGET_WINDOW_S = 60
+
+
+def _anon_budget_limit() -> int:
+    """[manager.security].anon_request_budget_per_min; 0 disables the budget."""
+    try:
+        return max(0, int(getattr(_settings.manager.security, "anon_request_budget_per_min", 600)))
+    except (AttributeError, TypeError, ValueError):
+        return 600
+
+
+class _AnonBudget:
+    """Fixed-window counter over the anonymous routes; logs once per window."""
+
+    def __init__(self, now: Callable[[], float] = time.monotonic) -> None:
+        self._now = now
+        self._lock = threading.Lock()
+        self._cell = int(now() // _ANON_BUDGET_WINDOW_S)
+        self._count = 0
+        self._refused = 0
+        self._prev_count = 0
+        self._prev_refused = 0
+
+    def _roll(self, now: float) -> int:
+        """Moves to the clock's current minute cell; returns the refusals of the cell left behind."""
+        cell = int(now // _ANON_BUDGET_WINDOW_S)
+        if cell == self._cell:
+            return 0
+        refused = self._refused
+        # Only the cell right before this one counts as the last full minute.
+        if cell == self._cell + 1:
+            self._prev_count, self._prev_refused = self._count + refused, refused
+        else:
+            self._prev_count, self._prev_refused = 0, 0
+        self._cell, self._count, self._refused = cell, 0, 0
+        return refused
+
+    def stats(self) -> dict:
+        """Requests and refusals on the open routes in the last full minute."""
+        with self._lock:
+            summary = self._roll(self._now())
+            out = {"anon_requests_per_min": self._prev_count,
+                   "anon_refused_per_min": self._prev_refused}
+        if summary:
+            log.warning("refused %d anonymous requests in the last minute (budget %d/min)",
+                        summary, _anon_budget_limit())
+        return out
+
+    def allow(self) -> bool:
+        limit = _anon_budget_limit()
+        if limit <= 0:
+            return True
+        first = False
+        with self._lock:
+            summary = self._roll(self._now())
+            if self._count < limit:
+                self._count += 1
+                allowed = True
+            else:
+                self._refused += 1
+                first = self._refused == 1
+                allowed = False
+        if summary:
+            log.warning("refused %d anonymous requests in the last minute (budget %d/min)",
+                        summary, limit)
+        if first:
+            log.warning("anonymous request budget spent (budget %d/min) — refusing "
+                        "registrations, status polls and logins until the window rolls", limit)
+        return allowed
+
+
+_ANON_BUDGET = _AnonBudget()
+
+
+def anon_request_stats() -> dict:
+    """{anon_requests_per_min, anon_refused_per_min} for the last full minute."""
+    return _ANON_BUDGET.stats()
+
+
+def _request_stats_view():
+    return jsonify({"ok": True, **anon_request_stats()})
+
+
+def _anon_budgeted(path: str) -> bool:
+    """True for a budgeted path requested without a session or a known agent bearer."""
+    if not (path in _ANON_BUDGET_PATHS or _AGENT_STATUS_PATH_RE.fullmatch(path) is not None
+            or _CERT_BUNDLE_PATH_RE.fullmatch(path) is not None):
+        return False
+    if session.get("auth_ok") is True:
+        return False
+    return not _agent_by_token(_bearer_from_request() or "")
+
+
+def _anon_budget_refusal(path: str):
+    g.anon_budget_refused = True
+    headers = {"Retry-After": str(_ANON_BUDGET_WINDOW_S)}
+    if _wants_json(path):
+        return jsonify({"ok": False, "error": "too many requests; try again later"}), 429, headers
+    return "Too many requests; try again later.\n", 429, {**headers, "Content-Type": "text/plain; charset=utf-8"}
+
+
 # ── before_request gate ──────────────────────────────────────────────
 def _wants_json(path: str) -> bool:
     return path.startswith(("/api/", "/proxy/", "/sdcpp", "/ws/"))
@@ -425,6 +529,8 @@ def _wants_json(path: str) -> bool:
 def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
+    if _anon_budgeted(path) and not _ANON_BUDGET.allow():
+        return _anon_budget_refusal(path)
     # Always-open infra paths — never gated, never role-checked. The icon
     # prefix (#522) requires an ALREADY-normalized path: the gate and
     # Werkzeug's dispatcher disagree about "..", in both directions.
@@ -880,3 +986,5 @@ def register_auth(app, ctx, *,
                      view_func=_admin_auth_get, methods=["GET"])
     app.add_url_rule("/api/admin/auth", endpoint="admin_auth_set",
                      view_func=_admin_auth_set, methods=["POST"])
+    app.add_url_rule("/api/manager/request-stats", endpoint="manager_request_stats",
+                     view_func=_request_stats_view, methods=["GET"])

@@ -20,6 +20,31 @@
   };
 
   let _selNode = null;
+  let _autoNode = null;      // node the card opened by itself (null = operator's choice)
+  let _mutedNode = null;     // flagged node the operator closed; stays shut until it heals
+
+  // Worst flag among a node's detail rows ('' | 'warn' | 'crit').
+  function rowsWorst(d, node) {
+    let worst = '';
+    for (const r of detailRows(d, node)) {
+      if (r[2] === 'crit') return 'crit';
+      if (r[2] === 'warn') worst = 'warn';
+    }
+    return worst;
+  }
+
+  // Opens a node whose trouble the diagram cannot show on an edge: any crit
+  // row, or a warn row on the manager (its own pressure has no edge). The
+  // operator's own pick or close always wins.
+  function autoSelect(flags) {
+    const order = ['manager', 'agents', 'ae', 'influx', 'browsers'];
+    const flagged = order.filter(n => flags[n] === 'crit' || (n === 'manager' && flags[n]));
+    const worst = flagged.find(n => flags[n] === 'crit') || flagged[0] || null;
+    if (_mutedNode && !flags[_mutedNode]) _mutedNode = null;
+    if (_selNode && _selNode !== _autoNode) return;          // operator's own pick
+    if (_autoNode && !flags[_autoNode]) { _selNode = null; _autoNode = null; }
+    if (worst && worst !== _mutedNode && !_selNode) { _selNode = worst; _autoNode = worst; }
+  }
   let _last = null;
 
   // ── formatting ───────────────────────────────────────────────────────
@@ -286,6 +311,9 @@
         ['agent links', dash(conns.agents)],
         ['worker threads', total != null ? `${busy} / ${total} busy` : '—',
           total && busy / total >= 0.9 ? 'warn' : ''],
+        ['open routes', flow.anon_req_per_min != null
+          ? `${flow.anon_req_per_min} /min · ${flow.anon_refused_per_min || 0} refused` : '—',
+          flow.anon_refused_per_min ? 'warn' : ''],
         ['engine probe', ae && ae.ok ? ms(ae.latency_ms) : 'timeout', ae && ae.ok ? '' : 'crit'],
       ];
     }
@@ -497,11 +525,15 @@
           if (t) t.textContent = st.label;
         }
       }
+      const flags = {};
       for (const [nid, eids] of Object.entries(NODE_EDGES)) {
         const n = svg.querySelector('#hc' + nid);
         if (!n) continue;
         let worst = 'ok';
         for (const eid of eids) if (WORST[edges[eid].state] > WORST[worst]) worst = edges[eid].state;
+        const rw = rowsWorst(_last, n.dataset.node);
+        if (rw && WORST[rw] > WORST[worst]) worst = rw;
+        if (worst === 'warn' || worst === 'crit') flags[n.dataset.node] = worst;
         n.setAttribute('class', 'hc-node ' + worst + (n.dataset.node === _selNode ? ' sel' : ''));
         const sb = n.querySelector('.sb');
         if (sb) {
@@ -510,9 +542,16 @@
           fitText(sb, Number(n.querySelector('rect').getAttribute('width')) - 30);
         }
       }
+      autoSelect(flags);
+      svg.querySelectorAll('.hc-node').forEach(n => n.classList.toggle('sel', n.dataset.node === _selNode));
       if (!svg._hcBound) {
         svg._hcBound = true;
-        const toggleNode = n => { _selNode = (_selNode === n.dataset.node) ? null : n.dataset.node; renderDetail(); };
+        const toggleNode = n => {
+          _selNode = (_selNode === n.dataset.node) ? null : n.dataset.node;
+          _autoNode = null;
+          if (!_selNode && n.dataset.node) _mutedNode = n.dataset.node;
+          renderDetail();
+        };
         svg.addEventListener('click', ev => {
           const n = ev.target.closest('.hc-node');
           if (n) toggleNode(n);
@@ -568,7 +607,7 @@
     if (det && !det._hcBound) {
       det._hcBound = true;
       det.addEventListener('click', ev => {
-        if (ev.target.closest('[data-close]')) { _selNode = null; renderDetail(); }
+        if (ev.target.closest('[data-close]')) { _mutedNode = _selNode; _selNode = null; _autoNode = null; renderDetail(); }
       });
     }
     renderDetail();
@@ -577,7 +616,7 @@
   window.HealthView = {
     render, svcRows, svcRowHtml, edgeStates, nodeSubs, detailRows, warnRows, pillOf, upStr, num, authState,
     jobsRows, jobsHtml, jobsSummary,
-    select: n => { _selNode = n; renderDetail(); },
+    select: n => { _selNode = n; _autoNode = null; renderDetail(); },
     selected: () => _selNode,
   };
 })();

@@ -351,6 +351,11 @@ async function fetchServicesAndInflux() {
       const apiAge = sAge('manager_api_latency_ms');
       setText('mgrPerfApi',     fmtMs(apiV));
       setText('mgrPerfHistory', 'history: ' + fmtMs(histV));
+      const anonAge = sAge('manager_anon_requests_per_min');
+      const anonReq = (anonAge == null || anonAge > SM_STALE_S) ? null : sGet('manager_anon_requests_per_min');
+      const anonRef = anonReq == null ? null : sGet('manager_anon_refused_per_min');
+      setText('mgrPerfAnon', anonReq == null ? 'open routes: —'
+        : `open routes: ${Math.round(anonReq)}/min` + (anonRef ? ` · ${Math.round(anonRef)} refused` : ''));
       if (mgrPerfChart && (apiV != null || histV != null)) {
         pushMulti(mgrPerfChart, Date.now(), [apiV, histV]);
       }
@@ -503,11 +508,12 @@ async function fetchManagerStreamsCard() {
     _mgrPoolRefusalTrack = LMSeries.trackRefusals(_mgrPoolRefusalTrack, pool.refusals, now);
     const saturated = pool.active >= pool.limit;
     const refusing = !saturated && _mgrPoolRefusalTrack.recent;
+    const anonRefused = Number(d.anon_refused_per_min) > 0;
     if (badge) {
-      const mod = saturated ? 'status--crit' : refusing ? 'status--warn' : 'status--ok';
+      const mod = saturated ? 'status--crit' : (refusing || anonRefused) ? 'status--warn' : 'status--ok';
       badge.className = 'status ' + mod;
       badge.innerHTML = '<span class="status__dot"></span>'
-        + (saturated ? 'saturated' : refusing ? 'refusing' : 'ok');
+        + (saturated ? 'saturated' : refusing ? 'refusing' : anonRefused ? 'flooded' : 'ok');
     }
     const cell = (label, val, warn) =>
       `<div><span style="color:var(--fg-dim);">${label}:</span> <b style="${warn ? crit : ''}">${val}</b></div>`;
@@ -520,7 +526,10 @@ async function fetchManagerStreamsCard() {
       cell('Worker backlog', v(d.worker_backlog), d.worker_backlog > 0) +
       cell('Browser conns', v(d.browser_connections), false) +
       cell('Agent conns', v(d.agent_connections), false) +
-      cell('Off-pool SSE', d.sse_daemon_running ? `${v(d.sse_daemon_streams)} active` : 'off');
+      cell('Off-pool SSE', d.sse_daemon_running ? `${v(d.sse_daemon_streams)} active` : 'off') +
+      cell('Open routes', d.anon_requests_per_min == null ? '–'
+        : `${v(d.anon_requests_per_min)} /min` + (d.anon_budget_per_min ? ` of ${v(d.anon_budget_per_min)}` : ''), false) +
+      cell('Refused (open routes)', v(d.anon_refused_per_min), anonRefused);
     const agents = d.agents || [];
     const nextTrack = {};
     if (!agents.length) {
@@ -539,7 +548,7 @@ async function fetchManagerStreamsCard() {
       }).join('');
     }
     _mgrAgentRefusalTrack = nextTrack;
-    _dashSetStatus('mgr-streams', saturated ? 'dash-crit' : refusing ? 'dash-warn' : 'dash-ok');
+    _dashSetStatus('mgr-streams', saturated ? 'dash-crit' : (refusing || anonRefused) ? 'dash-warn' : 'dash-ok');
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">error: ${e.message}</td></tr>`;
     _dashSetStatus('mgr-streams', 'dash-off');

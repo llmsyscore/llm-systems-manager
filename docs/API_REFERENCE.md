@@ -47,6 +47,15 @@ Returns the current hardware snapshot across all monitored agents: CPU, RAM, GPU
 
 ---
 
+### `GET /api/manager/request-stats`
+Returns how many requests the manager answered in the last full minute on the pages and routes that need no login or token (agent registration, the waiting-agent status check, the certificate fetch, the login page), and how many of those it refused because the `[manager.security].anon_request_budget_per_min` budget was spent. Agents read it once a minute and store both numbers as the `manager_anon_requests_per_min` / `manager_anon_refused_per_min` self-monitor series; Admin › System Health shows the same pair on the manager node.
+
+**Access:** any signed-in user, or an approved agent's token.
+
+**Response:** `{"ok": true, "anon_requests_per_min": <n>, "anon_refused_per_min": <n>}`
+
+---
+
 ### `GET /api/history`
 Returns historical time-series data used to draw dashboard charts. The time window and resolution are controlled by the server's configured history settings.
 

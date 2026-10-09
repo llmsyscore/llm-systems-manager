@@ -117,6 +117,7 @@ CATALOG: list[dict] = [
     _e("manager.security.admin_cidrs", "list", "Admin CIDRs", "Networks allowed to call admin-only endpoints. One CIDR per line.", "auth", MANAGER),
     _e("manager.security.stream_token_ttl_s", "int", "Stream token TTL (s)", "Lifetime of short-lived SSE/WS tickets.", "auth", MANAGER, min=30, max=3600),
     _e("manager.security.tls_rotation_warn_days", "int", "Cert expiry warning (days)", "Warn when TLS certs expire within N days.", "auth", MANAGER, min=1, max=365),
+    _e("manager.security.anon_request_budget_per_min", "int", "Anonymous request budget (per min)", "Requests per minute allowed on the routes that need no login or token (agent registration, status poll, login). 0 = no limit.", "auth", MANAGER, min=0, max=100000),
     # history
     _e("manager.history.window_minutes", "int", "History window (min)", "Ring-buffer depth behind /api/history; RAM grows with it.", "history", MANAGER, min=1, max=1440),
     _e("manager.history.refresh_interval_s", "float", "Refresh interval (s)", "Background refresher cadence.", "history", MANAGER, min=1, max=300),

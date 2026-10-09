@@ -1430,6 +1430,7 @@ _REG_RATE_TABLE_MAX = 4096
 _REG_STR_FIELDS = {"hostname": 253, "bind_url": 512, "fingerprint": 256, "version": 64,
                    "description": 1000, "agent_user": 128, "role": 64}
 _reg_rate: "dict[str, deque]" = {}
+_reg_refused_logged: "dict[str, float]" = {}
 _reg_rate_lock = threading.Lock()
 
 
@@ -1441,13 +1442,20 @@ def _reg_rate_limited(addr: str, now: "float | None" = None) -> bool:
         while q and q[0] <= now - 60:
             q.popleft()
         if len(q) >= _REG_RATE_PER_MIN:
+            if now - _reg_refused_logged.get(addr, 0.0) >= 60:
+                _reg_refused_logged[addr] = now
+                log.warning("registration REFUSED (rate limit) from %s: %d/min reached",
+                            addr, _REG_RATE_PER_MIN)
             return True
         q.append(now)
         if len(_reg_rate) > _REG_RATE_TABLE_MAX:
             for k in [k for k, v in _reg_rate.items() if not v or v[-1] <= now - 60]:
                 _reg_rate.pop(k, None)
+                _reg_refused_logged.pop(k, None)
             while len(_reg_rate) > _REG_RATE_TABLE_MAX:
-                _reg_rate.pop(next(iter(_reg_rate)))
+                oldest = next(iter(_reg_rate))
+                _reg_rate.pop(oldest, None)
+                _reg_refused_logged.pop(oldest, None)
         return False
 
 

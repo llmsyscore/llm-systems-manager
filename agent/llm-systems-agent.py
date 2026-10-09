@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.09-4"
+VERSION = "v2026.10.09-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1780,10 +1780,30 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
     return out
 
 
+def _probe_manager_request_stats(base: str, hdrs: dict[str, str]) -> dict[str, Optional[float]]:
+    """The manager's open-route request counters for the last full minute; None when unreadable."""
+    out: dict[str, Optional[float]] = {"manager_anon_requests_per_min": None,
+                                       "manager_anon_refused_per_min": None}
+    try:
+        r = _post_session.get(f"{base}/api/manager/request-stats",
+                              timeout=CONFIG.META_PERF_TIMEOUT_S, headers=hdrs)
+        if r.status_code != 200:
+            return out
+        body = r.json() or {}
+        for key, src in (("manager_anon_requests_per_min", "anon_requests_per_min"),
+                         ("manager_anon_refused_per_min", "anon_refused_per_min")):
+            if isinstance(body.get(src), (int, float)):
+                out[key] = float(body[src])
+    except Exception as e:
+        logger.debug("probe manager request-stats failed: %s", e)
+    return out
+
+
 def _probe_manager_perf(base: str, token: str) -> dict[str, Optional[float]]:
-    """Manager latency probes; both stay None until the agent holds a token."""
+    """Manager latency probes and request counters; all stay None until the agent holds a token."""
     if not token:
-        return {"manager_api_latency_ms": None, "manager_history_latency_ms": None}
+        return {"manager_api_latency_ms": None, "manager_history_latency_ms": None,
+                "manager_anon_requests_per_min": None, "manager_anon_refused_per_min": None}
     hdrs = {"Authorization": f"Bearer {token}"}
     return {
         "manager_api_latency_ms": _probe_http_latency(
@@ -1793,6 +1813,7 @@ def _probe_manager_perf(base: str, token: str) -> dict[str, Optional[float]]:
             "GET", f"{base}/api/history?since_minutes=60",
             CONFIG.META_PERF_TIMEOUT_S, headers=hdrs,
         ),
+        **_probe_manager_request_stats(base, hdrs),
     }
 
 

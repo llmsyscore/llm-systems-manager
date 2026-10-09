@@ -89,6 +89,22 @@ describe('dashboard-manager badge wiring (#456)', () => {
     await run();
   }
 
+  it('shows the open-route counters and warns on refusals (#1216)', async () => {
+    await poll({ active: 1, limit: 10, peak: 2, refusals: 0 },
+               { anon_requests_per_min: 3210, anon_refused_per_min: 2610, anon_budget_per_min: 600 });
+    const html = document.getElementById('mgrStreamsSummary').innerHTML;
+    expect(html).toContain('Open routes');
+    expect(html).toContain('3210 /min');
+    expect(html).toContain('2610');
+    const badge = document.getElementById('mgrStreamsBadge');
+    expect(badge.className).toContain('status--warn');
+    expect(badge.innerHTML).toContain('flooded');
+    await poll({ active: 1, limit: 10, peak: 2, refusals: 0 },
+               { anon_requests_per_min: 12, anon_refused_per_min: 0, anon_budget_per_min: 600 });
+    expect(document.getElementById('mgrStreamsBadge').className).toContain('status--ok');
+    expect(document.getElementById('mgrStreamsSummary').innerHTML).toContain('12 /min');
+  });
+
   it('no longer derives saturation from the lifetime refusal counter', async () => {
     // active well under limit, but a huge lifetime refusal count — must stay non-crit.
     await poll({ active: 2, limit: 10, peak: 15, refusals: 500 });
@@ -148,6 +164,6 @@ describe('dashboard-manager badge wiring (#456)', () => {
   // not code the harness can meaningfully "execute".
   it('index.html cache-busts the touched scripts with a fresh version', () => {
     expect(indexSrc).toMatch(/js\/lib\/series\.js\?v=2026\.08\.04-2/);
-    expect(indexSrc).toMatch(/js\/dashboard-manager\.js\?v=2026\.09\.18-1/);
+    expect(indexSrc).toMatch(/js\/dashboard-manager\.js\?v=2026\.10\.09-1/);
   });
 });

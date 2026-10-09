@@ -230,6 +230,9 @@ class ManagerSecurity(BaseModel):
     )
     tls_rotation_warn_days: int = 30
     stream_token_ttl_s: int = 300
+    # Requests per minute allowed on the routes that need no login or token
+    # (agent registration, status poll, certificate fetch, login page); 0 = no limit.
+    anon_request_budget_per_min: int = 600
     # Manager-origin CSP set on proxied HTML responses (llama Chat UI, AE SPA,
     # OpenClaw, image-gen). Defense-in-depth behind upstream XSS. 'unsafe-inline'
     # is required so the manager's own injected shims (ALARM_WS_URL, openclaw WS

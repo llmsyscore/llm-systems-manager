@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.09-3"
+__version__ = "v2026.10.09-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4360,7 +4360,8 @@ def _audit_after_request(resp):
             return resp
         detail = _audit_detail(action, target, resp)
         if action == "auth.login" and status == 429:
-            detail = {**(detail or {}), "reason": "locked"}
+            budget = getattr(_flask_g, "anon_budget_refused", False)
+            detail = {**(detail or {}), "reason": "budget" if budget else "locked"}
         _audit_record((
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
             actor, role, flask_request.remote_addr or "", auth_kind,
@@ -5768,6 +5769,14 @@ def admin_system_health():
         "influx_writes_per_s": ae_flow["influx_writes_per_s"],
         "history_req_per_s": round(_HISTORY_REQ_RATE.per_s(now), 2),
     }
+    _anon = auth.anon_request_stats()
+    health["flow"]["anon_req_per_min"] = _anon["anon_requests_per_min"]
+    health["flow"]["anon_refused_per_min"] = _anon["anon_refused_per_min"]
+    if _anon["anon_refused_per_min"]:
+        health["warnings"].append(
+            f"open routes: {_anon['anon_refused_per_min']} of {_anon['anon_requests_per_min']} requests "
+            f"refused in the last minute (budget {auth._anon_budget_limit()}/min) — a flood on registration, "
+            "status checks or the login page; see the manager node")
     health["agent_update"] = _agent_update_state(health["agents"])
     # Services whose saved settings only apply after a restart.
     health["restart_pending"] = _settings_restart_pending(
@@ -5787,7 +5796,11 @@ def admin_stream_stats():
     deny = _require_admin()
     if deny is not None:
         return deny
-    return jsonify(stream_health.snapshot())
+    _anon = auth.anon_request_stats()
+    return jsonify({**stream_health.snapshot(),
+                    "anon_requests_per_min": _anon["anon_requests_per_min"],
+                    "anon_refused_per_min": _anon["anon_refused_per_min"],
+                    "anon_budget_per_min": auth._anon_budget_limit()})
 
 
 # Cache for AE + InfluxDB versions. Both endpoints are cheap but we
