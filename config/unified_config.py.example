@@ -431,6 +431,7 @@ class AlarmEngineCaches(BaseModel):
     alert_repo_ttl_s: int = 300
     metric_catalog_warmup_days: int = 7
     websocket_queue_size: int = 500
+    max_hosts_per_metric: int = Field(default=256, ge=1)
 
 
 class AlarmEngineCorrelation(BaseModel):

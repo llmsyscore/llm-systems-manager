@@ -295,6 +295,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
 | `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open. Docker installs generate it on first start when `.env` leaves it blank | *(set by installer)* |
 | `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install and must differ from `ingest_token` (the engine refuses to start when they are equal). Docker installs generate it on first start when `.env` leaves it blank. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
+| `[alarm_engine.caches].max_hosts_per_metric` | How many machines the alarm engine keeps in its recent-history cache for each metric. Raise it when the fleet is larger than this; the engine logs one warning per metric when the cap is reached | `256` |
 | `[notifications.smtp].server` | SMTP server hostname for email alarm notifications | *(not set)* |
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
 | `[notifications.smtp].ca_file` | The mail server's certificate is always checked against the system trust store. Set this to a CA certificate file when the relay uses a private certificate | *(blank)* |

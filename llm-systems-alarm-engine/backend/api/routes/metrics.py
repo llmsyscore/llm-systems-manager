@@ -13,6 +13,7 @@ import asyncio
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -41,6 +42,10 @@ _HIST_LIMIT_MAX   = _API.history_limit_max
 _SUMMARY_WIN_MAX  = _API.summary_window_minutes_max
 # getattr guard: field may be absent from an older unified_config.py.
 _HIST_MAX_POINTS_DEFAULT = int(getattr(_API, "history_max_response_points", 1500) or 0)
+
+# Single worker for history, summary and export reads: one CPU-bound point
+# build at a time keeps the event loop responsive for every other request.
+_READ_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metric-read")
 
 # Bin-size ladder for history downsampling; shared steps keep bucket
 # timestamps on a common epoch grid across metrics and hosts.
@@ -308,8 +313,10 @@ async def export_metrics(
 
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
     try:
-        points = metric_repo.get_points(
-            source, metric_name, since=since, limit=10000, hostname=hostname,
+        points = await asyncio.get_running_loop().run_in_executor(
+            _READ_POOL, lambda: metric_repo.get_points(
+                source, metric_name, since=since, limit=10000, hostname=hostname,
+            ),
         )
     except Exception:
         logger.exception("metrics export: get_points failed")
@@ -360,11 +367,17 @@ async def get_metric_history(
     # .timestamp() on it would be interpreted as local time, off by the
     # local UTC offset and silently filtering out all in-cache points).
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
-    points = metric_repo.get_points(
-        source, metric_name, since=since, limit=limit, hostname=hostname,
-        agg=agg,
-    )
-    return downsample_history(points, max_points, agg=agg)
+
+    # The InfluxDB read, point building and downsampling run on the read
+    # pool so a long-range read does not stall the event loop.
+    def _read() -> list[dict]:
+        points = metric_repo.get_points(
+            source, metric_name, since=since, limit=limit, hostname=hostname,
+            agg=agg,
+        )
+        return downsample_history(points, max_points, agg=agg)
+
+    return await asyncio.get_running_loop().run_in_executor(_READ_POOL, _read)
 
 
 @router.get("/{source}/{metric_name}/summary")
@@ -378,7 +391,9 @@ async def get_metric_summary(
     """Get aggregated metric summary."""
     _validate_tag(source, "source")
     _validate_tag(metric_name, "metric_name")
-    summary = metric_repo.get_summary(source, metric_name, window_minutes=window_minutes)
+    summary = await asyncio.get_running_loop().run_in_executor(
+        _READ_POOL, lambda: metric_repo.get_summary(source, metric_name, window_minutes=window_minutes),
+    )
 
     if not summary:
         raise HTTPException(status_code=404, detail=f"No data for {source}/{metric_name}")

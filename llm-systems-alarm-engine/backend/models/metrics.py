@@ -1,17 +1,25 @@
 """Metric data models."""
 
+import random
 from datetime import datetime
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from .._time import now_utc
 
+_rng = random.Random()
+
+
+def _point_id() -> UUID:
+    """Random version-4 id drawn without a system entropy read per point."""
+    return UUID(int=_rng.getrandbits(128), version=4)
+
 
 class MetricPoint(BaseModel):
     """A single metric data point."""
-    metric_id: UUID = Field(default_factory=uuid4)
+    metric_id: UUID = Field(default_factory=_point_id)
     source: str = Field(description="Metric source (gpu, cpu, ram, disk, network, psu)")
     metric_name: str = Field(description="Metric name (temperature, vram_usage, cpu_usage, etc.)")
     value: float = Field(allow_inf_nan=False, description="Metric value")

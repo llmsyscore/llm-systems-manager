@@ -73,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.07-4"
+__version__ = "v2026.10.09-4"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -360,7 +360,7 @@ async def _on_startup() -> None:
         raise SystemExit(2)
 
     # 1. Initialize cache
-    cache = Cache()
+    cache = Cache(max_hosts_per_series=settings.alarm_engine.caches.max_hosts_per_metric)
 
     # 1b. Open the SQLite settings store (rules / channels / notification
     # configs / deliveries). Self-creates on first run; idempotent schema
