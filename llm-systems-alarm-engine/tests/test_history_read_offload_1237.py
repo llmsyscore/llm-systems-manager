@@ -31,6 +31,9 @@ class _SlowRepo:
         self._slow()
         return [MetricPoint(source="system", metric_name="cpu_total", value=1.0, hostname="h")]
 
+    def get_history_rows(self, *a, **k):
+        return [p.to_dict() for p in self.get_points()]
+
     def get_summary(self, *a, **k):
         self._slow()
         return MetricSummary(source="system", metric_name="cpu_total", unit="%",

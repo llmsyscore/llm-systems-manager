@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from typing import Any, Optional
 
 from ..models.alarm_rule import AlarmRule, AlarmRuleCreate, AlarmRuleUpdate, DEFAULT_AUTO_RESOLVE_CYCLES
 from ..models.alert import Alert, AlertCreate, AlertFilter, AlertStatus, AlertUpdate
-from ..models.metrics import MetricPoint, MetricSummary
+from ..models.metrics import MetricPoint, MetricSummary, _point_id
 from ..models.notification import (
     NotificationChannel,
     NotificationChannelCreate,
@@ -25,7 +26,7 @@ from ..models.notification import (
 from .ae_alarms_db import AeAlarmsDB, _NON_LIVE_STATUSES
 from .ae_settings_db import AeSettingsDB
 from .cache import MetricCache
-from .influxdb_client import InfluxDBClient
+from .influxdb_client import HISTORY_GRAINS_S, InfluxDBClient
 from config.unified_config import settings
 
 logger = logging.getLogger(__name__)
@@ -1262,6 +1263,31 @@ def _downsample_every(window_seconds: float, tiers) -> Optional[str]:
     return tiers[-1].every if tiers else None
 
 
+# Bin-size ladder for history downsampling; shared steps keep bucket
+# timestamps on a common epoch grid across metrics and hosts.
+_DOWNSAMPLE_LADDER_S = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
+
+
+def history_step_s(window_seconds: float, budget: int) -> int:
+    """Bucket size in seconds that fits budget points over the window: the
+    first ladder step that fits, else an exact division of the window."""
+    step = next((s for s in _DOWNSAMPLE_LADDER_S
+                 if (window_seconds / s) + 1 <= budget), None)
+    return step if step is not None else int(window_seconds // max(1, budget - 1)) + 1
+
+
+def _fit_every(every: Optional[str], window_seconds: float, max_points: int,
+               n_hosts: int) -> Optional[str]:
+    """Coarsest grain between the tier grain and the bucket size the
+    downsampler would use for max_points over n_hosts; the tier grain if none."""
+    if every is None or max_points <= 0 or every not in HISTORY_GRAINS_S:
+        return every
+    step = history_step_s(window_seconds, max(1, max_points // max(1, n_hosts)))
+    fit = [n for n, size in HISTORY_GRAINS_S.items()
+           if HISTORY_GRAINS_S[every] <= size <= step]
+    return max(fit, key=HISTORY_GRAINS_S.get) if fit else every
+
+
 class MetricRepository:
     """Repository for metric data points."""
 
@@ -1307,56 +1333,17 @@ class MetricRepository:
         historical queries (24h, 7d, 30d) directly from persistent storage.
         """
         now = datetime.now(timezone.utc)
-        cache_ttl_seconds = self.cache.metric_ttl_seconds
-
-        if since is None:
-            window_seconds = cache_ttl_seconds
-        else:
-            # Tolerate either naive (assume UTC) or tz-aware `since` so the
-            # subtraction below never raises a tz mismatch.
-            since_aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
-            window_seconds = max(0, (now - since_aware).total_seconds())
-
-        # 1-second tolerance: callers like the route handler at
-        # routes/metrics.py compute `since = now - timedelta(minutes=N)`,
-        # then we re-read `now` here a few milliseconds later, so a request
-        # for "the last 60 minutes" lands at window_seconds = 3600.005s.
-        # Without this slack the boundary request would always miss the
-        # cache by a hair and fall through to InfluxDB (and now to the
-        # rollup), hiding the most-recent-hour fast-path entirely.
-        use_cache = window_seconds <= cache_ttl_seconds + 1.0
-
-        if use_cache:
-            cache_points = self.cache.get_metric_points(
-                source, metric_name, since=since, limit=limit, hostname=hostname
-            )
-            # Cache covers the requested window. If the cache has no points,
-            # the series isn't reporting — don't waste an InfluxDB query on
-            # the hot rule-eval path (each miss costs ~1-2s round-trip when
-            # InfluxDB is busy ingesting). Long-range queries (window past
-            # cache TTL) still fall through below.
-            return cache_points
-
-        if self.db is None:
+        window_seconds = self._window_seconds(since, now)
+        if self._serve_from_cache(window_seconds):
+            # In-window reads come from the cache only; an empty cache means
+            # the series is not reporting, so no InfluxDB query is made.
             return self.cache.get_metric_points(
                 source, metric_name, since=since, limit=limit, hostname=hostname
             )
 
-        # Pick a downsampling bucket so a long-window chart returns hundreds
-        # of points (not hundreds of thousands). Full resolution is preserved
-        # for ≤1h windows (those come from the in-memory cache above and
-        # never reach this branch). Tier ladder is configurable via
-        # [[alarm_engine.history.downsampling.tiers]] in llm-systems.toml.
-        every = _downsample_every(
-            window_seconds, settings.alarm_engine.history.downsampling.tiers)
-
-        try:
-            db_points = self.db.query_metrics(
-                source, metric_name, start=since, limit=limit, every=every,
-                agg=agg, hostname=hostname,
-            )
-        except Exception as e:
-            logger.warning(f"DB metric query failed for {source}/{metric_name}: {e}")
+        db_points = self._db_rows(source, metric_name, since, limit, hostname,
+                                  agg, self._tier_every(window_seconds))
+        if db_points is None:
             return self.cache.get_metric_points(
                 source, metric_name, since=since, limit=limit, hostname=hostname
             )
@@ -1382,6 +1369,82 @@ class MetricRepository:
         if hostname:
             result = [p for p in result if p.hostname == hostname]
         return result
+
+    def get_history_rows(
+        self,
+        source: str,
+        metric_name: str,
+        since: Optional[datetime] = None,
+        limit: int = 1000,
+        hostname: Optional[str] = None,
+        agg: str = "mean",
+        max_points: int = 0,
+    ) -> list[dict]:
+        """History response rows (MetricPoint.to_dict shape) for one series.
+        Long-range reads use a grain whose row count fits max_points."""
+        now = datetime.now(timezone.utc)
+        window_seconds = self._window_seconds(since, now)
+        if self._serve_from_cache(window_seconds) or self.db is None:
+            return [p.to_dict() for p in self.cache.get_metric_points(
+                source, metric_name, since=since, limit=limit, hostname=hostname
+            )]
+        n_hosts = 1 if hostname else self.cache.metric_host_count(source, metric_name)
+        every = _fit_every(self._tier_every(window_seconds), window_seconds,
+                           max_points, n_hosts)
+        db_rows = self._db_rows(source, metric_name, since, limit, hostname,
+                                agg, every)
+        if db_rows is None:
+            return [p.to_dict() for p in self.cache.get_metric_points(
+                source, metric_name, since=since, limit=limit, hostname=hostname
+            )]
+        rows: list[dict] = []
+        for p in db_rows:
+            value = p.get("value")
+            host = p.get("hostname")
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                continue
+            if hostname and host != hostname:
+                continue
+            rows.append({
+                "metric_id": str(_point_id()),
+                "source": source,
+                "metric_name": metric_name,
+                "value": value,
+                "unit": p.get("unit"),
+                "timestamp": p.get("timestamp") or now.isoformat(),
+                "hostname": host,
+            })
+        return rows
+
+    def _window_seconds(self, since: Optional[datetime], now: datetime) -> float:
+        """Seconds between since (naive = UTC) and now; the cache TTL when unset."""
+        if since is None:
+            return float(self.cache.metric_ttl_seconds)
+        since_aware = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - since_aware).total_seconds())
+
+    def _serve_from_cache(self, window_seconds: float) -> bool:
+        """True when the window fits the cache TTL, with 1 s of boundary slack."""
+        return window_seconds <= self.cache.metric_ttl_seconds + 1.0
+
+    @staticmethod
+    def _tier_every(window_seconds: float) -> Optional[str]:
+        """Downsample grain from the configured tier ladder."""
+        return _downsample_every(
+            window_seconds, settings.alarm_engine.history.downsampling.tiers)
+
+    def _db_rows(self, source: str, metric_name: str, since: Optional[datetime],
+                 limit: int, hostname: Optional[str], agg: str,
+                 every: Optional[str]) -> Optional[list[dict]]:
+        """InfluxDB rows for one series at the given grain; None on failure."""
+        try:
+            return self.db.query_metrics(
+                source, metric_name, start=since, limit=limit, every=every,
+                agg=agg, hostname=hostname,
+            )
+        except Exception as e:
+            logger.warning(f"DB metric query failed for {source}/{metric_name}: {e}")
+            return None
 
     def get_latest(self, source: str, metric_name: str) -> Optional[MetricPoint]:
         """Get the latest metric point."""
