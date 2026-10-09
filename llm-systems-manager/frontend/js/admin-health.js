@@ -61,7 +61,16 @@
   }
 
   // ── services column ──────────────────────────────────────────────────
-  // One row per service: dot, name (+ link chip), version, uptime, restart.
+  // One row per service: dot, name (+ link chip), version, status pill, restart,
+  // plus a wrapping detail line under the version when the pill is not green.
+  // #1235: InfluxDB state → short pill word; the full text goes to the detail line.
+  function influxPill(state) {
+    const st = String(state || 'unknown');
+    if (st === 'connected') return { txt: 'connected', cls: 'ok', detail: null };
+    const head = st.split(':')[0].replace(/_/g, ' ').trim() || 'unknown';
+    return { txt: head, cls: 'crit', detail: st.indexOf(':') > 0 ? st : null };
+  }
+
   function svcRows(d) {
     const mgr = (d && d.manager) || {};
     const ae = svcOf(d, 'alarm_engine');
@@ -69,7 +78,7 @@
     const pending = (d && d.restart_pending) || [];
     const rows = [{
       st: 'ok', n: 'Manager', lk: null, ver: mgr.version || '—',
-      up: upStr(mgr.uptime_s), upTxt: 'unknown', upCls: upStr(mgr.uptime_s) ? '' : 'crit',
+      up: upStr(mgr.uptime_s), upTxt: 'unknown', upCls: upStr(mgr.uptime_s) ? '' : 'crit', detail: null,
       act: 'Restart Manager', svc: 'manager', rp: pending.includes('manager'),
     }];
 
@@ -84,19 +93,25 @@
     // #764: the AE restart is always offered; the tip names how it restarts.
     const via = ((d && d.ae_restart) || {}).via;
     const auth = aeOk ? authState(ae) : null;
+    // #1233: "degraded" = engine up, InfluxDB not connected.
+    const aeDegraded = aeOk && ae.state === 'degraded';
     rows.push({
-      st: aeOk ? 'ok' : 'crit', n: 'Alarm Engine', lk, ver: (ae && ae.version) || '—',
+      st: aeOk ? (aeDegraded ? 'warn' : 'ok') : 'crit', n: 'Alarm Engine', lk, ver: (ae && ae.version) || '—',
       ak: auth && auth.k === 'warn' ? { chip: auth.chip, tip: auth.tip } : null,
-      up: aeOk ? upStr(ae && ae.uptime_s) : null,
-      upTxt: aeOk ? 'connected' : 'unreachable', upCls: aeOk ? '' : 'crit',
+      up: aeOk && !aeDegraded ? upStr(ae && ae.uptime_s) : null,
+      upTxt: aeOk ? (aeDegraded ? 'degraded' : 'connected') : 'unreachable',
+      upCls: aeOk ? (aeDegraded ? 'warn' : '') : 'crit',
+      detail: aeDegraded ? 'InfluxDB is not connected — metric history is not being stored'
+        : (!aeOk && ae && ae.error ? String(ae.error) : null),
       act: 'Restart Alarm Engine' + (via === 'self-restart' ? ' · via its self-restart API' : ''),
       svc: 'alarm_engine', rp: pending.includes('alarm_engine'),
     });
 
     const inOk = !!(influx && influx.ok);
+    const ip = influxPill(influx && (influx.state || (influx.via && !inOk ? 'unreachable' : null)));
     rows.push({
       st: inOk ? 'ok' : 'crit', n: 'InfluxDB', lk: null, ver: (influx && influx.version) || '—',
-      up: null, upTxt: (influx && influx.state) || 'unknown', upCls: inOk ? '' : 'crit',
+      up: null, upTxt: ip.txt, upCls: inOk ? 'ok' : 'crit', detail: ip.detail,
       act: null, svc: null,
     });
     return rows;
@@ -127,7 +142,9 @@
       ? `<span class="lk ${s.lk[1] === 'crit' ? 'crit' : (s.lk[1] === 'on' ? '' : 'off')}">${esc(s.lk[0])}</span>` : '')
       + (s.ak ? `<span class="lk warn" title="${esc(s.ak.tip)}">${esc(s.ak.chip)}</span>` : '')
       + (s.rp ? '<span class="lk warn" title="Saved settings apply after a restart">restart pending</span>' : '');
-    const up = s.up ? `<span class="l">up</span>${esc(s.up)}` : esc(s.upTxt);
+    const up = `<span class="pill ${s.upCls || ''}">`
+      + (s.up ? `<span class="l">up</span>${esc(s.up)}` : esc(s.upTxt)) + '</span>';
+    const detail = s.detail ? `<div class="d ${s.upCls || ''}">${esc(s.detail)}</div>` : '';
     const logBtn = s.svc
       ? `<button type="button" class="ib" data-log-svc="${esc(s.svc)}" data-tip="View ${esc(s.n)} log">${SVG_LOG}</button>`
       : '<span class="ib none"></span>';
@@ -136,7 +153,7 @@
       : '<span class="ib none"></span>';
     return `<div class="hc-svcr"><span class="dot ${s.st}"></span>`
       + `<div class="n"><span class="nt">${esc(s.n)}</span>${lk}</div><div class="v">${esc(s.ver)}</div>`
-      + `<div class="up ${s.upCls || ''}">${up}</div><span class="acts">${logBtn}${btn}</span></div>`;
+      + `<div class="up">${up}</div><span class="acts">${logBtn}${btn}</span>${detail}</div>`;
   }
 
   // ── data-flow edges ──────────────────────────────────────────────────
@@ -184,7 +201,8 @@
       : mk(lim && near >= 0.9 ? 'warn' : 'ok', `${act} ${act === 1 ? 'stream' : 'streams'}`, near);
 
     const wr = flow.influx_writes_per_s;
-    out.eAeIn = (!aeOk || !inOk) ? mk('off', '—', 0)
+    out.eAeIn = !aeOk ? mk('off', '—', 0)
+      : !inOk ? mk('crit', 'no writes', 0)
       : wr == null ? mk('ok', '—', 0.3)
       : mk('ok', `${num(wr)} writes/s`, wr / 60);
 
@@ -213,7 +231,7 @@
       nMg: 'this host',
       nBr: br,
       nAe: (ae && ae.ok) ? (ing != null ? `${num(ing)} points/s` : 'connected') : 'unreachable',
-      nIn: (influx && influx.state) || 'unknown',
+      nIn: influxPill(influx && (influx.state || (influx.via && !influx.ok ? 'unreachable' : null))).txt,
     };
   }
 

@@ -73,7 +73,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.09-4"
+__version__ = "v2026.10.09-5"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -895,8 +895,10 @@ async def health_check(authorization: Optional[str] = Header(default=None)) -> d
     if settings.influxdb.host:
         influx_status, influx_latency_ms, influx_version = await asyncio.to_thread(_ping_influxdb)
     auth = _ae_auth.auth_state(authorization)
+    # "degraded" while InfluxDB is configured but not connected: history is not stored.
+    degraded = bool(settings.influxdb.host) and influx_status != "connected"
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
         "version": __version__,
         "uptime_s": round(time.time() - _startup_ts, 1) if _startup_ts else None,
         # Management-gate posture (#828); detail sits in components.auth.

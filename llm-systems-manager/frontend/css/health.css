@@ -24,7 +24,7 @@
 
 /* ── services column ── */
 #adminHealthCard .hc-svc { display: flex; flex-direction: column; gap: 12px; }
-#adminHealthCard .hc-svcr { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; grid-template-rows: auto auto; column-gap: 10px; row-gap: 1px; align-items: center; }
+#adminHealthCard .hc-svcr { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; grid-template-rows: auto auto; grid-auto-rows: auto; column-gap: 8px; row-gap: 1px; align-items: center; }
 #adminHealthCard .hc-svcr .dot { grid-column: 1; grid-row: 1 / span 2; }
 #adminHealthCard .hc-svcr .n { grid-column: 2; grid-row: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
 #adminHealthCard .hc-svcr .n .nt { white-space: nowrap; }
@@ -33,10 +33,15 @@
 #adminHealthCard .hc-svcr .n .lk.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 30%, transparent); }
 #adminHealthCard .hc-svcr .n .lk.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
 #adminHealthCard .hc-svcr .v { grid-column: 2; grid-row: 2; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#adminHealthCard .hc-svcr .up { grid-column: 3; grid-row: 1 / span 2; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-#adminHealthCard .hc-svcr .up.crit { color: var(--crit); }
-#adminHealthCard .hc-svcr .up.warn { color: var(--warn); }
-#adminHealthCard .hc-svcr .up .l { color: var(--fg-faint); margin-right: 4px; }
+#adminHealthCard .hc-svcr .up { grid-column: 3; grid-row: 1 / span 2; display: flex; justify-content: flex-end; }
+#adminHealthCard .hc-svcr .pill { display: inline-block; min-width: 72px; box-sizing: border-box; text-align: center; font-family: var(--font-mono); font-size: 10px; font-weight: 500; line-height: 1.7; padding: 0 7px; border-radius: 999px; color: var(--fg-muted); border: 1px solid var(--border-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#adminHealthCard .hc-svcr .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+#adminHealthCard .hc-svcr .pill.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 30%, transparent); background: color-mix(in srgb, var(--crit) 10%, transparent); }
+#adminHealthCard .hc-svcr .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+#adminHealthCard .hc-svcr .pill .l { color: var(--fg-faint); margin-right: 4px; }
+#adminHealthCard .hc-svcr .d { grid-column: 2 / span 3; grid-row: 3; font-size: 11px; line-height: 1.35; color: var(--fg-dim); white-space: normal; overflow-wrap: anywhere; }
+#adminHealthCard .hc-svcr .d.crit { color: var(--crit); }
+#adminHealthCard .hc-svcr .d.warn { color: var(--warn); }
 #adminHealthCard .hc-svcr .acts { grid-column: 4; grid-row: 1 / span 2; display: flex; align-items: center; gap: 4px; }
 #adminHealthCard .hc-svcr .ib.none { visibility: hidden; }
 

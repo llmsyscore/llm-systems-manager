@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.09-1"
+__version__ = "v2026.10.09-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -5412,7 +5412,10 @@ def admin_system_health():
             except Exception:
                 info = {}
             _ae_health_state["consecutive_failures"] = 0
-            if ae_ok and info.get("status") == "ok":
+            # "degraded" = engine up, InfluxDB not connected (#1233); still a live engine.
+            _ae_state = info.get("status") if isinstance(info, dict) else None
+            ae_up = ae_ok and _ae_state in ("ok", "degraded")
+            if ae_up:
                 _ae_health_state["last_ok_at"] = datetime.now(timezone.utc).isoformat()
                 if isinstance(info.get("restart_pending"), bool):
                     _ae_health_state["restart_pending"] = info["restart_pending"]
@@ -5429,7 +5432,8 @@ def admin_system_health():
             _bearer_sent = bool(_ae_session.headers.get("Authorization"))
             health["services"].append({
                 "name": "alarm_engine",
-                "ok": ae_ok and info.get("status") == "ok",
+                "ok": ae_up,
+                "state": _ae_state,
                 "url": ae_url,
                 "latency_ms": round(dur, 1),
                 "status_code": r.status_code,
@@ -5492,6 +5496,9 @@ def admin_system_health():
             })
             if not ae_ok:
                 health["warnings"].append(f"alarm engine returned HTTP {r.status_code}")
+            elif _ae_state == "degraded":
+                health["warnings"].append(
+                    f"InfluxDB {comps.get('influxdb', 'not connected')} — metric history is not being stored")
         except Exception as e:
             _ae_health_state["consecutive_failures"] += 1
             sustained = _ae_health_state["consecutive_failures"] >= 2
