@@ -471,7 +471,7 @@ brew services start llm-systems-alarm-engine
 
 `llm-systems-influx-setup` (installed by the manager formula) needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships separately). To do it by hand instead: `brew services start influxdb@2`, `influx setup`, create the buckets/tokens, and fill `[influxdb.tokens]` in the TOML.
 
-`brew upgrade` tracks new releases automatically (the same tap cron that bumps the agent formula bumps these). The dashboard is at `http://<host>:5000`; the alarm engine can run without InfluxDB, but history and alert evaluation stay degraded until the tokens are filled in.
+`brew upgrade` tracks new releases automatically (the same tap cron that bumps the agent formula bumps these); an upgrade keeps your config values, adds any new settings with their defaults, and leaves the previous file next to it as `llm-systems.toml.bak.<timestamp>`. The dashboard is at `http://<host>:5000`; the alarm engine can run without InfluxDB, but history and alert evaluation stay degraded until the tokens are filled in.
 
 ---
 
