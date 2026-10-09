@@ -335,15 +335,20 @@ If you changed a setting used by both (such as InfluxDB credentials), restart bo
 
 ### InfluxDB Memory Settings
 
-When the installer sets up InfluxDB (modes 1 and 6), it also protects it on hosts where memory is tight. Running `install.sh --update` applies the same settings to existing installs.
+When the installer sets up InfluxDB (modes 1 and 6), it also protects it on hosts where memory is tight. Existing installs get the same settings on their next update; see **Refreshing an existing install** below.
 
 - **Out-of-memory protection.** A systemd drop-in, `/etc/systemd/system/influxdb.service.d/llm-systems-manager.conf`, sets `OOMScoreAdjust=-500`. If the host runs out of memory, the kernel then stops other processes before InfluxDB. Without it, InfluxDB is usually the largest process, so it is the one that gets stopped, and because it needs 2–3 GB while it starts back up, it can get stuck being stopped and restarted over and over. Check it with `systemctl show -p OOMScoreAdjust influxdb` (expect `-500`).
 - **Memory limit (`GOMEMLIMIT`).** When InfluxDB shares the host with the manager, alarm engine or an agent, the installer writes `GOMEMLIMIT` into `/etc/default/influxdb2`, the file the service reads its environment from. This makes InfluxDB free unused memory sooner instead of holding gigabytes it no longer needs. The value is 35% of the host's RAM, at least 1024 MiB, and at least 1600 MiB on hosts with 4 GiB or more (6 GiB → 2150 MiB, 16 GiB → 5734 MiB). It is a target, not a hard cap: InfluxDB can go above it when it really needs the memory. The installer summary shows the value. An InfluxDB-only host (mode 6) gets no limit.
 - **Your own value wins.** The installer only edits the lines between its `# === llm-systems-manager memory (managed) ===` markers. To pick your own limit, add a `GOMEMLIMIT=...` line outside the markers; the installer then removes its block and leaves your line alone.
 - **Write delay.** The managed tuning block in `/etc/influxdb/config.toml` sets `storage-wal-fsync-delay` to `0s`, so each write is saved to disk right away and the Self-monitor write latency shows the real storage cost. Installs from before October 2026 carried `100ms`, which added a tenth of a second to every write; `install.sh --update` changes that line to `0s` and asks to restart InfluxDB. A value you set yourself other than `100ms` is left alone.
 - **Don't add `MemoryMax`.** A hard systemd memory cap below what InfluxDB needs while starting up gets it killed on every start, which is the same restart loop the protection above prevents.
-- **Applying changes.** A fresh install restarts InfluxDB itself. When an update changes either setting, InfluxDB is added to the updater's restart prompt. After editing `/etc/default/influxdb2` by hand, run `sudo systemctl restart influxdb`.
+- **Refreshing an existing install.** A fresh install restarts InfluxDB itself. How the settings reach an install that already exists depends on how it was installed:
+  - **Script install, InfluxDB on the same host as the manager or alarm engine:** `install.sh --update` refreshes them and adds InfluxDB to its restart prompt.
+  - **InfluxDB-only host (mode 6):** run the same `install.sh --update` command on that host. There is no app code to update there, so it refreshes these settings and asks to restart InfluxDB.
+  - **`.deb` / `.rpm` package:** every package upgrade refreshes them when InfluxDB runs on the same host, and restarts InfluxDB if anything changed.
+  - **By hand, any time:** `sudo bash tools/installer/tune-influxdb.sh` applies them and asks before restarting InfluxDB (`--restart` restarts without asking, `--dry-run` only reports). After editing `/etc/default/influxdb2` yourself, run `sudo systemctl restart influxdb`.
 - **Uninstalling** InfluxDB through the uninstaller removes the drop-in and the managed block.
+- **Docker** installs don't get these settings: the container runs InfluxDB on its defaults.
 - **Homebrew (macOS)** installs don't get these settings: macOS has no Linux out-of-memory killer to adjust, and Homebrew generates the `influxdb@2` service file itself.
 
 ---
@@ -639,7 +644,7 @@ The update process:
 - Backs up any files that will change
 - Syncs only the changed files
 - Reloads systemd units and restarts affected services
-- Refreshes the [InfluxDB memory settings](#influxdb-memory-settings) on hosts that run InfluxDB
+- Refreshes the [InfluxDB memory settings](#influxdb-memory-settings) on hosts that run InfluxDB (on an InfluxDB-only host this is the whole update)
 - Runs the smoke test to confirm the update succeeded
 
 Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.

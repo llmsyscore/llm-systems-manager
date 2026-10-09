@@ -429,6 +429,62 @@ jobs:
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
 
+  influxdb-only:
+    name: InfluxDB-only host (mode 6) + update
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A DB-only host carries no app code, so update.sh must refresh the
+    # InfluxDB host tuning instead of exiting "nothing to update" (#1249).
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends jq rsync wget gnupg ca-certificates openssl
+
+      - name: Install InfluxDB only (mode 6)
+        run: sudo bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+
+      # Mode 6 gets the OOM drop-in and 0s fsync but no GOMEMLIMIT (dedicated host).
+      - name: Assert fresh mode-6 tuning
+        run: |
+          set -x
+          systemctl show -p OOMScoreAdjust --value influxdb | grep -qx -- '-500'
+          sudo grep -qE '^storage-wal-fsync-delay[[:space:]]*=[[:space:]]*"0s"' /etc/influxdb/config.toml
+          if sudo grep -q '^GOMEMLIMIT=' /etc/default/influxdb2 2>/dev/null; then echo 'ERROR: GOMEMLIMIT set on a DB-only host'; exit 1; fi
+
+      - name: Roll the host back to a pre-tuning layout
+        run: |
+          sudo rm -rf /etc/systemd/system/influxdb.service.d
+          sudo systemctl daemon-reload
+          sudo sed -i -E 's/^(storage-wal-fsync-delay[[:space:]]*=[[:space:]]*)"0s"/\1"100ms"/' /etc/influxdb/config.toml
+          sudo grep -q '"100ms"' /etc/influxdb/config.toml
+
+      - name: Run update.sh on the DB-only host
+        run: |
+          set -o pipefail
+          sudo bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update.log
+          if grep -q 'nothing to update' /tmp/update.log; then echo 'ERROR: update.sh skipped the InfluxDB-only host'; exit 1; fi
+          grep -q 'InfluxDB host tuning' /tmp/update.log
+
+      - name: Assert update.sh refreshed the tuning and InfluxDB is healthy
+        run: |
+          set -x
+          sudo grep -qx 'OOMScoreAdjust=-500' /etc/systemd/system/influxdb.service.d/llm-systems-manager.conf
+          systemctl show -p OOMScoreAdjust --value influxdb | grep -qx -- '-500'
+          sudo grep -qE '^storage-wal-fsync-delay[[:space:]]*=[[:space:]]*"0s"' /etc/influxdb/config.toml
+          if sudo grep -q '^GOMEMLIMIT=' /etc/default/influxdb2 2>/dev/null; then echo 'ERROR: GOMEMLIMIT set on a DB-only host'; exit 1; fi
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8086/health >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8086/health | jq .
+          # A second run is a no-op: nothing changed, no restart.
+          sudo bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update2.log
+          grep -q 'already current' /tmp/update2.log
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: sudo journalctl -u influxdb -n 200 --no-pager || true
+
   source-local-install:
     name: --source local install (mode 1, offline source)
     runs-on: ubuntu-latest

@@ -164,6 +164,20 @@ jobs:
           sudo stat -c '%U %a' /opt/llm-systems-manager/data/manager_users.json | grep -qx 'llmsys 600'
           sudo bash tools/installer/ci-first-signin.sh /tmp/admin-reset.log
 
+      # A local influxdb.service set up before the host tuning existed: no OOM
+      # drop-in, no GOMEMLIMIT block, the old 100ms fsync delay. The stub unit
+      # is enough for the postinst's local-InfluxDB check (#1249).
+      - name: Plant a stale local InfluxDB layout
+        run: |
+          printf '[Unit]\nDescription=stub influxdb\n[Service]\nType=oneshot\nExecStart=/bin/true\nRemainAfterExit=yes\n' \
+            | sudo tee /etc/systemd/system/influxdb.service >/dev/null
+          sudo systemctl daemon-reload
+          sudo install -d -m 0755 /etc/influxdb
+          printf '# === llm-systems-manager tuning (managed) ===\nstorage-wal-fsync-delay                    = "100ms"\n# === END llm-systems-manager tuning ===\n' \
+            | sudo tee /etc/influxdb/config.toml >/dev/null
+          printf 'INFLUXD_CONFIG_PATH=/etc/influxdb/config.toml\n' | sudo tee /etc/default/influxdb2 >/dev/null
+          sudo rm -rf /etc/systemd/system/influxdb.service.d
+
       # Upgrade must keep the live config (marker key survives) and leave
       # both services running.
       - name: Upgrade to 0.0.2
@@ -173,7 +187,7 @@ jobs:
           # An older install's allowed-origin list: http only.
           sudo sed -i -E 's|^(cors_origins[[:space:]]*=[[:space:]]*)"[^"]*"|\1"http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"|' \
             /opt/llm-systems-manager/config/llm-systems.toml
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
+          sudo DEBIAN_FRONTEND=noninteractive LLMSYS_INFLUX_HEALTH_WAIT=3 apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
           sudo grep -qF 'cors_origins = "http://192.0.2.10:5000,https://192.0.2.10:5443,http://localhost:5000,https://localhost:5443,http://192.0.2.10:8081,https://192.0.2.10:8081"' \
@@ -187,6 +201,17 @@ jobs:
           probe https://127.0.0.1:8081/health
           # try-restart must have bounced the service (fresh start timestamp).
           test "$(systemctl show -p ActiveEnterTimestamp --value llm-systems-manager)" != "$STARTED_BEFORE"
+
+      # The upgrade refreshed the local InfluxDB host tuning (#1249): the OOM
+      # drop-in, a host-sized GOMEMLIMIT (InfluxDB shares the host) and 0s fsync.
+      - name: Assert InfluxDB host tuning refreshed by the upgrade
+        run: |
+          set -x
+          sudo grep -qx 'OOMScoreAdjust=-500' /etc/systemd/system/influxdb.service.d/llm-systems-manager.conf
+          systemctl show -p OOMScoreAdjust --value influxdb | grep -qx -- '-500'
+          sudo grep -qE '^GOMEMLIMIT=[0-9]+MiB$' /etc/default/influxdb2
+          sudo grep -qE '^storage-wal-fsync-delay[[:space:]]*=[[:space:]]*"0s"' /etc/influxdb/config.toml
+          if sudo grep -q '100ms' /etc/influxdb/config.toml; then echo 'ERROR: 100ms fsync delay survived the upgrade'; exit 1; fi
 
       - name: Purge → no leftovers
         run: |
