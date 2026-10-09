@@ -21,25 +21,25 @@ def _mk(host: str, offset_s: float, value: float) -> MetricPoint:
                        timestamp=T0 + timedelta(seconds=offset_s))
 
 
-def _series(hosts: int, seconds: int, cadence_s: int = 5) -> list[MetricPoint]:
+def _series(hosts: int, seconds: int, cadence_s: int = 5) -> list[dict]:
     pts = []
     for h in range(hosts):
         for i in range(0, seconds, cadence_s):
             pts.append(_mk(f"host{h}", i, float(i % 100)))
     pts.sort(key=lambda p: p.timestamp)
-    return pts
+    return [p.to_dict() for p in pts]
 
 
 # ── pure helper ──────────────────────────────────────────────────────────────
 
 def test_under_cap_is_passthrough():
     pts = _series(hosts=2, seconds=300)
-    assert metrics.downsample_history(pts, 1500) == [p.to_dict() for p in pts]
+    assert metrics.downsample_history(pts, 1500) == pts
 
 
 def test_zero_cap_disables():
     pts = _series(hosts=7, seconds=3600)
-    assert metrics.downsample_history(pts, 0) == [p.to_dict() for p in pts]
+    assert metrics.downsample_history(pts, 0) == pts
 
 
 def test_over_cap_shrinks_below_cap():
@@ -58,7 +58,7 @@ def test_all_hosts_survive_downsampling():
 def test_bucket_values_are_means():
     # 1 host, 20 points over 100s, cap 5 -> 30s ladder step; bucket [0,30)
     # holds offsets 0..25 with value == offset.
-    pts = [_mk("h", i, float(i)) for i in range(0, 100, 5)]
+    pts = [_mk("h", i, float(i)).to_dict() for i in range(0, 100, 5)]
     out = metrics.downsample_history(pts, 5)
     assert len(out) <= 5
     expected = sum(range(0, 30, 5)) / 6.0
@@ -67,7 +67,7 @@ def test_bucket_values_are_means():
 
 def test_bucket_values_are_maxes_with_agg_max():
     # Same series; agg="max" keeps the bucket's peak (offset 25), #596.
-    pts = [_mk("h", i, float(i)) for i in range(0, 100, 5)]
+    pts = [_mk("h", i, float(i)).to_dict() for i in range(0, 100, 5)]
     out = metrics.downsample_history(pts, 5, agg="max")
     assert len(out) <= 5
     assert abs(out[0]["value"] - 25.0) < 1e-9

@@ -437,6 +437,12 @@ class MetricCache:
         with self._lock:
             return len(self._cache)
 
+    def metric_host_count(self, source: str, metric_name: str) -> int:
+        """Number of hosts with cached points for a source/metric pair."""
+        key = f"{source}:{metric_name}"
+        with self._shard(key):
+            return len(self._metric_points.get(key) or {})
+
     @property
     def metric_keys(self) -> list[str]:
         """List all metric source:metric_name keys."""

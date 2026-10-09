@@ -23,7 +23,7 @@ from ...integration.metric_flatten import metric_to_points
 from ...rate_counter import INGEST_POINTS
 from ...models.alarm_rule import TAG_VALUE_RE
 from ...models.metrics import MetricBatchCreate, MetricPoint
-from ...storage.repositories import MetricRepository
+from ...storage.repositories import MetricRepository, history_step_s
 from ..auth import require_ingest_token, require_management_token
 from config.unified_config import settings
 
@@ -47,45 +47,36 @@ _HIST_MAX_POINTS_DEFAULT = int(getattr(_API, "history_max_response_points", 1500
 # build at a time keeps the event loop responsive for every other request.
 _READ_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metric-read")
 
-# Bin-size ladder for history downsampling; shared steps keep bucket
-# timestamps on a common epoch grid across metrics and hosts.
-_DOWNSAMPLE_LADDER_S = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
 
-
-def downsample_history(points: list[MetricPoint], max_points: int,
+def downsample_history(rows: list[dict], max_points: int,
                        agg: str = "mean") -> list[dict]:
-    """Serialize points to history dicts, mean- (or max-) bucketed per host
-    onto an epoch-aligned grid when over max_points; max_points<=0 means raw."""
-    if max_points <= 0 or len(points) <= max_points:
-        return [p.to_dict() for p in points]
-    by_host: dict[Optional[str], list[tuple[float, MetricPoint]]] = {}
+    """History rows (MetricPoint.to_dict shape), mean- (or max-) bucketed per
+    host onto an epoch-aligned grid when over max_points; max_points<=0 = raw."""
+    if max_points <= 0 or len(rows) <= max_points:
+        return rows
+    by_host: dict[Optional[str], list[tuple[float, dict]]] = {}
     ts_min = ts_max = None
-    for p in points:
-        ts = p.timestamp.timestamp()
-        by_host.setdefault(p.hostname, []).append((ts, p))
+    for p in rows:
+        ts = datetime.fromisoformat(p["timestamp"]).timestamp()
+        by_host.setdefault(p["hostname"], []).append((ts, p))
         ts_min = ts if ts_min is None else min(ts_min, ts)
         ts_max = ts if ts_max is None else max(ts_max, ts)
     window_s = max(0.0, (ts_max or 0.0) - (ts_min or 0.0))
-    budget = max(1, max_points // len(by_host))
-    # +1 covers the extra bucket an aligned grid can straddle at the edges.
-    step = next((s for s in _DOWNSAMPLE_LADDER_S
-                 if (window_s / s) + 1 <= budget), None)
-    if step is None:
-        step = int(window_s // max(1, budget - 1)) + 1
+    step = history_step_s(window_s, max(1, max_points // len(by_host)))
     out: list[dict] = []
     for host, pairs in by_host.items():
-        buckets: dict[int, list[tuple[float, MetricPoint]]] = {}
+        buckets: dict[int, list[tuple[float, dict]]] = {}
         for ts, p in pairs:
             buckets.setdefault(int(ts // step) * step, []).append((ts, p))
         for b, ps in buckets.items():
             last = ps[-1][1]
             out.append({
-                "metric_id": str(last.metric_id),
-                "source": last.source,
-                "metric_name": last.metric_name,
-                "value": (max(x.value for _, x in ps) if agg == "max"
-                          else sum(x.value for _, x in ps) / len(ps)),
-                "unit": last.unit,
+                "metric_id": last["metric_id"],
+                "source": last["source"],
+                "metric_name": last["metric_name"],
+                "value": (max(x["value"] for _, x in ps) if agg == "max"
+                          else sum(x["value"] for _, x in ps) / len(ps)),
+                "unit": last["unit"],
                 "timestamp": datetime.fromtimestamp(
                     b, tz=timezone.utc).isoformat(),
                 "hostname": host,
@@ -368,14 +359,14 @@ async def get_metric_history(
     # local UTC offset and silently filtering out all in-cache points).
     since = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
 
-    # The InfluxDB read, point building and downsampling run on the read
+    # The InfluxDB read, row building and downsampling run on the read
     # pool so a long-range read does not stall the event loop.
     def _read() -> list[dict]:
-        points = metric_repo.get_points(
+        rows = metric_repo.get_history_rows(
             source, metric_name, since=since, limit=limit, hostname=hostname,
-            agg=agg,
+            agg=agg, max_points=max_points,
         )
-        return downsample_history(points, max_points, agg=agg)
+        return downsample_history(rows, max_points, agg=agg)
 
     return await asyncio.get_running_loop().run_in_executor(_READ_POOL, _read)
 

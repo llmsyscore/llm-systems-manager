@@ -45,6 +45,7 @@ def test_read_full(tmp_path):
         "metrics_rollup_bucket": "alarm_engine_metrics_rollup",
         "token": "secret-token",
         "rollup_token": "rollup-token",
+        "rollup_measurement": "metrics_1m",
     }
 
 

@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from .._best_effort import best_effort
 from .._time import now_utc
 from ..rate_counter import INFLUX_WRITES
@@ -13,6 +13,11 @@ from influxdb_client.client.write_api import SYNCHRONOUS, WriteOptions
 
 logger = logging.getLogger(__name__)
 
+
+# Flux durations query_metrics accepts for `every`, with their size in seconds.
+HISTORY_GRAINS_S: dict[str, int] = {
+    "30s": 30, "1m": 60, "5m": 300, "10m": 600, "30m": 1800, "1h": 3600,
+}
 
 # Grains that the 1-minute rollup measurement can satisfy. "30s" is excluded
 # because a 1-min rollup can't synthesize 30-second bins.
@@ -169,9 +174,7 @@ class InfluxDBClient:
         end_ts = end.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Defense-in-depth: refuse arbitrary strings as Flux durations.
-        # Only allow a small allowlist that matches our get_points() tiers.
-        allowed_every = {"30s", "1m", "5m", "10m", "30m", "1h"}
-        if every is not None and every not in allowed_every:
+        if every is not None and every not in HISTORY_GRAINS_S:
             logger.warning("query_metrics: ignoring disallowed every=%r", every)
             every = None
         if agg not in ("mean", "max"):
@@ -203,9 +206,13 @@ class InfluxDBClient:
                 skip_aggregate = True
 
         aggregate_clause = (
-            f"|> aggregateWindow(every: {every}, fn: {agg}, createEmpty: false)"
+            f"|> aggregateWindow(every: {every}, fn: {agg}, createEmpty: false, "
+            f'timeSrc: "_start")'
             if every and not skip_aggregate else ""
         )
+        # The window that starts at the range edge is labelled by the range
+        # start; snap it onto the grain so every label sits on the grid.
+        grain_s = HISTORY_GRAINS_S.get(every, 0) if aggregate_clause else 0
         # Host-scoped reads filter by hostname inside the Flux query (#602).
         hostname_clause = (
             f'|> filter(fn: (r) => r.hostname == "{_flux_str(hostname)}")'
@@ -233,6 +240,9 @@ class InfluxDBClient:
             for table in tables:
                 for record in table.records:
                     ts = record.get_time()
+                    if ts and grain_s and ts.timestamp() % grain_s:
+                        ts = datetime.fromtimestamp(
+                            ts.timestamp() // grain_s * grain_s, tz=timezone.utc)
                     results.append({
                         "timestamp": ts.isoformat() if ts else "",
                         "value": record.get_value(),
