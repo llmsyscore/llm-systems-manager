@@ -965,12 +965,13 @@ if $HAVE_AGENT && component_wanted "agent"; then
   fi
 fi
 
-# InfluxDB OOM drop-in + GOMEMLIMIT block; a change queues influxdb first in the restart prompt.
+# InfluxDB OOM drop-in, GOMEMLIMIT block and WAL fsync delay; a change queues influxdb first in the restart prompt.
 if $HAVE_INFLUX && component_wanted "alarm-engine"; then
   if (( DRY_RUN )); then
-    log "[dry-run] would refresh the influxdb OOM drop-in and GOMEMLIMIT block"
+    log "[dry-run] would refresh the influxdb OOM drop-in, GOMEMLIMIT block and WAL fsync delay"
   else
     apply_influxdb_host_tuning 1
+    apply_influxdb_wal_fsync_delay
     if (( LLMSYS_INFLUX_TUNING_CHANGED )); then
       RESTART_UNITS=("influxdb.service" ${RESTART_UNITS[@]+"${RESTART_UNITS[@]}"})
     else

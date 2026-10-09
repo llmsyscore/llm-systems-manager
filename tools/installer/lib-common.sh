@@ -231,6 +231,24 @@ apply_influxdb_host_tuning() {
   rm -f "$tmp"
 }
 
+# apply_influxdb_wal_fsync_delay — rewrites the managed storage-wal-fsync-delay
+# line from "100ms" to "0s" in place; sets LLMSYS_INFLUX_TUNING_CHANGED=1 on a change.
+LLMSYS_INFLUX_CONF="${LLMSYS_INFLUX_CONF:-/etc/influxdb/config.toml}"
+apply_influxdb_wal_fsync_delay() {
+  local conf="$LLMSYS_INFLUX_CONF" tmp
+  LLMSYS_INFLUX_TUNING_CHANGED="${LLMSYS_INFLUX_TUNING_CHANGED:-0}"
+  $SUDO test -f "$conf" 2>/dev/null || return 0
+  if ! $SUDO grep -qE '^storage-wal-fsync-delay[[:space:]]*=[[:space:]]*"100ms"' "$conf" 2>/dev/null; then
+    return 0
+  fi
+  tmp="$(mktemp)"
+  $SUDO sed -E 's/^(storage-wal-fsync-delay[[:space:]]*=[[:space:]]*)"100ms"/\1"0s"/' "$conf" > "$tmp"
+  $SUDO install -o root -g root -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  LLMSYS_INFLUX_TUNING_CHANGED=1
+  ok "influxdb WAL fsync delay: 100ms -> 0s ($conf)"
+}
+
 # install_sudoers_fragment <tpl> <dst> — render @@RUN_USER@@, visudo-validate, and
 # install 0440 root:root only if valid. Removes the temp on every path. Returns 0
 # on install, 1 on missing template / invalid fragment.

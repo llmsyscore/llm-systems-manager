@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.09-2"
+VERSION = "v2026.10.09-4"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1558,10 +1558,27 @@ def _influx_reset_clients() -> None:
     _influx_drop_client("rollup")
 
 
+def _probe_auth_warn(url: str, status: int) -> None:
+    """Log one throttled warning when a self-monitor probe is refused for auth."""
+    if status in (401, 403):
+        _diag_throttle(
+            f"probe_auth:{url}",
+            "self-monitor probe %s answered %s — no sample recorded; "
+            "check the agent's tokens", url, status, level=logging.WARNING,
+        )
+
+
+def _have_ingest_token() -> bool:
+    """True once the heartbeat ack has delivered the shared ingest token."""
+    with _runtime_lock:
+        return bool(_state.get("ingest_token"))
+
+
 def _probe_http_latency(
     method: str, url: str, timeout: float, body: Any = None,
     expect_status: tuple[int, ...] = (200,),
     headers: Optional[dict[str, str]] = None,
+    warn_auth: bool = True,
 ) -> Optional[float]:
     """Time a single HTTP request, return latency in ms or None on failure."""
     try:
@@ -1572,6 +1589,8 @@ def _probe_http_latency(
             r = _post_session.post(url, json=body, timeout=timeout, headers=headers)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if r.status_code not in expect_status:
+            if warn_auth:
+                _probe_auth_warn(url, r.status_code)
             return None
         return elapsed_ms
     except Exception as e:
@@ -1621,6 +1640,8 @@ def _probe_ae_ingest() -> Optional[float]:
         )
         elapsed = (time.perf_counter() - t0) * 1000.0
         if r.status_code not in (200, 201):
+            if _have_ingest_token():
+                _probe_auth_warn(f"{base}/api/alarm/metrics/ingest", r.status_code)
             return None
         return elapsed
     except Exception as e:
@@ -1795,10 +1816,13 @@ def _meta_perf_loop() -> None:
 
                 if CONFIG.ALARM_ENGINE_URL:
                     base = CONFIG.ALARM_ENGINE_URL.rstrip("/")
+                    tok = _ingest_token_provider()
                     results["ae_query_24h_latency_ms"] = _probe_http_latency(
                         "GET",
-                        f"{base}/api/alarm/metrics/system/cpu_total?since_minutes=1440",
+                        f"{base}/api/alarm/metrics/probe?since_minutes=1440",
                         CONFIG.META_PERF_TIMEOUT_S,
+                        headers={"Authorization": f"Bearer {tok}"} if tok else None,
+                        warn_auth=_have_ingest_token(),
                     )
 
                 results.update(_probe_influxdb())

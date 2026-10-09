@@ -285,7 +285,7 @@ storage-cache-snapshot-write-cold-duration = "30m"
 storage-max-concurrent-compactions         = 1
 storage-compact-throughput-burst           = "16m"
 # Write path
-storage-wal-fsync-delay                    = "100ms"
+storage-wal-fsync-delay                    = "0s"
 BLOCK
   printf '# Queries (concurrency scaled to %s detected cores)\n' "$QUERY_CONCURRENCY"
   printf 'query-concurrency                          = %s\n' "$QUERY_CONCURRENCY"

@@ -2055,6 +2055,18 @@ Downloads all stored metrics as a file, useful for backup or external analysis.
 
 ---
 
+### `GET /api/alarm/metrics/probe`
+Times one long-range history read (the last 24 hours of `system/cpu_total` across all hosts) and returns only the point count and how long the read took. Agents call it once a minute for the Self-monitor latency chart. No metric values are returned.
+
+**Access:** Requires the ingest token; open only when no ingest token is configured.
+
+**Query parameters:**
+- `since_minutes` — how far back to read, in minutes (default: 1440)
+
+**Response:** `{"points": <count>, "read_ms": <milliseconds>}`
+
+---
+
 ### `GET /api/alarm/metrics/<source>/<metric_name>`
 Returns the time-series history for a specific metric from a specific source host. Used by dashboard chart backfill.
 
