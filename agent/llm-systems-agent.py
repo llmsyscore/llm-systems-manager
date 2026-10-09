@@ -79,7 +79,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.07-5"
+VERSION = "v2026.10.09-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -1752,6 +1752,22 @@ def _probe_influxdb() -> dict[str, Optional[float]]:
     return out
 
 
+def _probe_manager_perf(base: str, token: str) -> dict[str, Optional[float]]:
+    """Manager latency probes; both stay None until the agent holds a token."""
+    if not token:
+        return {"manager_api_latency_ms": None, "manager_history_latency_ms": None}
+    hdrs = {"Authorization": f"Bearer {token}"}
+    return {
+        "manager_api_latency_ms": _probe_http_latency(
+            "GET", f"{base}/api/metrics", CONFIG.META_PERF_TIMEOUT_S, headers=hdrs,
+        ),
+        "manager_history_latency_ms": _probe_http_latency(
+            "GET", f"{base}/api/history?since_minutes=60",
+            CONFIG.META_PERF_TIMEOUT_S, headers=hdrs,
+        ),
+    }
+
+
 def _meta_perf_loop() -> None:
     """Background prober; writes results into _meta_perf_state for the next collector tick."""
     while True:
@@ -1759,18 +1775,9 @@ def _meta_perf_loop() -> None:
             results: dict[str, Optional[float]] = {}
 
             if CONFIG.MONITOR_MANAGER_ENABLED and CONFIG.MANAGER_URL:
-                base = CONFIG.MANAGER_URL.rstrip("/")
-                # Probes hit auth-gated routes; agent bearer bypasses _auth_gate.
-                mgr_tok = _state.get("token") or ""
-                mgr_hdrs = {"Authorization": f"Bearer {mgr_tok}"} if mgr_tok else None
-                results["manager_api_latency_ms"] = _probe_http_latency(
-                    "GET", f"{base}/api/metrics",
-                    CONFIG.META_PERF_TIMEOUT_S, headers=mgr_hdrs,
-                )
-                results["manager_history_latency_ms"] = _probe_http_latency(
-                    "GET", f"{base}/api/history?since_minutes=60",
-                    CONFIG.META_PERF_TIMEOUT_S, headers=mgr_hdrs,
-                )
+                results.update(_probe_manager_perf(
+                    CONFIG.MANAGER_URL.rstrip("/"), _state.get("token") or "",
+                ))
 
             if CONFIG.MONITOR_ALARM_ENGINE_ENABLED:
                 ae_health_ms, last_cycle_ms = _probe_ae_health_with_cycle()

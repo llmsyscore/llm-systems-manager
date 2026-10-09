@@ -830,6 +830,7 @@ crt_pem, key_pem = _pki.sign_agent_cert(
     ip_san=detected_ip,
     extra_dns_sans=extra_dns_sans,
     extra_ip_sans=extra_ip_sans,
+    role=_pki.ROLE_ALARM_ENGINE,
 )
 crt = ae_data_dir / "ae-tls.crt"
 key = ae_data_dir / "ae-tls.key"
