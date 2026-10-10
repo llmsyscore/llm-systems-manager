@@ -96,6 +96,13 @@ class _NoChecks:
                                   "size_b": None, "small": False, "at": 0.0, "detail": "stubbed"}
     def forget(self): return None
 
+@pytest.fixture(autouse=True)
+def _fresh_anon_budget():
+    """Each test starts with an empty anonymous-request budget window (#1216)."""
+    import auth
+    auth._ANON_BUDGET = auth._AnonBudget()
+    yield
+
 
 @pytest.fixture(autouse=True)
 def _tower_checks_stubbed(monkeypatch):

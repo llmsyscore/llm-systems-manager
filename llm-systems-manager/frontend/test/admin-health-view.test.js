@@ -43,7 +43,8 @@ const HEALTHY = {
     primary_lms_push: { has_agent: true, ok: true, age_s: 6 },
     primary_vllm_push: { has_agent: false },
   },
-  flow: { agent_pushes_per_s: 3, ae_ingest_points_per_s: 42, influx_writes_per_s: 40, history_req_per_s: 0.8 },
+  flow: { agent_pushes_per_s: 3, ae_ingest_points_per_s: 42, influx_writes_per_s: 40, history_req_per_s: 0.8,
+          anon_req_per_min: 12, anon_refused_per_min: 0 },
   agent_update: { latest: 'v2026.09.01-3', outdated: 0, hostnames: [] },
   ae_restart: { available: true, via: 'systemctl' },
   warnings: [],
@@ -302,6 +303,17 @@ describe('node detail strip', () => {
     expect(rows.streams).toBe('3 / 32 · peak 9 · refusals 0');
     expect(rows['worker threads']).toBe('4 / 32 busy');
     expect(rows['engine probe']).toBe('12 ms');
+    expect(rows['open routes']).toBe('12 /min · 0 refused');
+  });
+
+  test('refused anonymous requests flag the open-routes row (#1216)', () => {
+    const d = JSON.parse(JSON.stringify(HEALTHY));
+    d.flow.anon_req_per_min = 640; d.flow.anon_refused_per_min = 40;
+    const row = view().detailRows(d, 'manager').find(r => r[0] === 'open routes');
+    expect(row[1]).toBe('640 /min · 40 refused');
+    expect(row[2]).toBe('warn');
+    const none = view().detailRows({ ...HEALTHY, flow: {} }, 'manager').find(r => r[0] === 'open routes');
+    expect(none[1]).toBe('—');
   });
 });
 
@@ -492,5 +504,58 @@ describe('#1161 certificate role rows', () => {
     const svc = HEALTHY.services.map(s => s.name === 'alarm_engine' ? { ...s, tls_role_checked: true } : s);
     expect(view().detailRows({ ...HEALTHY, services: svc }, 'ae')).toContainEqual(['certificate role', 'checked', 'ok']);
     expect(view().detailRows(HEALTHY, 'ae')).toContainEqual(['certificate role', 'not yet', '']);
+  });
+});
+
+describe('flagged nodes highlight and auto-open their detail strip (#1216)', () => {
+  const flooded = () => {
+    const d = JSON.parse(JSON.stringify(HEALTHY));
+    d.flow.anon_req_per_min = 3210; d.flow.anon_refused_per_min = 2610;
+    return d;
+  };
+
+  test('a warn row on the manager node colours the node and opens its strip', () => {
+    const doc = card(flooded());
+    expect(doc.getElementById('hcnMg').getAttribute('class')).toContain('warn');
+    expect(doc.getElementById('hcnMg').getAttribute('class')).toContain('sel');
+    expect(doc.getElementById('adminHealthDetail').textContent).toContain('open routes');
+    expect(doc.getElementById('adminHealthDetail').textContent).toContain('2610 refused');
+  });
+
+  test('a healthy payload opens nothing', () => {
+    const doc = card(HEALTHY);
+    expect(doc.getElementById('adminHealthDetail').innerHTML).toBe('');
+    expect(doc.getElementById('hcnMg').getAttribute('class')).not.toContain('warn');
+  });
+
+  test('a strip the operator closed stays closed while the same node is flagged, and clears when it heals', () => {
+    const d = flooded();
+    const win = runHarness({
+      sources: [adminSrc, healthSrc],
+      bodyHtml: `<div id="adminTab">${CARD}</div>`,
+      bootstrap: `HealthView.render(${JSON.stringify(d)}, null);
+        window.__afterOpen = HealthView.selected();
+        document.querySelector('#adminHealthDetail [data-close]').click();
+        HealthView.render(${JSON.stringify(d)}, null);
+        window.__afterClose = HealthView.selected();
+        HealthView.render(${JSON.stringify(HEALTHY)}, null);
+        HealthView.render(${JSON.stringify(d)}, null);
+        window.__afterHeal = HealthView.selected();`,
+    });
+    expect(win.__afterOpen).toBe('manager');
+    expect(win.__afterClose).toBe(null);
+    expect(win.__afterHeal).toBe('manager');
+  });
+
+  test('a node the operator picked is not overridden by an auto-open', () => {
+    const win = runHarness({
+      sources: [adminSrc, healthSrc],
+      bodyHtml: `<div id="adminTab">${CARD}</div>`,
+      bootstrap: `HealthView.render(${JSON.stringify(HEALTHY)}, null);
+        document.getElementById('hcnAg').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+        HealthView.render(${JSON.stringify(flooded())}, null);
+        window.__sel = HealthView.selected();`,
+    });
+    expect(win.__sel).toBe('agents');
   });
 });

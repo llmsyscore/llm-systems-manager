@@ -251,6 +251,7 @@ admin_cidrs = ["127.0.0.1", "::1", "192.168.1.0/24", "192.168.2.0/24"]
 
 tls_rotation_warn_days = 30                              # warn when certs expire within N days
 stream_token_ttl_s = 300                                 # short-lived SSE/EventSource HMAC tokens
+anon_request_budget_per_min = 600                        # requests/min on the no-login routes (registration, status poll, login); 0 = no limit
 
 # CSP applied to proxied HTML (llama Chat UI, AE SPA, OpenClaw, image-gen).
 # 'unsafe-inline' is required (injected shims); cdn.jsdelivr.net serves the

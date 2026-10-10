@@ -290,6 +290,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].hsts_max_age_s` | `Strict-Transport-Security` max-age emitted on HTTPS responses; `0` = off. Leave it off while the plain-HTTP port shares the hostname — HSTS preserves the port | `0` |
 | `[manager.agents].enrollment_mode` | When new machines may register and wait for approval: `auto` opens enrollment for one window after each manager start, `open` keeps it open and `closed` keeps it closed until changed here or on Admin › Agents (in `auto`, a change made on Admin › Agents lasts until the next manager start). Applies without a restart | `auto` |
 | `[manager.agents].enrollment_window_min` | Minutes enrollment stays open after a start in `auto` mode, and per **Open enrollment** click | `15` |
+| `[manager.security].anon_request_budget_per_min` | How many requests per minute the manager answers on the pages and routes that need no login or token (agent registration, the waiting-agent status check, the login page). Past the budget it answers "too many requests" until the minute is over. `0` turns the limit off. See [Protecting the Manager from Request Floods](#protecting-the-manager-from-request-floods) | `600` |
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
@@ -604,6 +605,58 @@ How it behaves:
 - **HSTS is opt-in.** `[manager].hsts_max_age_s` (default `0`) adds a `Strict-Transport-Security` header to HTTPS responses. Leave it at `0` unless the plain-HTTP port is closed — HSTS preserves the port, so one HTTPS visit makes the browser rewrite `http://host:5000` to `https://host:5000` and fail.
 
 This is also the prerequisite for installing the phone companion below.
+
+### Protecting the Manager from Request Floods
+
+Most of the manager needs a login or an agent token, so a stranger can only reach a few routes: agent registration, the status check a waiting agent repeats until it is approved, the certificate fetch an approved agent makes once, and the login page. The manager protects those routes in two layers:
+
+- **Per address.** One address may send 6 registrations a minute and 5 failed logins in 15 minutes; past that it is refused for a while. Each refusal is logged with the address: `registration REFUSED (rate limit) from <address>` (once a minute per address) and `manager login LOCKED (user=<name>) from <address>`.
+- **For everyone together.** `[manager.security].anon_request_budget_per_min` (default `600`) caps the total number of requests per minute (a fixed 60-second window, not aligned to the clock's minutes) on those routes, whatever addresses they come from. Past the budget the manager answers `429 Too many requests` with a `Retry-After: 60` header before it reads the request or builds a page. Requests that carry a login session or an approved agent's token are not counted, so during a flood your dashboard keeps working and approved agents keep fetching their certificates; a waiting agent's status check and a fresh login share the budget with the flood, so they may have to wait a minute. The log gets one line when the budget runs out and one line per minute while the flood lasts (`refused N anonymous requests in the last minute`). The default leaves room for the largest normal load (100 waiting agents each checking every 15 seconds) and only bites at a real flood; raise it for a very large fleet, or set `0` to turn it off when a proxy in front already limits requests.
+- **Watching it.** When requests were refused in the last minute, Admin › System Health lists it under Warnings, colours the Manager box, and opens the Manager details with the **open routes** row (requests on those routes and how many were refused, for the last full 60-second window); close the details and they stay closed until the flood is over. The Manager dashboard's Stream & Connection Health card shows the same two numbers and turns its badge to "flooded". The agent on the manager host stores the same two numbers once a minute as the `manager_anon_requests_per_min` and `manager_anon_refused_per_min` series (source `manager_self_monitor`), so the Manager Perf card on the dashboard shows them, the alarm engine's history keeps them, and an alarm rule on `manager_anon_refused_per_min` above 0 tells you a flood happened while you were away.
+
+On a network you do not fully trust, put a reverse proxy in front of the manager and let it absorb floods before they reach the service. Note that the manager then sees every client as the proxy's own address: the per-address limits above apply to the proxy as a whole, and the log lines name the proxy, so address-based banning has to happen at the proxy. With nginx, add a limit for the open routes (agents behind one NAT share one address, so raise the rate for a large site):
+
+```nginx
+limit_req_zone $binary_remote_addr zone=lsm_anon:10m rate=30r/m;
+
+server {
+    listen 443 ssl;
+    server_name manager.example.net;
+    # ssl_certificate / ssl_certificate_key: your real certificate
+
+    location ~ ^/(login|api/agents/register|api/agents/[^/]+/(status|cert-bundle))$ {
+        limit_req zone=lsm_anon burst=20 nodelay;
+        proxy_pass http://127.0.0.1:5000;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+    }
+}
+```
+
+When clients connect to the manager directly, fail2ban can ban an address at the firewall after repeated refusals by watching the manager's own log lines (behind a proxy, use fail2ban's stock `nginx-limit-req` filter on the proxy's error log instead). The manager logs to the journal, so the jail reads it with the `systemd` backend:
+
+```ini
+# /etc/fail2ban/filter.d/llm-systems-manager.conf
+[Definition]
+failregex = registration REFUSED \(rate limit\) from <HOST>:
+            manager login LOCKED \(user=.*\) from <HOST>$
+            manager login FAILED \(user=.*\) from <HOST>$
+journalmatch = _SYSTEMD_UNIT=llm-systems-manager.service
+```
+
+```ini
+# /etc/fail2ban/jail.d/llm-systems-manager.conf
+[llm-systems-manager]
+enabled  = true
+backend  = systemd
+filter   = llm-systems-manager
+maxretry = 3
+findtime = 600
+bantime  = 3600
+```
+
+The registration line is written once a minute per address, so a machine that keeps flooding registrations is banned after three refused minutes; failed logins count per attempt. Check it with `fail2ban-client status llm-systems-manager`. Keep your own machines out of the jail with `ignoreip` so a mistyped password on the admin workstation does not lock you out.
 
 ### Phone Companion (PWA)
 
