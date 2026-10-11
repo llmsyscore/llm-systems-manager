@@ -671,3 +671,35 @@ class TestDataFlowVllm:
         assert "primary_llama_push" in df and "primary_lms_push" in df
         assert "primary_vllm_push" in df
         assert "has_agent" in df["primary_vllm_push"]
+
+
+# ── #1256: the store is parsed once per on-disk change, not once per request ──
+
+def test_reads_parse_the_file_once_until_it_changes(tmp_path, monkeypatch):
+    store = manager_users.UserStore(tmp_path / "manager_users.json")
+    store.create("a", "h", "admin")
+    assert store.get("a")["role"] == "admin"
+    loads = []
+    real = manager_users.json.load
+    monkeypatch.setattr(manager_users.json, "load", lambda f: loads.append(1) or real(f))
+    for _ in range(50):
+        assert store.get("a")["role"] == "admin"
+        assert store.count_enabled_admins() == 1
+    assert loads == []
+
+
+def test_external_rewrite_is_picked_up(tmp_path):
+    p = tmp_path / "manager_users.json"
+    store = manager_users.UserStore(p)
+    store.create("a", "h", "admin")
+    assert store.get("b") is None
+    other = manager_users.UserStore(p)
+    other.create("b", "h", "operator")
+    assert store.get("b")["role"] == "operator"
+
+
+def test_returned_user_is_a_copy(tmp_path):
+    store = manager_users.UserStore(tmp_path / "manager_users.json")
+    store.create("a", "h", "admin")
+    store.get("a")["role"] = "operator"
+    assert store.get("a")["role"] == "admin"

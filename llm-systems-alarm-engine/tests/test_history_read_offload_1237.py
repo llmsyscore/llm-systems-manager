@@ -1,4 +1,4 @@
-"""#1237: metric history, summary and export reads run on a one-thread read
+"""#1237: metric history, summary and export reads run on a bounded read
 pool, so a slow long-range read no longer stalls every other alarm engine
 request, and point ids no longer read system entropy per point."""
 import threading

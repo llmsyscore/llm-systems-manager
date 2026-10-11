@@ -7,8 +7,10 @@ Password hashing reuses auth.scrypt_hash / scrypt_verify (stdlib scrypt).
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -31,20 +33,39 @@ class UserStore:
     def __init__(self, path: "Path | str") -> None:
         self._path = Path(path)
         self._lock = threading.RLock()
+        self._cache: "dict | None" = None
+        self._cache_key = None
 
     # ── persistence ──────────────────────────────────────────────
-    def _load(self) -> dict:
+    def _file_key(self):
+        """(mtime_ns, size, inode) of the store file; None when it is missing."""
         try:
-            with open(self._path) as f:
-                d = json.load(f)
-        except (FileNotFoundError, ValueError):
-            d = {}
-        d.setdefault("schema_version", 1)
-        d.setdefault("users", {})
-        return d
+            st = os.stat(self._path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+    def _doc(self) -> dict:
+        """The parsed store, re-read only when the file on disk has changed."""
+        key = self._file_key()
+        if self._cache is None or key != self._cache_key:
+            try:
+                with open(self._path) as f:
+                    d = json.load(f)
+            except (FileNotFoundError, ValueError):
+                d = {}
+            d.setdefault("schema_version", 1)
+            d.setdefault("users", {})
+            self._cache, self._cache_key = d, key
+        return self._cache
+
+    def _load(self) -> dict:
+        """A private copy of the store for callers that mutate and save it."""
+        return copy.deepcopy(self._doc())
 
     def _save(self, data: dict) -> None:
         write_durable(self._path, json.dumps(data, indent=2))
+        self._cache, self._cache_key = None, None
 
     # ── helpers ──────────────────────────────────────────────────
     @staticmethod
@@ -64,15 +85,16 @@ class UserStore:
     # ── reads ────────────────────────────────────────────────────
     def is_empty(self) -> bool:
         with self._lock:
-            return not self._load()["users"]
+            return not self._doc()["users"]
 
     def get(self, username: str) -> "dict | None":
         with self._lock:
-            return self._load()["users"].get(self.normalize(username))
+            u = self._doc()["users"].get(self.normalize(username))
+        return dict(u) if u is not None else None
 
     def list(self) -> list:
         with self._lock:
-            users = self._load()["users"]
+            users = self._doc()["users"]
         out = []
         for name, u in sorted(users.items()):
             row = {k: v for k, v in u.items() if k != "password_hash"}
@@ -82,24 +104,24 @@ class UserStore:
 
     def count_enabled_admins(self) -> int:
         with self._lock:
-            return self._enabled_admins(self._load()["users"])
+            return self._enabled_admins(self._doc()["users"])
 
     def password_pending(self) -> bool:
         """True when an enabled admin still has a temporary password or needs a new one."""
         with self._lock:
-            users = self._load()["users"]
+            users = self._doc()["users"]
         return any(u.get("role") == "admin" and not u.get("disabled")
                    and (u.get("must_change") or u.get("reset_required")) for u in users.values())
 
     def needs_reset(self) -> bool:
         """True when no enabled admin has a password to sign in with."""
         with self._lock:
-            return self._enabled_admins(self._load()["users"]) == 0
+            return self._enabled_admins(self._doc()["users"]) == 0
 
     def awaiting_reset(self, is_retired) -> list:
         """Enabled admins marked reset_required or whose password is_retired(hash) accepts."""
         with self._lock:
-            users = self._load()["users"]
+            users = self._doc()["users"]
         return [n for n, u in sorted(users.items())
                 if u.get("role") == "admin" and not u.get("disabled")
                 and (u.get("reset_required") or is_retired(u.get("password_hash") or ""))]
@@ -153,7 +175,7 @@ class UserStore:
         created as an admin and a disabled one is enabled. Returns the stored name."""
         name = self.normalize(username)
         with self._lock:
-            if name not in self._load()["users"]:
+            if name not in self._doc()["users"]:
                 self.create(name, password_hash, "admin", must_change=True)
                 return name
             self._mutate(name, lambda _u, _n, u: u.__setitem__("disabled", False))

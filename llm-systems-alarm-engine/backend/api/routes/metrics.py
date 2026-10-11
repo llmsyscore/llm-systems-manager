@@ -44,9 +44,10 @@ _SUMMARY_WIN_MAX  = _API.summary_window_minutes_max
 # getattr guard: field may be absent from an older unified_config.py.
 _HIST_MAX_POINTS_DEFAULT = int(getattr(_API, "history_max_response_points", 1500) or 0)
 
-# Single worker for history, summary and export reads: one CPU-bound point
-# build at a time keeps the event loop responsive for every other request.
-_READ_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metric-read")
+# Bounded pool for history, summary and export reads: they stay off the
+# event loop and up to _READ_WORKERS of them run at once.
+_READ_WORKERS = 4
+_READ_POOL = ThreadPoolExecutor(max_workers=_READ_WORKERS, thread_name_prefix="metric-read")
 
 
 def downsample_history(rows: list[dict], max_points: int,

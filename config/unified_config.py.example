@@ -341,6 +341,9 @@ class ManagerConfig(BaseModel):
     # Fixed Cheroot worker-thread pool shared by BOTH the HTTP and TLS servers
     # (cheroot can't grow it at runtime); each held SSE stream pins one thread.
     http_threads: int = 64
+    # Listen-queue depth for both Cheroot servers; the kernel caps it at
+    # net.core.somaxconn. Cheroot's own default (5) stalls simultaneous connects.
+    listen_backlog: int = 1024
     # Workers reserved for non-stream (control/health/heartbeat) requests.
     # Concurrent SSE streams are capped at http_threads - stream_reserve_threads
     # so healthy long-lived streams can never exhaust the pool and hang control.

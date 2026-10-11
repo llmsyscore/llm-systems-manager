@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.09-7"
+__version__ = "v2026.10.11-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -9300,6 +9300,26 @@ def _set_listen_keepalive(sock) -> None:
         log.warning("TCP keepalive setup skipped: %s", e)
 
 
+def _listen_backlog() -> int:
+    """Listen-queue depth for both Cheroot servers ([manager].listen_backlog)."""
+    return int(getattr(settings.manager, "listen_backlog", 1024) or 1024)
+
+
+def _new_cheroot_server(bind_addr):
+    """Cheroot WSGI server for `app` with the configured worker count and
+    listen backlog; the kernel caps the backlog at net.core.somaxconn."""
+    from cheroot.wsgi import Server as _CherootServer
+    srv = _CherootServer(
+        bind_addr, app,
+        numthreads=int(getattr(settings.manager, "http_threads", 64) or 64),
+        request_queue_size=_listen_backlog(),
+    )
+    # Cheroot keeps only 10 idle keep-alive connections by default and answers
+    # the rest with Connection: close; idle ones are still reaped after `timeout`.
+    srv.keep_alive_conn_limit = None
+    return srv
+
+
 def _cheroot_serve_with_keepalive(srv) -> None:
     """Cheroot start() = prepare()+serve(); split it so keepalive sockopts land
     on the bound listener before the accept loop runs."""
@@ -9360,11 +9380,9 @@ def _maybe_start_manager_tls_server() -> None:
     custom = _custom_manager_tls_files()
 
     def _serve_tls() -> None:
-        from cheroot.wsgi import Server as _CherootServer
         from cheroot.ssl.builtin import BuiltinSSLAdapter
         try:
-            srv = _CherootServer(("0.0.0.0", tls_port), app,
-                                 numthreads=int(getattr(settings.manager, "http_threads", 64) or 64))
+            srv = _new_cheroot_server(("0.0.0.0", tls_port))
             adapter = BuiltinSSLAdapter(str(crt), str(key))
             # Operator cert is served only to SNI hostnames it covers; the
             # internal-CA cert stays the default so CA-pinned agents keep working.
@@ -10042,14 +10060,10 @@ if __name__ == "__main__":
                     "[alarm_engine].alarm_engine_url so agents need no resolution "
                     "(the AE TLS cert SAN auto-covers the IP).", _ae_h)
 
-    from cheroot.wsgi import Server as _CherootServer
-    _http_srv = _CherootServer(
-        (settings.manager.host, settings.manager.port), app,
-        numthreads=int(getattr(settings.manager, "http_threads", 64) or 64),
-    )
-    log.info("  Manager HTTP: listening on http://%s:%d (%d worker threads)",
+    _http_srv = _new_cheroot_server((settings.manager.host, settings.manager.port))
+    log.info("  Manager HTTP: listening on http://%s:%d (%d worker threads, listen backlog %d)",
              settings.manager.host, settings.manager.port,
-             int(getattr(settings.manager, "http_threads", 64) or 64))
+             int(getattr(settings.manager, "http_threads", 64) or 64), _listen_backlog())
 
     # systemd stop sends SIGTERM. Without a handler Python raises
     # SystemExit straight through cheroot's accept loop and the shutdown

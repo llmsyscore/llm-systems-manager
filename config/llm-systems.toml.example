@@ -43,6 +43,11 @@ public_hosts = []
 # then are refused. Floor for a kiosk + several operators is ~32.
 http_threads = 64
 
+# Pending-connection queue for both servers (the kernel caps it at
+# net.core.somaxconn). Many browsers connecting at once wait in this queue
+# instead of retrying for seconds.
+listen_backlog = 1024
+
 # Workers reserved for non-stream (control/health/heartbeat) requests. Each
 # live SSE stream pins one worker, so concurrent streams are capped at
 # http_threads - stream_reserve_threads; over the cap → 503 + retry.
