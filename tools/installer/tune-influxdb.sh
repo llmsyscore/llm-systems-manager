@@ -2,7 +2,8 @@
 # =============================================================================
 # tools/installer/tune-influxdb.sh — refreshes the InfluxDB host tuning on a
 # host that runs influxdb.service: the OOM drop-in, the GOMEMLIMIT block
-# (shared hosts only) and the managed WAL fsync delay.
+# (shared hosts only), the managed WAL fsync delay, cache snapshot size and
+# query concurrency.
 #
 #   sudo bash tune-influxdb.sh [--restart | --no-restart] [--dry-run]
 #
@@ -42,12 +43,14 @@ _colocated=0
 grep -qE '^llm-systems-(manager|alarm-engine|agent)\.service$' <<<"$_units" && _colocated=1
 
 if (( DRY_RUN )); then
-  log "[dry-run] would refresh the influxdb OOM drop-in, GOMEMLIMIT block (colocated=$_colocated) and WAL fsync delay"
+  log "[dry-run] would refresh the influxdb OOM drop-in, GOMEMLIMIT block (colocated=$_colocated), WAL fsync delay, cache snapshot size and query concurrency"
   exit 0
 fi
 
 apply_influxdb_host_tuning "$_colocated"
 apply_influxdb_wal_fsync_delay
+apply_influxdb_cache_snapshot_size
+apply_influxdb_query_concurrency
 if (( ! LLMSYS_INFLUX_TUNING_CHANGED )); then
   ok "InfluxDB host tuning already current (GOMEMLIMIT $LLMSYS_INFLUX_GOMEMLIMIT)"
   exit 0

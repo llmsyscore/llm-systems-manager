@@ -249,6 +249,48 @@ apply_influxdb_wal_fsync_delay() {
   ok "influxdb WAL fsync delay: 100ms -> 0s ($conf)"
 }
 
+# apply_influxdb_cache_snapshot_size — rewrites the managed 128 MiB
+# storage-cache-snapshot-memory-size line to 16 MiB in place; flags a restart on a change.
+apply_influxdb_cache_snapshot_size() {
+  local conf="$LLMSYS_INFLUX_CONF" tmp
+  LLMSYS_INFLUX_TUNING_CHANGED="${LLMSYS_INFLUX_TUNING_CHANGED:-0}"
+  $SUDO test -f "$conf" 2>/dev/null || return 0
+  if ! $SUDO grep -qE '^storage-cache-snapshot-memory-size[[:space:]]*=[[:space:]]*134217728[[:space:]]*$' "$conf" 2>/dev/null; then
+    return 0
+  fi
+  tmp="$(mktemp)"
+  $SUDO sed -E 's/^(storage-cache-snapshot-memory-size[[:space:]]*=[[:space:]]*)134217728[[:space:]]*$/\116777216/' "$conf" > "$tmp"
+  $SUDO install -o root -g root -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  LLMSYS_INFLUX_TUNING_CHANGED=1
+  ok "influxdb cache snapshot size: 128 MiB -> 16 MiB ($conf)"
+}
+
+# apply_influxdb_query_concurrency — sets the query-concurrency line to the host's core
+# count (floor 2) and query-queue-size to 16x it, in place; flags a restart on a change.
+apply_influxdb_query_concurrency() {
+  local conf="$LLMSYS_INFLUX_CONF" tmp want queue cur
+  LLMSYS_INFLUX_TUNING_CHANGED="${LLMSYS_INFLUX_TUNING_CHANGED:-0}"
+  $SUDO test -f "$conf" 2>/dev/null || return 0
+  want="$(nproc 2>/dev/null || echo 2)"
+  [[ "$want" =~ ^[0-9]+$ ]] || want=2
+  (( want < 2 )) && want=2
+  queue=$(( want * 16 ))
+  cur="$($SUDO awk '/^query-(concurrency|queue-size)[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); printf "%s ", $0 }' "$conf" 2>/dev/null)"
+  [[ -n "$cur" && "$cur" != "$want $queue " ]] || return 0
+  cur="${cur%% *}"
+  tmp="$(mktemp)"
+  $SUDO awk -v c="$want" -v q="$queue" '
+    /^# Queries \(concurrency scaled to/ { $0 = "# Queries (concurrency scaled to " c " detected cores)" }
+    /^query-concurrency[[:space:]]*=/ { $0 = sprintf("%-42s = %s", "query-concurrency", c) }
+    /^query-queue-size[[:space:]]*=/  { $0 = sprintf("%-42s = %s", "query-queue-size", q) }
+    { print }' "$conf" > "$tmp"
+  $SUDO install -o root -g root -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  LLMSYS_INFLUX_TUNING_CHANGED=1
+  ok "influxdb query concurrency: $cur -> $want (queue $queue) ($conf)"
+}
+
 # install_sudoers_fragment <tpl> <dst> — render @@RUN_USER@@, visudo-validate, and
 # install 0440 root:root only if valid. Removes the temp on every path. Returns 0
 # on install, 1 on missing template / invalid fragment.

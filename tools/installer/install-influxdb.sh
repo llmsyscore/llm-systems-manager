@@ -279,7 +279,7 @@ awk -v b="$BEGIN_MARKER" -v e="$END_MARKER" '
   cat <<'BLOCK'
 # Cache
 storage-cache-max-memory-size              = 1073741824
-storage-cache-snapshot-memory-size         = 134217728
+storage-cache-snapshot-memory-size         = 16777216
 storage-cache-snapshot-write-cold-duration = "30m"
 # Compactions
 storage-max-concurrent-compactions         = 1
