@@ -761,6 +761,38 @@ fi
 # shellcheck source=tools/installer/lib-common.sh
 . "$REPO_SRC/tools/installer/lib-common.sh"
 
+# ── Anonymous install report consent (install modes only; update/uninstall never ask) ─
+# Compat no-op helpers when an older release tarball's lib-common lacks them.
+_TELEMETRY_DONE=0
+if ! declare -F telemetry_report >/dev/null; then
+  telemetry_consent() { export LLMSYS_TELEMETRY=0 LLMSYS_HEARTBEAT=0 LLMSYS_TELEMETRY_REASON=unsupported; }
+  telemetry_payload() { return 1; }
+  telemetry_report() { return 0; }
+  telemetry_endpoint() { :; }
+fi
+_TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
+if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
+  _tele_preview_dir="$(mktemp -d)"
+  LLMSYS_TELEMETRY_PREVIEW="$(telemetry_payload install script "$MODE" ok "$_tele_preview_dir" "$_TELEMETRY_VERSION" "$REPO_SRC" 2>/dev/null \
+    | python3 -c 'import json,sys; p=json.load(sys.stdin); p.pop("install_id", None); print(json.dumps(p, indent=1))' 2>/dev/null || true)"
+  rm -rf "$_tele_preview_dir"
+  export LLMSYS_TELEMETRY_PREVIEW
+  telemetry_consent
+fi
+
+# EXIT-trap hook: on a non-zero exit, report the failed stage unless a final report already ran.
+_telemetry_on_exit() {
+  local rc=$?
+  (( rc != 0 )) || return 0
+  (( _TELEMETRY_DONE )) && return 0
+  [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
+  local stage; stage="$(printf '%s' "${LLMSYS_STAGE:-unknown}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
+  telemetry_report install script "$MODE" "failed:$stage" "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data" \
+    "$_TELEMETRY_VERSION" "$REPO_SRC" "$(telemetry_endpoint)" >/dev/null 2>&1 || true
+  local d="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data"
+  ${SUDO:-} chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$d/install-id" "$d/telemetry-"* "$d/telemetry.log" 2>/dev/null || true
+}
+
 # Compat shims: a main install.sh may pair with an older release tarball's
 # lib-common.sh (default --source release), so newer helpers get fallbacks.
 if ! declare -F detect_primary_ip >/dev/null; then
@@ -830,6 +862,7 @@ case "$MODE" in
       ok "removed staging tree $LLMSYS_CLONE_TMP"
     fi
   fi
+  _TELEMETRY_DONE=1
   exit "$_rc"
   ;;
 esac
@@ -896,7 +929,7 @@ export LLMSYS_INSTALL_MODE="$MODE"
 # cleanup trap before either mktemp so a mid-sequence failure still cleans up.
 LLMSYS_INFLUXDB_TOKEN_FILE=""
 export LLMSYS_INFLUXDB_TOKEN_FILE LLMSYS_APT_STAMP
-trap 'rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
+trap '_telemetry_on_exit; rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
 LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
 # Keep the preflight stamp when it exists; otherwise start an empty one.
@@ -1488,13 +1521,22 @@ echo "  ────────────────────────
 echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
+_TELEMETRY_DONE=1
 if (( FAIL == 0 )); then
+  telemetry_report install script "$MODE" ok "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
+    "$(telemetry_endpoint)"
+  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id" \
+    "$LLMSYS_INSTALL_DIR/data/telemetry-"* "$LLMSYS_INSTALL_DIR/data/telemetry.log" 2>/dev/null || true
   if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
     ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
   else
     ok "Installation succeeded."
   fi
 else
+  telemetry_report install script "$MODE" "failed:health_checks" "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
+    "$(telemetry_endpoint)"
+  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id" \
+    "$LLMSYS_INSTALL_DIR/data/telemetry-"* "$LLMSYS_INSTALL_DIR/data/telemetry.log" 2>/dev/null || true
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1
 fi

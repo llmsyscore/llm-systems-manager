@@ -3913,6 +3913,43 @@ fi
 $SUDO mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR"
 
+# Anonymous install and crash report consent: writes state/install-id and state/telemetry.json.
+_tele_py="${PYTHON3:-$(command -v python3 || true)}"
+if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
+  _tele_t="${LLMSYS_TELEMETRY:-}"
+  if [[ -z "$_tele_t" ]]; then
+    if [[ -t 0 ]]; then
+      read -rp "  Send anonymous install and crash reports (OS, hardware, version; no names or paths)? [Y/n] " _a
+      case "$(printf '%s' "${_a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) _tele_t=0 ;; *) _tele_t=1 ;; esac
+    else
+      _tele_t=1
+    fi
+  fi
+  [[ "$_tele_t" == "1" ]] || _tele_t=0
+  $SUDO "$_tele_py" -I - "$INSTALL_DIR/state" "$_tele_t" <<'PY' || true
+import json, os, sys, time, uuid
+d, t = sys.argv[1], sys.argv[2] == "1"
+def put(name, text, mode):
+    tmp = os.path.join(d, ".%s.%d.tmp" % (name, os.getpid()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, os.path.join(d, name))
+idf = os.path.join(d, "install-id")
+iid = ""
+if os.path.isfile(idf) and not os.path.islink(idf):
+    iid = open(idf).read().strip()
+if not iid:
+    iid = str(uuid.uuid4())
+    put("install-id", iid + "\n", 0o644)
+at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.stat(idf).st_mtime))
+put("telemetry.json", json.dumps({"install_report": t, "crash_reports": t,
+                                  "install_id": iid, "installed_at": at}, indent=1), 0o600)
+PY
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/state/telemetry.json" "$INSTALL_DIR/state/install-id" 2>/dev/null || true
+  export LLMSYS_TELEMETRY="$_tele_t"
+fi
+
 if [[ "$AGENT_OS" == "linux" ]]; then
   $SUDO mkdir -p /var/log/llm-systems-manager
   $SUDO chown "$USER_ARG:$USER_GROUP" /var/log/llm-systems-manager
@@ -4584,3 +4621,11 @@ if [[ "$MANAGER_URL" =~ ^https?://(127\.0\.0\.1|localhost)(:[0-9]+)?/?$ ]]; then
 fi
 echo "  Approve at:     $APPROVE_URL/  → Admin tab → Agents"
 echo "─────────────────────────────────────────────────────────────────────────"
+
+# Agent-only install report (Mode 5 or standalone); full installs report from install.sh.
+if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
+      && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
+  LLMSYS_TELEMETRY=1 bash "$SRC_DIR/../tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
+    --data-dir "$INSTALL_DIR/state" --root "$(cd "$SRC_DIR/.." && pwd)" || true
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/state/telemetry-"* "$INSTALL_DIR/state/telemetry.log" 2>/dev/null || true
+fi

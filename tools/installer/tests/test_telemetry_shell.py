@@ -127,3 +127,36 @@ def test_endpoint_env_override_and_default(tmp_path):
     assert r.stdout.strip() == "https://x.example.test/e"
     r = run(tmp_path, "telemetry_endpoint", {"LLMSYS_TELEMETRY_ENDPOINT": "http://bad"})
     assert r.stdout.strip().startswith("https://telemetry-receiver.")
+
+
+def run_wrapper(tmp_path, args, env_extra=None):
+    b = fake_curl(tmp_path)
+    env = {k: v for k, v in os.environ.items() if k not in ("CI", "LLMSYS_TELEMETRY", "LLMSYS_HEARTBEAT")}
+    env["PATH"] = f"{b}:{env['PATH']}"
+    env["LLMSYS_INSTALL_DIR"] = str(tmp_path)
+    env.update(env_extra or {})
+    data = tmp_path / "state"
+    r = subprocess.run(["bash", str(INSTALLER / "telemetry-report.sh"), "--event", "install", "--channel", "script",
+                        "--mode", "5", "--data-dir", str(data), "--root", str(REPO), *args],
+                       env=env, capture_output=True, text=True)
+    return r, data
+
+
+def test_wrapper_without_toml_honours_exported_consent(tmp_path):
+    r, data = run_wrapper(tmp_path, [], {"LLMSYS_TELEMETRY": "1"})
+    assert r.returncode == 0, r.stderr
+    assert (data / "telemetry-last.json").exists()
+
+
+def test_wrapper_without_toml_or_consent_sends_nothing(tmp_path):
+    r, data = run_wrapper(tmp_path, [])
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "bin" / "curl.calls").exists()
+
+
+def test_wrapper_toml_answer_beats_exported_consent(tmp_path):
+    t = tmp_path / "c.toml"
+    t.write_text("[manager.telemetry]\ninstall_report = false\n")
+    r, data = run_wrapper(tmp_path, ["--toml", str(t)], {"LLMSYS_TELEMETRY": "1", "SUDO": ""})
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "bin" / "curl.calls").exists()
