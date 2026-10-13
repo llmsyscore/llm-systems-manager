@@ -249,6 +249,62 @@ apply_influxdb_wal_fsync_delay() {
   ok "influxdb WAL fsync delay: 100ms -> 0s ($conf)"
 }
 
+LLMSYS_INFLUX_BLOCK_BEGIN="# === llm-systems-manager tuning (managed) ==="
+LLMSYS_INFLUX_BLOCK_END="# === END llm-systems-manager tuning ==="
+
+# apply_influxdb_cache_snapshot_size — inside the managed block, rewrites a 128 MiB
+# storage-cache-snapshot-memory-size to 16 MiB in place; flags a restart on a change.
+apply_influxdb_cache_snapshot_size() {
+  local conf="$LLMSYS_INFLUX_CONF" tmp cur
+  LLMSYS_INFLUX_TUNING_CHANGED="${LLMSYS_INFLUX_TUNING_CHANGED:-0}"
+  $SUDO test -f "$conf" 2>/dev/null || return 0
+  cur="$($SUDO awk -v b="$LLMSYS_INFLUX_BLOCK_BEGIN" -v e="$LLMSYS_INFLUX_BLOCK_END" '
+    $0 == b { inb=1; next }
+    $0 == e { inb=0 }
+    inb && /^storage-cache-snapshot-memory-size[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); print; exit }' "$conf" 2>/dev/null)"
+  [[ "$cur" == "134217728" ]] || return 0
+  tmp="$(mktemp)"
+  $SUDO awk -v b="$LLMSYS_INFLUX_BLOCK_BEGIN" -v e="$LLMSYS_INFLUX_BLOCK_END" '
+    $0 == b { inb=1 }
+    $0 == e { inb=0 }
+    inb && /^storage-cache-snapshot-memory-size[[:space:]]*=[[:space:]]*134217728[[:space:]]*$/ { $0 = sprintf("%-42s = %s", "storage-cache-snapshot-memory-size", "16777216") }
+    { print }' "$conf" > "$tmp"
+  $SUDO install -o root -g root -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  LLMSYS_INFLUX_TUNING_CHANGED=1
+  ok "influxdb cache snapshot size: 128 MiB -> 16 MiB ($conf)"
+}
+
+# apply_influxdb_query_concurrency — inside the managed block, sets query-concurrency to
+# the host's core count (floor 2) and query-queue-size to 16x it; flags a restart on a change.
+apply_influxdb_query_concurrency() {
+  local conf="$LLMSYS_INFLUX_CONF" tmp want queue cur
+  LLMSYS_INFLUX_TUNING_CHANGED="${LLMSYS_INFLUX_TUNING_CHANGED:-0}"
+  $SUDO test -f "$conf" 2>/dev/null || return 0
+  want="$(nproc 2>/dev/null || echo 2)"
+  [[ "$want" =~ ^[0-9]+$ ]] || want=2
+  (( want < 2 )) && want=2
+  queue=$(( want * 16 ))
+  cur="$($SUDO awk -v b="$LLMSYS_INFLUX_BLOCK_BEGIN" -v e="$LLMSYS_INFLUX_BLOCK_END" '
+    $0 == b { inb=1; next }
+    $0 == e { inb=0 }
+    inb && /^query-(concurrency|queue-size)[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); printf "%s ", $0 }' "$conf" 2>/dev/null)"
+  [[ -n "$cur" && "$cur" != "$want $queue " ]] || return 0
+  cur="${cur%% *}"
+  tmp="$(mktemp)"
+  $SUDO awk -v b="$LLMSYS_INFLUX_BLOCK_BEGIN" -v e="$LLMSYS_INFLUX_BLOCK_END" -v c="$want" -v q="$queue" '
+    $0 == b { inb=1 }
+    $0 == e { inb=0 }
+    inb && /^# Queries \(concurrency scaled to/ { $0 = "# Queries (concurrency scaled to " c " detected cores)" }
+    inb && /^query-concurrency[[:space:]]*=/ { $0 = sprintf("%-42s = %s", "query-concurrency", c) }
+    inb && /^query-queue-size[[:space:]]*=/  { $0 = sprintf("%-42s = %s", "query-queue-size", q) }
+    { print }' "$conf" > "$tmp"
+  $SUDO install -o root -g root -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  LLMSYS_INFLUX_TUNING_CHANGED=1
+  ok "influxdb query concurrency: $cur -> $want (queue $queue) ($conf)"
+}
+
 # install_sudoers_fragment <tpl> <dst> — render @@RUN_USER@@, visudo-validate, and
 # install 0440 root:root only if valid. Removes the temp on every path. Returns 0
 # on install, 1 on missing template / invalid fragment.

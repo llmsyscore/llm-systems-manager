@@ -65,7 +65,7 @@ def test_single_core_floors_at_two(tmp_path):
 
 def test_static_values_unchanged(tmp_path):
     out = _run_block(tmp_path, nproc=8)
-    assert _val(out, "storage-cache-snapshot-memory-size") == "134217728"
+    assert _val(out, "storage-cache-snapshot-memory-size") == "16777216"
     assert _val(out, "query-memory-bytes") == "268435456"
     assert _val(out, "storage-max-concurrent-compactions") == "1"
 
