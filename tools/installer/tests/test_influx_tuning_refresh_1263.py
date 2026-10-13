@@ -13,13 +13,18 @@ UPDATE = INSTALLER / "update.sh"
 
 BEGIN = "# === llm-systems-manager tuning (managed) ==="
 END = "# === END llm-systems-manager tuning ==="
-MANAGED = (f'bolt-path = "/x"\nquery-concurrency                          = 1\n{BEGIN}\n'
+MANAGED = (f'bolt-path = "/x"\n{BEGIN}\n'
            "# Cache\nstorage-cache-snapshot-memory-size         = 134217728\n"
            "# Queries (concurrency scaled to 2 detected cores)\n"
            "query-concurrency                          = 2\n"
            "query-queue-size                           = 32\n"
            "query-memory-bytes                         = 268435456\n"
            f"{END}\n")
+
+
+UNMARKED = ('bolt-path = "/x"\n\n# Cache\nstorage-cache-snapshot-memory-size         = 134217728\n'
+            "# Queries\nquery-concurrency                          = 2\n"
+            "query-queue-size                           = 32\n")
 
 
 def test_install_block_snapshots_at_16_mib():
@@ -69,10 +74,15 @@ def test_snapshot_operator_value_is_preserved(tmp_path):
     assert "changed=0" in out and text == custom
 
 
-def test_snapshot_outside_the_block_is_the_operators(tmp_path):
-    outside = f'storage-cache-snapshot-memory-size         = 134217728\n{BEGIN}\nquery-concurrency                          = 2\n{END}\n'
-    out, text = _apply(tmp_path, outside, "apply_influxdb_cache_snapshot_size")
-    assert "changed=0" in out and text == outside
+def test_unmarked_config_is_refreshed_too(tmp_path):
+    out, text = _apply(tmp_path, UNMARKED, "apply_influxdb_cache_snapshot_size")
+    assert "changed=1" in out and "= 16777216" in text
+    out, text = _apply(tmp_path, text, "apply_influxdb_query_concurrency", nproc=8)
+    assert "changed=1" in out
+    assert "query-concurrency                          = 8\n" in text
+    assert "query-queue-size                           = 128\n" in text
+    assert "# Queries\n" in text
+    assert text.count("\n") == UNMARKED.count("\n")
 
 
 def test_query_queue_drift_alone_is_corrected(tmp_path):
@@ -89,8 +99,7 @@ def test_query_concurrency_follows_the_host_cores(tmp_path):
     assert "# Queries (concurrency scaled to 8 detected cores)" in text
     assert "query-concurrency                          = 8\n" in text
     assert "query-queue-size                           = 128\n" in text
-    # the operator's own line outside the managed block is untouched
-    assert text.startswith('bolt-path = "/x"\nquery-concurrency                          = 1\n')
+    assert text.startswith('bolt-path = "/x"\n')
     assert text.count("\n") == MANAGED.count("\n")
 
 
