@@ -8,7 +8,7 @@ sys.path.insert(0, SPECPATH)
 # (influxdb_client in _probe_influxdb, uvicorn's optional speedups) need naming.
 hiddenimports = [
     "influxdb_client", "influxdb_client.client.write_api",
-    "uvloop", "httptools", "websockets",
+    "uvloop", "httptools", "websockets", "telemetry_report",
 ]
 
 a = Analysis(
