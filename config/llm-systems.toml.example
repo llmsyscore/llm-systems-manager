@@ -229,6 +229,15 @@ release_repo = "llmsyscore/llm-systems-manager"
 # needs nothing here.
 push_notify_token = ""
 
+[manager.telemetry]
+# Anonymous install report: what was installed and on what hardware. Asked at install.
+install_report = true
+# Anonymous crash reports: error type and code location only, no messages.
+crash_reports = true
+# Daily usage report: version, agent count, provider mix and uptime. Off unless chosen.
+heartbeat = false
+endpoint = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+
 [manager.history]
 # In-memory ring buffer behind /api/history; sets how far back the landing
 # charts pre-populate. RAM cost grows roughly linearly with window_minutes.

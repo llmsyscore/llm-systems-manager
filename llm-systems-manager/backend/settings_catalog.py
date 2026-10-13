@@ -28,6 +28,7 @@ GROUPS: list[tuple[str, str]] = [
     ("tower", "Tower assistant"),
     ("forecast", "Forecast"),
     ("companion", "Companion (PWA)"),
+    ("telemetry", "Usage reports"),
     ("gateway", "Inference Gateway"),
     ("proxies", "Proxied UIs"),
     ("openclaw", "OpenClaw Budget"),
@@ -231,6 +232,11 @@ CATALOG: list[dict] = [
     _e("manager.companion.release_check", "bool", "Release check", "Opt-in GitHub release check (the manager's only outbound github.com call).", "companion", MANAGER, common=True),
     _e("manager.companion.release_repo", "str", "Release repo", "GitHub repo the check queries.", "companion", MANAGER),
     _e("manager.companion.push_notify_token", "str", "Push notify token", "Bearer the AE presents on push delivery; blank falls back to AE tokens.", "companion", MANAGER, secret=True),
+    # telemetry
+    _e("manager.telemetry.install_report", "bool", "Install report", "Send one anonymous report of what was installed and on what hardware; crash reports follow this answer at install time.", "telemetry", MANAGER, hot=True, common=True),
+    _e("manager.telemetry.crash_reports", "bool", "Crash reports", "Send the error type and code location of unexpected crashes. No messages, names or paths.", "telemetry", MANAGER, hot=True, common=True),
+    _e("manager.telemetry.heartbeat", "bool", "Daily usage report", "Once a day: version, agent count, provider mix and uptime.", "telemetry", MANAGER, hot=True, common=True),
+    _e("manager.telemetry.endpoint", "str", "Report endpoint", "Where the reports are sent.", "telemetry", MANAGER, hot=True),
     # gateway
     _e("manager.gateway.enabled", "bool", "Gateway enabled", "OpenAI-compatible /api/gateway endpoint.", "gateway", MANAGER, hot=True, common=True),
     _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line, optionally \"label=secret\" to name the client in the Routing card.", "gateway", MANAGER, secret=True),
