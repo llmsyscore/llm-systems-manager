@@ -74,8 +74,9 @@ install_rewrite() {
 # Adds keys the example introduced to the existing config, keeping operator
 # values; any failure leaves the config as it is.
 merge_new_keys() {
-  local py here tmp err added
+  local py here tmp err added tele_new=0
   py="$(find_python)" || return 0
+  grep -q '^\[manager.telemetry\]' "$TARGET" 2>/dev/null || tele_new=1
   here="$(cd "$(dirname "$0")" && pwd)"
   tmp="$TARGET.seed.$$"
   err="$TARGET.seed.$$.err"
@@ -87,6 +88,9 @@ merge_new_keys() {
       rm -f "$tmp"
     elif install_rewrite "$tmp"; then
       echo "brew-seed-config: merged $added new key(s) from the example into $TARGET"
+      if [ "$tele_new" = "1" ] && grep -q '^\[manager.telemetry\]' "$TARGET"; then
+        echo "brew-seed-config: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+      fi
     else
       echo "brew-seed-config: could not write the merged config — $TARGET kept as is; compare it with $EXAMPLE" >&2
     fi
@@ -162,6 +166,7 @@ done < "$EXAMPLE"
 grep -q "^log_dir = \"$LOG_DIR\"" "$TMP"          || { rm -f "$TMP"; die "log_dir rewrite failed — .example drifted?"; }
 grep -q "^ingest_token = \"$INGEST_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "ingest_token rewrite failed — .example drifted?"; }
 grep -q "^management_token = \"$MGMT_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "management_token rewrite failed — .example drifted?"; }
+grep -q '^\[manager.telemetry\]' "$TMP" || { rm -f "$TMP"; die "telemetry block missing — .example drifted?"; }
 
 mv "$TMP" "$TARGET"
 chmod 0600 "$TARGET"

@@ -58,7 +58,7 @@ jobs:
       # Mode 1 generates the shared ingest + management tokens live, so the
       # scheduler covers the alarm engine with no manual wiring.
       - name: Run installer (mode 1)
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
 
       - name: Smoke test
         run: sudo bash tools/installer/ci-smoke.sh
@@ -105,10 +105,10 @@ jobs:
           echo "shared runner IP: $ip"
 
       - name: Install alarm engine (mode 4)
-        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
 
       - name: Install manager (mode 3)
-        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
 
       # The operator's manual split steps: TLS cert to the AE, tokens activated
       # on the AE and pasted into the manager. Leaves the scheduler covering the AE.

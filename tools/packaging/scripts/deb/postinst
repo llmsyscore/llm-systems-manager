@@ -1,22 +1,33 @@
 # deb postinst body — concatenated after common.sh by build-packages.sh.
+LLMSYS_PKG_FORMAT=deb
 case "$1" in
   configure)
     # Pull debconf answers into the LLMSYS_CFG_* overrides the config
     # bootstrap consumes, then drop the stored passwords.
     if [ -f /usr/share/debconf/confmodule ]; then
       . /usr/share/debconf/confmodule
+      _tele_env="${LLMSYS_TELEMETRY:-}" _hb_env="${LLMSYS_HEARTBEAT:-}"
       for pair in admin-user:LLMSYS_CFG_ADMIN_USER \
                   admin-password:LLMSYS_CFG_ADMIN_PASSWORD \
                   smtp-server:LLMSYS_CFG_SMTP_SERVER \
                   smtp-user:LLMSYS_CFG_SMTP_USER \
-                  smtp-password:LLMSYS_CFG_SMTP_PASS; do
+                  smtp-password:LLMSYS_CFG_SMTP_PASS \
+                  telemetry:LLMSYS_TELEMETRY heartbeat:LLMSYS_HEARTBEAT; do
         RET=""
         db_get "llm-systems-manager/${pair%%:*}" || true
         if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
       done
+      case "${LLMSYS_TELEMETRY:-}" in true) LLMSYS_TELEMETRY=1 ;; false) LLMSYS_TELEMETRY=0 ;; esac
+      case "${LLMSYS_HEARTBEAT:-}" in true) LLMSYS_HEARTBEAT=1 ;; false) LLMSYS_HEARTBEAT=0 ;; esac
+      # Answers set in the environment win over debconf.
+      [ -n "$_tele_env" ] && LLMSYS_TELEMETRY="$_tele_env"
+      [ -n "$_hb_env" ] && LLMSYS_HEARTBEAT="$_hb_env"
+      export LLMSYS_TELEMETRY LLMSYS_HEARTBEAT
       db_reset llm-systems-manager/admin-password || true
       db_reset llm-systems-manager/smtp-password || true
       db_stop || true
+    else
+      llmsys_default_telemetry "${2:-}"
     fi
     llmsys_configure "${2:-}"
     ;;

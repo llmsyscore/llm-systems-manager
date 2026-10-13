@@ -13,6 +13,8 @@ db_input high llm-systems-manager/admin-password || true
 db_input high llm-systems-manager/smtp-server || true
 db_input high llm-systems-manager/smtp-user || true
 db_input high llm-systems-manager/smtp-password || true
+db_input medium llm-systems-manager/telemetry || true
+db_input low llm-systems-manager/heartbeat || true
 # shellcheck disable=SC2119  # db_go is a debconf confmodule builtin, not a local function
 db_go || true
 

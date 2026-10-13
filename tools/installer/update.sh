@@ -1056,6 +1056,14 @@ if $HAVE_MANAGER || $HAVE_AE; then
   _example_toml="$REPO_SRC/config/llm-systems.toml.example"
   if [[ -f "$_live_toml" && -f "$_example_toml" ]]; then
     log "merging new keys from $(basename "$_example_toml") → $(basename "$_live_toml")"
+    # Config without the report section: ask when a human is present, else keep the example defaults.
+    _tele_new=0; _tele_ask=0
+    if ! $SUDO grep -q '^\[manager.telemetry\]' "$_live_toml" 2>/dev/null; then
+      _tele_new=1
+      if [[ -t 0 || -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] && (( ! DRY_RUN )); then
+        telemetry_consent; _tele_ask=1
+      fi
+    fi
     if (( DRY_RUN )); then
       log "[dry-run] would back up live TOML and append any missing keys"
     else
@@ -1090,6 +1098,32 @@ if $HAVE_MANAGER || $HAVE_AE; then
         $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$_live_toml"
         ok "merged $_added_count new key(s) into $_live_toml:"
         grep -E '^\s*\+' "$_TOML_MERGE_TMP" | sed 's/^/    /'
+        if (( _tele_new && _tele_ask )); then
+          _tb=false; [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] && _tb=true
+          _hb=false; [[ "${LLMSYS_HEARTBEAT:-0}" == "1" ]] && _hb=true
+          # Writes the answers into the newly merged [manager.telemetry] section.
+          $SUDO python3 - "$_live_toml" "$_tb" "$_hb" <<'PYEOF' || warn "could not write the report answers into $_live_toml"
+import re, sys
+from pathlib import Path
+
+def sub_bool_in_section(text, section, key, new_value):
+    """Replace the first 'key = true|false' line inside [section]."""
+    return re.sub(
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(true|false)\b',
+        lambda m: m.group(1) + new_value,
+        text, count=1, flags=re.MULTILINE | re.DOTALL,
+    )
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
+path.write_text(text)
+PYEOF
+        elif (( _tele_new )); then
+          log "Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+        fi
         rm -f "$_TOML_MERGE_TMP"
         $HAVE_MANAGER && RESTART_UNITS+=("llm-systems-manager.service")
         $HAVE_AE      && RESTART_UNITS+=("llm-systems-alarm-engine.service")

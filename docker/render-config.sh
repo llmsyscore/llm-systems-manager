@@ -76,6 +76,9 @@ render_config() {
   local smtp_user="${LSM_SMTP_USER:-}"
   local smtp_password="${LSM_SMTP_PASSWORD:-}"
   local discord_webhook="${LSM_DISCORD_WEBHOOK_URL:-}"
+  local tele="${LSM_TELEMETRY:-1}" hb="${LSM_HEARTBEAT:-0}" tele_b=true hb_b=false
+  [ "$tele" = "1" ] || tele_b=false
+  [ "$hb" = "1" ] && hb_b=true
 
   for v in "$influx_token" "$ingest_token" "$management_token" "$admin_user" \
            "$admin_cidrs_csv" "$public_hosts_csv" "$smtp_server" "$smtp_user" \
@@ -121,6 +124,11 @@ admin_cidrs = [$cidr_toml]
 llm_chat  = "auto"
 openclaw  = "auto"
 image_gen = "auto"
+
+[manager.telemetry]
+install_report = $tele_b
+crash_reports = $tele_b
+heartbeat = $hb_b
 
 [alarm_engine]
 manager_url = "$manager_url"

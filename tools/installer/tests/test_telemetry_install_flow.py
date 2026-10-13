@@ -40,7 +40,7 @@ def test_mode5_marks_report_done_before_exit():
 
 
 def test_update_merges_keys_without_prompt():
-    assert "telemetry_consent" not in UPDATE
+    assert UPDATE.count("telemetry_consent") == 1
     assert "telemetry_report update script" in UPDATE
     assert "read_toml_key install_report" in UPDATE
 
@@ -77,3 +77,17 @@ def test_final_block_creates_missing_data_dir_before_report():
     assert '[[ "$MODE" != "6" && ! -e "$LLMSYS_INSTALL_DIR/data" ]]' in head
     assert ('$SUDO install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"'
             ' 2>/dev/null || true') in head
+
+
+NOTICE = ("Anonymous install and crash reports are on after this upgrade; turn them off in "
+          "Settings › Usage reports or set install_report = false in llm-systems.toml")
+
+
+def test_update_asks_only_when_the_section_is_new_and_a_human_is_present():
+    i_check = UPDATE.index("grep -q '^\\[manager.telemetry\\]' \"$_live_toml\"")
+    i_consent = UPDATE.index("telemetry_consent")
+    guard = UPDATE[UPDATE.rindex("if [[", 0, i_consent):i_consent]
+    assert i_check < i_consent < UPDATE.index("toml_reconcile.py\" merge")
+    assert "-t 0" in guard
+    assert NOTICE in UPDATE
+    assert 'sub_bool_in_section(text, "manager.telemetry", "install_report"' in UPDATE
