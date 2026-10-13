@@ -1,0 +1,1 @@
+- The installer now asks whether to send an anonymous install report. Crash reports follow the same answer and a daily usage report is available from Settings › Usage reports. The README lists every field.

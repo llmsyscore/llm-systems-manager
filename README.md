@@ -661,6 +661,29 @@ An opt-in release check (`[manager.companion].release_check`, also toggleable fr
 
 ---
 
+## What the install, crash and usage reports contain
+
+The installer asks once whether to send an anonymous install report. Saying yes also allows crash reports. A daily usage report is a separate question and is off unless you turn it on. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
+
+| Report | When | Fields |
+|---|---|---|
+| Install | once per install or update | product version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, selected provider, whether the install succeeded |
+| Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
+| Daily usage | once a day when turned on | product version, number of agents, provider mix, uptime |
+
+Every report also carries a random install ID created at install time and the install date. Nothing in a report names you, your machine, your network, your files or your models. The receiving service keeps ordinary request logs, including the sending address, for a short time, as any web service does; the stored reports do not contain it.
+
+Turn reports off or on:
+
+- during an interactive install, answer the prompt (install and crash reports default to yes, the daily usage report to no);
+- for an unattended install, set `LLMSYS_TELEMETRY=0` (and `LLMSYS_HEARTBEAT=1` for the daily report) in the environment, or answer the package question on Debian and RHEL, or set `LSM_TELEMETRY` and `LSM_HEARTBEAT` in `.env` for Docker. Docker and Homebrew installs are reported by the manager on its first start. Nothing is sent when a `CI` variable is set;
+- when you update from a release that had no report settings, the updater asks once if you run it from a terminal. Unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch;
+- any time later, in **Settings › Usage reports** on the dashboard or in the phone companion's Settings screen (Reports card).
+
+The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Usage reports › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
+
+---
+
 ## Architecture
 
 ```
@@ -734,7 +757,7 @@ The frontend polls the manager every few seconds when something is active and sl
 
 ## Configuration
 
-Configuration options are accesible via the settings section of the Admin tab or the runtime config file: `config/llm-systems.toml`. Both the manager and the alarm engine read from the same file. A documented template ships as `config/llm-systems.toml.example` — the installer renders the live file from the template and prompts you for the values that have to be host-specific (IPs, SMTP credentials, InfluxDB tokens).
+Configuration options are accesible via the settings section of the Admin tab or the runtime config file: `config/llm-systems.toml`. Both the manager and the alarm engine read from the same file. A documented template ships as `config/llm-systems.toml.example` — the installer renders the live file from the template and prompts you for the values that have to be host-specific (IPs, SMTP credentials, InfluxDB tokens). Report settings live under `[manager.telemetry]`.
 
 Edit the config, then restart the affected service:
 

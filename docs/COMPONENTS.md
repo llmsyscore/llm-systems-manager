@@ -41,6 +41,7 @@ The Manager is the central hub of the system. It serves the web dashboard that o
 | manager_users | Manages user accounts: creation, password hashing, role assignment, lockout tracking |
 | _pki | Implements the internal Certificate Authority: generates the root cert on first boot, signs agent and service certs |
 | _archive | Handles encrypted export and import of the system configuration for backup and restore |
+| telemetry | Builds the install, crash and daily usage reports; keeps the random install ID file, the pending and last-sent report files and the crash sanitiser; sends the daily usage report; has a command line the installers use to send the install report |
 | stream_pool | Manager-side cap on concurrent long-lived SSE streams so they cannot exhaust the web server's worker threads; distinct from the agent's own `stream_pool.py`, which caps streams on the agent side instead (see Agent section) |
 | gateway | OpenAI-compatible `/v1/models`, `/v1/chat/completions`, and `/v1/completions` gateway. `/v1/models` merges every provider's pool; a completion first resolves which provider owns the requested model (pin, then the model index, then llama as fallback), then picks a host within that provider (pin, then an explicit `?agent=`, then pool round-robin, then the default). A miss against a cold or stale index waits up to 5 s on an async refresh before falling back, and a stale `/v1/models` refreshes single-flight |
 | gateway_usage | In-memory cumulative token counters for gateway-proxied responses, used by providers (LM Studio) that expose no native token telemetry |
@@ -114,6 +115,8 @@ Each Agent is tailored to its host: on a Linux machine with an AMD GPU and liqui
 | lms | Control of LM Studio: list loaded models, load/unload, read inference metrics, stream logs |
 | vllm | Control of vLLM: systemd lifecycle, Prometheus metrics, journal log streaming, service config, OpenAI passthrough, opt-in LoRA |
 | terminal | Spawns and manages interactive shell sessions (PTY) that stream input and output to the browser |
+
+The agent also has `telemetry_report.py`, a standard-library-only module that sends crash reports under the consent given at install time.
 
 The agent also has its own `stream_pool.py`, separate from the Manager's module of the same name — it caps concurrent long-lived SSE streams served *by the agent* (e.g. log tails) so they cannot exhaust the agent's own worker pool.
 

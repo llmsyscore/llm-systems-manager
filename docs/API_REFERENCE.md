@@ -1185,6 +1185,20 @@ Release-availability status for the companion's Admin screen. Always returns `{o
 
 ---
 
+### `GET /api/admin/telemetry`
+Report settings and the last report sent. Returns `{ok, install_report, crash_reports, heartbeat, pending, last}`, where `last` is `{event, sent_at, payload}` or `null` when nothing has been sent.
+
+**Access:** [Admin]
+
+---
+
+### `PUT /api/admin/telemetry`
+**Body:** any of `install_report`, `crash_reports`, `heartbeat` as booleans. Writes them to `[manager.telemetry]` in the config (applied without a restart) and records an audit entry.
+
+**Access:** [Admin]
+
+---
+
 ### `POST /api/companion/push/notify`
 Alarm-engine bridge (#538): fans one alert out to every subscribed device. **Bearer-gated**, not session-gated — the caller presents `[manager.companion] push_notify_token` (falling back to `[alarm_engine].management_token`, then `ingest_token`); with no token configured anywhere, an admin session is required instead. **Body:** `{"title", "body", "severity", "tag", "url"}` (all optional, length-capped; `url` is normalized to a same-origin path). Returns `{ok, subscriptions, sent, failed, pruned}`, 400 on a non-object body, 503 when `pywebpush` is not installed.
 
