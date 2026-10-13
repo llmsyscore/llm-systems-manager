@@ -45,6 +45,8 @@ err()  { printf '%s[ERR ]%s  %s\n'  "$LLMSYS_C_RED" "$LLMSYS_C_RST" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
 banner() {
+  # shellcheck disable=SC2034
+  LLMSYS_STAGE="$*"
   local title="$1"
   printf '\n%s── %s %s\n' "$LLMSYS_C_BLU" "$title" \
     "$(printf '─%.0s' $(seq 1 $((72 - ${#title}))))${LLMSYS_C_RST}"
@@ -124,14 +126,13 @@ enable_unit() {
   $SUDO systemctl enable "$1"
 }
 
-# read_toml_key <key> <toml_file> — echo the double-quoted value of the first
-# top-level `<key> = "..."` line. Empty on missing key/file. Uses $SUDO so it
-# can read a 0600 operator-owned config; safe under set -o pipefail.
+# read_toml_key <key> <toml_file> — echo the quoted (else bare) value of the first
+# top-level `<key> = ...` line; empty on missing key/file. Reads via $SUDO; pipefail-safe.
 read_toml_key() {
   local key="$1" file="$2"
   $SUDO test -f "$file" 2>/dev/null || { echo ""; return 0; }
   { $SUDO grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null || true; } \
-    | head -n1 | sed -E 's/[^"]*"([^"]+)".*/\1/'
+    | head -n1 | sed -E -e 's/[^"]*"([^"]+)".*/\1/;t' -e 's/^[^=]*=[[:space:]]*//;s/[[:space:]]*(#.*)?$//'
 }
 
 # ── Systemd unit + sudoers templating ───────────────────────────────────────
@@ -1282,4 +1283,83 @@ report_service_health() {
     err "$label  → $url  ($why)"
     return 1
   fi
+}
+
+# ── Telemetry: consent, payload preview, send, retry job ───────────────────
+LLMSYS_TELEMETRY_DEFAULT_ENDPOINT="https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+
+# Python with the stdlib the payload builder needs (3.11+ for tomllib is not required here).
+telemetry_python() {
+  local c
+  for c in "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/llm-systems-manager/venv/bin/python3" python3; do
+    command -v "$c" >/dev/null 2>&1 && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# telemetry_endpoint TOML — endpoint from [manager.telemetry] or the default.
+telemetry_endpoint() {
+  local v=""
+  [[ -n "${1:-}" && -r "$1" ]] && v="$(read_toml_key endpoint "$1" 2>/dev/null || true)"
+  case "$v" in https://*) printf '%s\n' "$v" ;; *) printf '%s\n' "$LLMSYS_TELEMETRY_DEFAULT_ENDPOINT" ;; esac
+}
+
+# telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout.
+telemetry_payload() {
+  local py; py="$(telemetry_python)" || return 1
+  "$py" -I "$7/llm-systems-manager/backend/telemetry.py" payload --event "$1" --channel "$2" \
+    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7"
+}
+
+# telemetry_consent — exports LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT (0|1) and LLMSYS_TELEMETRY_REASON.
+telemetry_consent() {
+  local t="${LLMSYS_TELEMETRY:-}" h="${LLMSYS_HEARTBEAT:-}" reason="default"
+  if [[ -n "${CI:-}" ]]; then
+    t=0; h=0; reason="ci"
+    log "Install report skipped: CI is set"
+  elif [[ -n "$t" || -n "$h" ]]; then
+    reason="env"
+    [[ "$t" == "1" ]] || t=0
+    [[ "$h" == "1" ]] || h=0
+  elif [[ -t 0 ]]; then
+    reason="prompt"
+    echo
+    echo "  Anonymous reports help us learn which systems the product runs on."
+    echo "  Nothing in them identifies you: no names, addresses, paths or tokens."
+    if [[ -n "${LLMSYS_TELEMETRY_PREVIEW:-}" ]]; then
+      echo "  This is the install report that would be sent:"
+      printf '%s\n' "$LLMSYS_TELEMETRY_PREVIEW" | sed 's/^/    /'
+    fi
+    local a
+    read -rp "  Send anonymous install and crash reports? [Y/n] " a
+    case "$(printf '%s' "${a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) t=0 ;; *) t=1 ;; esac
+    read -rp "  Also send a daily usage report (version, agent count, uptime)? [y/N] " a
+    case "$(printf '%s' "${a:-n}" | tr '[:upper:]' '[:lower:]')" in y|yes) h=1 ;; *) h=0 ;; esac
+  else
+    t=1; h=0
+  fi
+  export LLMSYS_TELEMETRY="$t" LLMSYS_HEARTBEAT="$h" LLMSYS_TELEMETRY_REASON="$reason"
+}
+
+# telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
+telemetry_report() {
+  [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
+  local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
+  local py pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
+  py="$(telemetry_python)" || return 0
+  mkdir -p "$dir" 2>/dev/null || return 0
+  telemetry_payload "$event" "$channel" "$mode" "$outcome" "$dir" "$ver" "$root" > "$pend" 2>/dev/null \
+    || { rm -f "$pend"; return 0; }
+  chmod 0600 "$pend" 2>/dev/null || true
+  if curl -fsS --max-time 5 -o /dev/null -H 'Content-Type: application/json' --data-binary "@$pend" "$ep" 2>/dev/null; then
+    mv -f "$pend" "$dir/telemetry-last.json"
+    printf '%s attempt 1 ok (%s)\n' "$(date -u +%FT%TZ)" "$event" >> "$logf"
+    ok "${event} report sent"
+  else
+    printf '%s attempt 1 failed (%s)\n' "$(date -u +%FT%TZ)" "$event" >> "$logf"
+    log "${event} report queued; retrying in the background"
+    setsid nohup bash "$root/tools/installer/telemetry-retry.sh" "$pend" "$ep" "$logf" "$py" "$root" \
+      >/dev/null 2>&1 < /dev/null &
+  fi
+  return 0
 }
