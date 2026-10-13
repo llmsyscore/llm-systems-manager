@@ -30,8 +30,11 @@ async function boot(status = STATUS) {
     `<!doctype html><html><body><div id="adminTab">${PANEL}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const w = dom.window;
-  w.fetch = (url) => Promise.resolve({ ok: true, status: 200,
-    json: () => Promise.resolve(JSON.parse(JSON.stringify(url === '/api/admin/telemetry' ? status : payload()))) });
+  w.fetch = (url) => {
+    if (url === '/api/admin/telemetry' && status === 'fail') return Promise.reject(new Error('offline'));
+    return Promise.resolve({ ok: true, status: 200,
+      json: () => Promise.resolve(JSON.parse(JSON.stringify(url === '/api/admin/telemetry' ? status : payload()))) });
+  };
   w._themedAlert = (o) => { w.__alert = o; return Promise.resolve(); };
   const inject = (code) => {
     const s = w.document.createElement('script');
@@ -69,6 +72,21 @@ describe('Usage reports group', () => {
     const row = w.document.querySelector('#stTelemetryStatus');
     expect(row.textContent).toMatch(/No report sent yet/);
     expect(w.document.querySelector('#stTelemetryView')).toBeNull();
+  });
+  test('a failing status fetch reads "Status unavailable"', async () => {
+    const w = await boot('fail');
+    expect(w.document.querySelector('#stTelemetryStatus').textContent).toMatch(/Status unavailable/);
+  });
+  test('a zoneless sent_at is read as UTC', async () => {
+    const tz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const naive = new Date(Date.now() - 7200e3).toISOString().replace('Z', '');
+      const w = await boot({ ...STATUS, last: { ...STATUS.last, sent_at: naive } });
+      expect(w.document.querySelector('#stTelemetryStatus').textContent).toMatch(/2h ago/);
+    } finally {
+      if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+    }
   });
   test('System Health has no telemetry row', () => {
     expect(healthSrc).not.toMatch(/telemetry|Usage report/i);

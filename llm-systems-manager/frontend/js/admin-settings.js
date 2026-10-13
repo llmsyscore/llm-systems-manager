@@ -603,7 +603,10 @@
       + `<div class="st-ct">${control}</div></div>`;
   }
   function teleAge(iso) {
-    const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    const str = String(iso || '');
+    const t = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(str) ? str : str + 'Z');
+    if (Number.isNaN(t)) return '\u2014';
+    const s = Math.max(0, (Date.now() - t) / 1000);
     if (s < 90) return 'just now';
     if (s < 5400) return `${Math.round(s / 60)}m ago`;
     if (s < 172800) return `${Math.round(s / 3600)}h ago`;
@@ -612,7 +615,8 @@
   function telemetryStatusHtml() {
     const s = _teleState;
     let text = 'Loading…', btn = '';
-    if (s && !s.last) text = s.pending ? 'One report is waiting to be sent' : 'No report sent yet';
+    if (s && s.failed) text = 'Status unavailable';
+    else if (s && !s.last) text = s.pending ? 'One report is waiting to be sent' : 'No report sent yet';
     else if (s) {
       text = `Last report: ${esc(s.last.event)} · ${esc(teleAge(s.last.sent_at))}`;
       btn = '<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetryView">View</button>';
@@ -625,7 +629,9 @@
   async function loadTelemetryState(force) {
     if (!force && _teleState && Date.now() - _teleAt < 15000) return;
     _teleAt = Date.now();
-    try { const r = await fetch('/api/admin/telemetry'); if (r.ok) _teleState = await r.json(); } catch (_) { /* offline */ }
+    let st = null;
+    try { const r = await fetch('/api/admin/telemetry'); if (r.ok) st = await r.json(); } catch (_) { /* offline */ }
+    _teleState = st && st.ok !== false ? st : { failed: true };
     const el = $('stTelemetryStatus');
     if (el) el.outerHTML = telemetryStatusHtml();
   }
