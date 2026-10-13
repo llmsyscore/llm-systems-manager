@@ -923,7 +923,7 @@ if $HAVE_AGENT && component_wanted "agent"; then
   # any change that didn't bump VERSION (buffered_metric_client.py edits,
   # systemd unit template tweaks, etc.).
   _agent_changed=0
-  for _f in llm-systems-agent.py buffered_metric_client.py _utils.py agent_context.py; do
+  for _f in llm-systems-agent.py buffered_metric_client.py _utils.py agent_context.py telemetry_report.py; do
     [[ -f "$REPO_SRC/agent/$_f" && -f "$AGENT_INSTALL_DIR/$_f" ]] || { _agent_changed=1; break; }
     if ! cmp -s "$REPO_SRC/agent/$_f" "$AGENT_INSTALL_DIR/$_f"; then
       _agent_changed=1; break

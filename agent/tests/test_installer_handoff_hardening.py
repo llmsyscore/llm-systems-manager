@@ -269,3 +269,14 @@ def test_writer_chowns_persistent_data_copy(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     assert "llmsys:llmsys" in _chown_calls(tmp_path, data)
+
+
+# Every sibling module the agent imports must be in the installer's required-file list.
+def test_agent_sibling_imports_are_installed():
+    src = (AGENT_DIR / "llm-systems-agent.py").read_text()
+    mods = set(re.findall(r"^(?:import|from)\s+([A-Za-z_]\w*)", src, re.MULTILINE))
+    siblings = {m for m in mods if (AGENT_DIR / f"{m}.py").is_file()}
+    assert "telemetry_report" in siblings
+    body = _extract_func(AGENT_INSTALL_SH, "_compute_required_install_files")
+    missing = sorted(m for m in siblings if f'/{m}.py"' not in body)
+    assert not missing, f"not in _compute_required_install_files: {missing}"
