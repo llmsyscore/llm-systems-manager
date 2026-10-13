@@ -98,9 +98,9 @@ def test_retry_script_renames_on_success(tmp_path):
 
 def test_read_toml_key_bare_boolean(tmp_path):
     t = tmp_path / "c.toml"
-    t.write_text('[manager.telemetry]\ninstall_report = true  # consent\nendpoint = "https://t.example.test/v1/event"\n')
-    r = run(tmp_path, f'SUDO=""; read_toml_key install_report "{t}"; read_toml_key endpoint "{t}"')
-    assert r.stdout.split() == ["true", "https://t.example.test/v1/event"]
+    t.write_text('[manager.telemetry]\ninstall_report = true  # consent\n')
+    r = run(tmp_path, f'SUDO=""; read_toml_key install_report "{t}"')
+    assert r.stdout.split() == ["true"]
 
 
 def test_report_replaces_planted_pending_symlink(tmp_path):
@@ -120,3 +120,10 @@ def test_report_leaves_planted_log_symlink_alone(tmp_path):
     r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event')
     assert r.returncode == 0, r.stderr
     assert victim.read_text() == "keep"
+
+
+def test_endpoint_env_override_and_default(tmp_path):
+    r = run(tmp_path, "telemetry_endpoint", {"LLMSYS_TELEMETRY_ENDPOINT": "https://x.example.test/e"})
+    assert r.stdout.strip() == "https://x.example.test/e"
+    r = run(tmp_path, "telemetry_endpoint", {"LLMSYS_TELEMETRY_ENDPOINT": "http://bad"})
+    assert r.stdout.strip().startswith("https://telemetry-receiver.")

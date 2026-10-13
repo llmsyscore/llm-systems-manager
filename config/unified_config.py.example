@@ -199,7 +199,6 @@ class ManagerTelemetry(BaseModel):
     install_report: bool = True
     crash_reports: bool = True
     heartbeat: bool = False
-    endpoint: str = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
 
 
 class ManagerHistory(BaseModel):

@@ -11,6 +11,7 @@ import traceback
 import urllib.request
 from datetime import datetime, timezone
 
+DEFAULT_ENDPOINT = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
 CONSENT = "telemetry.json"
 CRASHES = "telemetry-crashes.json"
 WINDOW_S = 24 * 3600
@@ -132,7 +133,7 @@ def report_exception(exc, tb, *, state_dir, version, root):
                                 uptime_s=int(time.time() - _started))
         if not allow_crash(state_dir, p["crash_hash"]):
             return
-        t = threading.Thread(target=send, args=(p, c.get("endpoint", "")), daemon=True)
+        t = threading.Thread(target=send, args=(p, os.environ.get("LLMSYS_TELEMETRY_ENDPOINT") or c.get("endpoint") or DEFAULT_ENDPOINT), daemon=True)
         t.start()
         t.join(2.0)
     except Exception:

@@ -1297,11 +1297,12 @@ telemetry_python() {
   return 1
 }
 
-# telemetry_endpoint TOML — endpoint from [manager.telemetry] or the default.
+# telemetry_endpoint — report endpoint: https env override or the default.
 telemetry_endpoint() {
-  local v=""
-  [[ -n "${1:-}" && -r "$1" ]] && v="$(read_toml_key endpoint "$1" 2>/dev/null || true)"
-  case "$v" in https://*) printf '%s\n' "$v" ;; *) printf '%s\n' "$LLMSYS_TELEMETRY_DEFAULT_ENDPOINT" ;; esac
+  case "${LLMSYS_TELEMETRY_ENDPOINT:-}" in
+    https://*) printf '%s\n' "$LLMSYS_TELEMETRY_ENDPOINT" ;;
+    *) printf '%s\n' "$LLMSYS_TELEMETRY_DEFAULT_ENDPOINT" ;;
+  esac
 }
 
 # telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout.

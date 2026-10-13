@@ -8,13 +8,12 @@ from config.unified_config import settings as live
 
 _REPO = Path(__file__).resolve().parents[2]
 PATHS = ["manager.telemetry.install_report", "manager.telemetry.crash_reports",
-         "manager.telemetry.heartbeat", "manager.telemetry.endpoint"]
+         "manager.telemetry.heartbeat"]
 
 
 def test_schema_has_telemetry_defaults():
     t = live.manager.telemetry
     assert isinstance(t.install_report, bool) and isinstance(t.heartbeat, bool)
-    assert t.endpoint.startswith("https://")
 
 
 def test_catalog_entries_exist_and_are_hot():
@@ -33,7 +32,6 @@ def test_toml_example_matches_model_defaults():
     assert block["install_report"] is True
     assert block["crash_reports"] is True
     assert block["heartbeat"] is False
-    assert block["endpoint"].endswith("/v1/event")
 
 
 def test_old_toml_boots_with_defaults(monkeypatch):

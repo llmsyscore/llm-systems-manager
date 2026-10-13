@@ -218,12 +218,12 @@ def test_report_exception_dedupe_gate_runs_first(cfg, monkeypatch):
 
 def test_install_identity_replaces_symlink_without_writing_through(tmp_path):
     target = tmp_path / "victim"
-    target.write_text("")
+    target.write_text("keep")
     (tmp_path / telemetry.IDFILE).symlink_to(target)
     iid, _ = telemetry.install_identity(tmp_path)
     f = tmp_path / telemetry.IDFILE
     assert not f.is_symlink() and f.read_text().strip() == iid
-    assert target.read_text() == ""
+    assert target.read_text() == "keep"
 
 
 def test_write_json_does_not_follow_planted_temp_symlink(tmp_path, monkeypatch):
@@ -234,3 +234,18 @@ def test_write_json_does_not_follow_planted_temp_symlink(tmp_path, monkeypatch):
     (tmp_path / f"out.{os.getpid()}.{threading.get_ident()}.tmp").symlink_to(target)
     telemetry._write_json(dest, {"a": 1})
     assert target.read_text() == "keep" and not dest.is_symlink()
+
+
+def test_endpoint_env_override_and_default(monkeypatch):
+    monkeypatch.delenv("LLMSYS_TELEMETRY_ENDPOINT", raising=False)
+    assert telemetry.endpoint() == telemetry.DEFAULT_ENDPOINT
+    monkeypatch.setenv("LLMSYS_TELEMETRY_ENDPOINT", "https://x.example.test/e")
+    assert telemetry.endpoint() == "https://x.example.test/e"
+
+
+def test_append_log_refuses_symlink(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / telemetry.LOG).symlink_to(victim)
+    telemetry._append_log(tmp_path, "x")
+    assert victim.read_text() == "keep"

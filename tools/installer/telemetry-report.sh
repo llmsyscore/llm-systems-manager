@@ -18,5 +18,5 @@ done
 consent="$(read_toml_key install_report "$TOML" 2>/dev/null || true)"
 [[ "$consent" == "true" ]] && export LLMSYS_TELEMETRY=1 || export LLMSYS_TELEMETRY=0
 ver="$(grep -E '^__version__ = ' "$ROOT/llm-systems-manager/backend/llm-systems-manager.py" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
-telemetry_report "$EVENT" "$CHANNEL" "$MODE" "$OUTCOME" "$DATA" "${ver:-unknown}" "$ROOT" "$(telemetry_endpoint "$TOML")"
+telemetry_report "$EVENT" "$CHANNEL" "$MODE" "$OUTCOME" "$DATA" "${ver:-unknown}" "$ROOT" "$(telemetry_endpoint)"
 exit 0

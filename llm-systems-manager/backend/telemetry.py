@@ -75,9 +75,11 @@ def enabled(kind: str) -> bool:
     return bool(getattr(c, kind, default)) if c is not None else default
 
 
+DEFAULT_ENDPOINT = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+
+
 def endpoint() -> str:
-    c = _cfg()
-    return str(getattr(c, "endpoint", "") or "")
+    return os.environ.get("LLMSYS_TELEMETRY_ENDPOINT") or DEFAULT_ENDPOINT
 
 
 def reload() -> None:
@@ -100,7 +102,7 @@ def _write_private(tmp: Path, text: str) -> None:
 def install_identity(data_dir: Path) -> tuple[str, str]:
     data_dir = Path(data_dir)
     f = data_dir / IDFILE
-    if not f.is_file() or not f.read_text().strip():
+    if f.is_symlink() or not f.is_file() or not f.read_text().strip():
         data_dir.mkdir(parents=True, exist_ok=True)
         tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
         _write_private(tmp, str(uuid.uuid4()) + "\n")
@@ -300,6 +302,8 @@ def _write_json(path: Path, obj) -> None:
 
 def _append_log(data_dir: Path, line: str) -> None:
     try:
+        if os.path.islink(Path(data_dir) / LOG):
+            return
         with open(Path(data_dir) / LOG, "a") as fh:
             fh.write(f"{_iso()} {line}\n")
     except Exception:
