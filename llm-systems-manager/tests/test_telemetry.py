@@ -193,3 +193,24 @@ def test_frames_trim_keeps_innermost(cfg):
     finally:
         traceback.extract_tb = orig
     assert len(txt) <= 2048 and txt.endswith(":19:n") and "0.py:0:" not in txt
+
+
+def test_detect_channel_is_memoised(monkeypatch):
+    calls = []
+    monkeypatch.setattr(telemetry, "_channel_cache", {})
+    monkeypatch.setattr(telemetry.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(telemetry.subprocess, "run",
+                        lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=1))
+    root = BACKEND.parent.parent
+    first = telemetry.detect_channel(root)
+    n = len(calls)
+    assert telemetry.detect_channel(root) == first and len(calls) == n
+
+
+def test_report_exception_dedupe_gate_runs_first(cfg, monkeypatch):
+    hits = []
+    for name in ("detect_channel", "build_payload", "_blank", "_deliver"):
+        monkeypatch.setattr(telemetry, name, lambda *a, _n=name, **k: hits.append(_n))
+    monkeypatch.setattr(telemetry, "allow_crash", lambda *a, **k: False)
+    telemetry.report_exception(ValueError("x"), None, component="manager")
+    assert hits == []

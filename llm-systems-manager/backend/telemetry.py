@@ -177,8 +177,17 @@ def host_facts() -> dict:
             "gpu_vendor": vendor, "gpu_count": count}
 
 
+_channel_cache: dict = {}
+
+
 def detect_channel(root: Path) -> str:
-    root = Path(root)
+    key = str(Path(root).resolve())
+    if key not in _channel_cache:
+        _channel_cache[key] = _detect_channel(Path(root))
+    return _channel_cache[key]
+
+
+def _detect_channel(root: Path) -> str:
     if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
         return "docker"
     s = str(root)
@@ -259,10 +268,11 @@ def crash_hash(exc_type: str, frames: str) -> str:
 
 
 def build_crash_payload(exc, tb, *, component: str, data_dir: Path, version: str, channel: str,
-                        root: Path, uptime_s: int) -> dict:
+                        root: Path, uptime_s: int, exc_type: Optional[str] = None,
+                        frames: Optional[str] = None) -> dict:
     p = _blank("crash", data_dir, version, channel)
-    exc_type = type(exc).__name__[:128]
-    frames = frames_text(tb, root)
+    exc_type = exc_type if exc_type is not None else type(exc).__name__[:128]
+    frames = frames if frames is not None else frames_text(tb, root)
     p.update(component=component, exc_type=exc_type, frames=frames or None,
              crash_hash=crash_hash(exc_type, frames), uptime_s=int(uptime_s))
     return p
@@ -402,11 +412,15 @@ def report_exception(exc, tb, *, component: str) -> None:
     try:
         if _data_dir is None or not enabled("crash_reports"):
             return
-        p = build_crash_payload(exc, tb, component=component, data_dir=_data_dir, version=_version,
-                                channel=detect_channel(_root or _data_dir.parent), root=_root or _data_dir.parent,
-                                uptime_s=int(time.time() - _started_at))
-        if not allow_crash(_data_dir, p["crash_hash"]):
+        root = _root or _data_dir.parent
+        exc_type = type(exc).__name__[:128]
+        frames = frames_text(tb, root)
+        if not allow_crash(_data_dir, crash_hash(exc_type, frames)):
             return
+        p = build_crash_payload(exc, tb, component=component, data_dir=_data_dir, version=_version,
+                                channel=detect_channel(root), root=root,
+                                uptime_s=int(time.time() - _started_at),
+                                exc_type=exc_type, frames=frames)
         t = threading.Thread(target=_deliver, args=(p,), name="telemetry-crash", daemon=True)
         t.start()
         t.join(2.0)
