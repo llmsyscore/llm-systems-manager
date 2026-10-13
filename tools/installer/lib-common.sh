@@ -1384,21 +1384,34 @@ telemetry_pick_root() {
   return 1
 }
 
+# telemetry_as_user_prefix USER — prints the user-switch prefix, one word per line; rc 1 when none works.
+telemetry_as_user_prefix() {
+  if [[ "$(id -un)" == "$1" ]]; then
+    return 0
+  elif [[ "$(id -u)" == "0" ]]; then
+    printf '%s\n' runuser -u "$1" --
+  elif command -v sudo >/dev/null 2>&1; then
+    printf '%s\n' sudo -n -u "$1"
+  else
+    return 1
+  fi
+}
+
 # telemetry_readable_root USER ROOT — echoes ROOT, or a throwaway /tmp copy of the report files USER can read.
 telemetry_readable_root() {
-  local user="$1" root="$2" tmp f
-  if [[ "$(id -un)" == "$user" ]]; then printf '%s\n' "$root"; return 0; fi
-  if command -v sudo >/dev/null 2>&1; then
-    sudo -u "$user" test -r "$root/llm-systems-manager/backend/telemetry.py" && { printf '%s\n' "$root"; return 0; }
-  else
-    runuser -u "$user" -- test -r "$root/llm-systems-manager/backend/telemetry.py" && { printf '%s\n' "$root"; return 0; }
+  local user="$1" root="$2" tmp f run=() priv=()
+  [[ "$(id -un)" == "$user" ]] && { printf '%s\n' "$root"; return 0; }
+  mapfile -t run < <(telemetry_as_user_prefix "$user") && (( ${#run[@]} )) || return 1
+  if "${run[@]}" test -r "$root/llm-systems-manager/backend/telemetry.py" 2>/dev/null; then
+    printf '%s\n' "$root"; return 0
   fi
+  [[ "$(id -u)" == "0" ]] || priv=(sudo -n)
   tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" || return 1
-  ${SUDO:-} chmod 0755 "$tmp" || return 1
-  ${SUDO:-} install -d -m 0755 -o "$user" "$tmp/llm-systems-manager/backend" "$tmp/tools/installer" || return 1
-  ${SUDO:-} install -m 0644 -o "$user" "$root/llm-systems-manager/backend/telemetry.py" "$tmp/llm-systems-manager/backend/" || return 1
+  chmod 0755 "$tmp" || return 1
+  ${priv[@]+"${priv[@]}"} install -d -m 0755 -o "$user" "$tmp/llm-systems-manager/backend" "$tmp/tools/installer" || return 1
+  ${priv[@]+"${priv[@]}"} install -m 0644 -o "$user" "$root/llm-systems-manager/backend/telemetry.py" "$tmp/llm-systems-manager/backend/" || return 1
   for f in lib-common.sh telemetry-report.sh telemetry-retry.sh; do
-    ${SUDO:-} install -m 0755 -o "$user" "$root/tools/installer/$f" "$tmp/tools/installer/" || return 1
+    ${priv[@]+"${priv[@]}"} install -m 0755 -o "$user" "$root/tools/installer/$f" "$tmp/tools/installer/" || return 1
   done
   printf '%s\n' "$tmp"
 }
@@ -1406,14 +1419,10 @@ telemetry_readable_root() {
 # telemetry_report_as_user USER EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — sends as USER; never fails.
 telemetry_report_as_user() {
   local user="$1" root run=()
-  root="$(telemetry_readable_root "$user" "$8")" || return 0
-  if [[ "$(id -un)" == "$user" ]]; then
-    run=()
-  elif command -v sudo >/dev/null 2>&1; then
-    run=(sudo -u "$user")
-  else
-    run=(runuser -u "$user" --)
+  if [[ "$(id -un)" != "$user" ]]; then
+    mapfile -t run < <(telemetry_as_user_prefix "$user") && (( ${#run[@]} )) || return 0
   fi
+  root="$(telemetry_readable_root "$user" "$8")" || return 0
   ${run[@]+"${run[@]}"} env LLMSYS_TELEMETRY="${LLMSYS_TELEMETRY:-0}" \
     LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" CI="${CI:-}" \
@@ -1428,8 +1437,7 @@ telemetry_write_answers() {
   [[ "$2" == "1" ]] && tb=true
   [[ "$3" == "1" ]] && hb=true
   ${SUDO:-} python3 - "$1" "$tb" "$hb" <<'PYEOF'
-import re, sys
-from pathlib import Path
+import os, re, secrets, stat, sys
 
 def sub_bool_in_section(text, section, key, new_value):
     """Replace the first 'key = true|false' line inside [section]."""
@@ -1439,11 +1447,27 @@ def sub_bool_in_section(text, section, key, new_value):
         text, count=1, flags=re.MULTILINE | re.DOTALL,
     )
 
-path = Path(sys.argv[1])
-text = path.read_text()
+path = sys.argv[1]
+if os.path.islink(path):
+    sys.exit("refusing a symlinked config: " + path)
+fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+with os.fdopen(fd) as fh:
+    st = os.fstat(fh.fileno())
+    text = fh.read()
 text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
 text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
 text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
-path.write_text(text)
+tmp = os.path.join(os.path.dirname(path) or ".", ".%s.%s.tmp" % (os.path.basename(path), secrets.token_hex(8)))
+wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(st.st_mode))
+try:
+    with os.fdopen(wfd, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        if os.geteuid() == 0:
+            os.fchown(fh.fileno(), st.st_uid, st.st_gid)
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp)
+    raise
 PYEOF
 }

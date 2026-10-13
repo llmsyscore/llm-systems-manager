@@ -4625,6 +4625,8 @@ echo "────────────────────────�
 if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
       && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
   _tele_root="$(cd "$SRC_DIR/.." && pwd)"
+  _tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)"
+  _tele_ver="${_tele_ver:-$VERSION}"
   # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
   if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
     _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
@@ -4641,6 +4643,6 @@ if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
       LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
       LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
       bash "$_tele_root/tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
-      --data-dir "$INSTALL_DIR/state" --root "$_tele_root" </dev/null || true
+      --data-dir "$INSTALL_DIR/state" --version "$_tele_ver" --root "$_tele_root" </dev/null || true
   fi
 fi

@@ -105,3 +105,5 @@ def test_agent_stages_a_readable_root_for_the_report():
     assert '_run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"' in block
     assert "mktemp -d /tmp/llmsys-telemetry.XXXXXX" in block
     assert '--root "$_tele_root"' in block
+    assert '--version "$_tele_ver"' in block
+    assert """_tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)\"""" in block

@@ -193,7 +193,7 @@ def test_report_as_user_runs_through_sudo_with_explicit_env(tmp_path):
                       f'telemetry_report_as_user svc install script 3 ok "{tmp_path}/data" v9 /r; echo done')
     assert r.returncode == 0 and "done" in r.stdout, r.stderr
     argv = (b / "sudo.calls").read_text().splitlines()
-    assert argv[:3] == ["-u", "svc", "env"]
+    assert argv[:4] == ["-n", "-u", "svc", "env"]
     assert "LLMSYS_TELEMETRY=1" in argv and "LLMSYS_TELEMETRY_RETRY_DELAYS=0 0" in argv
     assert "LLMSYS_TELEMETRY_ENDPOINT=" in argv and "CI=" in argv
     i = argv.index("bash")
@@ -202,14 +202,17 @@ def test_report_as_user_runs_through_sudo_with_explicit_env(tmp_path):
                             "--version", "v9", "--root", "/r"]
 
 
-def test_report_as_user_falls_back_to_runuser_without_sudo(tmp_path):
+def test_report_as_user_uses_runuser_when_root(tmp_path):
     b = _fake_bin(tmp_path, "runuser")
     bash = subprocess.run(["bash", "-c", "command -v bash"], capture_output=True, text=True).stdout.strip()
     env_bin = subprocess.run(["bash", "-c", "command -v env"], capture_output=True, text=True).stdout.strip()
     iso = tmp_path / "iso"
     iso.mkdir()
-    for tool, src in (("bash", bash), ("env", env_bin), ("id", "/usr/bin/id"), ("runuser", str(b / "runuser"))):
+    for tool, src in (("bash", bash), ("env", env_bin), ("runuser", str(b / "runuser"))):
         (iso / tool).symlink_to(src)
+    fake_id = iso / "id"
+    fake_id.write_text(f'#!{bash}\nif [ "$1" = "-u" ]; then echo 0; else echo root; fi\n')
+    fake_id.chmod(0o755)
     r = subprocess.run([bash, "-c", f'. "{LIB}"; telemetry_report_as_user svc update script "" ok /d v1 /r; echo done'],
                        env={"PATH": str(iso)}, capture_output=True, text=True)
     assert r.returncode == 0 and "done" in r.stdout, r.stderr
@@ -248,8 +251,12 @@ def test_report_as_user_stages_a_readable_copy_when_root_is_unreadable(tmp_path)
     b = fake_curl(tmp_path)
     sudo = b / "sudo"
     sudo.write_text("#!/usr/bin/env bash\n"
-                    'if [ "$3" = "test" ]; then exit 1; fi\n'
-                    f'printf "%s\\n" "$@" > "{b}/sudo.calls"\n')
+                    'if [ "$1" = "-n" ] && [ "$2" = "-u" ]; then\n'
+                    '  if [ "$4" = "test" ]; then exit 1; fi\n'
+                    f'  printf "%s\\n" "$@" > "{b}/sudo.calls"; exit 0\n'
+                    'fi\n'
+                    '[ "$1" = "-n" ] && shift\n'
+                    'exec "$@"\n')
     sudo.chmod(0o755)
     real_install = subprocess.run(["bash", "-c", "command -v install"], capture_output=True, text=True).stdout.strip()
     inst = b / "install"
@@ -278,10 +285,46 @@ def test_report_as_user_keeps_a_readable_root(tmp_path):
     b = fake_curl(tmp_path)
     sudo = b / "sudo"
     sudo.write_text("#!/usr/bin/env bash\n"
-                    'if [ "$3" = "test" ]; then exit 0; fi\n'
+                    'if [ "$4" = "test" ]; then exit 0; fi\n'
                     f'printf "%s\\n" "$@" > "{b}/sudo.calls"\n')
     sudo.chmod(0o755)
     r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report_as_user svc install script 3 ok "{tmp_path}/data" v1 "{REPO}"')
     assert r.returncode == 0, r.stderr
     argv = (b / "sudo.calls").read_text().splitlines()
     assert argv[argv.index("--root") + 1] == str(REPO)
+
+
+def test_report_as_user_skips_without_sudo_when_not_root(tmp_path):
+    bash = subprocess.run(["bash", "-c", "command -v bash"], capture_output=True, text=True).stdout.strip()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    fake_id = iso / "id"
+    fake_id.write_text(f'#!{bash}\nif [ "$1" = "-u" ]; then echo 1000; else echo someone; fi\n')
+    fake_id.chmod(0o755)
+    r = subprocess.run([bash, "-c", f'. "{LIB}"; telemetry_report_as_user svc update script "" ok /d v1 /r; echo done'],
+                       env={"PATH": str(iso)}, capture_output=True, text=True)
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+
+
+def test_write_answers_refuses_a_symlinked_toml(tmp_path):
+    target = tmp_path / "target.toml"
+    body = "[manager.telemetry]\ninstall_report = true\ncrash_reports = true\nheartbeat = false\n"
+    target.write_text(body)
+    link = tmp_path / "llm-systems.toml"
+    link.symlink_to(target)
+    r = run(tmp_path, f'SUDO=""; telemetry_write_answers "{link}" 0 1; echo rc=$?')
+    assert "rc=0" not in r.stdout
+    assert link.is_symlink() and os.readlink(link) == str(target)
+    assert target.read_text() == body
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name != "bin") == ["llm-systems.toml", "target.toml"]
+
+
+def test_write_answers_keeps_the_file_mode(tmp_path):
+    t = tmp_path / "c.toml"
+    t.write_text("[manager.telemetry]\ninstall_report = true\ncrash_reports = true\nheartbeat = false\n")
+    t.chmod(0o600)
+    r = run(tmp_path, f'SUDO=""; telemetry_write_answers "{t}" 0 0')
+    assert r.returncode == 0, r.stderr
+    assert oct(t.stat().st_mode & 0o777) == "0o600"
+    assert "install_report = false" in t.read_text()
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
