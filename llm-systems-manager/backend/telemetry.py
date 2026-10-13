@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -39,7 +38,7 @@ _version = ""
 _root: Optional[Path] = None
 _agent_count_fn: Optional[Callable[[], int]] = None
 _provider_mix_fn: Optional[Callable[[], dict]] = None
-_lock = threading.Lock()
+_lock = threading.RLock()
 _started_at = time.time()
 _log = None
 
@@ -249,8 +248,10 @@ def frames_text(tb, root: Path, limit: int = FRAME_LIMIT) -> str:
         if not fn.startswith(root + os.sep):
             continue
         out.append(f"{fn[len(root) + 1:]}:{fr.lineno}:{fr.name}")
-    txt = ";".join(out[-limit:])
-    return txt[:FRAMES_MAX_CHARS]
+    out = out[-limit:]
+    while out and len(";".join(out)) > FRAMES_MAX_CHARS:
+        out.pop(0)
+    return ";".join(out)
 
 
 def crash_hash(exc_type: str, frames: str) -> str:
@@ -270,10 +271,11 @@ def build_crash_payload(exc, tb, *, component: str, data_dir: Path, version: str
 # ── files ────────────────────────────────────────────────────────────────────
 
 def _write_json(path: Path, obj) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, sort_keys=True) + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+    with _lock:
+        tmp.write_text(json.dumps(obj, indent=1, sort_keys=True) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
 
 
 def _append_log(data_dir: Path, line: str) -> None:
@@ -312,6 +314,11 @@ def flush_pending(data_dir: Path, endpoint_url: str) -> bool:
 
 
 def allow_crash(data_dir: Path, h: str, now: Optional[float] = None) -> bool:
+    with _lock:
+        return _allow_crash(data_dir, h, now)
+
+
+def _allow_crash(data_dir: Path, h: str, now: Optional[float] = None) -> bool:
     now = time.time() if now is None else now
     f = Path(data_dir) / CRASHES
     try:
@@ -342,19 +349,23 @@ def _post(url: str, body: bytes, timeout: float):
     """One HTTPS POST. Uses the companion's pinned session when importable, else urllib."""
     try:
         import companion  # pinned adapter: public address only, no proxies, no redirects
+    except ImportError:
+        companion = None
+    if companion is not None:
         session = companion._push_session(url)
         try:
             return session.post(url, data=body, headers={"Content-Type": "application/json"},
                                 timeout=timeout)
         finally:
             session.close()
-    except ImportError:
-        import urllib.request
-        req = urllib.request.Request(url, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=timeout) as r:
-            return type("R", (), {"status_code": r.status})()
+    import urllib.request
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.ProxyHandler({}))
+    opener.add_handler(urllib.request.HTTPSHandler())
+    with opener.open(req, timeout=timeout) as r:
+        return type("R", (), {"status_code": r.status})()
 
 
 def send(payload: dict, endpoint_url: str, timeout: float = TIMEOUT_S) -> bool:
@@ -376,9 +387,11 @@ def _deliver(payload: dict) -> bool:
     if ok:
         record_sent(_data_dir, payload)
         _append_log(_data_dir, f"sent {payload['event']}")
-    else:
+    elif payload["event"] in ("install", "update"):
         write_pending(_data_dir, payload)
         _append_log(_data_dir, f"queued {payload['event']} (send failed)")
+    else:
+        _append_log(_data_dir, f"dropped {payload['event']} (send failed)")
     return ok
 
 

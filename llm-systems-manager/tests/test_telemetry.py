@@ -23,7 +23,9 @@ def cfg(tmp_path, monkeypatch):
     telemetry.configure(settings=s, data_dir=tmp_path, version="v2026.10.14-1",
                         root=BACKEND.parent.parent)
     monkeypatch.setattr(telemetry, "_snapshot_settings", lambda: s)
-    return tmp_path
+    yield tmp_path
+    telemetry._agent_count_fn = None
+    telemetry._provider_mix_fn = None
 
 
 def test_install_identity_is_stable_and_timestamped(tmp_path):
@@ -135,3 +137,53 @@ def test_cli_payload_and_facts(tmp_path):
     facts = json.loads(subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "facts"],
                                       capture_output=True, text=True, check=True).stdout)
     assert "os" in facts and "arch" in facts
+
+
+def test_failed_heartbeat_keeps_pending_install(cfg, monkeypatch):
+    monkeypatch.setattr(telemetry, "send", lambda payload, endpoint, timeout=5.0: False)
+    inst = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script")
+    assert telemetry._deliver(inst) is False
+    pend = cfg / "telemetry-pending.json"
+    assert json.loads(pend.read_text())["event"] == "install"
+    hb = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="script")
+    assert telemetry._deliver(hb) is False
+    assert json.loads(pend.read_text())["event"] == "install"
+
+
+def test_pinned_import_error_does_not_fall_back(cfg, monkeypatch):
+    import urllib.request
+
+    def _bad(*a, **k):
+        raise ImportError("inside session")
+    monkeypatch.setitem(sys.modules, "companion", SimpleNamespace(_push_session=_bad))
+
+    def _no(*a, **k):
+        raise AssertionError("urllib used")
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", _no)
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script")
+    assert telemetry.send(p, "https://telemetry.example.test/v1/event") is False
+
+
+def test_allow_crash_threads(cfg):
+    import threading
+    now = time.time()
+    res = []
+    ts = [threading.Thread(target=lambda i=i: res.append(telemetry.allow_crash(cfg, f"h{i}", now)))
+          for i in range(20)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sum(res) == 5
+
+
+def test_frames_trim_keeps_innermost(cfg):
+    root = BACKEND.parent.parent
+    fake = [SimpleNamespace(filename=str(root / ("f" * 150 + str(i) + ".py")), lineno=i, name="n")
+            for i in range(20)]
+    import traceback
+    orig = traceback.extract_tb
+    try:
+        traceback.extract_tb = lambda tb: fake
+        txt = telemetry.frames_text(None, root)
+    finally:
+        traceback.extract_tb = orig
+    assert len(txt) <= 2048 and txt.endswith(":19:n") and "0.py:0:" not in txt
