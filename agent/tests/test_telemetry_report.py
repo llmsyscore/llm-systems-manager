@@ -47,8 +47,32 @@ def test_dedupe(tmp_path):
 
 
 def test_hooks_never_raise(tmp_path, monkeypatch):
-    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    calls = []
+    monkeypatch.setattr(sys, "excepthook", lambda *a: calls.append(a))
     monkeypatch.setattr(TR.threading, "excepthook", TR.threading.excepthook)
     TR.install_hooks(state_dir=str(tmp_path), version="v1", root=str(_AGENT.parent))
     monkeypatch.setattr(TR, "build_crash_payload", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     sys.excepthook(ValueError, ValueError("x"), None)  # must not raise
+    assert len(calls) == 1
+
+
+class _Resp:
+    status = 302
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_send_redirect_is_failure(monkeypatch):
+    monkeypatch.setattr(TR.urllib.request.OpenerDirector, "open", lambda self, *a, **k: _Resp())
+    assert TR.send({"a": 1}, "https://t.example.test/v1/event") is False
+
+
+def test_send_non_https_opens_nothing(monkeypatch):
+    def boom(self, *a, **k):
+        raise AssertionError("opened")
+    monkeypatch.setattr(TR.urllib.request.OpenerDirector, "open", boom)
+    assert TR.send({"a": 1}, "http://t.example.test/v1/event") is False

@@ -17,6 +17,7 @@ WINDOW_S = 24 * 3600
 DAILY_CAP = 5
 FRAME_LIMIT = 20
 _started = time.time()
+_lock = threading.RLock()
 
 
 def _iso(ts=None):
@@ -26,10 +27,11 @@ def _iso(ts=None):
 
 def _write_json(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, indent=1, sort_keys=True)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    with _lock:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(obj, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
 
 
 def load_consent(state_dir):
@@ -64,6 +66,11 @@ def crash_hash(exc_type, frames):
 
 
 def allow_crash(state_dir, h, now=None):
+    with _lock:
+        return _allow_crash(state_dir, h, now)
+
+
+def _allow_crash(state_dir, h, now):
     now = time.time() if now is None else now
     path = os.path.join(state_dir, CRASHES)
     try:
@@ -107,7 +114,9 @@ def send(payload, endpoint, timeout=5.0):
         body = json.dumps(payload, separators=(",", ":")).encode()
         req = urllib.request.Request(endpoint, data=body, method="POST",
                                      headers={"Content-Type": "application/json"})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        opener = urllib.request.OpenerDirector()
+        opener.add_handler(urllib.request.ProxyHandler({}))
+        opener.add_handler(urllib.request.HTTPSHandler())
         with opener.open(req, timeout=timeout) as r:
             return 200 <= r.status < 300
     except Exception:
