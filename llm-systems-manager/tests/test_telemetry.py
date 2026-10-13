@@ -152,16 +152,22 @@ def test_failed_heartbeat_keeps_pending_install(cfg, monkeypatch):
 
 def test_pinned_import_error_does_not_fall_back(cfg, monkeypatch):
     import urllib.request
+    from tests.conftest import REAL_TELEMETRY_POST
+    monkeypatch.setattr(telemetry, "_post", REAL_TELEMETRY_POST)
 
     def _bad(*a, **k):
         raise ImportError("inside session")
     monkeypatch.setitem(sys.modules, "companion", SimpleNamespace(_push_session=_bad))
 
+    used = []
+
     def _no(*a, **k):
+        used.append(1)
         raise AssertionError("urllib used")
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", _no)
     p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script")
     assert telemetry.send(p, "https://telemetry.example.test/v1/event") is False
+    assert used == []
 
 
 def test_allow_crash_threads(cfg):

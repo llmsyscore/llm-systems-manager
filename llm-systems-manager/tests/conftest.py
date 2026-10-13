@@ -111,6 +111,20 @@ def _tower_checks_stubbed(monkeypatch):
     monkeypatch.setattr(tower, "_checks", _NoChecks(), raising=False)
 
 
+import telemetry as _telemetry  # noqa: E402
+REAL_TELEMETRY_POST = _telemetry._post  # unpatched sender for tests that exercise it
+
+
+@pytest.fixture(autouse=True)
+def _telemetry_send_blocked(monkeypatch):
+    """Makes every telemetry POST raise so no test reaches the live receiver."""
+    import telemetry
+
+    def _blocked(*a, **k):
+        raise RuntimeError("telemetry send blocked in tests")
+    monkeypatch.setattr(telemetry, "_post", _blocked)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _live_audit_untouched():
     """Fail the session if any test writes the LIVE audit_log table."""
