@@ -1348,15 +1348,6 @@ telemetry_log() {
   printf '%s\n' "$2" >> "$1" 2>/dev/null || true
 }
 
-# telemetry_chown USER GROUP DIR — hand the telemetry files in DIR to USER:GROUP; skips symlinks.
-telemetry_chown() {
-  local f
-  for f in install-id telemetry-pending.json telemetry-last.json telemetry.log; do
-    if [[ -e "$3/$f" && ! -L "$3/$f" ]]; then ${SUDO:-} chown -h "$1:$2" "$3/$f" 2>/dev/null || true; fi
-  done
-  return 0
-}
-
 # telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
 telemetry_report() {
   [[ -z "${CI:-}" ]] || return 0
@@ -1380,4 +1371,79 @@ telemetry_report() {
       >/dev/null 2>&1 < /dev/null &
   fi
   return 0
+}
+
+# telemetry_pick_root DIR... — first DIR holding telemetry-report.sh and the payload builder.
+telemetry_pick_root() {
+  local d
+  for d in "$@"; do
+    if [[ -f "$d/tools/installer/telemetry-report.sh" && -f "$d/llm-systems-manager/backend/telemetry.py" ]]; then
+      printf '%s\n' "$d"; return 0
+    fi
+  done
+  return 1
+}
+
+# telemetry_readable_root USER ROOT — echoes ROOT, or a throwaway /tmp copy of the report files USER can read.
+telemetry_readable_root() {
+  local user="$1" root="$2" tmp f
+  if [[ "$(id -un)" == "$user" ]]; then printf '%s\n' "$root"; return 0; fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -u "$user" test -r "$root/llm-systems-manager/backend/telemetry.py" && { printf '%s\n' "$root"; return 0; }
+  else
+    runuser -u "$user" -- test -r "$root/llm-systems-manager/backend/telemetry.py" && { printf '%s\n' "$root"; return 0; }
+  fi
+  tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" || return 1
+  ${SUDO:-} chmod 0755 "$tmp" || return 1
+  ${SUDO:-} install -d -m 0755 -o "$user" "$tmp/llm-systems-manager/backend" "$tmp/tools/installer" || return 1
+  ${SUDO:-} install -m 0644 -o "$user" "$root/llm-systems-manager/backend/telemetry.py" "$tmp/llm-systems-manager/backend/" || return 1
+  for f in lib-common.sh telemetry-report.sh telemetry-retry.sh; do
+    ${SUDO:-} install -m 0755 -o "$user" "$root/tools/installer/$f" "$tmp/tools/installer/" || return 1
+  done
+  printf '%s\n' "$tmp"
+}
+
+# telemetry_report_as_user USER EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — sends as USER; never fails.
+telemetry_report_as_user() {
+  local user="$1" root run=()
+  root="$(telemetry_readable_root "$user" "$8")" || return 0
+  if [[ "$(id -un)" == "$user" ]]; then
+    run=()
+  elif command -v sudo >/dev/null 2>&1; then
+    run=(sudo -u "$user")
+  else
+    run=(runuser -u "$user" --)
+  fi
+  ${run[@]+"${run[@]}"} env LLMSYS_TELEMETRY="${LLMSYS_TELEMETRY:-0}" \
+    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+    LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" CI="${CI:-}" \
+    bash "$root/tools/installer/telemetry-report.sh" --event "$2" --channel "$3" --mode "$4" \
+    --outcome "$5" --data-dir "$6" --version "$7" --root "$root" </dev/null || true
+  return 0
+}
+
+# telemetry_write_answers TOML REPORT_01 HEARTBEAT_01 — sets the [manager.telemetry] booleans.
+telemetry_write_answers() {
+  local tb=false hb=false
+  [[ "$2" == "1" ]] && tb=true
+  [[ "$3" == "1" ]] && hb=true
+  ${SUDO:-} python3 - "$1" "$tb" "$hb" <<'PYEOF'
+import re, sys
+from pathlib import Path
+
+def sub_bool_in_section(text, section, key, new_value):
+    """Replace the first 'key = true|false' line inside [section]."""
+    return re.sub(
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(true|false)\b',
+        lambda m: m.group(1) + new_value,
+        text, count=1, flags=re.MULTILINE | re.DOTALL,
+    )
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
+path.write_text(text)
+PYEOF
 }

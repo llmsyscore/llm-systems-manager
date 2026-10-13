@@ -2,6 +2,7 @@
 """lib-common telemetry_*: consent from env/CI/prompt, payload preview, inline send, retry job."""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -178,19 +179,109 @@ def test_report_never_creates_missing_data_dir(tmp_path):
     assert not (tmp_path / "bin" / "curl.calls").exists()
 
 
-def test_telemetry_chown_skips_symlinks(tmp_path):
+def _fake_bin(tmp_path, name):
     b = fake_curl(tmp_path)
-    c = b / "chown"
-    c.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{b}/chown.calls"\n')
+    c = b / name
+    c.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{b}/{name}.calls"\n')
     c.chmod(c.stat().st_mode | stat.S_IEXEC)
-    d = tmp_path / "data"
-    d.mkdir()
-    (d / "install-id").write_text("x\n")
-    victim = tmp_path / "victim"
-    victim.write_text("keep")
-    (d / "telemetry.log").symlink_to(victim)
-    (d / "telemetry-last.json").symlink_to(tmp_path / "nowhere")
-    r = run(tmp_path, f'set -e; SUDO=""; telemetry_chown svc svcgrp "{d}"; echo done')
+    return b
+
+
+def test_report_as_user_runs_through_sudo_with_explicit_env(tmp_path):
+    b = _fake_bin(tmp_path, "sudo")
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 LLMSYS_TELEMETRY_RETRY_DELAYS="0 0" '
+                      f'telemetry_report_as_user svc install script 3 ok "{tmp_path}/data" v9 /r; echo done')
     assert r.returncode == 0 and "done" in r.stdout, r.stderr
-    calls = (b / "chown.calls").read_text().splitlines()
-    assert calls == [f"-h svc:svcgrp {d}/install-id"]
+    argv = (b / "sudo.calls").read_text().splitlines()
+    assert argv[:3] == ["-u", "svc", "env"]
+    assert "LLMSYS_TELEMETRY=1" in argv and "LLMSYS_TELEMETRY_RETRY_DELAYS=0 0" in argv
+    assert "LLMSYS_TELEMETRY_ENDPOINT=" in argv and "CI=" in argv
+    i = argv.index("bash")
+    assert argv[i + 1:] == ["/r/tools/installer/telemetry-report.sh", "--event", "install", "--channel", "script",
+                            "--mode", "3", "--outcome", "ok", "--data-dir", f"{tmp_path}/data",
+                            "--version", "v9", "--root", "/r"]
+
+
+def test_report_as_user_falls_back_to_runuser_without_sudo(tmp_path):
+    b = _fake_bin(tmp_path, "runuser")
+    bash = subprocess.run(["bash", "-c", "command -v bash"], capture_output=True, text=True).stdout.strip()
+    env_bin = subprocess.run(["bash", "-c", "command -v env"], capture_output=True, text=True).stdout.strip()
+    iso = tmp_path / "iso"
+    iso.mkdir()
+    for tool, src in (("bash", bash), ("env", env_bin), ("id", "/usr/bin/id"), ("runuser", str(b / "runuser"))):
+        (iso / tool).symlink_to(src)
+    r = subprocess.run([bash, "-c", f'. "{LIB}"; telemetry_report_as_user svc update script "" ok /d v1 /r; echo done'],
+                       env={"PATH": str(iso)}, capture_output=True, text=True)
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+    argv = (b / "runuser.calls").read_text().splitlines()
+    assert argv[:4] == ["-u", "svc", "--", "env"]
+
+
+def test_report_as_user_runs_directly_when_already_that_user(tmp_path):
+    b = _fake_bin(tmp_path, "sudo")
+    me = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
+    data = tmp_path / "data"
+    data.mkdir()
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report_as_user {me} install script 3 ok "{data}" v9 "{REPO}"')
+    assert r.returncode == 0, r.stderr
+    assert not (b / "sudo.calls").exists()
+    assert json.loads((data / "telemetry-last.json").read_text())["version"] == "v9"
+
+
+def test_lib_common_has_no_chown_helper():
+    assert "telemetry_chown" not in LIB.read_text()
+
+
+def test_write_answers_sets_the_section(tmp_path):
+    t = tmp_path / "c.toml"
+    t.write_text("[manager]\nx = 1\n\n[manager.telemetry]\ninstall_report = true\ncrash_reports = true\n"
+                 "heartbeat = false\n\n[other]\nheartbeat = false\n")
+    r = run(tmp_path, f'SUDO=""; telemetry_write_answers "{t}" 0 1')
+    assert r.returncode == 0, r.stderr
+    import tomllib
+    doc = tomllib.loads(t.read_text())
+    assert doc["manager"]["telemetry"] == {"install_report": False, "crash_reports": False, "heartbeat": True}
+    assert doc["other"]["heartbeat"] is False
+
+
+def test_report_as_user_stages_a_readable_copy_when_root_is_unreadable(tmp_path):
+    b = fake_curl(tmp_path)
+    sudo = b / "sudo"
+    sudo.write_text("#!/usr/bin/env bash\n"
+                    'if [ "$3" = "test" ]; then exit 1; fi\n'
+                    f'printf "%s\\n" "$@" > "{b}/sudo.calls"\n')
+    sudo.chmod(0o755)
+    real_install = subprocess.run(["bash", "-c", "command -v install"], capture_output=True, text=True).stdout.strip()
+    inst = b / "install"
+    inst.write_text("#!/usr/bin/env bash\nargs=()\nwhile [ $# -gt 0 ]; do\n"
+                    '  if [ "$1" = "-o" ]; then shift 2; continue; fi\n  args+=("$1"); shift\ndone\n'
+                    f'exec {real_install} "${{args[@]}}"\n')
+    inst.chmod(0o755)
+    before = set(Path("/tmp").glob("llmsys-telemetry.*"))
+    r = run(tmp_path, f'SUDO=""; LLMSYS_TELEMETRY=1 telemetry_report_as_user svc install script 4 ok "{tmp_path}/data" v1 "{REPO}"')
+    assert r.returncode == 0, r.stderr
+    new = set(Path("/tmp").glob("llmsys-telemetry.*")) - before
+    assert len(new) == 1
+    staged = new.pop()
+    try:
+        for rel in ("llm-systems-manager/backend/telemetry.py", "tools/installer/lib-common.sh",
+                    "tools/installer/telemetry-report.sh", "tools/installer/telemetry-retry.sh"):
+            assert (staged / rel).read_bytes() == (REPO / rel).read_bytes(), rel
+        argv = (b / "sudo.calls").read_text().splitlines()
+        assert argv[argv.index("bash") + 1] == f"{staged}/tools/installer/telemetry-report.sh"
+        assert argv[argv.index("--root") + 1] == str(staged)
+    finally:
+        shutil.rmtree(staged)
+
+
+def test_report_as_user_keeps_a_readable_root(tmp_path):
+    b = fake_curl(tmp_path)
+    sudo = b / "sudo"
+    sudo.write_text("#!/usr/bin/env bash\n"
+                    'if [ "$3" = "test" ]; then exit 0; fi\n'
+                    f'printf "%s\\n" "$@" > "{b}/sudo.calls"\n')
+    sudo.chmod(0o755)
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report_as_user svc install script 3 ok "{tmp_path}/data" v1 "{REPO}"')
+    assert r.returncode == 0, r.stderr
+    argv = (b / "sudo.calls").read_text().splitlines()
+    assert argv[argv.index("--root") + 1] == str(REPO)

@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20261014001
+_INSTALL_SH_REVISION=20261014002
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -769,7 +769,10 @@ if ! declare -F telemetry_report >/dev/null; then
   telemetry_payload() { return 1; }
   telemetry_report() { return 0; }
   telemetry_endpoint() { :; }
-  telemetry_chown() { return 0; }
+fi
+if ! declare -F telemetry_report_as_user >/dev/null; then
+  telemetry_pick_root() { return 1; }
+  telemetry_report_as_user() { return 0; }
 fi
 _TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
 if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
@@ -790,9 +793,9 @@ _telemetry_on_exit() {
   local d="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data"
   [[ -d "$d" && ! -L "$d" ]] || return 0
   local stage; stage="$(printf '%s' "${LLMSYS_STAGE:-unknown}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
-  telemetry_report install script "$MODE" "failed:$stage" "$d" \
-    "$_TELEMETRY_VERSION" "$REPO_SRC" "$(telemetry_endpoint)" >/dev/null 2>&1 || true
-  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$d" || true
+  local root; root="$(telemetry_pick_root "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}" "$REPO_SRC")" || return 0
+  telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" "failed:$stage" "$d" \
+    "$_TELEMETRY_VERSION" "$root" >/dev/null 2>&1 || true
 }
 
 # Compat shims: a main install.sh may pair with an older release tarball's
@@ -1527,19 +1530,18 @@ _TELEMETRY_DONE=1
 if [[ "$MODE" != "6" && ! -e "$LLMSYS_INSTALL_DIR/data" ]]; then
   $SUDO install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data" 2>/dev/null || true
 fi
+_tele_root="$(telemetry_pick_root "$LLMSYS_INSTALL_DIR" "$REPO_SRC" || true)"
 if (( FAIL == 0 )); then
-  telemetry_report install script "$MODE" ok "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
-    "$(telemetry_endpoint)"
-  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
+  [[ -n "$_tele_root" ]] && telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" ok \
+    "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$_tele_root"
   if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
     ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
   else
     ok "Installation succeeded."
   fi
 else
-  telemetry_report install script "$MODE" "failed:health_checks" "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
-    "$(telemetry_endpoint)"
-  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
+  [[ -n "$_tele_root" ]] && telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" "failed:health_checks" \
+    "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$_tele_root"
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1
 fi

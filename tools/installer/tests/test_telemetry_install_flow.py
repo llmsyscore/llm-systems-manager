@@ -22,13 +22,13 @@ def test_exit_trap_reports_failed_stage():
     m = re.search(r"_telemetry_on_exit\(\) \{(.*?)\n\}", INSTALL, re.S)
     body = m.group(1)
     assert "failed:" in body and "LLMSYS_STAGE" in body
-    assert "telemetry_report" in body
+    assert "telemetry_report_as_user" in body
     assert re.search(r"trap '_telemetry_on_exit; rm -f", INSTALL)
 
 
 def test_install_success_reports_ok():
     tail = INSTALL[INSTALL.index('ok "Installation succeeded'):]
-    assert "telemetry_report install script" in INSTALL
+    assert 'telemetry_report_as_user "$LLMSYS_RUN_USER" install script' in INSTALL
     assert "_TELEMETRY_DONE=1" in INSTALL
     assert "failed:health_checks" in tail
 
@@ -41,7 +41,7 @@ def test_mode5_marks_report_done_before_exit():
 
 def test_update_merges_keys_without_prompt():
     assert UPDATE.count("telemetry_consent") == 1
-    assert "telemetry_report update script" in UPDATE
+    assert 'telemetry_report_as_user "$LLMSYS_RUN_USER" update script' in UPDATE
     assert "read_toml_key install_report" in UPDATE
 
 
@@ -58,21 +58,22 @@ def test_update_skips_under_ci():
     assert '-z "${CI:-}"' in line
 
 
-def test_telemetry_chown_is_symlink_safe_everywhere():
+def test_root_callers_send_as_the_run_user_and_never_chown():
     for text in (INSTALL, UPDATE):
-        assert 'chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id"' not in text
-        assert 'telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP"' in text
-    assert '/state/telemetry-"*' not in AGENT
-    assert AGENT.count('chown -h "$USER_ARG:$USER_GROUP" "$_tele_p"') == 2
+        assert "telemetry_chown" not in text
+        assert re.search(r"\btelemetry_report (install|update) ", text) is None
+    assert "chown -h" not in AGENT
+    assert '_run_as "$USER_ARG" "$_tele_py" -I - "$INSTALL_DIR/state"' in AGENT
+    assert '_run_as "$USER_ARG" env LLMSYS_TELEMETRY=1' in AGENT
 
 
 def test_exit_hook_needs_existing_data_dir():
     body = re.search(r"_telemetry_on_exit\(\) \{(.*?)\n\}", INSTALL, re.S).group(1)
-    assert body.index('[[ -d "$d" && ! -L "$d" ]] || return 0') < body.index("telemetry_report")
+    assert body.index('[[ -d "$d" && ! -L "$d" ]] || return 0') < body.index("telemetry_report_as_user")
 
 
 def test_final_block_creates_missing_data_dir_before_report():
-    i_ok = INSTALL.index('telemetry_report install script "$MODE" ok')
+    i_ok = INSTALL.index('telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" ok')
     head = INSTALL[INSTALL.rindex("_TELEMETRY_DONE=1", 0, i_ok):i_ok]
     assert '[[ "$MODE" != "6" && ! -e "$LLMSYS_INSTALL_DIR/data" ]]' in head
     assert ('$SUDO install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"'
@@ -87,7 +88,20 @@ def test_update_asks_only_when_the_section_is_new_and_a_human_is_present():
     i_check = UPDATE.index("grep -q '^\\[manager.telemetry\\]' \"$_live_toml\"")
     i_consent = UPDATE.index("telemetry_consent")
     guard = UPDATE[UPDATE.rindex("if [[", 0, i_consent):i_consent]
+    assert "(( ! ASSUME_YES ))" in guard
     assert i_check < i_consent < UPDATE.index("toml_reconcile.py\" merge")
     assert "-t 0" in guard
     assert NOTICE in UPDATE
-    assert 'sub_bool_in_section(text, "manager.telemetry", "install_report"' in UPDATE
+    assert 'telemetry_write_answers "$_live_toml"' in UPDATE
+
+
+def test_install_sh_revision_is_bumped():
+    rev = int(re.search(r"^_INSTALL_SH_REVISION=(\d+)$", INSTALL, re.M).group(1))
+    assert rev >= 20261014002
+
+
+def test_agent_stages_a_readable_root_for_the_report():
+    block = AGENT[AGENT.index("# Agent-only install report"):]
+    assert '_run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"' in block
+    assert "mktemp -d /tmp/llmsys-telemetry.XXXXXX" in block
+    assert '--root "$_tele_root"' in block

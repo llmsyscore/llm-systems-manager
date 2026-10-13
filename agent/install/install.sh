@@ -3926,7 +3926,7 @@ if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
     fi
   fi
   [[ "$_tele_t" == "1" ]] || _tele_t=0
-  $SUDO "$_tele_py" -I - "$INSTALL_DIR/state" "$_tele_t" <<'PY' || true
+  _run_as "$USER_ARG" "$_tele_py" -I - "$INSTALL_DIR/state" "$_tele_t" <<'PY' || true
 import json, os, sys, time, uuid
 d, t = sys.argv[1], sys.argv[2] == "1"
 def put(name, text, mode):
@@ -3946,10 +3946,6 @@ at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.stat(idf).st_mtime))
 put("telemetry.json", json.dumps({"install_report": t, "crash_reports": t,
                                   "install_id": iid, "installed_at": at}, indent=1), 0o600)
 PY
-  for _tele_f in telemetry.json install-id; do
-    _tele_p="$INSTALL_DIR/state/$_tele_f"
-    if [[ -e "$_tele_p" && ! -L "$_tele_p" ]]; then $SUDO chown -h "$USER_ARG:$USER_GROUP" "$_tele_p" 2>/dev/null || true; fi
-  done
   export LLMSYS_TELEMETRY="$_tele_t"
 fi
 
@@ -4628,10 +4624,23 @@ echo "────────────────────────�
 # Agent-only install report (Mode 5 or standalone); full installs report from install.sh.
 if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
       && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
-  LLMSYS_TELEMETRY=1 bash "$SRC_DIR/../tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
-    --data-dir "$INSTALL_DIR/state" --root "$(cd "$SRC_DIR/.." && pwd)" || true
-  for _tele_f in install-id telemetry-pending.json telemetry-last.json telemetry.log; do
-    _tele_p="$INSTALL_DIR/state/$_tele_f"
-    if [[ -e "$_tele_p" && ! -L "$_tele_p" ]]; then $SUDO chown -h "$USER_ARG:$USER_GROUP" "$_tele_p" 2>/dev/null || true; fi
-  done
+  _tele_root="$(cd "$SRC_DIR/.." && pwd)"
+  # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
+  if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
+    _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
+      && $SUDO chmod 0755 "$_tele_tmp" \
+      && $SUDO install -d -m 0755 -o "$USER_ARG" "$_tele_tmp/llm-systems-manager/backend" "$_tele_tmp/tools/installer" \
+      && $SUDO install -m 0644 -o "$USER_ARG" "$_tele_root/llm-systems-manager/backend/telemetry.py" "$_tele_tmp/llm-systems-manager/backend/" \
+      && $SUDO install -m 0755 -o "$USER_ARG" "$_tele_root/tools/installer/lib-common.sh" \
+           "$_tele_root/tools/installer/telemetry-report.sh" "$_tele_root/tools/installer/telemetry-retry.sh" \
+           "$_tele_tmp/tools/installer/" \
+      && _tele_root="$_tele_tmp" || _tele_root=""
+  fi
+  if [[ -n "$_tele_root" ]]; then
+    _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
+      LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
+      LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+      bash "$_tele_root/tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
+      --data-dir "$INSTALL_DIR/state" --root "$_tele_root" </dev/null || true
+  fi
 fi

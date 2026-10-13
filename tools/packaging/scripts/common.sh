@@ -152,8 +152,22 @@ llmsys_reconcile_config() {
   chmod 0600 "$tmp"
   mv "$tmp" "$LLMSYS_CFG"
   if [ "$tele_new" = "1" ] && grep -q '^\[manager.telemetry\]' "$LLMSYS_CFG"; then
-    echo "llm-systems-manager: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+    llmsys_telemetry_answers
   fi
+}
+
+# New [manager.telemetry] on upgrade: writes LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT when set, else says reports are on.
+llmsys_telemetry_answers() {
+  local t="${LLMSYS_TELEMETRY:-}" h="${LLMSYS_HEARTBEAT:-}"
+  if [ -n "$t" ] || [ -n "$h" ]; then
+    [ "${t:-1}" = "1" ] && t=1 || t=0
+    [ "$h" = "1" ] && h=1 || h=0
+    SUDO="" bash -c '. "$1/tools/installer/lib-common.sh" && telemetry_write_answers "$2" "$3" "$4"' \
+      _ "$LLMSYS_INSTALL_DIR" "$LLMSYS_CFG" "$t" "$h" >/dev/null 2>&1 \
+      || echo "llm-systems-manager: could not write the report answers into $LLMSYS_CFG" >&2
+    [ "$t" = "1" ] || return 0
+  fi
+  echo "llm-systems-manager: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
 }
 
 # Refreshes the live unified_config.py schema from the packaged example
@@ -288,19 +302,17 @@ llmsys_default_telemetry() {
   echo "llm-systems-manager: Anonymous install report on; set LLMSYS_TELEMETRY=0 before installing to turn it off"
 }
 
-# Sends the install/update report under the config's answer; never fails the caller.
+# Sends the install/update report as the run-as user under the config's answer; never fails the caller.
 llmsys_telemetry_report() {
-  local upgrade="$1" grp="$2" event=install f
+  local upgrade="$1" event=install
   [ "${LLMSYS_TELEMETRY:-}" = "0" ] && return 0
   [ -n "$upgrade" ] && event=update
-  bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \
+  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" \
+    LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
+    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+    bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \
     --channel "$LLMSYS_PKG_FORMAT" --mode 2 --data-dir "$LLMSYS_INSTALL_DIR/data" \
     --root "$LLMSYS_INSTALL_DIR" --toml "$LLMSYS_CFG" </dev/null || true
-  for f in install-id telemetry-pending.json telemetry-last.json telemetry.log; do
-    if [ -e "$LLMSYS_INSTALL_DIR/data/$f" ] && [ ! -L "$LLMSYS_INSTALL_DIR/data/$f" ]; then
-      chown -h "$LLMSYS_RUN_USER:$grp" "$LLMSYS_INSTALL_DIR/data/$f" 2>/dev/null || true
-    fi
-  done
   return 0
 }
 
@@ -327,7 +339,7 @@ llmsys_configure() {
   llmsys_build_venvs
   llmsys_write_config
   llmsys_write_marker "$adopt"
-  llmsys_telemetry_report "$upgrade" "$grp"
+  llmsys_telemetry_report "$upgrade"
   llmsys_warn_if_shadowed
   if [ -z "$upgrade" ]; then
     llmsys_enable_start

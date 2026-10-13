@@ -1060,8 +1060,9 @@ if $HAVE_MANAGER || $HAVE_AE; then
     _tele_new=0; _tele_ask=0
     if ! $SUDO grep -q '^\[manager.telemetry\]' "$_live_toml" 2>/dev/null; then
       _tele_new=1
-      if [[ -t 0 || -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] && (( ! DRY_RUN )); then
-        telemetry_consent; _tele_ask=1
+      if [[ -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] \
+         || { [[ -t 0 ]] && (( ! ASSUME_YES )); }; then
+        (( DRY_RUN )) || { telemetry_consent; _tele_ask=1; }
       fi
     fi
     if (( DRY_RUN )); then
@@ -1099,28 +1100,8 @@ if $HAVE_MANAGER || $HAVE_AE; then
         ok "merged $_added_count new key(s) into $_live_toml:"
         grep -E '^\s*\+' "$_TOML_MERGE_TMP" | sed 's/^/    /'
         if (( _tele_new && _tele_ask )); then
-          _tb=false; [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] && _tb=true
-          _hb=false; [[ "${LLMSYS_HEARTBEAT:-0}" == "1" ]] && _hb=true
-          # Writes the answers into the newly merged [manager.telemetry] section.
-          $SUDO python3 - "$_live_toml" "$_tb" "$_hb" <<'PYEOF' || warn "could not write the report answers into $_live_toml"
-import re, sys
-from pathlib import Path
-
-def sub_bool_in_section(text, section, key, new_value):
-    """Replace the first 'key = true|false' line inside [section]."""
-    return re.sub(
-        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(true|false)\b',
-        lambda m: m.group(1) + new_value,
-        text, count=1, flags=re.MULTILINE | re.DOTALL,
-    )
-
-path = Path(sys.argv[1])
-text = path.read_text()
-text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
-text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
-text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
-path.write_text(text)
-PYEOF
+          telemetry_write_answers "$_live_toml" "${LLMSYS_TELEMETRY:-0}" "${LLMSYS_HEARTBEAT:-0}" \
+            || warn "could not write the report answers into $_live_toml"
         elif (( _tele_new )); then
           log "Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
         fi
@@ -1390,9 +1371,10 @@ if [[ -z "${CI:-}" && "$(read_toml_key install_report "$_live_toml")" == "true" 
   export LLMSYS_TELEMETRY=1
   _upd_outcome=ok; (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )) && _upd_outcome="failed:update"
   _upd_ver="${MGR_V_NEW:-$(_extract_version "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null || true)}"
-  telemetry_report update script "" "$_upd_outcome" "$LLMSYS_INSTALL_DIR/data" "${_upd_ver:-unknown}" "$REPO_SRC" \
-    "$(telemetry_endpoint)"
-  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
+  if _tele_root="$(telemetry_pick_root "$LLMSYS_INSTALL_DIR" "$REPO_SRC")"; then
+    telemetry_report_as_user "$LLMSYS_RUN_USER" update script "" "$_upd_outcome" "$LLMSYS_INSTALL_DIR/data" \
+      "${_upd_ver:-unknown}" "$_tele_root"
+  fi
 fi
 (( PARANOID_VERIFY )) && log "md5 verify: $VERIFY_FAILURES mismatch(es)"
 if (( VERIFY_FAILURES > 0 )); then

@@ -30,7 +30,7 @@ def test_postinst_exports_answers_and_common_reports():
     assert "LLMSYS_PKG_FORMAT:-pkg" in common
 
 
-def _run_postinst_answers(tmp_path, env_extra, answers):
+def _run_postinst_answers(tmp_path, env_extra, answers, old_version=""):
     """Runs the postinst debconf block against a stub confmodule; prints the exported values."""
     stub = tmp_path / "confmodule"
     cases = "".join(f'    llm-systems-manager/{k}) RET="{v}" ;;\n' for k, v in answers.items())
@@ -42,7 +42,7 @@ def _run_postinst_answers(tmp_path, env_extra, answers):
               + body)
     env = {k: v for k, v in os.environ.items() if k not in ("CI", "LLMSYS_TELEMETRY", "LLMSYS_HEARTBEAT")}
     env.update(env_extra)
-    r = subprocess.run(["bash", "-c", script, "postinst", "configure", ""], env=env,
+    r = subprocess.run(["bash", "-c", script, "postinst", "configure", old_version], env=env,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip().splitlines()[-1]
@@ -120,4 +120,46 @@ def test_ci_workflows_silence_reports():
 
 
 def test_install_sh_revision_bumped():
-    assert "_INSTALL_SH_REVISION=20261014001" in (REPO / "tools/installer/install.sh").read_text()
+    assert "_INSTALL_SH_REVISION=20261014002" in (REPO / "tools/installer/install.sh").read_text()
+
+
+def test_postinst_upgrade_ignores_stored_debconf_answers(tmp_path):
+    out = _run_postinst_answers(tmp_path, {}, {"telemetry": "true", "heartbeat": "true"}, old_version="1.0.6")
+    assert out == "T= H= F=deb"
+
+
+COMMON = REPO / "tools/packaging/scripts/common.sh"
+
+
+def test_common_reports_as_the_run_user_without_chown():
+    text = COMMON.read_text()
+    body = text[text.index("llmsys_telemetry_report() {"):]
+    body = body[:body.index("\n}\n")]
+    assert 'runuser -u "$LLMSYS_RUN_USER" -- env' in body
+    assert "chown" not in body
+
+
+def _upgrade_answers(tmp_path, env_extra):
+    cfg = tmp_path / "c.toml"
+    cfg.write_text((REPO / "config/llm-systems.toml.example").read_text())
+    script = (f'set -e; . "{COMMON}"; LLMSYS_INSTALL_DIR="{REPO}"; LLMSYS_CFG="{cfg}"; llmsys_telemetry_answers')
+    env = {k: v for k, v in os.environ.items() if k not in ("CI", "LLMSYS_TELEMETRY", "LLMSYS_HEARTBEAT")}
+    env.update(env_extra)
+    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return tomllib.loads(cfg.read_text())["manager"]["telemetry"], r.stdout
+
+
+def test_package_upgrade_writes_explicit_answers(tmp_path):
+    tele, out = _upgrade_answers(tmp_path, {"LLMSYS_TELEMETRY": "0"})
+    assert tele == {"install_report": False, "crash_reports": False, "heartbeat": False}
+    assert "Anonymous install and crash reports are on" not in out
+    tele, out = _upgrade_answers(tmp_path, {"LLMSYS_HEARTBEAT": "1"})
+    assert tele == {"install_report": True, "crash_reports": True, "heartbeat": True}
+    assert "Anonymous install and crash reports are on" in out
+
+
+def test_package_upgrade_without_answers_keeps_defaults_and_says_so(tmp_path):
+    tele, out = _upgrade_answers(tmp_path, {})
+    assert tele["install_report"] is True and tele["heartbeat"] is False
+    assert "Anonymous install and crash reports are on" in out
