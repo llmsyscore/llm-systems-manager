@@ -259,6 +259,7 @@
 #admin-settings .st-checkrow :is(.st-ct, .st-body) .row.fb { margin-top: 2px; }
 #admin-settings .st-checkrow .d { color: var(--fg-muted); font-size: 12px; }
 #admin-settings .st-checkrow .d.w { width: 62px; }
+.st-pre { white-space: pre-wrap; font-size: 12px; max-height: 50vh; overflow: auto; text-align: left; margin: 0; }
 #admin-settings .st-chip { position: relative; display: inline-flex; align-items: center; height: 20px; font-family: var(--font-mono); font-size: 10.5px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-muted); white-space: nowrap; }
 #admin-settings .st-chip.ok { color: color-mix(in srgb, var(--ok) 78%, var(--fg)); border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong)); background: linear-gradient(180deg, color-mix(in srgb, var(--ok) 20%, transparent), color-mix(in srgb, var(--ok) 7%, transparent)); }
 #admin-settings .st-chip.ok.outline { background: transparent; }

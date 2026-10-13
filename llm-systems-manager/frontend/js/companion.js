@@ -854,9 +854,10 @@
 
   const settings = {
     async refresh() {
-      const [me, rel] = await Promise.all([
+      const [me, rel, tele] = await Promise.all([
         jfetch('/api/me').catch(() => null),
         jfetch('/api/companion/release').catch(() => null),
+        jfetch('/api/admin/telemetry').catch(() => null),
       ]);
       $('settingsUser').textContent = me
         ? ((me.user || me.username || 'signed in')
@@ -869,7 +870,24 @@
           + `aria-label="Release check" data-rel${ADMIN ? '' : ' disabled'}><i></i></button></div>`
         : '<div class="arow"><div class="atxt"><div class="an">Check for new releases</div>'
           + '<div class="ad">unavailable</div></div></div>';
+      this.tele = tele;
+      const T = [['install_report', 'Install report', 'one report of what was installed and on what hardware'],
+                 ['crash_reports', 'Crash reports', 'error type and code location only'],
+                 ['heartbeat', 'Daily usage report', 'version, agent count, provider mix, uptime']];
+      $('settingsReports').innerHTML = tele
+        ? T.map(([key, name, what]) => '<div class="arow"><div class="atxt">'
+            + `<div class="an">${esc(name)}</div><div class="ad">${esc(what)}${this.teleDetail(tele, key)}</div></div>`
+            + `<button class="switch" role="switch" aria-checked="${!!tele[key]}" aria-label="${esc(name)}" `
+            + `data-tele="${key}"${ADMIN ? '' : ' disabled'}><i></i></button></div>`).join('')
+        : '<div class="arow"><div class="atxt"><div class="an">Reports</div>'
+          + '<div class="ad">unavailable</div></div></div>';
       paintPush();
+    },
+    teleDetail(tele, key) {
+      const last = tele.last;
+      if (!last) return ' · nothing sent yet';
+      if (key === 'heartbeat' && last.event !== 'heartbeat') return '';
+      return ' · last ' + esc(last.event) + ' ' + esc(CV.age(last.sent_at, Date.now() / 1000));
     },
     detail(rel) {
       const base = rel.installed
@@ -883,6 +901,20 @@
     },
     start() {
       $('scr-settings').onclick = async (e) => {
+        const tb = e.target.closest('[data-tele]');
+        if (tb && !tb.disabled) {
+          const key = tb.getAttribute('data-tele');
+          const next = tb.getAttribute('aria-checked') !== 'true';
+          $('settingsMsg').textContent = next ? 'turning on…' : 'turning off…';
+          try {
+            await jpost('/api/admin/telemetry', { [key]: next }, 'PUT');
+            $('settingsMsg').textContent = next ? 'report on' : 'report off';
+          } catch (err) {
+            $('settingsMsg').textContent = 'failed: ' + errMsg(err);
+          }
+          this.refresh();
+          return;
+        }
         const t = e.target.closest('[data-rel]');
         if (!t || t.disabled) return;
         const next = t.getAttribute('aria-checked') !== 'true';
