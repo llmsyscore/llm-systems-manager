@@ -1341,22 +1341,30 @@ telemetry_consent() {
   export LLMSYS_TELEMETRY="$t" LLMSYS_HEARTBEAT="$h" LLMSYS_TELEMETRY_REASON="$reason"
 }
 
+# telemetry_log LOGF LINE — append a line unless LOGF is a symlink.
+telemetry_log() {
+  [[ -L "$1" ]] && return 0
+  printf '%s\n' "$2" >> "$1" 2>/dev/null || true
+}
+
 # telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
 telemetry_report() {
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
   local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
-  local py pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
+  local py tmp pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
   py="$(telemetry_python)" || return 0
+  [[ -L "$dir" ]] && return 0
   mkdir -p "$dir" 2>/dev/null || return 0
-  telemetry_payload "$event" "$channel" "$mode" "$outcome" "$dir" "$ver" "$root" > "$pend" 2>/dev/null \
-    || { rm -f "$pend"; return 0; }
-  chmod 0600 "$pend" 2>/dev/null || true
+  tmp="$(mktemp "$dir/.telemetry-pending.XXXXXX")" || return 0
+  telemetry_payload "$event" "$channel" "$mode" "$outcome" "$dir" "$ver" "$root" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 0; }
+  mv -f "$tmp" "$pend" 2>/dev/null || { rm -f "$tmp"; return 0; }
   if curl -fsS --max-time 5 -o /dev/null -H 'Content-Type: application/json' --data-binary "@$pend" "$ep" 2>/dev/null; then
     mv -f "$pend" "$dir/telemetry-last.json"
-    printf '%s attempt 1 ok (%s)\n' "$(date -u +%FT%TZ)" "$event" >> "$logf"
+    telemetry_log "$logf" "$(date -u +%FT%TZ) attempt 1 ok ($event)"
     ok "${event} report sent"
   else
-    printf '%s attempt 1 failed (%s)\n' "$(date -u +%FT%TZ)" "$event" >> "$logf"
+    telemetry_log "$logf" "$(date -u +%FT%TZ) attempt 1 failed ($event)"
     log "${event} report queued; retrying in the background"
     setsid nohup bash "$root/tools/installer/telemetry-retry.sh" "$pend" "$ep" "$logf" "$py" "$root" \
       >/dev/null 2>&1 < /dev/null &

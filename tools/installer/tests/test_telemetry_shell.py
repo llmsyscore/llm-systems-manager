@@ -101,3 +101,22 @@ def test_read_toml_key_bare_boolean(tmp_path):
     t.write_text('[manager.telemetry]\ninstall_report = true  # consent\nendpoint = "https://t.example.test/v1/event"\n')
     r = run(tmp_path, f'SUDO=""; read_toml_key install_report "{t}"; read_toml_key endpoint "{t}"')
     assert r.stdout.split() == ["true", "https://t.example.test/v1/event"]
+
+
+def test_report_replaces_planted_pending_symlink(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / "telemetry-pending.json").symlink_to(victim)
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event')
+    assert r.returncode == 0, r.stderr
+    assert victim.read_text() == "keep"
+    assert not (tmp_path / "telemetry-pending.json").is_symlink()
+
+
+def test_report_leaves_planted_log_symlink_alone(tmp_path):
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / "telemetry.log").symlink_to(victim)
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event')
+    assert r.returncode == 0, r.stderr
+    assert victim.read_text() == "keep"

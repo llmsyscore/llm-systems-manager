@@ -214,3 +214,23 @@ def test_report_exception_dedupe_gate_runs_first(cfg, monkeypatch):
     monkeypatch.setattr(telemetry, "allow_crash", lambda *a, **k: False)
     telemetry.report_exception(ValueError("x"), None, component="manager")
     assert hits == []
+
+
+def test_install_identity_replaces_symlink_without_writing_through(tmp_path):
+    target = tmp_path / "victim"
+    target.write_text("")
+    (tmp_path / telemetry.IDFILE).symlink_to(target)
+    iid, _ = telemetry.install_identity(tmp_path)
+    f = tmp_path / telemetry.IDFILE
+    assert not f.is_symlink() and f.read_text().strip() == iid
+    assert target.read_text() == ""
+
+
+def test_write_json_does_not_follow_planted_temp_symlink(tmp_path, monkeypatch):
+    target = tmp_path / "victim"
+    target.write_text("keep")
+    dest = tmp_path / "out.json"
+    import os, threading
+    (tmp_path / f"out.{os.getpid()}.{threading.get_ident()}.tmp").symlink_to(target)
+    telemetry._write_json(dest, {"a": 1})
+    assert target.read_text() == "keep" and not dest.is_symlink()

@@ -86,13 +86,24 @@ def reload() -> None:
 
 # ── identity and host facts ──────────────────────────────────────────────────
 
+def _write_private(tmp: Path, text: str) -> None:
+    # Exclusive no-follow create of a 0600 temp file, then write.
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+
+
 def install_identity(data_dir: Path) -> tuple[str, str]:
     data_dir = Path(data_dir)
     f = data_dir / IDFILE
     if not f.is_file() or not f.read_text().strip():
         data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_suffix(".tmp")
-        tmp.write_text(str(uuid.uuid4()) + "\n")
+        tmp = f.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        _write_private(tmp, str(uuid.uuid4()) + "\n")
         os.chmod(tmp, 0o644)
         os.replace(tmp, f)
     return f.read_text().strip(), _iso(f.stat().st_mtime)
@@ -283,8 +294,7 @@ def build_crash_payload(exc, tb, *, component: str, data_dir: Path, version: str
 def _write_json(path: Path, obj) -> None:
     tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     with _lock:
-        tmp.write_text(json.dumps(obj, indent=1, sort_keys=True) + "\n")
-        os.chmod(tmp, 0o600)
+        _write_private(tmp, json.dumps(obj, indent=1, sort_keys=True) + "\n")
         os.replace(tmp, path)
 
 
