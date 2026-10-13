@@ -76,3 +76,15 @@ def test_send_non_https_opens_nothing(monkeypatch):
         raise AssertionError("opened")
     monkeypatch.setattr(TR.urllib.request.OpenerDirector, "open", boom)
     assert TR.send({"a": 1}, "http://t.example.test/v1/event") is False
+
+
+def test_frames_skip_venv_and_site_packages(tmp_path):
+    lib, app = {}, {}
+    exec(compile("def boom():\n    raise ValueError('x')\n",
+                 str(tmp_path / "venv/lib/python3.12/site-packages/pkg/mod.py"), "exec"), lib)
+    exec(compile("def outer(f):\n    f()\n", str(tmp_path / "agent/app.py"), "exec"), app)
+    try:
+        app["outer"](lib["boom"])
+    except ValueError as e:
+        txt = TR.frames_text(e.__traceback__, str(tmp_path))
+    assert txt == "agent/app.py:2:outer"

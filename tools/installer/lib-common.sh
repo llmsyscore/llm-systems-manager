@@ -1320,7 +1320,7 @@ telemetry_consent() {
     log "Install report skipped: CI is set"
   elif [[ -n "$t" || -n "$h" ]]; then
     reason="env"
-    [[ "$t" == "1" ]] || t=0
+    [[ "${t:-1}" == "1" ]] && t=1 || t=0
     [[ "$h" == "1" ]] || h=0
   elif [[ -t 0 ]]; then
     reason="prompt"

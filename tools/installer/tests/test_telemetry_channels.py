@@ -14,8 +14,8 @@ def test_debconf_templates_and_config():
     c = (REPO / "tools/packaging/debconf/config").read_text()
     assert "Template: llm-systems-manager/telemetry\nType: boolean\nDefault: true" in t
     assert "Template: llm-systems-manager/heartbeat\nType: boolean\nDefault: false" in t
-    assert "db_input medium llm-systems-manager/telemetry" in c
-    assert "db_input low llm-systems-manager/heartbeat" in c
+    assert "db_input high llm-systems-manager/telemetry" in c
+    assert "db_input medium llm-systems-manager/heartbeat" in c
     assert c.index("llm-systems-manager/heartbeat") < c.index("db_go")
 
 
@@ -82,6 +82,21 @@ def test_render_config_defaults(tmp_path):
     assert r.returncode == 0, r.stderr
     doc = tomllib.loads(cfg.read_text())
     assert doc["manager"]["telemetry"] == {"install_report": True, "crash_reports": True, "heartbeat": False}
+
+
+def test_render_config_keeps_settings_opt_out_across_restarts(tmp_path):
+    cfg = tmp_path / "c.toml"
+    env = dict(os.environ, LSM_TELEMETRY="1", LSM_HEARTBEAT="0", LSM_INFLUX_TOKEN="t",
+               LSM_AE_INGEST_TOKEN="a" * 64, LSM_AE_MANAGEMENT_TOKEN="b" * 64,
+               LLM_SYSTEMS_CONFIG=str(cfg), LLM_SYSTEMS_AE_DATA=str(tmp_path / "ae"))
+    cmd = ["bash", "-c", f'. "{REPO}/docker/render-config.sh"; render_config']
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    cfg.write_text(cfg.read_text().replace("crash_reports = true", "crash_reports = false"))
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    doc = tomllib.loads(cfg.read_text())
+    assert doc["manager"]["telemetry"] == {"install_report": True, "crash_reports": False, "heartbeat": False}
 
 
 def test_compose_and_env_example_carry_keys():

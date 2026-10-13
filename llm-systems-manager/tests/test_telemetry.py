@@ -39,7 +39,7 @@ def test_install_identity_is_stable_and_timestamped(tmp_path):
 def test_payload_has_schema_fields_and_no_host_names(cfg):
     import socket
     p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script",
-                                mode="3", provider="llama", outcome="ok")
+                                mode="3", outcome="ok")
     assert p["schema"] == 1 and p["event"] == "install"
     for k in ("install_id", "installed_at", "sent_at", "version", "channel", "mode",
               "os", "arch", "ram_gb", "gpu_vendor", "gpu_count", "provider", "outcome"):
@@ -249,3 +249,71 @@ def test_append_log_refuses_symlink(tmp_path):
     (tmp_path / telemetry.LOG).symlink_to(victim)
     telemetry._append_log(tmp_path, "x")
     assert victim.read_text() == "keep"
+
+
+def test_frames_skip_venv_and_site_packages(tmp_path):
+    lib, app = {}, {}
+    exec(compile("def boom():\n    raise ValueError('x')\n",
+                 str(tmp_path / "venv/lib/python3.12/site-packages/pkg/mod.py"), "exec"), lib)
+    exec(compile("def outer(f):\n    f()\n", str(tmp_path / "backend/app.py"), "exec"), app)
+    try:
+        app["outer"](lib["boom"])
+    except ValueError as e:
+        txt = telemetry.frames_text(e.__traceback__, tmp_path)
+    assert txt == "backend/app.py:2:outer"
+
+
+@pytest.fixture
+def sched(cfg, monkeypatch):
+    sent = []
+    monkeypatch.setattr(telemetry, "FIRST_DELAY_S", 0)
+    monkeypatch.setattr(telemetry, "TICK_S", 0)
+    monkeypatch.setattr(telemetry, "_hb_attempt", 0.0)
+    monkeypatch.setattr(telemetry, "_channel_cache", {})
+    monkeypatch.setattr(telemetry, "_detect_channel", lambda root: "script")
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: sent.append(p["event"]) or True)
+    monkeypatch.setattr(telemetry, "flush_pending", lambda d, e: sent.append("flush") or True)
+
+    def run():
+        sent.clear()
+        telemetry.start_scheduler(lambda: True).join(5)
+        return list(sent)
+    return run
+
+
+def _stamp(cfg, age_s):
+    (cfg / telemetry.HEARTBEAT_STAMP).write_text(telemetry._iso(time.time() - age_s) + "\n")
+    (cfg / telemetry.LAST).write_text("{}")
+
+
+def test_scheduler_sends_stale_heartbeat_at_first_tick(cfg, sched):
+    telemetry._settings.manager.telemetry.heartbeat = True
+    _stamp(cfg, 25 * 3600)
+    assert sched() == ["heartbeat"]
+
+
+def test_scheduler_skips_recent_heartbeat(cfg, sched):
+    telemetry._settings.manager.telemetry.heartbeat = True
+    _stamp(cfg, 3600)
+    assert sched() == []
+
+
+def test_deliver_writes_heartbeat_stamp(cfg, monkeypatch):
+    monkeypatch.setattr(telemetry, "send", lambda payload, endpoint, timeout=5.0: True)
+    assert telemetry._heartbeat_age() == float("inf")
+    telemetry._deliver({"event": "heartbeat", "sent_at": telemetry._iso()})
+    assert telemetry._heartbeat_age() < 60
+
+
+def test_scheduler_first_start_paths(cfg, sched):
+    (cfg / telemetry.PENDING).write_text("{}")
+    assert sched() == ["flush"]
+    (cfg / telemetry.PENDING).unlink()
+    assert sched() == ["install"]
+    telemetry._settings.manager.telemetry.install_report = False
+    assert sched() == []
+
+
+def test_scheduler_prewarms_channel(cfg, sched):
+    sched()
+    assert str(Path(telemetry._root).resolve()) in telemetry._channel_cache

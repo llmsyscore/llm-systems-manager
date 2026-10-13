@@ -42,6 +42,13 @@ def test_env_zero_beats_prompt(tmp_path):
     assert "T=0 H=0 R=env" in r.stdout
 
 
+def test_env_heartbeat_alone_keeps_report_on(tmp_path):
+    r = run(tmp_path, "telemetry_consent; echo T=$LLMSYS_TELEMETRY H=$LLMSYS_HEARTBEAT R=$LLMSYS_TELEMETRY_REASON",
+            {"LLMSYS_HEARTBEAT": "1"})
+    assert r.returncode == 0, r.stderr
+    assert "T=1 H=1 R=env" in r.stdout
+
+
 def test_ci_guard(tmp_path):
     r = run(tmp_path, "telemetry_consent; echo T=$LLMSYS_TELEMETRY R=$LLMSYS_TELEMETRY_REASON", {"CI": "true"})
     assert "T=0 R=ci" in r.stdout

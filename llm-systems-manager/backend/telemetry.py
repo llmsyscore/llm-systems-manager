@@ -31,6 +31,10 @@ CRASH_DAILY_CAP = 5
 FRAME_LIMIT = 20
 FRAMES_MAX_CHARS = 2048
 HEARTBEAT_EVERY_S = 24 * 3600
+HEARTBEAT_STAMP = "telemetry-heartbeat"
+FIRST_DELAY_S = 300
+TICK_S = 60
+HEARTBEAT_RETRY_S = 3600
 
 _settings: Any = None
 _data_dir: Optional[Path] = None
@@ -244,14 +248,13 @@ def _mix_text(mix: Optional[dict]) -> Optional[str]:
 
 
 def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mode: str = "",
-                  provider: str = "", outcome: str = "", extra: Optional[dict] = None) -> dict:
+                  outcome: str = "", extra: Optional[dict] = None) -> dict:
     if event not in EVENTS:
         raise ValueError(event)
     p = _blank(event, data_dir, version, channel)
     p["mode"] = (mode or None)
     if event in ("install", "update"):
         p.update(host_facts())
-        p["provider"] = provider or None
         p["outcome"] = (outcome or "ok")[:128]
     elif event == "heartbeat":
         p["agent_count"] = int(_agent_count_fn()) if _agent_count_fn else None
@@ -262,6 +265,11 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
     return p
 
 
+def _outside_product(rel: str) -> bool:
+    parts = rel.split(os.sep)
+    return any(p == "site-packages" or p == "venv" for p in parts[:-1])
+
+
 def frames_text(tb, root: Path, limit: int = FRAME_LIMIT) -> str:
     root = str(Path(root).resolve())
     out = []
@@ -269,7 +277,10 @@ def frames_text(tb, root: Path, limit: int = FRAME_LIMIT) -> str:
         fn = str(Path(fr.filename).resolve()) if fr.filename else ""
         if not fn.startswith(root + os.sep):
             continue
-        out.append(f"{fn[len(root) + 1:]}:{fr.lineno}:{fr.name}")
+        rel = fn[len(root) + 1:]
+        if _outside_product(rel):
+            continue
+        out.append(f"{rel}:{fr.lineno}:{fr.name}")
     out = out[-limit:]
     while out and len(";".join(out)) > FRAMES_MAX_CHARS:
         out.pop(0)
@@ -405,12 +416,21 @@ def send(payload: dict, endpoint_url: str, timeout: float = TIMEOUT_S) -> bool:
         return False
 
 
+def _write_stamp(path: Path, text: str) -> None:
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+    with _lock:
+        _write_private(tmp, text + "\n")
+        os.replace(tmp, path)
+
+
 def _deliver(payload: dict) -> bool:
     assert _data_dir is not None
     ok = send(payload, endpoint())
     if ok:
         record_sent(_data_dir, payload)
         _append_log(_data_dir, f"sent {payload['event']}")
+        if payload["event"] == "heartbeat":
+            _write_stamp(_data_dir / HEARTBEAT_STAMP, payload.get("sent_at") or _iso())
     elif payload["event"] in ("install", "update"):
         write_pending(_data_dir, payload)
         _append_log(_data_dir, f"queued {payload['event']} (send failed)")
@@ -459,11 +479,41 @@ def install_excepthooks(component: str) -> None:
 
 # ── scheduler ────────────────────────────────────────────────────────────────
 
+def _heartbeat_age(now: Optional[float] = None) -> float:
+    """Seconds since the last sent heartbeat; infinity when none was ever sent."""
+    now = time.time() if now is None else now
+    try:
+        txt = (_data_dir / HEARTBEAT_STAMP).read_text().strip()
+        ts = datetime.strptime(txt, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+        return now - ts
+    except Exception:
+        return float("inf")
+
+
+_hb_attempt = 0.0
+
+
+def _heartbeat_tick() -> None:
+    global _hb_attempt
+    now = time.time()
+    if not enabled("heartbeat") or _heartbeat_age(now) < HEARTBEAT_EVERY_S:
+        return
+    if now - _hb_attempt < HEARTBEAT_RETRY_S:
+        return
+    _hb_attempt = now
+    _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
+                           channel=detect_channel(_root)))
+
+
 def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Thread:
     """First start: flush a pending file or send the install report when no report ever left.
-    Then one heartbeat a day when enabled."""
+    Then a heartbeat whenever enabled and the last one is a day old."""
     def _loop():
-        time.sleep(300)
+        try:
+            detect_channel(_root)
+        except Exception:
+            pass
+        time.sleep(FIRST_DELAY_S)
         try:
             if (_data_dir / PENDING).is_file():
                 flush_pending(_data_dir, endpoint())
@@ -473,17 +523,17 @@ def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Th
         except Exception as e:
             if _log:
                 _log.debug("telemetry first-start: %s", type(e).__name__)
-        jitter = (uuid.uuid4().int % 3600)
-        while not stop_fn():
-            time.sleep(HEARTBEAT_EVERY_S + jitter - 300)
-            jitter = 0
+        while True:
             try:
-                if enabled("heartbeat"):
-                    _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
-                                           channel=detect_channel(_root)))
+                _heartbeat_tick()
             except Exception as e:
                 if _log:
                     _log.debug("telemetry heartbeat: %s", type(e).__name__)
+            if stop_fn():
+                break
+            time.sleep(TICK_S)
+            if stop_fn():
+                break
     t = threading.Thread(target=_loop, name="telemetry", daemon=True)
     t.start()
     return t
@@ -499,7 +549,7 @@ def status() -> dict:
     except Exception:
         last = None
     return {"install_report": enabled("install_report"), "crash_reports": enabled("crash_reports"),
-            "heartbeat": enabled("heartbeat"), "endpoint": endpoint(),
+            "heartbeat": enabled("heartbeat"),
             "pending": bool(_data_dir and (_data_dir / PENDING).is_file()), "last": last}
 
 
@@ -512,7 +562,6 @@ def _main(argv) -> int:
     p.add_argument("--event", required=True, choices=EVENTS)
     p.add_argument("--channel", required=True)
     p.add_argument("--mode", default="")
-    p.add_argument("--provider", default="")
     p.add_argument("--outcome", default="")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--version", required=True)
@@ -527,7 +576,7 @@ def _main(argv) -> int:
         return 0
     if a.cmd == "payload":
         out = build_payload(a.event, data_dir=Path(a.data_dir), version=a.version, channel=a.channel,
-                            mode=a.mode, provider=a.provider, outcome=a.outcome)
+                            mode=a.mode, outcome=a.outcome)
         print(json.dumps(out))
         return 0
     payload = json.loads(Path(a.file).read_text())

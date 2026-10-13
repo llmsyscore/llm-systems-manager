@@ -171,7 +171,7 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily usage report to no. The README section "What the install, crash and usage reports contain" lists every field.
 
-- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`.
+- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
 - Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
 - Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
 - Nothing is sent when a `CI` variable is set.

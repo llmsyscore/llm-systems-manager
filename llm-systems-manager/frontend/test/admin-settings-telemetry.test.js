@@ -21,7 +21,6 @@ const payload = () => ({
   topology: { split: false, ae_config_reachable: true },
 });
 const STATUS = { ok: true, install_report: true, crash_reports: true, heartbeat: false, pending: false,
-                 endpoint: 'https://example.invalid/r',
                  last: { event: 'install', sent_at: new Date(Date.now() - 7200e3).toISOString(),
                          payload: { event: 'install', os: 'debian' } } };
 

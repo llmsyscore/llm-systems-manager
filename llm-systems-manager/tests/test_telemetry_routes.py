@@ -18,8 +18,9 @@ def client(monkeypatch, tmp_path):
 def test_get_status_shape(client):
     body = client.get("/api/admin/telemetry").get_json()
     assert body["ok"] is True
-    for k in ("install_report", "crash_reports", "heartbeat", "endpoint", "last", "pending"):
+    for k in ("install_report", "crash_reports", "heartbeat", "last", "pending"):
         assert k in body
+    assert "endpoint" not in body
 
 
 def test_put_writes_keys_through_toml_io(client, monkeypatch):

@@ -42,6 +42,13 @@ resolve_ae_tokens() {
   fi
 }
 
+# Prints a [manager.telemetry] boolean from $CFG, or the fallback when missing.
+_telemetry_key() {
+  local v
+  v="$(sed -nE '/^\[manager\.telemetry\]/,/^\[/{s/^'"$1"'[[:space:]]*=[[:space:]]*(true|false).*/\1/p}' "$CFG" | head -n1)"
+  echo "${v:-$2}"
+}
+
 render_config() {
   # A bind-mounted TOML always wins, even if it still carries the marker line.
   if grep -qsF " $CFG " /proc/self/mounts; then
@@ -79,6 +86,13 @@ render_config() {
   local tele="${LSM_TELEMETRY:-1}" hb="${LSM_HEARTBEAT:-0}" tele_b=true hb_b=false
   [ "$tele" = "1" ] || tele_b=false
   [ "$hb" = "1" ] && hb_b=true
+  local ir_b="$tele_b" cr_b="$tele_b"
+  # An existing [manager.telemetry] block keeps its values; env seeds only a fresh config.
+  if [ -s "$CFG" ] && grep -q '^\[manager\.telemetry\]' "$CFG"; then
+    ir_b="$(_telemetry_key install_report "$ir_b")"
+    cr_b="$(_telemetry_key crash_reports "$cr_b")"
+    hb_b="$(_telemetry_key heartbeat "$hb_b")"
+  fi
 
   for v in "$influx_token" "$ingest_token" "$management_token" "$admin_user" \
            "$admin_cidrs_csv" "$public_hosts_csv" "$smtp_server" "$smtp_user" \
@@ -126,8 +140,8 @@ openclaw  = "auto"
 image_gen = "auto"
 
 [manager.telemetry]
-install_report = $tele_b
-crash_reports = $tele_b
+install_report = $ir_b
+crash_reports = $cr_b
 heartbeat = $hb_b
 
 [alarm_engine]

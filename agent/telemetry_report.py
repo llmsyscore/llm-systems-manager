@@ -27,9 +27,15 @@ def _iso(ts=None):
 
 
 def _write_json(path, obj):
-    tmp = path + ".tmp"
+    d, name = os.path.split(path)
+    tmp = os.path.join(d, f".{name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     with _lock:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            fd = os.open(tmp, flags, 0o600)
+        except FileExistsError:
+            os.unlink(tmp)
+            fd = os.open(tmp, flags, 0o600)
         with os.fdopen(fd, "w") as fh:
             json.dump(obj, fh, indent=1, sort_keys=True)
         os.replace(tmp, path)
@@ -57,8 +63,12 @@ def frames_text(tb, root, limit=FRAME_LIMIT):
     out = []
     for fr in traceback.extract_tb(tb):
         fn = os.path.realpath(fr.filename) if fr.filename else ""
-        if fn.startswith(root + os.sep):
-            out.append(f"{fn[len(root) + 1:]}:{fr.lineno}:{fr.name}")
+        if not fn.startswith(root + os.sep):
+            continue
+        rel = fn[len(root) + 1:]
+        if any(p in ("venv", "site-packages") for p in rel.split(os.sep)[:-1]):
+            continue
+        out.append(f"{rel}:{fr.lineno}:{fr.name}")
     return ";".join(out[-limit:])[:2048]
 
 
