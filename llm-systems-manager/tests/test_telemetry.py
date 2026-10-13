@@ -1,0 +1,137 @@
+"""telemetry.py: identity file, payload shape, crash sanitising, dedupe, CLI."""
+from __future__ import annotations
+import json
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import telemetry
+
+BACKEND = Path(__file__).resolve().parents[1] / "backend"
+
+
+@pytest.fixture
+def cfg(tmp_path, monkeypatch):
+    s = SimpleNamespace(manager=SimpleNamespace(telemetry=SimpleNamespace(
+        install_report=True, crash_reports=True, heartbeat=False,
+        endpoint="https://telemetry.example.test/v1/event")))
+    telemetry.configure(settings=s, data_dir=tmp_path, version="v2026.10.14-1",
+                        root=BACKEND.parent.parent)
+    monkeypatch.setattr(telemetry, "_snapshot_settings", lambda: s)
+    return tmp_path
+
+
+def test_install_identity_is_stable_and_timestamped(tmp_path):
+    iid, at = telemetry.install_identity(tmp_path)
+    uuid.UUID(iid)
+    assert at.endswith("Z")
+    assert telemetry.install_identity(tmp_path) == (iid, at)
+    assert (tmp_path / "install-id").read_text().strip() == iid
+
+
+def test_payload_has_schema_fields_and_no_host_names(cfg):
+    import socket
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script",
+                                mode="3", provider="llama", outcome="ok")
+    assert p["schema"] == 1 and p["event"] == "install"
+    for k in ("install_id", "installed_at", "sent_at", "version", "channel", "mode",
+              "os", "arch", "ram_gb", "gpu_vendor", "gpu_count", "provider", "outcome"):
+        assert k in p, k
+    assert p["agent_count"] is None and p["frames"] is None
+    text = json.dumps(p)
+    assert socket.gethostname() not in text
+    assert str(cfg) not in text
+
+
+def test_heartbeat_payload_omits_hardware(cfg):
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
+                        root=BACKEND.parent.parent,
+                        agent_count_fn=lambda: 3, provider_mix_fn=lambda: {"llama": 2, "lms": 1})
+    p = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
+    assert p["agent_count"] == 3 and p["provider_mix"] == "llama=2,lms=1"
+    assert p["cpu_model"] is None and p["ram_gb"] is None
+
+
+def test_frames_are_relative_and_message_free(cfg):
+    root = BACKEND.parent.parent
+    try:
+        raise ValueError("secret-host.example.lan /etc/passwd")
+    except ValueError as e:
+        p = telemetry.build_crash_payload(e, e.__traceback__, component="manager", data_dir=cfg,
+                                          version="v1", channel="script", root=root, uptime_s=12)
+    assert p["event"] == "crash" and p["exc_type"] == "ValueError"
+    assert "secret-host" not in json.dumps(p) and "/etc/passwd" not in json.dumps(p)
+    assert p["frames"].startswith("llm-systems-manager/tests/test_telemetry.py:")
+    assert str(root) not in p["frames"]
+    assert len(p["crash_hash"]) == 16
+
+
+def test_frames_cap(cfg):
+    def deep(n):
+        if n == 0:
+            raise RuntimeError("x")
+        deep(n - 1)
+    try:
+        deep(40)
+    except RuntimeError as e:
+        txt = telemetry.frames_text(e.__traceback__, BACKEND.parent.parent)
+    assert txt.count(";") <= 19 and len(txt) <= 2048
+
+
+def test_dedupe_window_and_daily_cap(cfg):
+    now = time.time()
+    assert telemetry.allow_crash(cfg, "aaaa", now)
+    assert not telemetry.allow_crash(cfg, "aaaa", now + 60)
+    assert telemetry.allow_crash(cfg, "aaaa", now + 86401)
+    for h in ("b1", "b2", "b3", "b4"):
+        assert telemetry.allow_crash(cfg, h, now + 86402)
+    assert not telemetry.allow_crash(cfg, "b5", now + 86403)
+
+
+def test_send_never_raises_and_records(cfg, monkeypatch):
+    sent = []
+    class R:  # minimal response stand-in
+        status_code = 204
+    monkeypatch.setattr(telemetry, "_post", lambda url, body, timeout: sent.append((url, body)) or R())
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script")
+    assert telemetry.send(p, "https://telemetry.example.test/v1/event") is True
+    telemetry.record_sent(cfg, p)
+    assert json.loads((cfg / "telemetry-last.json").read_text())["event"] == "install"
+    def boom(*a, **k):
+        raise OSError("down")
+    monkeypatch.setattr(telemetry, "_post", boom)
+    assert telemetry.send(p, "https://telemetry.example.test/v1/event") is False
+
+
+def test_pending_roundtrip(cfg, monkeypatch):
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="brew")
+    telemetry.write_pending(cfg, p)
+    assert (cfg / "telemetry-pending.json").exists()
+    monkeypatch.setattr(telemetry, "send", lambda payload, endpoint, timeout=5.0: True)
+    assert telemetry.flush_pending(cfg, "https://x/v1/event") is True
+    assert not (cfg / "telemetry-pending.json").exists()
+    assert (cfg / "telemetry-last.json").exists()
+
+
+def test_hook_never_raises(cfg, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("inner")
+    monkeypatch.setattr(telemetry, "build_crash_payload", boom)
+    telemetry.report_exception(ValueError("x"), None, component="manager")  # must not raise
+
+
+def test_cli_payload_and_facts(tmp_path):
+    out = subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "payload",
+                          "--event", "install", "--channel", "script", "--mode", "1",
+                          "--data-dir", str(tmp_path), "--version", "v9", "--root", str(BACKEND.parent.parent)],
+                         capture_output=True, text=True, check=True).stdout
+    p = json.loads(out)
+    assert p["event"] == "install" and p["version"] == "v9" and p["channel"] == "script"
+    facts = json.loads(subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "facts"],
+                                      capture_output=True, text=True, check=True).stdout)
+    assert "os" in facts and "arch" in facts
