@@ -20,7 +20,7 @@ def cfg(tmp_path, monkeypatch):
     s = SimpleNamespace(manager=SimpleNamespace(telemetry=SimpleNamespace(
         install_report=True, crash_reports=True, heartbeat=False,
         endpoint="https://telemetry.example.test/v1/event")))
-    telemetry.configure(settings=s, data_dir=tmp_path, version="v2026.10.14-1",
+    telemetry.configure(settings=s, data_dir=tmp_path, version="v2026.10.13-1",
                         root=BACKEND.parent.parent)
     monkeypatch.setattr(telemetry, "_snapshot_settings", lambda: s)
     yield tmp_path
