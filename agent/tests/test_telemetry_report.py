@@ -35,6 +35,7 @@ def test_payload_is_sanitised(tmp_path):
     s = json.dumps(p)
     assert "host.lan" not in s and "/opt/secret" not in s and str(_AGENT.parent) not in s
     assert p["frames"].startswith("agent/tests/test_telemetry_report.py:")
+    assert None not in p.values()
 
 
 def test_dedupe(tmp_path):

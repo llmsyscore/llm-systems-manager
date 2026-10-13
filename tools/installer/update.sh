@@ -1103,7 +1103,7 @@ if $HAVE_MANAGER || $HAVE_AE; then
           telemetry_write_answers "$_live_toml" "${LLMSYS_TELEMETRY:-0}" "${LLMSYS_HEARTBEAT:-0}" \
             || warn "could not write the report answers into $_live_toml"
         elif (( _tele_new )); then
-          log "Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+          log "Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Telemetry & analytics or set install_report = false in llm-systems.toml"
         fi
         rm -f "$_TOML_MERGE_TMP"
         $HAVE_MANAGER && RESTART_UNITS+=("llm-systems-manager.service")

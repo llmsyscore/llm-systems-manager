@@ -42,21 +42,21 @@ def test_payload_has_schema_fields_and_no_host_names(cfg):
                                 mode="3", outcome="ok")
     assert p["schema"] == 1 and p["event"] == "install"
     for k in ("install_id", "installed_at", "sent_at", "version", "channel", "mode",
-              "os", "arch", "ram_gb", "gpu_vendor", "gpu_count", "provider", "outcome"):
+              "os", "arch", "ram_gb", "gpu_vendor", "gpu_count", "outcome"):
         assert k in p, k
-    assert p["agent_count"] is None and p["frames"] is None
+    assert "agent_count" not in p and "frames" not in p
     text = json.dumps(p)
     assert socket.gethostname() not in text
     assert str(cfg) not in text
 
 
-def test_heartbeat_payload_omits_hardware(cfg):
+def test_heartbeat_payload_includes_host_facts(cfg):
     telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
                         root=BACKEND.parent.parent,
                         agent_count_fn=lambda: 3, provider_mix_fn=lambda: {"llama": 2, "lms": 1})
     p = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
     assert p["agent_count"] == 3 and p["provider_mix"] == "llama=2,lms=1"
-    assert p["cpu_model"] is None and p["ram_gb"] is None
+    assert p["os"] and p["arch"] and isinstance(p["cpu_model"], str)
 
 
 def test_frames_are_relative_and_message_free(cfg):

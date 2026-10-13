@@ -3919,7 +3919,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "backup.export": "Exported an encrypted archive", "backup.import-apply": "Imported an archive",
     "backup.run": "Ran a backup now", "backup.download": "Downloaded a retained archive",
     "config.gateway": "Turned the inference gateway on/off",
-    "config.telemetry": "Changed usage report settings",
+    "config.telemetry": "Changed report settings",
     "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
@@ -10012,7 +10012,7 @@ if __name__ == "__main__":
         target=stream_health.loop, name="stream-health", daemon=True,
     ).start()
 
-    # Install / usage reports: pending flush on start, then one heartbeat a day when on.
+    # Install / diagnostic reports: pending flush on start, then one heartbeat a day when on.
     telemetry.start_scheduler(lambda: _shutting_down)
 
     # OpenClaw budget metrics → AE ingest (#216); no-op unless [openclaw]

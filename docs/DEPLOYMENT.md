@@ -169,14 +169,14 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 ### Anonymous reports
 
-The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily usage report to no. The README section "What the install, crash and usage reports contain" lists every field.
+The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily diagnostic report to no. The README section "What the install, crash and diagnostic reports contain" lists every field.
 
 - Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
 - Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
 - Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
 - Nothing is sent when a `CI` variable is set.
 - Updating from a release without these settings: the updater asks once from a terminal; unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch.
-- Later changes: **Settings › Usage reports** on the dashboard, or the phone companion's Settings screen.
+- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen.
 
 ### Mixing install methods
 
@@ -328,7 +328,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.companion].release_check` | Opt-in GitHub check for a newer release, shown in the companion | `false` |
 | `[manager.telemetry].install_report` | Send the anonymous install report | `true` |
 | `[manager.telemetry].crash_reports` | Send anonymous crash reports | `true` |
-| `[manager.telemetry].heartbeat` | Send the daily usage report | `false` |
+| `[manager.telemetry].heartbeat` | Send the daily diagnostic report | `false` |
 
 ### Applying Changes
 
@@ -689,7 +689,7 @@ push_notify_token = ""                    # blank = fall back to the alarm-engin
 [manager.telemetry]
 install_report = true    # anonymous install report
 crash_reports = true     # anonymous crash reports
-heartbeat = false        # daily usage report
+heartbeat = false        # daily diagnostic report
 ```
 
 Setup:

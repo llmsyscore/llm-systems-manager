@@ -38,5 +38,5 @@ Description: Send an anonymous install and crash report?
 Template: llm-systems-manager/heartbeat
 Type: boolean
 Default: false
-Description: Send a daily anonymous usage report?
+Description: Send a daily anonymous diagnostic report?
  Version, agent count, provider mix and uptime, once a day.

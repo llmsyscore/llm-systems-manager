@@ -111,7 +111,7 @@ per-rule channels) is configured via a bind-mounted TOML.
 ## Anonymous reports
 
 `LSM_TELEMETRY=0` turns off the anonymous install and crash reports;
-`LSM_HEARTBEAT=1` turns on the daily usage report. See the README section
+`LSM_HEARTBEAT=1` turns on the daily diagnostic report. See the README section
 *What the reports contain*. The `.env` values seed a new config; later changes from
 Settings are kept across restarts.
 

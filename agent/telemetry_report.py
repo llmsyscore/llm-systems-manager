@@ -111,11 +111,12 @@ def build_crash_payload(exc, tb, *, version, root, state_dir, uptime_s):
     c = load_consent(state_dir)
     exc_type = type(exc).__name__[:128]
     frames = frames_text(tb, root)
-    return {"schema": 1, "event": "crash", "install_id": c.get("install_id"),
+    p = {"schema": 1, "event": "crash", "install_id": c.get("install_id"),
             "installed_at": c.get("installed_at"), "sent_at": _iso(), "version": version[:128],
             "channel": "agent", "component": "agent", "exc_type": exc_type,
             "frames": frames or None, "crash_hash": crash_hash(exc_type, frames),
             "uptime_s": int(uptime_s)}
+    return {k: v for k, v in p.items() if v is not None}
 
 
 def send(payload, endpoint, timeout=5.0):

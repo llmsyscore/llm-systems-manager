@@ -1334,7 +1334,7 @@ telemetry_consent() {
     local a
     read -rp "  Send anonymous install and crash reports? [Y/n] " a
     case "$(printf '%s' "${a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) t=0 ;; *) t=1 ;; esac
-    read -rp "  Also send a daily usage report (version, agent count, uptime)? [y/N] " a
+    read -rp "  Also send a daily diagnostic report (version, OS, hardware, agent count, uptime)? [y/N] " a
     case "$(printf '%s' "${a:-n}" | tr '[:upper:]' '[:lower:]')" in y|yes) h=1 ;; *) h=0 ;; esac
   else
     t=1; h=0

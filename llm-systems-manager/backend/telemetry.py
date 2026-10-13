@@ -1,4 +1,4 @@
-"""Anonymous install, crash and usage reports: payload, files, send, hooks.
+"""Anonymous install, crash and diagnostic reports: payload, files, send, hooks.
 Also a CLI (payload / send / facts) so the shell installers reuse the builder."""
 from __future__ import annotations
 
@@ -241,6 +241,10 @@ def _blank(event: str, data_dir: Path, version: str, channel: str) -> dict:
     return p
 
 
+def _present(p: dict) -> dict:
+    return {k: p[k] for k in _KEYS if p.get(k) is not None}
+
+
 def _mix_text(mix: Optional[dict]) -> Optional[str]:
     if not mix:
         return None
@@ -257,12 +261,13 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
         p.update(host_facts())
         p["outcome"] = (outcome or "ok")[:128]
     elif event == "heartbeat":
+        p.update(host_facts())
         p["agent_count"] = int(_agent_count_fn()) if _agent_count_fn else None
         p["provider_mix"] = _mix_text(_provider_mix_fn()) if _provider_mix_fn else None
         p["uptime_days"] = int((time.time() - _started_at) // 86400)
     if extra:
         p.update({k: v for k, v in extra.items() if k in _KEYS})
-    return p
+    return _present(p)
 
 
 def _outside_product(rel: str) -> bool:
@@ -299,7 +304,7 @@ def build_crash_payload(exc, tb, *, component: str, data_dir: Path, version: str
     frames = frames if frames is not None else frames_text(tb, root)
     p.update(component=component, exc_type=exc_type, frames=frames or None,
              crash_hash=crash_hash(exc_type, frames), uptime_s=int(uptime_s))
-    return p
+    return _present(p)
 
 
 # ── files ────────────────────────────────────────────────────────────────────

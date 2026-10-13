@@ -89,7 +89,7 @@ merge_new_keys() {
     elif install_rewrite "$tmp"; then
       echo "brew-seed-config: merged $added new key(s) from the example into $TARGET"
       if [ "$tele_new" = "1" ] && grep -q '^\[manager.telemetry\]' "$TARGET"; then
-        echo "brew-seed-config: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+        echo "brew-seed-config: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Telemetry & analytics or set install_report = false in llm-systems.toml"
       fi
     else
       echo "brew-seed-config: could not write the merged config — $TARGET kept as is; compare it with $EXAMPLE" >&2

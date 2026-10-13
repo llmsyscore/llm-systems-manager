@@ -167,7 +167,7 @@ llmsys_telemetry_answers() {
       || echo "llm-systems-manager: could not write the report answers into $LLMSYS_CFG" >&2
     [ "$t" = "1" ] || return 0
   fi
-  echo "llm-systems-manager: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Usage reports or set install_report = false in llm-systems.toml"
+  echo "llm-systems-manager: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Telemetry & analytics or set install_report = false in llm-systems.toml"
 }
 
 # Refreshes the live unified_config.py schema from the packaged example

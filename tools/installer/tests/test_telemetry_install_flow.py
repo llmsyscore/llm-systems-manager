@@ -81,7 +81,7 @@ def test_final_block_creates_missing_data_dir_before_report():
 
 
 NOTICE = ("Anonymous install and crash reports are on after this upgrade; turn them off in "
-          "Settings › Usage reports or set install_report = false in llm-systems.toml")
+          "Settings › Telemetry & analytics or set install_report = false in llm-systems.toml")
 
 
 def test_update_asks_only_when_the_section_is_new_and_a_human_is_present():

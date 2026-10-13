@@ -871,9 +871,9 @@
         : '<div class="arow"><div class="atxt"><div class="an">Check for new releases</div>'
           + '<div class="ad">unavailable</div></div></div>';
       this.tele = tele;
-      const T = [['install_report', 'Install report', 'one report of what was installed and on what hardware'],
+      const T = [['install_report', 'Install and update reports', 'one report on install or update: version, channel, OS, hardware'],
                  ['crash_reports', 'Crash reports', 'error type and code location only'],
-                 ['heartbeat', 'Daily usage report', 'version, agent count, provider mix, uptime']];
+                 ['heartbeat', 'Daily diagnostic report', 'version, OS, hardware, agent count, provider mix, uptime']];
       $('settingsReports').innerHTML = tele
         ? T.map(([key, name, what]) => '<div class="arow"><div class="atxt">'
             + `<div class="an">${esc(name)}</div><div class="ad">${esc(what)}${this.teleDetail(tele, key)}</div></div>`

@@ -1,4 +1,4 @@
-// Usage reports group: status row after the heartbeat toggle, View opens the payload, nothing on System Health.
+// Telemetry & analytics group: status row after the heartbeat toggle, View opens the payload, nothing on System Health.
 import { describe, test, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { srcFile, flush } from './helpers/harness.js';
@@ -12,9 +12,9 @@ const PANEL = indexSrc.slice(_stAt, indexSrc.indexOf('\n\n    </div>', _stAt));
 
 const E = (path, label) => ({ path, label, help: 'h', group: 'telemetry', service: 'manager', type: 'bool', hot: true });
 const payload = () => ({
-  ok: true, groups: [{ key: 'telemetry', title: 'Usage reports' }],
-  entries: [E('manager.telemetry.install_report', 'Install report'), E('manager.telemetry.crash_reports', 'Crash reports'),
-            E('manager.telemetry.heartbeat', 'Daily usage report')],
+  ok: true, groups: [{ key: 'telemetry', title: 'Telemetry & analytics' }],
+  entries: [E('manager.telemetry.install_report', 'Install and update reports'), E('manager.telemetry.crash_reports', 'Crash reports'),
+            E('manager.telemetry.heartbeat', 'Daily diagnostic report')],
   values: { 'manager.telemetry.install_report': true, 'manager.telemetry.crash_reports': true,
             'manager.telemetry.heartbeat': false },
   defaults: {}, secrets: {}, drift: {}, restart_pending: [], ae_sync_pending: [], ae_sync_retry_s: 30,
@@ -50,7 +50,7 @@ async function boot(status = STATUS) {
   return w;
 }
 
-describe('Usage reports group', () => {
+describe('Telemetry & analytics group', () => {
   test('status row follows the heartbeat toggle and names the last report', async () => {
     const w = await boot();
     const rows = [...w.document.querySelectorAll('.st-rows > .settings-row')];
@@ -88,6 +88,6 @@ describe('Usage reports group', () => {
     }
   });
   test('System Health has no telemetry row', () => {
-    expect(healthSrc).not.toMatch(/telemetry|Usage report/i);
+    expect(healthSrc).not.toMatch(/telemetry|Telemetry/i);
   });
 });

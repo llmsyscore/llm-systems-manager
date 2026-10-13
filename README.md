@@ -661,26 +661,26 @@ An opt-in release check (`[manager.companion].release_check`, also toggleable fr
 
 ---
 
-## What the install, crash and usage reports contain
+## What the install, crash and diagnostic reports contain
 
-The installer asks once whether to send an anonymous install report. Saying yes also allows crash reports. A daily usage report is a separate question and starts off. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
+The installer asks once whether to send an anonymous install report. Saying yes also allows crash reports. A daily diagnostic report is a separate question and starts off. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
 
 | Report | When | Fields |
 |---|---|---|
 | Install | once per install or update | product version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
 | Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
-| Daily usage | once a day when turned on | product version, number of agents, provider mix, uptime |
+| Daily diagnostic | once a day when turned on | product version, operating system, hardware, number of agents, provider mix, uptime |
 
 Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The receiving service keeps ordinary request logs, including the sending address, for a short time; the stored reports do not contain it.
 
 Turn reports off or on:
 
-- during an interactive install, answer the prompt (install and crash reports default to yes, the daily usage report to no);
+- during an interactive install, answer the prompt (install and crash reports default to yes, the daily diagnostic report to no);
 - for an unattended install, set `LLMSYS_TELEMETRY=0` (and `LLMSYS_HEARTBEAT=1` for the daily report) in the environment, or, for packages, answer the Debian package question or (on RHEL) set the same two variables, which otherwise print one line saying the report is on; or set `LSM_TELEMETRY` and `LSM_HEARTBEAT` in `.env` for Docker. Docker and Homebrew installs are reported by the manager on its first start. Nothing is sent when a `CI` variable is set (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.);
 - when you update from a release that had no report settings, the updater asks once if you run it from a terminal. Unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch;
-- any time later, in **Settings › Usage reports** on the dashboard or in the phone companion's Settings screen (Reports card).
+- any time later, in **Settings › Telemetry & analytics** on the dashboard or in the phone companion's Settings screen (Reports card).
 
-The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Usage reports › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
+The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
 
 ---
 
