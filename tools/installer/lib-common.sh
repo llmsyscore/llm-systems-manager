@@ -1348,14 +1348,23 @@ telemetry_log() {
   printf '%s\n' "$2" >> "$1" 2>/dev/null || true
 }
 
+# telemetry_chown USER GROUP DIR — hand the telemetry files in DIR to USER:GROUP; skips symlinks.
+telemetry_chown() {
+  local f
+  for f in install-id telemetry-pending.json telemetry-last.json telemetry.log; do
+    if [[ -e "$3/$f" && ! -L "$3/$f" ]]; then ${SUDO:-} chown -h "$1:$2" "$3/$f" 2>/dev/null || true; fi
+  done
+  return 0
+}
+
 # telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
 telemetry_report() {
+  [[ -z "${CI:-}" ]] || return 0
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
   local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
   local py tmp pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
   py="$(telemetry_python)" || return 0
-  [[ -L "$dir" ]] && return 0
-  mkdir -p "$dir" 2>/dev/null || return 0
+  [[ -L "$dir" || ! -d "$dir" ]] && return 0
   tmp="$(mktemp "$dir/.telemetry-pending.XXXXXX")" || return 0
   telemetry_payload "$event" "$channel" "$mode" "$outcome" "$dir" "$ver" "$root" > "$tmp" 2>/dev/null \
     || { rm -f "$tmp"; return 0; }

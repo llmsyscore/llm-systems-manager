@@ -3946,7 +3946,10 @@ at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.stat(idf).st_mtime))
 put("telemetry.json", json.dumps({"install_report": t, "crash_reports": t,
                                   "install_id": iid, "installed_at": at}, indent=1), 0o600)
 PY
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/state/telemetry.json" "$INSTALL_DIR/state/install-id" 2>/dev/null || true
+  for _tele_f in telemetry.json install-id; do
+    _tele_p="$INSTALL_DIR/state/$_tele_f"
+    if [[ -e "$_tele_p" && ! -L "$_tele_p" ]]; then $SUDO chown -h "$USER_ARG:$USER_GROUP" "$_tele_p" 2>/dev/null || true; fi
+  done
   export LLMSYS_TELEMETRY="$_tele_t"
 fi
 
@@ -4627,5 +4630,8 @@ if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
       && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
   LLMSYS_TELEMETRY=1 bash "$SRC_DIR/../tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
     --data-dir "$INSTALL_DIR/state" --root "$(cd "$SRC_DIR/.." && pwd)" || true
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/state/telemetry-"* "$INSTALL_DIR/state/telemetry.log" 2>/dev/null || true
+  for _tele_f in install-id telemetry-pending.json telemetry-last.json telemetry.log; do
+    _tele_p="$INSTALL_DIR/state/$_tele_f"
+    if [[ -e "$_tele_p" && ! -L "$_tele_p" ]]; then $SUDO chown -h "$USER_ARG:$USER_GROUP" "$_tele_p" 2>/dev/null || true; fi
+  done
 fi

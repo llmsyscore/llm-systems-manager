@@ -769,6 +769,7 @@ if ! declare -F telemetry_report >/dev/null; then
   telemetry_payload() { return 1; }
   telemetry_report() { return 0; }
   telemetry_endpoint() { :; }
+  telemetry_chown() { return 0; }
 fi
 _TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
 if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
@@ -786,11 +787,12 @@ _telemetry_on_exit() {
   (( rc != 0 )) || return 0
   (( _TELEMETRY_DONE )) && return 0
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
-  local stage; stage="$(printf '%s' "${LLMSYS_STAGE:-unknown}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
-  telemetry_report install script "$MODE" "failed:$stage" "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data" \
-    "$_TELEMETRY_VERSION" "$REPO_SRC" "$(telemetry_endpoint)" >/dev/null 2>&1 || true
   local d="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data"
-  ${SUDO:-} chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$d/install-id" "$d/telemetry-"* "$d/telemetry.log" 2>/dev/null || true
+  [[ -d "$d" && ! -L "$d" ]] || return 0
+  local stage; stage="$(printf '%s' "${LLMSYS_STAGE:-unknown}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
+  telemetry_report install script "$MODE" "failed:$stage" "$d" \
+    "$_TELEMETRY_VERSION" "$REPO_SRC" "$(telemetry_endpoint)" >/dev/null 2>&1 || true
+  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$d" || true
 }
 
 # Compat shims: a main install.sh may pair with an older release tarball's
@@ -1522,11 +1524,13 @@ echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
 _TELEMETRY_DONE=1
+if [[ "$MODE" != "6" && ! -e "$LLMSYS_INSTALL_DIR/data" ]]; then
+  $SUDO install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data" 2>/dev/null || true
+fi
 if (( FAIL == 0 )); then
   telemetry_report install script "$MODE" ok "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
     "$(telemetry_endpoint)"
-  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id" \
-    "$LLMSYS_INSTALL_DIR/data/telemetry-"* "$LLMSYS_INSTALL_DIR/data/telemetry.log" 2>/dev/null || true
+  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
   if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
     ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
   else
@@ -1535,8 +1539,7 @@ if (( FAIL == 0 )); then
 else
   telemetry_report install script "$MODE" "failed:health_checks" "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$REPO_SRC" \
     "$(telemetry_endpoint)"
-  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id" \
-    "$LLMSYS_INSTALL_DIR/data/telemetry-"* "$LLMSYS_INSTALL_DIR/data/telemetry.log" 2>/dev/null || true
+  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1
 fi

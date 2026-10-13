@@ -136,6 +136,7 @@ def run_wrapper(tmp_path, args, env_extra=None):
     env["LLMSYS_INSTALL_DIR"] = str(tmp_path)
     env.update(env_extra or {})
     data = tmp_path / "state"
+    data.mkdir(exist_ok=True)
     r = subprocess.run(["bash", str(INSTALLER / "telemetry-report.sh"), "--event", "install", "--channel", "script",
                         "--mode", "5", "--data-dir", str(data), "--root", str(REPO), *args],
                        env=env, capture_output=True, text=True)
@@ -160,3 +161,36 @@ def test_wrapper_toml_answer_beats_exported_consent(tmp_path):
     r, data = run_wrapper(tmp_path, ["--toml", str(t)], {"LLMSYS_TELEMETRY": "1", "SUDO": ""})
     assert r.returncode == 0, r.stderr
     assert not (tmp_path / "bin" / "curl.calls").exists()
+
+
+def test_report_is_noop_under_ci(tmp_path):
+    r = run(tmp_path, f'CI=1 LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event')
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "bin" / "curl.calls").exists()
+    assert not list(tmp_path.glob("telemetry*")) and not (tmp_path / "install-id").exists()
+
+
+def test_report_never_creates_missing_data_dir(tmp_path):
+    d = tmp_path / "missing" / "data"
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{d}" v1 "{REPO}" https://t.example.test/v1/event')
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "missing").exists()
+    assert not (tmp_path / "bin" / "curl.calls").exists()
+
+
+def test_telemetry_chown_skips_symlinks(tmp_path):
+    b = fake_curl(tmp_path)
+    c = b / "chown"
+    c.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{b}/chown.calls"\n')
+    c.chmod(c.stat().st_mode | stat.S_IEXEC)
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "install-id").write_text("x\n")
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (d / "telemetry.log").symlink_to(victim)
+    (d / "telemetry-last.json").symlink_to(tmp_path / "nowhere")
+    r = run(tmp_path, f'set -e; SUDO=""; telemetry_chown svc svcgrp "{d}"; echo done')
+    assert r.returncode == 0 and "done" in r.stdout, r.stderr
+    calls = (b / "chown.calls").read_text().splitlines()
+    assert calls == [f"-h svc:svcgrp {d}/install-id"]

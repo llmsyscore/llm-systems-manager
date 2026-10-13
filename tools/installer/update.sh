@@ -1352,14 +1352,13 @@ fi
 log "health: $PASS pass / $FAIL fail"
 # Anonymous update report under the install-time answer; never prompts.
 _live_toml="$LLMSYS_INSTALL_DIR/config/llm-systems.toml"
-if [[ "$(read_toml_key install_report "$_live_toml")" == "true" ]]; then
+if [[ -z "${CI:-}" && "$(read_toml_key install_report "$_live_toml")" == "true" ]]; then
   export LLMSYS_TELEMETRY=1
   _upd_outcome=ok; (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )) && _upd_outcome="failed:update"
   _upd_ver="${MGR_V_NEW:-$(_extract_version "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null || true)}"
   telemetry_report update script "" "$_upd_outcome" "$LLMSYS_INSTALL_DIR/data" "${_upd_ver:-unknown}" "$REPO_SRC" \
     "$(telemetry_endpoint)"
-  $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data/install-id" \
-    "$LLMSYS_INSTALL_DIR/data/telemetry-"* "$LLMSYS_INSTALL_DIR/data/telemetry.log" 2>/dev/null || true
+  telemetry_chown "$LLMSYS_RUN_USER" "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data"
 fi
 (( PARANOID_VERIFY )) && log "md5 verify: $VERIFY_FAILURES mismatch(es)"
 if (( VERIFY_FAILURES > 0 )); then
