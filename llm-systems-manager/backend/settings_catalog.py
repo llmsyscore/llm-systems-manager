@@ -235,7 +235,7 @@ CATALOG: list[dict] = [
     # telemetry
     _e("manager.telemetry.install_report", "bool", "Install and update reports", "Send one anonymous report when the product is installed or updated: version, channel, operating system and hardware.", "telemetry", MANAGER, hot=True, common=True),
     _e("manager.telemetry.crash_reports", "bool", "Crash reports", "Send the error type and code location of unexpected crashes. No messages, names or paths.", "telemetry", MANAGER, hot=True, common=True),
-    _e("manager.telemetry.heartbeat", "bool", "Daily diagnostic report", "Once a day: version, operating system, hardware, agent count, provider mix and uptime.", "telemetry", MANAGER, hot=True, common=True),
+    _e("manager.telemetry.heartbeat", "bool", "Daily diagnostic report", "Once a day: release and component versions, operating system, hardware, agent count, provider mix and uptime.", "telemetry", MANAGER, hot=True, common=True),
     # gateway
     _e("manager.gateway.enabled", "bool", "Gateway enabled", "OpenAI-compatible /api/gateway endpoint.", "gateway", MANAGER, hot=True, common=True),
     _e("manager.gateway.api_keys", "list", "Gateway API keys", "Bearer keys for external clients; empty = dashboard sessions only. One per line, optionally \"label=secret\" to name the client in the Routing card.", "gateway", MANAGER, secret=True),

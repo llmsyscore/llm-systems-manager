@@ -42,6 +42,10 @@ _version = ""
 _root: Optional[Path] = None
 _agent_count_fn: Optional[Callable[[], int]] = None
 _provider_mix_fn: Optional[Callable[[], dict]] = None
+_release_fn: Optional[Callable[[], Optional[str]]] = None
+_manager_version_fn: Optional[Callable[[], Optional[str]]] = None
+_ae_version_fn: Optional[Callable[[], Optional[str]]] = None
+_agent_versions_fn: Optional[Callable[[], Optional[dict]]] = None
 _lock = threading.RLock()
 _started_at = time.time()
 _log = None
@@ -53,10 +57,14 @@ def _iso(ts: Optional[float] = None) -> str:
 
 
 def configure(*, settings, data_dir: Path, version: str, root: Path,
-              agent_count_fn=None, provider_mix_fn=None, log=None) -> None:
+              agent_count_fn=None, provider_mix_fn=None, log=None, release_fn=None,
+              manager_version_fn=None, alarm_engine_version_fn=None, agent_versions_fn=None) -> None:
     global _settings, _data_dir, _version, _root, _agent_count_fn, _provider_mix_fn, _log
+    global _release_fn, _manager_version_fn, _ae_version_fn, _agent_versions_fn
     _settings, _data_dir, _version, _root = settings, Path(data_dir), version, Path(root)
     _agent_count_fn, _provider_mix_fn, _log = agent_count_fn, provider_mix_fn, log
+    _release_fn, _manager_version_fn = release_fn, manager_version_fn
+    _ae_version_fn, _agent_versions_fn = alarm_engine_version_fn, agent_versions_fn
 
 
 def _snapshot_settings():
@@ -227,7 +235,8 @@ def _detect_channel(root: Path) -> str:
 
 # ── payloads ─────────────────────────────────────────────────────────────────
 
-_KEYS = ("schema", "event", "install_id", "installed_at", "sent_at", "version", "channel", "mode",
+_KEYS = ("schema", "event", "install_id", "installed_at", "sent_at", "version", "release", "manager_version",
+         "alarm_engine_version", "agent_versions", "channel", "mode",
          "os", "os_version", "arch", "cpu_model", "ram_gb", "gpu_vendor", "gpu_count", "provider",
          "outcome", "agent_count", "provider_mix", "uptime_days", "component", "exc_type", "frames",
          "crash_hash", "uptime_s")
@@ -251,6 +260,14 @@ def _mix_text(mix: Optional[dict]) -> Optional[str]:
     return ",".join(f"{k}={int(v)}" for k, v in sorted(mix.items()))[:128]
 
 
+def _call_str(fn) -> Optional[str]:
+    try:
+        v = fn() if fn else None
+    except Exception:
+        return None
+    return str(v)[:128] if v else None
+
+
 def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mode: str = "",
                   outcome: str = "", extra: Optional[dict] = None) -> dict:
     if event not in EVENTS:
@@ -260,11 +277,19 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
     if event in ("install", "update"):
         p.update(host_facts())
         p["outcome"] = (outcome or "ok")[:128]
+        p["release"] = _call_str(_release_fn)
     elif event == "heartbeat":
         p.update(host_facts())
         p["agent_count"] = int(_agent_count_fn()) if _agent_count_fn else None
         p["provider_mix"] = _mix_text(_provider_mix_fn()) if _provider_mix_fn else None
         p["uptime_days"] = int((time.time() - _started_at) // 86400)
+        p["release"] = _call_str(_release_fn)
+        p["manager_version"] = _call_str(_manager_version_fn)
+        p["alarm_engine_version"] = _call_str(_ae_version_fn)
+        try:
+            p["agent_versions"] = _mix_text(_agent_versions_fn()) if _agent_versions_fn else None
+        except Exception:
+            p["agent_versions"] = None
     if extra:
         p.update({k: v for k, v in extra.items() if k in _KEYS})
     return _present(p)
@@ -302,6 +327,7 @@ def build_crash_payload(exc, tb, *, component: str, data_dir: Path, version: str
     p = _blank("crash", data_dir, version, channel)
     exc_type = exc_type if exc_type is not None else type(exc).__name__[:128]
     frames = frames if frames is not None else frames_text(tb, root)
+    p["release"] = _call_str(_release_fn)
     p.update(component=component, exc_type=exc_type, frames=frames or None,
              crash_hash=crash_hash(exc_type, frames), uptime_s=int(uptime_s))
     return _present(p)
@@ -579,6 +605,7 @@ def _main(argv) -> int:
     p.add_argument("--channel", required=True)
     p.add_argument("--mode", default="")
     p.add_argument("--outcome", default="")
+    p.add_argument("--release", default="")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--root", required=True)
@@ -592,7 +619,7 @@ def _main(argv) -> int:
         return 0
     if a.cmd == "payload":
         out = build_payload(a.event, data_dir=Path(a.data_dir), version=a.version, channel=a.channel,
-                            mode=a.mode, outcome=a.outcome)
+                            mode=a.mode, outcome=a.outcome, extra={"release": a.release[:128] or None})
         print(json.dumps(out))
         return 0
     payload = json.loads(Path(a.file).read_text())

@@ -667,9 +667,9 @@ The installer asks once whether to send an anonymous install report. Saying yes 
 
 | Report | When | Fields |
 |---|---|---|
-| Install | once per install or update | product version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
+| Install | once per install or update | product release and version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
 | Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
-| Daily diagnostic | once a day when turned on | product version, operating system, hardware, number of agents, provider mix, uptime |
+| Daily diagnostic | once a day when turned on | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime |
 
 Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The receiving service keeps ordinary request logs, including the sending address, for a short time; the stored reports do not contain it.
 

@@ -169,7 +169,7 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 ### Anonymous reports
 
-The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily diagnostic report to no. The README section "What the install, crash and diagnostic reports contain" lists every field.
+The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily diagnostic report to no. The README section "What the install, crash and diagnostic reports contain" lists every field, including the product release and the manager, alarm engine and agent versions.
 
 - Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
 - Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.

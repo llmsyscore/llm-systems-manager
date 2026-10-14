@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.13-2"
+__version__ = "v2026.10.13-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6471,9 +6471,26 @@ def _telemetry_provider_mix() -> dict:
     return mix
 
 
+def _telemetry_agent_versions() -> dict:
+    mix: dict = {}
+    for a in agent_registry.load_agents()["agents"].values():
+        v = a.get("version")
+        if a.get("status") == "approved" and v:
+            mix[str(v)] = mix.get(str(v), 0) + 1
+    return mix
+
+
+def _telemetry_ae_version():
+    _refresh_infra_versions()
+    return _infra_version_cache.get("ae")
+
+
 telemetry.configure(settings=settings, data_dir=DATA_DIR, version=__version__, root=_REPO_ROOT_PATH,
                     agent_count_fn=_telemetry_agent_count, provider_mix_fn=_telemetry_provider_mix,
-                    log=log)
+                    release_fn=lambda: companion._installed_release()["tag"],
+                    manager_version_fn=lambda: __version__,
+                    alarm_engine_version_fn=_telemetry_ae_version,
+                    agent_versions_fn=_telemetry_agent_versions, log=log)
 telemetry.install_excepthooks("manager")
 
 _TELEMETRY_TOGGLES = ("install_report", "crash_reports", "heartbeat")

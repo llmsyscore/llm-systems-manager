@@ -69,6 +69,15 @@ def test_payload_preview_has_no_hostname(tmp_path):
     assert socket.gethostname() not in r.stdout
 
 
+def test_payload_includes_release_from_release_file(tmp_path):
+    root = tmp_path / "root"
+    shutil.copytree(REPO / "llm-systems-manager" / "backend", root / "llm-systems-manager" / "backend")
+    (root / "RELEASE").write_text("v2026.10.7\n")
+    r = run(tmp_path, f'telemetry_payload install script 3 ok "{tmp_path}" v1 "{root}"')
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["release"] == "v2026.10.7"
+
+
 def test_report_sends_inline_and_records(tmp_path):
     r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event')
     assert r.returncode == 0, r.stderr

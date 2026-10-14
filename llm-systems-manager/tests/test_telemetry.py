@@ -26,6 +26,8 @@ def cfg(tmp_path, monkeypatch):
     yield tmp_path
     telemetry._agent_count_fn = None
     telemetry._provider_mix_fn = None
+    telemetry._release_fn = telemetry._manager_version_fn = None
+    telemetry._ae_version_fn = telemetry._agent_versions_fn = None
 
 
 def test_install_identity_is_stable_and_timestamped(tmp_path):
@@ -57,6 +59,21 @@ def test_heartbeat_payload_includes_host_facts(cfg):
     p = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
     assert p["agent_count"] == 3 and p["provider_mix"] == "llama=2,lms=1"
     assert p["os"] and p["arch"] and isinstance(p["cpu_model"], str)
+
+
+def test_heartbeat_carries_component_versions_and_install_release(cfg):
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
+                        root=BACKEND.parent.parent, release_fn=lambda: "v2026.10",
+                        manager_version_fn=lambda: "m1", alarm_engine_version_fn=lambda: "ae1",
+                        agent_versions_fn=lambda: {"v2": 1, "v1": 7})
+    hb = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
+    assert (hb["release"], hb["manager_version"], hb["alarm_engine_version"]) == ("v2026.10", "m1", "ae1")
+    assert hb["agent_versions"] == "v1=7,v2=1"
+    ins = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
+    assert ins["release"] == "v2026.10" and "manager_version" not in ins and "agent_versions" not in ins
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
+                        root=BACKEND.parent.parent)
+    assert "release" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
 
 
 def test_frames_are_relative_and_message_free(cfg):
@@ -130,9 +147,11 @@ def test_hook_never_raises(cfg, monkeypatch):
 def test_cli_payload_and_facts(tmp_path):
     out = subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "payload",
                           "--event", "install", "--channel", "script", "--mode", "1",
-                          "--data-dir", str(tmp_path), "--version", "v9", "--root", str(BACKEND.parent.parent)],
+                          "--data-dir", str(tmp_path), "--version", "v9", "--root", str(BACKEND.parent.parent),
+                          "--release", "v2026.10.1"],
                          capture_output=True, text=True, check=True).stdout
     p = json.loads(out)
+    assert p["release"] == "v2026.10.1"
     assert p["event"] == "install" and p["version"] == "v9" and p["channel"] == "script"
     facts = json.loads(subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "facts"],
                                       capture_output=True, text=True, check=True).stdout)

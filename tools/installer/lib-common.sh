@@ -1305,11 +1305,17 @@ telemetry_endpoint() {
   esac
 }
 
-# telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout.
+# telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout; release from RELEASE.
 telemetry_payload() {
-  local py; py="$(telemetry_python)" || return 1
+  local py rel="" f; py="$(telemetry_python)" || return 1
+  for f in "$7/RELEASE" "${LLMSYS_INSTALL_DIR:-/nonexistent}/RELEASE"; do
+    [[ -f "$f" ]] || continue
+    rel="$(head -n1 "$f" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$rel" && "$rel" != \$Format* ]] && break
+    rel=""
+  done
   "$py" -I "$7/llm-systems-manager/backend/telemetry.py" payload --event "$1" --channel "$2" \
-    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7"
+    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7" --release "$rel"
 }
 
 # telemetry_consent — exports LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT (0|1) and LLMSYS_TELEMETRY_REASON.

@@ -873,7 +873,7 @@
       this.tele = tele;
       const T = [['install_report', 'Install and update reports', 'one report on install or update: version, channel, OS, hardware'],
                  ['crash_reports', 'Crash reports', 'error type and code location only'],
-                 ['heartbeat', 'Daily diagnostic report', 'version, OS, hardware, agent count, provider mix, uptime']];
+                 ['heartbeat', 'Daily diagnostic report', 'release and component versions, OS, hardware, agent count, provider mix, uptime']];
       $('settingsReports').innerHTML = tele
         ? T.map(([key, name, what]) => '<div class="arow"><div class="atxt">'
             + `<div class="an">${esc(name)}</div><div class="ad">${esc(what)}${this.teleDetail(tele, key)}</div></div>`
