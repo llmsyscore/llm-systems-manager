@@ -1252,7 +1252,7 @@ fi
 # Prints 64 lowercase hex digits for any accepted fingerprint spelling; rc 1 otherwise.
 _normalize_fingerprint() {
   local v="${1:-}"
-  v="$(printf '%s' "$v" | tr -d '[:space:]:' | tr 'A-Z' 'a-z')"
+  v="$(printf '%s' "$v" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
   v="${v#sha256}"
   [[ "$v" =~ ^[0-9a-f]{64}$ ]] || return 1
   printf '%s' "$v"
@@ -1284,7 +1284,7 @@ _pin_manager_ca() {
     return 1
   fi
   https_url="$(printf '%s' "$body" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("https_url") or "").rstrip("/"))')"
-  got="$(openssl x509 -noout -fingerprint -sha256 -in "$tmp" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"
+  got="$(openssl x509 -noout -fingerprint -sha256 -in "$tmp" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
   if [[ "$got" != "$want" ]]; then
     echo "ERROR: manager CA fingerprint does not match the pin" >&2
     echo "       served:  ${got:-<unreadable>}" >&2

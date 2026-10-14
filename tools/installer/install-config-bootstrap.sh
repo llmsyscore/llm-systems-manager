@@ -948,7 +948,7 @@ fi
 if (( HAS_MGR )) && [[ -n "$ENROLLMENT_SECRET" ]]; then
   _CA_FP=""
   if $SUDO test -f "$INSTALL_DIR/data/internal-ca.crt" 2>/dev/null; then
-    _CA_FP="$($SUDO openssl x509 -noout -fingerprint -sha256 -in "$INSTALL_DIR/data/internal-ca.crt" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f' || true)"
+    _CA_FP="$($SUDO openssl x509 -noout -fingerprint -sha256 -in "$INSTALL_DIR/data/internal-ca.crt" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]' || true)"
   fi
   cat <<EOF
 

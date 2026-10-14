@@ -1076,7 +1076,7 @@ def enrollment_secret() -> str:
     return "" if v in _SECRET_UNSET else v
 
 
-def _enrollment_secret_problem() -> "str | None":
+def _registration_gate_problem() -> "str | None":
     """'missing' or 'wrong' when a configured secret was not presented correctly; None when accepted."""
     secret = enrollment_secret()
     if not secret:
@@ -1755,10 +1755,10 @@ def _agents_register():
                 **({"token": agent["token"]} if agent.get("status") == "approved" and agent.get("token") else {}),
             })
 
-        problem = _enrollment_secret_problem()
+        problem = _registration_gate_problem()
         if problem:
             log.warning("agent registration refused: enrollment secret %s (hostname=%s from=%s)",
-                        problem, hostname, remote)
+                        "missing" if problem == "missing" else "wrong", hostname, remote)
             return jsonify({"ok": False,
                             "error": "enrollment secret missing or wrong; install the agent with "
                                      "the current secret shown on Admin › Agents",
