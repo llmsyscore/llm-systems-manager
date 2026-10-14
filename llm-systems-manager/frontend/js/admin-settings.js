@@ -33,7 +33,7 @@
     try { localStorage.setItem(NAV_STATE_KEY, JSON.stringify({ open: [..._navOpen], closed: [..._navClosed] })); } catch (_) { /* private mode */ }
   }
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
-  let _teleState = null, _teleAt = 0;
+  let _teleState = null, _teleAt = 0, _teleSending = false;
   // Conversation eval + curated models (#1047): one read each, polled while a job runs.
   let _towerGetHidden = '', _towerGetKey = '', _towerGetAgent = '';
   let _towerEval = null, _towerModels = null, _towerExtrasAt = 0, _towerExtrasPoll = 0, _towerActBusy = '';
@@ -621,6 +621,7 @@
       text = `Last report: ${esc(s.last.event)} · ${esc(teleAge(s.last.sent_at))}`;
       btn = '<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetryView">View</button>';
     }
+    btn += `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetrySend"${_teleSending ? ' disabled' : ''}>${_teleSending ? 'Sending…' : 'Send now'}</button>`;
     return '<div class="settings-row st-fld st-checkrow" id="stTelemetryStatus">'
       + '<div class="st-lb"><label>Last report</label></div>'
       + '<div class="help">What left this machine most recently. View shows the exact fields.</div>'
@@ -634,6 +635,23 @@
     _teleState = st && st.ok !== false ? st : { failed: true };
     const el = $('stTelemetryStatus');
     if (el) el.outerHTML = telemetryStatusHtml();
+  }
+  async function sendTelemetryNow() {
+    if (_teleSending) return;
+    _teleSending = true;
+    let err = '';
+    const redraw = () => { const el = $('stTelemetryStatus'); if (el) el.outerHTML = telemetryStatusHtml(); };
+    redraw();
+    try {
+      const r = await fetch('/api/admin/telemetry/send', { method: 'POST' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); err = d.error || 'Send failed'; }
+    } catch (_) { err = 'Send failed'; }
+    _teleSending = false;
+    if (err) {
+      if (typeof _toastErr === 'function') _toastErr(err);
+      else if (typeof window._themedToast === 'function') window._themedToast(err, { kind: 'err' });
+      redraw();
+    } else await loadTelemetryState(true);
   }
   function viewTelemetryPayload() {
     const p = _teleState && _teleState.last && _teleState.last.payload;
@@ -1172,6 +1190,7 @@
 
   function onClick(ev) {
     if (ev.target.closest('#stTowerCheckBtn')) { ev.preventDefault(); runTowerCheck(); return; }
+    if (ev.target.closest('#stTelemetrySend')) { ev.preventDefault(); sendTelemetryNow(); return; }
     if (ev.target.closest('#stTelemetryView')) { ev.preventDefault(); viewTelemetryPayload(); return; }
     if (onTowerExtrasClick(ev)) return;
     const tedit = ev.target.closest('.st-tools [data-tools-edit]');

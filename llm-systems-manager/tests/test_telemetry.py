@@ -305,6 +305,22 @@ def test_deliver_writes_heartbeat_stamp(cfg, monkeypatch):
     assert telemetry._heartbeat_age() < 60
 
 
+def test_send_now_sends_heartbeat_even_when_toggle_off(cfg, monkeypatch):
+    telemetry._settings.manager.telemetry.heartbeat = False
+    seen = []
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: seen.append(p) or True)
+    r = telemetry.send_now()
+    assert r["ok"] is True and r["event"] == "heartbeat" and r["sent_at"]
+    assert seen[0]["event"] == "heartbeat"
+
+
+def test_send_now_never_raises(cfg, monkeypatch):
+    def boom(p):
+        raise RuntimeError("x")
+    monkeypatch.setattr(telemetry, "_deliver", boom)
+    assert telemetry.send_now() == {"ok": False, "error": "RuntimeError"}
+
+
 def test_scheduler_first_start_paths(cfg, sched):
     (cfg / telemetry.PENDING).write_text("{}")
     assert sched() == ["flush"]

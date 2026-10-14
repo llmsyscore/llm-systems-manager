@@ -444,6 +444,17 @@ def _deliver(payload: dict) -> bool:
     return ok
 
 
+def send_now() -> dict:
+    """Sends a heartbeat report immediately, whatever the daily toggle says. Never raises."""
+    try:
+        p = build_payload("heartbeat", data_dir=_data_dir, version=_version,
+                          channel=detect_channel(_root))
+        ok = bool(_deliver(p))
+        return {"ok": ok, "event": "heartbeat", "sent_at": p.get("sent_at")}
+    except Exception as e:
+        return {"ok": False, "error": type(e).__name__}
+
+
 # ── crash reporting ──────────────────────────────────────────────────────────
 
 def report_exception(exc, tb, *, component: str) -> None:

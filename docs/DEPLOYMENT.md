@@ -176,7 +176,7 @@ The installer asks once, after the mode picker, whether to send an anonymous ins
 - Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
 - Nothing is sent when a `CI` variable is set.
 - Updating from a release without these settings: the updater asks once from a terminal; unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch.
-- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen.
+- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen. The Send now button next to the last report sends a diagnostic report immediately.
 
 ### Mixing install methods
 

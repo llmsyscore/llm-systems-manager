@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.13-1"
+__version__ = "v2026.10.13-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3920,6 +3920,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "backup.run": "Ran a backup now", "backup.download": "Downloaded a retained archive",
     "config.gateway": "Turned the inference gateway on/off",
     "config.telemetry": "Changed report settings",
+    "config.telemetry-send": "Sent a diagnostic report now",
     "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
@@ -4000,6 +4001,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings",    "config.settings"),
     ("PUT",    re.compile(r"^/api/admin/gateway$"),                    "config.gateway",     "config.settings"),
     ("PUT",    re.compile(r"^/api/admin/telemetry$"),                  "config.telemetry",   "config.settings"),
+    ("POST",   re.compile(r"^/api/admin/telemetry/send$"),             "config.telemetry-send", "config.settings"),
     ("POST",   re.compile(r"^/api/admin/backup-now$"),                 "backup.run",         "backup"),
     ("GET",    re.compile(r"^/api/admin/backup-archive/(?P<t>.+)$"),   "backup.download",    "backup"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
@@ -6495,6 +6497,15 @@ def admin_telemetry():
             return _err_json("config file unreadable", 500, exc=e)
         telemetry.reload()
     return jsonify({"ok": True, **telemetry.status()})
+
+
+@app.route("/api/admin/telemetry/send", methods=["POST"])
+def admin_telemetry_send():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    r = telemetry.send_now()
+    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 502)
 
 
 _RUN_CONFIG_KEYS = {"benchmark": ("bench", "osl", "limit", "concurrency", "levels", "bench_tool"),

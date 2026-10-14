@@ -42,6 +42,32 @@ def test_audit_route_registered():
     assert M._audit_match("PUT", "/api/admin/telemetry")[:2] == ("config.telemetry", None)
 
 
+def test_send_ok(client, monkeypatch):
+    monkeypatch.setattr(telemetry, "send_now", lambda: {"ok": True, "event": "heartbeat", "sent_at": "t"})
+    r = client.post("/api/admin/telemetry/send")
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True and "heartbeat" in r.get_json()
+
+
+def test_send_failure_is_502(client, monkeypatch):
+    monkeypatch.setattr(telemetry, "send_now", lambda: {"ok": False, "event": "heartbeat", "sent_at": "t"})
+    r = client.post("/api/admin/telemetry/send")
+    assert r.status_code == 502 and r.get_json()["ok"] is False
+
+
+def test_send_denied_without_admin(client, monkeypatch):
+    monkeypatch.setattr(M, "_require_admin", lambda: ("no", 403))
+    called = []
+    monkeypatch.setattr(telemetry, "send_now", lambda: called.append(1))
+    assert client.post("/api/admin/telemetry/send").status_code == 403
+    assert not called
+
+
+def test_send_audit_route_registered():
+    assert M._audit_match("POST", "/api/admin/telemetry/send")[0] == "config.telemetry-send"
+    assert M._AUDIT_LABELS["config.telemetry-send"] == "Sent a diagnostic report now"
+
+
 def test_hot_reloader_registered():
     assert "manager.telemetry." in M._HOT_RELOADERS
 

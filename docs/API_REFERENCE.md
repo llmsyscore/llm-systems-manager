@@ -1199,6 +1199,13 @@ Report settings and the last report sent. Returns `{ok, install_report, crash_re
 
 ---
 
+### `POST /api/admin/telemetry/send`
+Sends a diagnostic report immediately, whatever the daily setting is, and records an audit entry. Returns the same fields as the GET plus `event` and `sent_at`; 502 with `ok: false` when the send failed.
+
+**Access:** [Admin]
+
+---
+
 ### `POST /api/companion/push/notify`
 Alarm-engine bridge (#538): fans one alert out to every subscribed device. **Bearer-gated**, not session-gated — the caller presents `[manager.companion] push_notify_token` (falling back to `[alarm_engine].management_token`, then `ingest_token`); with no token configured anywhere, an admin session is required instead. **Body:** `{"title", "body", "severity", "tag", "url"}` (all optional, length-capped; `url` is normalized to a same-origin path). Returns `{ok, subscriptions, sent, failed, pruned}`, 400 on a non-object body, 503 when `pywebpush` is not installed.
 

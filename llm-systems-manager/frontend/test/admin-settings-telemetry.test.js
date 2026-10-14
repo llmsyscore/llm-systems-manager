@@ -29,7 +29,9 @@ async function boot(status = STATUS) {
     `<!doctype html><html><body><div id="adminTab">${PANEL}</div></body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const w = dom.window;
-  w.fetch = (url) => {
+  w.__posts = [];
+  w.fetch = (url, opts) => {
+    if (opts && opts.method === 'POST') { w.__posts.push(url); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }); }
     if (url === '/api/admin/telemetry' && status === 'fail') return Promise.reject(new Error('offline'));
     return Promise.resolve({ ok: true, status: 200,
       json: () => Promise.resolve(JSON.parse(JSON.stringify(url === '/api/admin/telemetry' ? status : payload()))) });
@@ -65,6 +67,15 @@ describe('Telemetry & analytics group', () => {
     const w = await boot();
     w.document.querySelector('#stTelemetryView').click();
     expect(w.__alert.bodyHtml).toContain('&quot;os&quot;: &quot;debian&quot;');
+  });
+  test('Send now is always rendered and POSTs, then the row reloads', async () => {
+    const w = await boot({ ...STATUS, last: null });
+    const btn = w.document.querySelector('#stTelemetrySend');
+    expect(btn.textContent).toBe('Send now');
+    btn.click();
+    await flush(); await flush();
+    expect(w.__posts).toEqual(['/api/admin/telemetry/send']);
+    expect(w.document.querySelector('#stTelemetrySend').disabled).toBe(false);
   });
   test('reads "No report sent yet" when nothing was sent', async () => {
     const w = await boot({ ...STATUS, last: null });

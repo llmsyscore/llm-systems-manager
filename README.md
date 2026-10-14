@@ -678,7 +678,7 @@ Turn reports off or on:
 - during an interactive install, answer the prompt (install and crash reports default to yes, the daily diagnostic report to no);
 - for an unattended install, set `LLMSYS_TELEMETRY=0` (and `LLMSYS_HEARTBEAT=1` for the daily report) in the environment, or, for packages, answer the Debian package question or (on RHEL) set the same two variables, which otherwise print one line saying the report is on; or set `LSM_TELEMETRY` and `LSM_HEARTBEAT` in `.env` for Docker. Docker and Homebrew installs are reported by the manager on its first start. Nothing is sent when a `CI` variable is set (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.);
 - when you update from a release that had no report settings, the updater asks once if you run it from a terminal. Unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch;
-- any time later, in **Settings › Telemetry & analytics** on the dashboard or in the phone companion's Settings screen (Reports card).
+- any time later, in **Settings › Telemetry & analytics** on the dashboard or in the phone companion's Settings screen (Reports card). The Send now button next to the last report sends a diagnostic report immediately.
 
 The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
 
