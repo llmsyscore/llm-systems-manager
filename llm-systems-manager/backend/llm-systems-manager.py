@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-2"
+__version__ = "v2026.10.14-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6498,6 +6498,13 @@ _TELEMETRY_TOGGLES = ("install_report", "crash_reports", "heartbeat")
 
 @app.route("/api/admin/telemetry", methods=["GET", "PUT"])
 def admin_telemetry():
+    if flask_request.method == "GET" and auth.effective_role() == "operator":
+        # Operators read the switches and the last report's event and time, never the payload.
+        st = telemetry.status()
+        last = st.get("last")
+        return jsonify({"ok": True, "read_only": True,
+                        **{k: st[k] for k in (*_TELEMETRY_TOGGLES, "pending")},
+                        "last": {"event": last["event"], "sent_at": last["sent_at"]} if last else None})
     deny = _require_admin()
     if deny is not None:
         return deny
@@ -6522,7 +6529,7 @@ def admin_telemetry_send():
     if deny is not None:
         return deny
     r = telemetry.send_now()
-    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 502)
+    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 409 if r.get("error") == "busy" else 502)
 
 
 _RUN_CONFIG_KEYS = {"benchmark": ("bench", "osl", "limit", "concurrency", "levels", "bench_tool"),

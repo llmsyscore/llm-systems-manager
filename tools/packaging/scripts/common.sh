@@ -307,7 +307,7 @@ llmsys_telemetry_report() {
   local upgrade="$1" event=install
   [ "${LLMSYS_TELEMETRY:-}" = "0" ] && return 0
   [ -n "$upgrade" ] && event=update
-  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" \
+  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" LLMSYS_INSTALL_DIR="$LLMSYS_INSTALL_DIR" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
     LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
     bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \

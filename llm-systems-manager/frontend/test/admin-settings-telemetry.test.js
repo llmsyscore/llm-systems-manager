@@ -30,8 +30,14 @@ async function boot(status = STATUS) {
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const w = dom.window;
   w.__posts = [];
+  w.__toasts = [];
+  w._toastErr = (m) => w.__toasts.push(m);
   w.fetch = (url, opts) => {
-    if (opts && opts.method === 'POST') { w.__posts.push(url); return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }); }
+    if (opts && opts.method === 'POST') {
+      w.__posts.push(url);
+      const st = w.__postStatus || 200;
+      return Promise.resolve({ ok: st === 200, status: st, json: () => Promise.resolve(st === 200 ? { ok: true } : { ok: false, error: 'RuntimeError' }) });
+    }
     if (url === '/api/admin/telemetry' && status === 'fail') return Promise.reject(new Error('offline'));
     return Promise.resolve({ ok: true, status: 200,
       json: () => Promise.resolve(JSON.parse(JSON.stringify(url === '/api/admin/telemetry' ? status : payload()))) });
@@ -76,6 +82,19 @@ describe('Telemetry & analytics group', () => {
     await flush(); await flush();
     expect(w.__posts).toEqual(['/api/admin/telemetry/send']);
     expect(w.document.querySelector('#stTelemetrySend').disabled).toBe(false);
+  });
+  test('a failed send shows a plain toast, never the error class, and re-enables the button', async () => {
+    const w = await boot({ ...STATUS, last: null });
+    w.__postStatus = 502;
+    w.document.querySelector('#stTelemetrySend').click();
+    await flush(); await flush();
+    expect(w.__toasts).toEqual(['The report could not be sent']);
+    expect(w.document.body.innerHTML).not.toContain('RuntimeError');
+    expect(w.document.querySelector('#stTelemetrySend').disabled).toBe(false);
+    w.__postStatus = 409;
+    w.document.querySelector('#stTelemetrySend').click();
+    await flush(); await flush();
+    expect(w.__toasts[1]).toBe('A report is already being sent');
   });
   test('reads "No report sent yet" when nothing was sent', async () => {
     const w = await boot({ ...STATUS, last: null });

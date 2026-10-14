@@ -390,6 +390,8 @@ def _operator_denied(path: str) -> bool:
     open paths and never gets here, but list-by-provider is explicitly allowed."""
     if path == "/api/agents/list-by-provider":
         return False
+    if path == "/api/admin/telemetry" and flask_request.method == "GET":
+        return False  # operators read the report switches; the route strips the payload
     if path.startswith("/api/admin/"):
         return True
     if path.startswith("/api/terminal/") or path.startswith("/api/lms/terminal/") \

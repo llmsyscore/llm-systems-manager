@@ -1355,7 +1355,15 @@ telemetry_log() {
 }
 
 # telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
+# A staged /tmp root is removed on every path except a spawned retry job, which removes it itself.
 telemetry_report() {
+  _TELEMETRY_KEEP_ROOT=""
+  _telemetry_report_run "$@"
+  [[ "$_TELEMETRY_KEEP_ROOT" == "$7" ]] || telemetry_drop_staged "$7"
+  return 0
+}
+
+_telemetry_report_run() {
   [[ -z "${CI:-}" ]] || return 0
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
   local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
@@ -1375,7 +1383,14 @@ telemetry_report() {
     log "${event} report queued; retrying in the background"
     setsid nohup bash "$root/tools/installer/telemetry-retry.sh" "$pend" "$ep" "$logf" "$py" "$root" \
       >/dev/null 2>&1 < /dev/null &
+    _TELEMETRY_KEEP_ROOT="$root"
   fi
+  return 0
+}
+
+# telemetry_drop_staged ROOT — removes ROOT when it is a staged /tmp copy of the report files.
+telemetry_drop_staged() {
+  case "$1" in /tmp/llmsys-telemetry.*) [[ -d "$1" ]] && rm -rf "$1" ;; esac
   return 0
 }
 
@@ -1419,6 +1434,8 @@ telemetry_readable_root() {
   for f in lib-common.sh telemetry-report.sh telemetry-retry.sh; do
     ${priv[@]+"${priv[@]}"} install -m 0755 -o "$user" "$root/tools/installer/$f" "$tmp/tools/installer/" || return 1
   done
+  # Handed to the user last, after the privileged writes, so the user can remove it.
+  ${priv[@]+"${priv[@]}"} chown "$user" "$tmp" || return 1
   printf '%s\n' "$tmp"
 }
 
@@ -1432,6 +1449,7 @@ telemetry_report_as_user() {
   ${run[@]+"${run[@]}"} env LLMSYS_TELEMETRY="${LLMSYS_TELEMETRY:-0}" \
     LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" CI="${CI:-}" \
+    LLMSYS_INSTALL_DIR="${LLMSYS_INSTALL_DIR:-}" \
     bash "$root/tools/installer/telemetry-report.sh" --event "$2" --channel "$3" --mode "$4" \
     --outcome "$5" --data-dir "$6" --version "$7" --root "$root" </dev/null || true
   return 0

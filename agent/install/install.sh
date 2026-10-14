@@ -3921,7 +3921,10 @@ if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
   _tele_t="${LLMSYS_TELEMETRY:-}"
   if [[ -z "$_tele_t" ]]; then
     if [[ -t 0 ]]; then
-      read -rp "  Send anonymous install and crash reports (OS, hardware, version; no names or paths)? [Y/n] " _a
+      echo
+      echo "  Anonymous reports help us learn which systems the product runs on."
+      echo "  Nothing in them identifies you: no names, addresses, paths or tokens."
+      read -rp "  Send anonymous install and crash reports? [Y/n] " _a
       case "$(printf '%s' "${_a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) _tele_t=0 ;; *) _tele_t=1 ;; esac
     else
       _tele_t=1
@@ -3934,6 +3937,7 @@ d, t = sys.argv[1], sys.argv[2] == "1"
 def put(name, text, mode):
     tmp = os.path.join(d, ".%s.%d.tmp" % (name, os.getpid()))
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    os.fchmod(fd, mode)
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
     os.replace(tmp, os.path.join(d, name))
@@ -4633,14 +4637,20 @@ if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
   _tele_ver="${_tele_ver:-$VERSION}"
   # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
   if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
-    _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
+    _tele_tmp=""
+    if _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
       && $SUDO chmod 0755 "$_tele_tmp" \
       && $SUDO install -d -m 0755 -o "$USER_ARG" "$_tele_tmp/llm-systems-manager/backend" "$_tele_tmp/tools/installer" \
       && $SUDO install -m 0644 -o "$USER_ARG" "$_tele_root/llm-systems-manager/backend/telemetry.py" "$_tele_tmp/llm-systems-manager/backend/" \
       && $SUDO install -m 0755 -o "$USER_ARG" "$_tele_root/tools/installer/lib-common.sh" \
            "$_tele_root/tools/installer/telemetry-report.sh" "$_tele_root/tools/installer/telemetry-retry.sh" \
            "$_tele_tmp/tools/installer/" \
-      && _tele_root="$_tele_tmp" || _tele_root=""
+      && $SUDO chown "$USER_ARG" "$_tele_tmp"; then
+      _tele_root="$_tele_tmp"
+    else
+      if [[ -n "$_tele_tmp" ]]; then $SUDO rm -rf "$_tele_tmp"; fi
+      _tele_root=""
+    fi
   fi
   if [[ -n "$_tele_root" ]]; then
     _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
