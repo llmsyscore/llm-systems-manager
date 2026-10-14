@@ -48,7 +48,7 @@ def _fp(crt: Path) -> str:
 def _pin_script(tmp_path, response: dict, fingerprint: str) -> str:
     (tmp_path / "resp.json").write_text(json.dumps(response))
     return "\n".join([
-        _func("_normalize_fingerprint"), _func("_pin_manager_ca"), _func("_install_pinned_ca"),
+        _func("_normalize_fingerprint"), _func("_pin_manager_ca"), _func("_install_pinned_ca"), _func("_place_file"),
         f'INSTALL_DIR="{tmp_path}/inst"; MANAGER_URL="http://10.0.0.1:5000"; CA_FINGERPRINT="{fingerprint}"',
         'SUDO=""; USER_ARG="$(id -un)"; USER_GROUP="$(id -gn)"',
         f'_probe_pki_ca() {{ cat "{tmp_path}/resp.json"; }}',
@@ -158,6 +158,32 @@ def test_secret_file_written_0600_and_kept_on_update(tmp_path):
     assert (p.stat().st_mode & 0o777) == 0o600, "created world-readable before chmod"
 
 
+def test_planted_symlinks_are_replaced_not_followed(tmp_path):
+    """A symlink left at the destination must not make the (root) write land elsewhere."""
+    inst = tmp_path / "inst"
+    (inst / "data").mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    (inst / "data" / "enrollment-secret").symlink_to(victim)
+    fn = _func("_write_enrollment_secret")
+    base = f'{fn}\nINSTALL_DIR="{inst}"; SUDO=""; USER_ARG="$(id -un)"; USER_GROUP="$(id -gn)"'
+    r = _bash(base + '\nENROLLMENT_SECRET="s3cret"; DO_UPDATE=false; _write_enrollment_secret')
+    assert r.returncode == 0, r.stderr
+    dest = inst / "data" / "enrollment-secret"
+    assert not dest.is_symlink() and dest.read_text() == "s3cret"
+    assert victim.read_text() == "untouched"
+    assert not list((inst / "data").glob(".enroll.*"))
+    crt = _ca(tmp_path)
+    (inst / "data" / "tls-ca.pem").symlink_to(victim)
+    resp = {"ok": True, "ca_pem": crt.read_text(), "fingerprint": "sha256:" + _fp(crt), "https_url": ""}
+    r = _bash(_pin_script(tmp_path, resp, _fp(crt)))
+    assert r.returncode == 0, r.stderr
+    ca = inst / "data" / "tls-ca.pem"
+    assert not ca.is_symlink() and ca.read_text() == crt.read_text()
+    assert victim.read_text() == "untouched"
+    assert not list((inst / "data").glob(".place.*"))
+
+
 def test_flags_and_env_are_parsed():
     assert "--enrollment-secret)" in SRC and "--ca-fingerprint)" in SRC
     assert 'ENROLLMENT_SECRET="${LLMSYS_ENROLLMENT_SECRET:-}"' in SRC
@@ -166,7 +192,7 @@ def test_flags_and_env_are_parsed():
 
 def test_secret_never_echoed():
     for line in SRC.splitlines():
-        if line.strip() == '( umask 077; printf \'%s\' "$ENROLLMENT_SECRET" | $SUDO tee "$dest" >/dev/null )':
+        if line.strip() == '( umask 077; printf \'%s\' "$ENROLLMENT_SECRET" | $SUDO tee "$tmp" >/dev/null )':
             continue
         if "ENROLLMENT_SECRET" in line and re.search(r"\b(echo|printf|log|_ok|_warn)\b", line):
             assert "$ENROLLMENT_SECRET" not in line and "${ENROLLMENT_SECRET" not in line, line

@@ -1309,11 +1309,20 @@ _install_pinned_ca() {
   local dest="$INSTALL_DIR/data/tls-ca.pem"
   [[ -n "${USER_GROUP:-}" && -n "$CA_PINNED_FILE" && "$CA_PINNED_FILE" != "$dest" ]] || return 0
   $SUDO mkdir -p "$INSTALL_DIR/data"
-  $SUDO cp "$CA_PINNED_FILE" "$dest"
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$dest"
-  $SUDO chmod 0644 "$dest"
+  _place_file "$CA_PINNED_FILE" "$dest" 0644
   rm -f "$CA_PINNED_FILE"
   CA_PINNED_FILE="$dest"
+}
+
+# Copies SRC to DEST through a root-owned temp + rename, so a planted symlink
+# at DEST is replaced instead of followed. Args: SRC DEST MODE.
+_place_file() {
+  local src="$1" dest="$2" mode="$3" tmp
+  tmp="$($SUDO mktemp "$(dirname "$dest")/.place.XXXXXX")"
+  $SUDO cp "$src" "$tmp"
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$tmp"
+  $SUDO chmod "$mode" "$tmp"
+  $SUDO mv -f "$tmp" "$dest"
 }
 
 # Replaces only the MANAGER_URL: line of an agent_config.yaml, atomically, keeping mode and owner.
@@ -1355,9 +1364,11 @@ _write_enrollment_secret() {
     return 0
   fi
   $SUDO mkdir -p "$INSTALL_DIR/data"
-  ( umask 077; printf '%s' "$ENROLLMENT_SECRET" | $SUDO tee "$dest" >/dev/null )
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$dest"
-  $SUDO chmod 0600 "$dest"
+  local tmp; tmp="$($SUDO mktemp "$INSTALL_DIR/data/.enroll.XXXXXX")"
+  ( umask 077; printf '%s' "$ENROLLMENT_SECRET" | $SUDO tee "$tmp" >/dev/null )
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$tmp"
+  $SUDO chmod 0600 "$tmp"
+  $SUDO mv -f "$tmp" "$dest"
   echo "  ✓ enrollment secret stored"
 }
 
