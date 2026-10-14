@@ -48,6 +48,7 @@
 .mc-menu.open { display: block; }
 .mc-menu button { display: flex; width: 100%; align-items: center; gap: 8px; white-space: nowrap; background: none; border: 0; color: var(--fg-muted); font-family: var(--font-sans); font-size: 12.5px; font-weight: 500; padding: 7px 10px; border-radius: 5px; cursor: pointer; text-align: left; }
 .mc-menu button:hover { background: var(--bg-card-alt); color: var(--fg); }
+.mc-menu button:disabled { color: var(--fg-faint); cursor: default; background: none; }
 .mc-menu button.danger { color: var(--crit); }
 .mc-menu button.is-current { color: var(--fg); }
 .mc-menu button.is-current::after { content: "✓"; margin-left: auto; padding-left: 10px; color: var(--ok); }

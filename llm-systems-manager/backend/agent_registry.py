@@ -88,6 +88,7 @@ __all__ = [
     "approved_agent_caps",
     "issue_stream_token",
     "issue_handoff_token",
+    "handoff_key",
     "ingest_token_for_agent",
     "AGENTS_FILE",
 ]
@@ -1143,9 +1144,14 @@ def issue_stream_token(agent_id: str, path: str, ttl: "int | None" = None) -> st
     return _sign_stream_token(_agent_stream_key(agent_id), agent_id, path, ttl)
 
 
+def handoff_key() -> bytes:
+    """Hand-off token key: HMAC(manager_secret, "stream-handoff-key"), separate from every other token kind."""
+    return _hmac.new(_deps.manager_secret(), b"stream-handoff-key", hashlib.sha256).digest()
+
+
 def issue_handoff_token(agent_id: str, path: str, ttl: "int | None" = None) -> str:
-    """Manager SSE-daemon hand-off token, signed with the manager-only secret."""
-    return _sign_stream_token(_deps.manager_secret(), agent_id, path, ttl)
+    """Manager SSE-daemon hand-off token, signed with the hand-off key."""
+    return _sign_stream_token(handoff_key(), agent_id, path, ttl)
 
 
 # ── Private: cert build/sign (shared by heartbeat-ack issuer + admin-tab rotation) ──

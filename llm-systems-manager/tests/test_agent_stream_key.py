@@ -48,11 +48,30 @@ def test_agent_key_cannot_mint_a_token_for_another_agent(secret):
     assert not _agent_accepts(agent_registry._agent_stream_key(B), B, forged, "/x")
 
 
-def test_handoff_token_needs_the_manager_secret(secret):
+def test_handoff_token_verifies_only_under_the_handoff_key(secret):
+    key = agent_registry.handoff_key()
     tok = agent_registry.issue_handoff_token(A, sse_daemon.PATH, 60)
-    assert sse_daemon._verify_handoff(tok, A, sse_daemon.PATH, secret) is True
+    assert sse_daemon._verify_handoff(tok, A, sse_daemon.PATH, key) is True
+    assert sse_daemon._verify_handoff(tok, A, sse_daemon.PATH, secret) is False
+    assert key != secret and key != M._ws_ticket_key()
     agent_minted = agent_registry.issue_stream_token(A, sse_daemon.PATH, 60)
-    assert sse_daemon._verify_handoff(agent_minted, A, sse_daemon.PATH, secret) is False
+    assert sse_daemon._verify_handoff(agent_minted, A, sse_daemon.PATH, key) is False
+
+
+def test_raw_secret_signature_is_not_a_handoff_token(secret):
+    expiry = int(time.time()) + 60
+    sig = hmac.new(secret, f"{A}|{sse_daemon.PATH}|{expiry}".encode(), hashlib.sha256).hexdigest()
+    assert sse_daemon._verify_handoff(f"{expiry}.{sig}", A, sse_daemon.PATH,
+                                      agent_registry.handoff_key()) is False
+
+
+@pytest.mark.parametrize("key_name", ["secret", "handoff"])
+def test_ws_ticket_rejects_other_domains_keys(secret, key_name):
+    key = secret if key_name == "secret" else agent_registry.handoff_key()
+    expiry, nonce = int(time.time()) + 60, "00" * 8
+    sig = hmac.new(key, f"{M._ws_ticket_subject('/ws/alarm')}|{expiry}|{nonce}".encode(),
+                   hashlib.sha256).hexdigest()
+    assert M._verify_ws_ticket(f"{expiry}.{nonce}.{sig}") is False
 
 
 @pytest.mark.parametrize("path", ["/ws/alarm", "/ws/openclaw"])

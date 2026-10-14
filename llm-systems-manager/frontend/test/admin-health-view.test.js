@@ -221,6 +221,22 @@ describe('warnings column', () => {
     expect(win.__called).toBe(1);
   });
 
+  test('Update all is disabled while an update is running (#1254)', () => {
+    const win = runHarness({
+      sources: [adminSrc, healthSrc],
+      bodyHtml: `<div id="adminTab">${CARD}</div>`,
+      bootstrap: `window.__called = 0;
+        adminUpdateAll = () => { window.__called++; };
+        _adminUpdateBusy = true;
+        HealthView.render(${JSON.stringify(DOWN)}, null);
+        document.querySelector('#adminHealthWarnings [data-act="updateall"]').click();`,
+    });
+    const btn = win.document.querySelector('#adminHealthWarnings [data-act="updateall"]');
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain('running');
+    expect(win.__called).toBe(0);
+  });
+
   test('advisories render as info rows and keep the pill Healthy (#1071)', () => {
     const doc = card({ ...HEALTHY, advisories: ['No OTLP data <b>yet</b>'] });
     const rows = [...doc.querySelectorAll('#adminHealthWarnings .w')];

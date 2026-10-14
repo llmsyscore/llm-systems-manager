@@ -249,13 +249,24 @@ describe('#793 row + drawer markup', () => {
     expect(byId('p1').querySelector('[data-act="approve"]').textContent).toBe('Approve');
     expect(byId('p1').querySelector('[data-act="pause"]')).toBeNull();
   });
-  test('endpoint column carries IP + version; meta line is os · role; update shows as an amber ↑', () => {
+  test('update actions are disabled while an update is running (#1254)', () => {
+    const win = harness(boot([approved('old', { version: 'v1', update_available: true }), approved('new')]) + ' _adminUpdateBusy = true; AgentsView.render();');
+    const upd = win.document.querySelector('[data-row="old"] .mc-menu [data-act="update"]');
+    expect(upd.disabled).toBe(true);
+    expect(upd.textContent).toContain('Update running');
+    const redeploy = win.document.querySelector('[data-row="new"] .mc-menu [data-act="update"]');
+    expect(redeploy.disabled).toBe(true);
+    const win2 = harness(boot([approved('old', { version: 'v1', update_available: true })]));
+    expect(win2.document.querySelector('[data-row="old"] .mc-menu [data-act="update"]').disabled).toBe(false);
+  });
+  test('endpoint column carries IP + version; meta line is os · role; update shows as a visible "update to" line', () => {
     const win = harness(boot([approved('old', { version: 'v1', update_available: true, agent_user: 'llmsys' })]));
     const row = win.document.querySelector('[data-row="old"]');
     expect(row.querySelector('.sub .m').textContent).toBe('linux·llama host');
     expect(row.querySelector('.ag-ep .ip').textContent).toBe('192.0.2.3');
     expect(row.querySelector('.ag-ep .ver').textContent).toContain('v1');
-    expect(row.querySelector('.ag-ep .up').getAttribute('title')).toContain('v2');
+    expect(row.querySelector('.ag-ep .ag-upd').textContent).toBe('↑ update to v2');
+    expect(row.querySelector('.ag-ep [title]')).toBeNull();
     expect(row.querySelector('.ag-seen')).toBeNull();   // live: no countdown
     const menu = win.document.querySelector('[data-row="old"] .mc-menu');
     expect(menu.querySelector('[data-act="update"]').textContent).toContain('Update to v2');

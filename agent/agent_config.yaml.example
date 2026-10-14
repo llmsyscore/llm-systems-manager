@@ -216,6 +216,8 @@ COLLECT_POWERMETRICS_ENABLED: false
 #   source        alert source label                   (default: "log-watch")
 #   metric        alert metric label                   (default: log filename)
 #   enabled       set false to retain the entry but skip it temporarily
+# Lines that are the alarm engine's own record of a rule's alert (they carry
+# "rule=<name>") are skipped, so an alert does not re-open from its own close.
 #
 # To enable: flip LOG_WATCH_ENABLED to true, then uncomment LOG_WATCH_RULES
 # AND every line under it (drop the leading "# " from each line). Indent is

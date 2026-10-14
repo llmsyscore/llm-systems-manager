@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-7"
+__version__ = "v2026.10.14-8"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3157,7 +3157,8 @@ def stream_llama_state_info():
     cases the browser uses the Cheroot /api/llama-state/stream path (#110)."""
     from urllib.parse import quote
     port = int(getattr(settings.manager, "stream_proxy_port", 5445) or 0)
-    aid = flask_request.args.get("agent") or _primary_llama_agent_id()
+    asked = flask_request.args.get("agent")
+    aid = asked if asked and agent_registry.resolve_agent_by_id(asked) else _primary_llama_agent_id()
     if port <= 0 or not sse_daemon.is_running() or flask_request.is_secure or not aid:
         return jsonify({"enabled": False})
     ttl = int(getattr(settings.manager.security, "stream_token_ttl_s", 300) or 300)
@@ -9542,6 +9543,11 @@ def _ws_ticket_subject(path: str) -> str:
     return f"ws|{path}"
 
 
+def _ws_ticket_key() -> bytes:
+    """Connection-ticket key: HMAC(manager_secret, "ws-ticket-key"), separate from every other token kind."""
+    return hmac.new(_manager_secret(), b"ws-ticket-key", hashlib.sha256).digest()
+
+
 def _ws_bridge_path(req_target: str) -> str:
     """The bridge path a request target addresses ("" when it is not one)."""
     from urllib.parse import urlsplit
@@ -9563,12 +9569,12 @@ def _issue_ws_ticket(ttl: "int | None" = None, path: str = "/ws/alarm") -> str:
     expiry = int(time.time()) + (ttl if ttl is not None else _ws_ticket_ttl())
     nonce = secrets.token_hex(8)
     msg = f"{_ws_ticket_subject(path)}|{expiry}|{nonce}".encode()
-    sig = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
+    sig = hmac.new(_ws_ticket_key(), msg, hashlib.sha256).hexdigest()
     return f"{expiry}.{nonce}.{sig}"
 
 
 def _parse_ws_ticket(ticket: str, path: str = "/ws/alarm") -> "tuple[int, str] | None":
-    """(expiry, nonce) for a well-formed, unexpired ticket correctly signed for `path`; else None."""
+    """(expiry, nonce) for a well-formed ticket signed for `path` whose expiry lies within the configured lifetime; else None."""
     if not ticket or ticket.count(".") != 2:
         return None
     try:
@@ -9576,10 +9582,11 @@ def _parse_ws_ticket(ticket: str, path: str = "/ws/alarm") -> "tuple[int, str] |
         expiry = int(expiry_str)
     except (ValueError, TypeError):
         return None
-    if expiry < time.time():
+    now = time.time()
+    if expiry < now or expiry > now + _ws_ticket_ttl() + 5:
         return None
     msg = f"{_ws_ticket_subject(path)}|{expiry}|{nonce}".encode()
-    expected = hmac.new(_manager_secret(), msg, hashlib.sha256).hexdigest()
+    expected = hmac.new(_ws_ticket_key(), msg, hashlib.sha256).hexdigest()
     return (expiry, nonce) if hmac.compare_digest(expected, sig) else None
 
 
@@ -10153,7 +10160,7 @@ if __name__ == "__main__":
             port=int(getattr(settings.manager, "stream_proxy_port", 5445) or 0),
             lifetime_s=float(getattr(settings.manager, "stream_proxy_lifetime_s", 600.0) or 600.0),
             keepalive_s=float(getattr(settings.manager, "stream_keepalive_s", 8.0) or 8.0),
-            secret=_manager_secret(),
+            secret=agent_registry.handoff_key(),
             snapshot_fn=_build_llama_state_payload,
             is_shutting_down=lambda: _shutting_down,
         )
