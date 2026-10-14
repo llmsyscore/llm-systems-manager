@@ -233,10 +233,24 @@ Copy just `tools/installer/install.sh` from an existing manager installation usi
 
 The agent installer works on both Linux and macOS. It will ask for the manager server address so the agent knows where to register.
 
+The manager's Admin › Agents page (Manage ▾ → Enrollment) shows two values for new agents: the **enrollment secret**, which a new machine must send to register, and the manager's **CA fingerprint**. Pass both to the installer, or copy the ready-made command from that menu:
+
+```bash
+sudo bash install.sh --mode 5 -- --manager-url https://<manager-host>:5443 --ca-fingerprint <fingerprint> --enrollment-secret <secret>
+```
+
+With the fingerprint the agent checks the manager's certificate before it sends anything and talks to the manager over TLS from the start. Without it the agent registers over plain HTTP and receives the certificate after approval. An agent that arrives without the secret while one is set is turned away; the agent log says the secret is missing and shows the install command to run. The same values can be given as environment variables (`LLMSYS_ENROLLMENT_SECRET`, `LLMSYS_CA_FINGERPRINT`); the Docker Compose file takes `LSM_ENROLLMENT_SECRET`, and the deb/rpm agent package asks for the secret during install (or takes `LLMSYS_CFG_ENROLLMENT_SECRET`).
+
 Or you can optionally download and run the installer from github
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+```
+
+**If an agent is waiting for a secure connection.** The agent log shows a line that starts with `control channel:` and mentions `holding the token`, and the agent does not register or report. This happens when the agent already has the manager's certificate but its settings still point at the manager's plain HTTP address, and the manager's secure address does not answer or its certificate has changed. To fix it, either make sure the manager's https port (5443 by default) can be reached from the agent, or run the installer again with the fingerprint shown in Admin › Agents (Manage ▾ → Enrollment):
+
+```bash
+sudo bash install.sh --mode 5 -- --update --ca-fingerprint <fingerprint>
 ```
 
 ### Step 2: Start the Agent (if not started during the installation)
@@ -257,7 +271,7 @@ launchctl start com.llm-systems-agent
 
 New machines can register only while enrollment is open. Enrollment is open for 15 minutes after each manager start; after that, open it from **Admin › Agents** with **Open enrollment** before starting the agent (each click adds 15 minutes, and **Close enrollment** sits in the **Manage ▾** menu). The header chip shows whether enrollment is open and how long remains. An agent that registers while enrollment is closed keeps trying on its own and appears as soon as enrollment opens.
 
-New agents must then be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting.
+New agents must then be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting. A new secret made on Admin › Agents reaches approved agents by itself; only machines installed later need the new value.
 
 1. Open the dashboard in your browser
 2. Go to the **Admin** tab
@@ -301,6 +315,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].hsts_max_age_s` | `Strict-Transport-Security` max-age emitted on HTTPS responses; `0` = off. Leave it off while the plain-HTTP port shares the hostname — HSTS preserves the port | `0` |
 | `[manager.agents].enrollment_mode` | When new machines may register and wait for approval: `auto` opens enrollment for one window after each manager start, `open` keeps it open and `closed` keeps it closed until changed here or on Admin › Agents (in `auto`, a change made on Admin › Agents lasts until the next manager start). Applies without a restart | `auto` |
 | `[manager.agents].enrollment_window_min` | Minutes enrollment stays open after a start in `auto` mode, and per **Open enrollment** click | `15` |
+| `[manager.agents].enrollment_secret` | Value new machines must send to register. Blank lets any machine register while enrollment is open. Made at install on new managers; Admin › Agents can make a new one. Applies without a restart | blank |
 | `[manager.security].anon_request_budget_per_min` | How many requests per minute the manager answers on the pages and routes that need no login or token (agent registration, the waiting-agent status check, the login page). Past the budget it answers "too many requests" until the minute is over. `0` turns the limit off. See [Protecting the Manager from Request Floods](#protecting-the-manager-from-request-floods) | `600` |
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |

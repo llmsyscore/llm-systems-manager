@@ -118,7 +118,7 @@ def test_reissue_check_ignores_an_address_left_out_of_the_san(install, monkeypat
     install["agents"][AID] = a
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
-    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent, csr_pem=None: pytest.fail("reissued"))
     body = {"has_tls_cert": True, "tls_san_ips": ["10.0.0.5"]}
     assert ar._maybe_issue_tls_bundle(a, body) is None
 
@@ -129,7 +129,7 @@ def test_reissue_check_still_fires_for_a_missing_own_address(install, monkeypatc
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
     monkeypatch.setattr(ar, "save_agents", lambda d: None)
-    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: {"expires_at": "x"})
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent, csr_pem=None: {"expires_at": "x"})
     out = ar._maybe_issue_tls_bundle(a, {"has_tls_cert": True, "tls_san_ips": ["10.9.9.9"]})
     assert out == {"expires_at": "x", "reason": "san-mismatch"}
 
@@ -139,7 +139,7 @@ def test_reissue_check_reads_ipv6_sans_in_any_spelling(install, monkeypatch):
     install["agents"][AID] = a
     monkeypatch.setattr(ar._deps, "settings", type("S", (), {"manager": type("M", (), {
         "security": type("Sec", (), {"tls_rotation_warn_days": 30})})}), raising=False)
-    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent, csr_pem=None: pytest.fail("reissued"))
     body = {"has_tls_cert": True, "tls_san_ips": ["2001:DB8:0:0:0:0:0:5"]}
     assert ar._maybe_issue_tls_bundle(a, body) is None
 

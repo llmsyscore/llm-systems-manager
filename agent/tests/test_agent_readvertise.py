@@ -57,6 +57,7 @@ def _ns(bind_host: str = "0.0.0.0", lan_ip=None, post_ok: bool = True) -> dict:
         "_tls_enabled": lambda: True,
         "_capabilities": lambda: {},
         "_provider_specs": lambda: [],
+        "_enrollment_headers": lambda extra=None: dict(extra or {}),
         "_last_advertised_host": None,
         "_READVERTISE_RETRY_S": 600.0,
         "_readvertise_retry_at": 0.0,
@@ -207,6 +208,7 @@ def test_first_heartbeat_follows_the_token_within_a_second():
 
     class Cfg:
         HEARTBEAT_INTERVAL_S = 60
+        MANAGER_URL = "https://manager:5000"
 
         @property
         def COLLECTION_ENABLED(self):

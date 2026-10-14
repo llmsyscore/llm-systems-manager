@@ -4,11 +4,13 @@ case "$1" in
     if [ -f /usr/share/debconf/confmodule ]; then
       . /usr/share/debconf/confmodule
       for pair in manager-url:LLMSYS_CFG_MANAGER_URL \
-                  alarm-engine-url:LLMSYS_CFG_ALARM_ENGINE_URL; do
+                  alarm-engine-url:LLMSYS_CFG_ALARM_ENGINE_URL \
+                  enrollment-secret:LLMSYS_CFG_ENROLLMENT_SECRET; do
         RET=""
         db_get "llm-systems-agent/${pair%%:*}" || true
         if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
       done
+      db_reset llm-systems-agent/enrollment-secret || true
       db_stop || true
     fi
     llmsys_agent_configure "${2:-}"

@@ -52,8 +52,10 @@ if [[ -f "$REAL" ]]; then
   # Keep a live management_token across re-runs (Mode 3 offers it as the default).
   PREV_MGMT_TOKEN="$($SUDO sed -nE 's/^[[:space:]]*management_token[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$REAL" | head -n1)"
   [[ "$PREV_MGMT_TOKEN" == "REPLACE_ME" ]] && PREV_MGMT_TOKEN=""
+  PREV_ENROLLMENT_SECRET="$($SUDO sed -nE 's/^[[:space:]]*enrollment_secret[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$REAL" | head -n1)"
 fi
 : "${PREV_MGMT_TOKEN:=}"
+: "${PREV_ENROLLMENT_SECRET:=}"
 
 # Copy template
 $SUDO cp -a "$EXAMPLE" "$REAL"
@@ -368,6 +370,13 @@ fi
 # only on the AE host would make the manager hand agents a blank token and every
 # push would 401. The operator must then set the SAME ingest_token in both hosts'
 # config and restart, which the warning below points out.
+# Enrollment secret new agents must send to register; a re-run keeps the live value.
+ENROLLMENT_SECRET=""
+if (( HAS_MGR )); then
+  ENROLLMENT_SECRET="${PREV_ENROLLMENT_SECRET:-$(openssl rand -hex 32)}"
+  ok "enrollment secret ready (new agents must present it to register)"
+fi
+
 INGEST_TOKEN=""
 INGEST_COMMENTED=0
 # management_token gates the AE's rules/alerts/notifications routes. A distinct
@@ -511,6 +520,7 @@ trap '$SUDO rm -f "${_CB_VALS:-}"' EXIT
   printf 'MGMT_TOKEN=%s\n'                  "$MGMT_TOKEN"
   printf 'MGMT_COMMENTED=%s\n'              "$MGMT_COMMENTED"
   printf 'MGR_MGMT_TOKEN_PASTE=%s\n'        "$MGR_MGMT_TOKEN_PASTE"
+  printf 'ENROLLMENT_SECRET=%s\n'           "$ENROLLMENT_SECRET"
   printf 'INFLUX_HOSTNAME=%s\n'             "$INFLUX_HOSTNAME"
   printf 'INFLUX_PORT=%s\n'                 "$INFLUX_PORT"
   printf 'TELEMETRY_REPORT=%s\n'            "$([[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] && echo true || echo false)"
@@ -584,6 +594,7 @@ mgr_ingest_paste      = vals.get("MGR_INGEST_TOKEN_PASTE", "")
 mgmt_token_val        = vals.get("MGMT_TOKEN", "")
 mgmt_commented_flag   = vals.get("MGMT_COMMENTED") == "1"
 mgr_mgmt_paste        = vals.get("MGR_MGMT_TOKEN_PASTE", "")
+enrollment_secret_val = vals.get("ENROLLMENT_SECRET", "")
 influx_host        = vals.get("INFLUX_HOSTNAME", "")
 influx_port        = vals.get("INFLUX_PORT", "")
 
@@ -616,6 +627,8 @@ if has_mgr:
         text = sub_in_section(text, "manager.auth", "username", admin_user)
     if admin_hash:
         text = sub_in_section(text, "manager.auth", "password_hash", admin_hash)
+    if enrollment_secret_val:
+        text = sub_in_section(text, "manager.agents", "enrollment_secret", enrollment_secret_val)
 
 # ── Alarm-engine-side keys ──
 if has_ae:
@@ -928,5 +941,26 @@ if (( MGMT_GENERATED )); then
   The alarm engine logs "ALARM ENGINE AUTH" at startup and the manager's
   Admin → System Health card shows "auth open" until step 3 is done.
 
+EOF
+fi
+
+# Enrollment secret and CA fingerprint for agents on other machines.
+if (( HAS_MGR )) && [[ -n "$ENROLLMENT_SECRET" ]]; then
+  _CA_FP=""
+  if $SUDO test -f "$INSTALL_DIR/data/internal-ca.crt" 2>/dev/null; then
+    _CA_FP="$($SUDO openssl x509 -noout -fingerprint -sha256 -in "$INSTALL_DIR/data/internal-ca.crt" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f' || true)"
+  fi
+  cat <<EOF
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │ Installing agents on other machines                                  │
+  └──────────────────────────────────────────────────────────────────────┘
+    Enrollment secret (new agents need it):   ${ENROLLMENT_SECRET}
+    Manager CA fingerprint (SHA-256):          ${_CA_FP:-printed on Admin › Agents after the first start}
+
+    On each agent host:
+      sudo bash install.sh --mode 5 -- --manager-url <manager-url> \\
+           --ca-fingerprint <fingerprint> --enrollment-secret <secret>
+    Both values are also on Admin › Agents → Manage ▾ → Enrollment.
 EOF
 fi

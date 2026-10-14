@@ -156,3 +156,10 @@ def test_universal_installer_has_no_pid_tempfiles():
     hits = [ln for ln in UNIVERSAL_SH.read_text().splitlines()
             if re.search(r'="/tmp/[^"]*\$\$', ln)]
     assert not hits, f"PID-based temp paths remain: {hits}"
+
+
+def test_enrollment_secret_stays_out_of_argv_and_logs():
+    src = AGENT_INSTALL_SH.read_text()
+    body = re.search(r"^_write_enrollment_secret\(\) \{.*?^\}", src, re.MULTILINE | re.DOTALL).group(0)
+    assert "tee" in body and 'printf \'%s\' "$ENROLLMENT_SECRET"' in body
+    assert "echo \"$ENROLLMENT_SECRET" not in src and "echo $ENROLLMENT_SECRET" not in src

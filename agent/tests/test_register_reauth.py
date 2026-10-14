@@ -89,9 +89,9 @@ def test_register_posts_carry_bearer_token():
     for m in posts:
         assert "headers=" in m.group(1), \
             f"register POST missing Authorization headers: {m.group(1)[:120]}"
-    assert 'reg_headers = {"Authorization": f"Bearer {cached}"} if cached else {}' \
+    assert '_enrollment_headers({"Authorization": f"Bearer {cached}"} if cached else None)' \
         in srcs["registry_register_blocking"]
-    assert 'headers={"Authorization": f"Bearer {tok}"}' in srcs["_post_registration"]
+    assert 'headers=_enrollment_headers({"Authorization": f"Bearer {tok}"})' in srcs["_post_registration"]
 
 
 def test_403_handler_does_not_clobber_registration_body():

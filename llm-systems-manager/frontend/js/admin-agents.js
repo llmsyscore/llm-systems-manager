@@ -141,6 +141,10 @@
     agents: (typeof _adminAgentsCache !== 'undefined' && _adminAgentsCache) || [],
     global: (typeof _adminGlobal !== 'undefined' && _adminGlobal) || {},
     enrollment: (typeof _adminEnrollment !== 'undefined' && _adminEnrollment) || null,
+    secretRequired: typeof _adminEnrollSecretRequired !== 'undefined' && !!_adminEnrollSecretRequired,
+    caFingerprint: (typeof _adminCaFingerprint !== 'undefined' && _adminCaFingerprint) || '',
+    managerHttpsUrl: (typeof _adminManagerHttpsUrl !== 'undefined' && _adminManagerHttpsUrl) || '',
+    pageOrigin: (typeof location !== 'undefined' && location.origin) || '',
     providers: (typeof _adminProviders !== 'undefined' && _adminProviders) || [],
     poolProviders: (typeof _adminPoolProviders !== 'undefined' && _adminPoolProviders) || [],
     hostAuto: typeof _adminHostAutoDetected !== 'undefined' && !!_adminHostAutoDetected,
@@ -391,6 +395,17 @@
     return { chip: `Enrollment <b>open</b> · ${left} min left`, cls: 'open', btn: `Extend ${e.window_min || 15} min`, close: true };
   }
   const $ = id => document.getElementById(id);
+  function secretChipText(required) {
+    return required ? { html: 'Secret <b>required</b>', cls: 'ok' } : { html: '<b>No</b> secret', cls: 'warn' };
+  }
+  // Agent install command with the parts the operator has: url, CA pin, secret.
+  function installCommand(c, secret) {
+    const parts = ['sudo bash install.sh --mode 5 --', '--manager-url', c.managerHttpsUrl || c.pageOrigin];
+    const fp = String(c.caFingerprint || '').replace(/^sha256:/, '');
+    if (fp) parts.push('--ca-fingerprint', fp);
+    if (secret) parts.push('--enrollment-secret', secret);
+    return parts.join(' ');
+  }
   function renderHeader(c) {
     const s = summary(c.agents);
     const sum = $('agSummary');
@@ -419,6 +434,12 @@
     if (ch) { ch.hidden = !en.chip; ch.innerHTML = en.chip; ch.classList.toggle('open', en.cls === 'open'); ch.classList.toggle('closed', en.cls === 'closed'); }
     if (eb) { eb.hidden = !en.btn; eb.textContent = en.btn; eb.classList.toggle('mcbtn-pri', en.cls === 'closed'); eb.classList.toggle('mcbtn-ghost', en.cls !== 'closed'); }
     if (ec) ec.hidden = !en.close;
+    const sc = secretChipText(c.secretRequired);
+    const sch = $('agSecretChip');
+    if (sch) { sch.hidden = false; sch.innerHTML = sc.html; sch.classList.toggle('ok', sc.cls === 'ok'); sch.classList.toggle('warn', sc.cls === 'warn'); }
+    const ss = $('agSecretState'), cc = $('agCaCopy');
+    if (ss) ss.textContent = c.secretRequired ? 'Secret: set — new machines must send it' : 'Secret: not set — any machine may register while enrollment is open';
+    if (cc) cc.hidden = !c.caFingerprint;
     return s;
   }
   function renderRoster(c) {
@@ -532,6 +553,11 @@
       }
       case 'updateall': closeMenus(); call('adminUpdateAll'); break;
       case 'pushca': closeMenus(); call('adminPushCaToAgents'); break;
+      case 'secretreveal': call('adminEnrollmentSecretReveal'); break;
+      case 'secretcopy': closeMenus(); call('adminEnrollmentSecretCopy'); break;
+      case 'secretrotate': closeMenus(); call('adminEnrollmentSecretRotate'); break;
+      case 'cacopy': closeMenus(); call('adminCopyText', 'CA fingerprint', ctx().caFingerprint.replace(/^sha256:/, '')); break;
+      case 'installcmd': closeMenus(); call('adminCopyInstallCommand'); break;
       case 'approveall': closeMenus(); approveAll(); break;
       case 'enroll': call('adminEnrollment', 'open'); break;
       case 'enrollclose': closeMenus(); call('adminEnrollment', 'close'); break;
@@ -582,7 +608,7 @@
   }
 
   window.AgentsView = {
-    enrollText,
+    enrollText, secretChipText, installCommand,
     FRESH_MS, ipOf, infraList, rowState, tlsInfo, showDesc, fmtAgo, clock, fingerprintShort,
     parseFilter, matches, summary, stampState, capsHtml, rolesHtml, connectionHtml, shortcutsHtml,
     drawerHtml, infraHtml, menuHtml, actionsHtml, rowHtml, render, stamp, init, openIds, refreshNow,

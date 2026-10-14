@@ -1090,6 +1090,19 @@ fi
 _AGENT_DETECTED_IP="$PRIMARY_IP"
 _LOCAL_MGR_URL="http://${_AGENT_DETECTED_IP}:5000"
 
+# Sets AGENT_ENROLL_SECRET (passed as env, never argv) and adds the CA fingerprint to AGENT_CMD.
+agent_enrollment_handoff() {
+  local _cafp _ca="$LLMSYS_INSTALL_DIR/data/internal-ca.crt"
+  AGENT_ENROLL_SECRET="$(read_toml_key enrollment_secret "$LLMSYS_INSTALL_DIR/config/llm-systems.toml")"
+  [[ "$AGENT_ENROLL_SECRET" == '""' ]] && AGENT_ENROLL_SECRET=""
+  AGENT_ENROLL_SECRET="${AGENT_ENROLL_SECRET:-${LLMSYS_ENROLLMENT_SECRET:-}}"
+  if $SUDO test -f "$_ca" 2>/dev/null; then
+    _cafp="$($SUDO openssl x509 -noout -fingerprint -sha256 -in "$_ca" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' || true)"
+    [[ -n "$_cafp" ]] && AGENT_CMD+=(--ca-fingerprint "$_cafp")
+  fi
+  return 0
+}
+
 # ── Mode 1: install the local agent now that the manager is up ─────────────
 case "$MODE" in
 1)
@@ -1127,10 +1140,11 @@ case "$MODE" in
     # outer installer, the local agent runs as the same user. Operators
     # wanting a different agent user can still override via FORWARD_ARGS.
     [[ -n "$RUN_USER_OVERRIDE" ]] && AGENT_CMD+=(--user "$RUN_USER_OVERRIDE")
+    agent_enrollment_handoff
     if (( ${#FORWARD_ARGS[@]} > 0 )); then
       AGENT_CMD+=("${FORWARD_ARGS[@]}")
     fi
-    if [[ "$MANAGER_UP_AGENT_INSTALL" == "1" ]] && "${AGENT_CMD[@]}"; then
+    if [[ "$MANAGER_UP_AGENT_INSTALL" == "1" ]] && LLMSYS_ENROLLMENT_SECRET="$AGENT_ENROLL_SECRET" "${AGENT_CMD[@]}"; then
       ok "agent installed"
       if [[ -t 0 ]]; then
         read -rp "  Start the agent now? [Y/n] " START_AGENT
@@ -1294,10 +1308,11 @@ if (( _OFFER_AGENT )); then
     case "$MODE" in
       6) AGENT_CMD+=(--role system_only --enable-monitor-influxdb-disk) ;;
     esac
+    agent_enrollment_handoff
     if [[ -f "$AGENT_INSTALL_BIN" ]]; then
       chmod +x "$AGENT_INSTALL_BIN" 2>/dev/null || true
       log "running agent installer — manager=$AGENT_MGR_URL${AGENT_AE_URL:+ alarm-engine=$AGENT_AE_URL}"
-      "${AGENT_CMD[@]}" || warn "agent installer returned non-zero — review its output above"
+      LLMSYS_ENROLLMENT_SECRET="$AGENT_ENROLL_SECRET" "${AGENT_CMD[@]}" || warn "agent installer returned non-zero — review its output above"
     else
       err "agent installer missing at $AGENT_INSTALL_BIN — rerun mode 5 or"
       err "  ${AGENT_CMD[*]}"
@@ -1462,18 +1477,24 @@ case "$MODE" in
     echo "    2. Approve this host's agent from the Admin tab → Agents"
     echo "    3. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     echo "       (SMTP creds, InfluxDB tokens; file is mode 0600)"
+    echo "    4. Installing agents elsewhere: the enrollment secret and CA fingerprint are on"
+    echo "       Admin › Agents → Manage ▾ → Enrollment (also printed above by the config step)"
     ;;
   2)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
     signin_step
     echo "    2. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
     echo "       (set real IPs, SMTP creds, InfluxDB tokens; file is mode 0600)"
+    echo "    3. Installing agents elsewhere: the enrollment secret and CA fingerprint are on"
+    echo "       Admin › Agents → Manage ▾ → Enrollment (also printed above by the config step)"
     ;;
   3)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
     signin_step
     echo "    2. Confirm the remote alarm-engine URL set in [manager].alarm_engine_url"
     echo "    3. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
+    echo "    4. Installing agents elsewhere: the enrollment secret and CA fingerprint are on"
+    echo "       Admin › Agents → Manage ▾ → Enrollment (also printed above by the config step)"
     ;;
   4)
     # Pull the manager host out of [alarm_engine].manager_url so the scp

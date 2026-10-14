@@ -139,8 +139,10 @@ gen_token() {
 }
 INGEST_TOKEN="$(gen_token)"
 MGMT_TOKEN="$(gen_token)"
+ENROLL_SECRET="$(gen_token)"
 [ ${#INGEST_TOKEN} -eq 64 ] || die "token generation failed"
 [ ${#MGMT_TOKEN} -eq 64 ]   || die "token generation failed"
+[ ${#ENROLL_SECRET} -eq 64 ] || die "token generation failed"
 
 mkdir -p "$(dirname "$TARGET")" "$LOG_DIR"
 
@@ -157,15 +159,18 @@ while IFS= read -r line || [ -n "$line" ]; do
       printf 'ingest_token = "%s"\n' "$INGEST_TOKEN" >> "$TMP" ;;
     'management_token = ""'*)
       printf 'management_token = "%s"\n' "$MGMT_TOKEN" >> "$TMP" ;;
+    'enrollment_secret = ""'*)
+      printf 'enrollment_secret = "%s"\n' "$ENROLL_SECRET" >> "$TMP" ;;
     *)
       printf '%s\n' "$line" >> "$TMP" ;;
   esac
 done < "$EXAMPLE"
 
-# All three rewrites must have landed — a drifted .example must fail loudly.
+# All four rewrites must have landed — a drifted .example must fail loudly.
 grep -q "^log_dir = \"$LOG_DIR\"" "$TMP"          || { rm -f "$TMP"; die "log_dir rewrite failed — .example drifted?"; }
 grep -q "^ingest_token = \"$INGEST_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "ingest_token rewrite failed — .example drifted?"; }
 grep -q "^management_token = \"$MGMT_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "management_token rewrite failed — .example drifted?"; }
+grep -q "^enrollment_secret = \"$ENROLL_SECRET\"" "$TMP" || { rm -f "$TMP"; die "enrollment_secret rewrite failed — .example drifted?"; }
 grep -q '^\[manager.telemetry\]' "$TMP" || { rm -f "$TMP"; die "telemetry block missing — .example drifted?"; }
 
 mv "$TMP" "$TARGET"

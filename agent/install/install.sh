@@ -55,6 +55,10 @@ MANAGER_URL="http://127.0.0.1:5000"   # placeholder default shown in the prompt;
                                        # --manager-url) and confirms reachability
                                        # before doing anything destructive.
 MANAGER_URL_EXPLICIT=false             # set true if --manager-url given on CLI
+ENROLLMENT_SECRET="${LLMSYS_ENROLLMENT_SECRET:-}"   # sent on registration; blank = none
+CA_FINGERPRINT="${LLMSYS_CA_FINGERPRINT:-}"         # sha256 of the manager CA; blank = no pin
+CA_PINNED_FILE=""                                   # set by _pin_manager_ca
+MANAGER_URL_PRE_PIN=""                              # MANAGER_URL before the pin moved it to https
 ALARM_ENGINE_URL=""                    # optional CLI override; empty → derived
 ALARM_ENGINE_URL_EXPLICIT=false        # set true if --alarm-engine-url given
 ROLE="auto"
@@ -172,6 +176,13 @@ INSTALL — agent identity
       REQUIRED — if not passed on the CLI, the installer prompts and tests
       reachability before doing anything destructive. Non-interactive
       runs (no TTY) without --manager-url are refused.
+
+  --enrollment-secret V   Secret new machines must send to register (Admin › Agents →
+                          Manage ▾ → Enrollment). Also LLMSYS_ENROLLMENT_SECRET.
+  --ca-fingerprint FP     SHA-256 fingerprint of the manager's CA (same place). The
+                          installer fetches the CA, checks it, and the agent talks
+                          TLS from its first request. Also LLMSYS_CA_FINGERPRINT.
+                          With --update it replaces the stored CA.
 
   --alarm-engine-url URL
       Base URL of the alarm engine the agent should push samples to
@@ -415,6 +426,8 @@ while [[ $# -gt 0 ]]; do
     --hostname)     _need_arg "$1" "${2:-}"; HOSTNAME_OVERRIDE="$2"; shift 2 ;;
     --description)  _need_arg "$1" "${2:-}"; DESCRIPTION_OVERRIDE="$2"; shift 2 ;;
     --manager-url)  _need_arg "$1" "${2:-}"; MANAGER_URL="$2"; MANAGER_URL_EXPLICIT=true; shift 2 ;;
+    --enrollment-secret) _need_arg "$1" "${2:-}"; ENROLLMENT_SECRET="$2"; shift 2 ;;
+    --ca-fingerprint)    _need_arg "$1" "${2:-}"; CA_FINGERPRINT="$2"; shift 2 ;;
     --alarm-engine-url) _need_arg "$1" "${2:-}"; ALARM_ENGINE_URL="$2"; ALARM_ENGINE_URL_EXPLICIT=true; shift 2 ;;
     --role)         _need_arg "$1" "${2:-}"; ROLE="$2"; shift 2 ;;
     --enable-perf)  ENABLE_PERF=true;  PERF_FLAG_EXPLICIT=true; shift ;;
@@ -1046,21 +1059,30 @@ _fetch_agent_into() {
     fi
   fi
 
+  local _ca_file; _ca_file="$(_yaml_scalar "$cfg" TLS_CA_FILE)"
+  [[ -z "$_ca_file" ]] && _ca_file="data/tls-ca.pem"
+  [[ "$_ca_file" != /* ]] && _ca_file="$INSTALL_DIR/$_ca_file"
+  local _cacert=""
+  [[ "$mgr_url" == https://* && -f "$_ca_file" ]] && _cacert="$_ca_file"
+
   local tmpdir; tmpdir="$(mktemp -d)"
   # The bearer header travels in a curl -K config file, not argv.
   printf 'header = "Authorization: Bearer %s"\n' "$tok" > "$tmpdir/curl-auth.cfg"
   echo "  Downloading agent/ from $mgr_url/api/agent-tarball"
-  if ! curl -fsSL -K "$tmpdir/curl-auth.cfg" -D "$tmpdir/resp-headers" \
+  # Tries the manager's internal CA first, then the system trust store.
+  if [[ -n "$_cacert" ]] && curl -fsSL --cacert "$_cacert" -K "$tmpdir/curl-auth.cfg" -D "$tmpdir/resp-headers" \
             "$mgr_url/api/agent-tarball" -o "$tmpdir/agent.tar.gz"; then
+    echo "  ✓ downloaded using the manager's internal CA"
+  elif curl -fsSL -K "$tmpdir/curl-auth.cfg" -D "$tmpdir/resp-headers" \
+            "$mgr_url/api/agent-tarball" -o "$tmpdir/agent.tar.gz"; then
+    [[ "$mgr_url" == https://* ]] && echo "  ✓ downloaded using the system's trusted certificates"
+  else
     echo "  ⚠ download failed from $mgr_url/api/agent-tarball" >&2
     rm -rf "$tmpdir"
     return 1
   fi
 
   # Verify the manager's CA signature over the tarball before touching it.
-  local _ca_file; _ca_file="$(_yaml_scalar "$cfg" TLS_CA_FILE)"
-  [[ -z "$_ca_file" ]] && _ca_file="data/tls-ca.pem"
-  [[ "$_ca_file" != /* ]] && _ca_file="$INSTALL_DIR/$_ca_file"
   if ! _verify_tarball_sig "$tmpdir/agent.tar.gz" "$tmpdir/resp-headers" \
                            "$_ca_file" "${LLMSYS_ALLOW_INSECURE_UPDATE:-0}"; then
     rm -rf "$tmpdir"
@@ -1227,6 +1249,118 @@ fi
 # ──────────────────────────────────────────────────────────────────────────
 # Update mode — redeploy files, refresh venv, merge new config keys, restart
 # ──────────────────────────────────────────────────────────────────────────
+# Prints 64 lowercase hex digits for any accepted fingerprint spelling; rc 1 otherwise.
+_normalize_fingerprint() {
+  local v="${1:-}"
+  v="$(printf '%s' "$v" | tr -d '[:space:]:' | tr 'A-Z' 'a-z')"
+  v="${v#sha256}"
+  [[ "$v" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$v"
+}
+
+# GET $MANAGER_URL/api/pki/ca; prints the JSON body (curl -k: the pin, not the chain, is the check).
+_probe_pki_ca() {
+  curl -fsSk -m 10 "$MANAGER_URL/api/pki/ca" 2>/dev/null
+}
+
+# Fetches the manager CA, checks it against CA_FINGERPRINT, keeps it in a temp file,
+# and moves MANAGER_URL to the advertised https URL when the manager serves TLS.
+_pin_manager_ca() {
+  local want body tmp got https_url
+  if ! command -v curl >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
+    echo "ERROR: --ca-fingerprint needs curl and openssl" >&2
+    return 1
+  fi
+  want="$(_normalize_fingerprint "$CA_FINGERPRINT")" || {
+    echo "ERROR: --ca-fingerprint must be the SHA-256 fingerprint (64 hex digits, colons optional)" >&2
+    return 1
+  }
+  body="$(_probe_pki_ca)" || { echo "ERROR: could not read $MANAGER_URL/api/pki/ca" >&2; return 1; }
+  tmp="$(mktemp)"
+  if ! printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.stdout.write(d.get("ca_pem") or "")' > "$tmp" 2>/dev/null \
+     || [[ ! -s "$tmp" ]]; then
+    echo "ERROR: manager returned no CA certificate from $MANAGER_URL/api/pki/ca" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  https_url="$(printf '%s' "$body" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("https_url") or "").rstrip("/"))')"
+  got="$(openssl x509 -noout -fingerprint -sha256 -in "$tmp" 2>/dev/null | sed -E 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"
+  if [[ "$got" != "$want" ]]; then
+    echo "ERROR: manager CA fingerprint does not match the pin" >&2
+    echo "       served:  ${got:-<unreadable>}" >&2
+    echo "       pinned:  $want" >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  CA_PINNED_FILE="$tmp"
+  MANAGER_URL_PRE_PIN="$MANAGER_URL"
+  echo "  ✓ manager CA verified against the pinned fingerprint"
+  if [[ "$https_url" == https://* ]]; then
+    MANAGER_URL="$https_url"
+    echo "  ✓ agent will talk to the manager over TLS from the start: $MANAGER_URL"
+  else
+    echo "  ⓘ manager TLS is off; the agent keeps $MANAGER_URL"
+  fi
+  _install_pinned_ca
+}
+
+# Copies the pinned CA to data/tls-ca.pem owned by the agent user; no-op until USER_GROUP is known.
+_install_pinned_ca() {
+  local dest="$INSTALL_DIR/data/tls-ca.pem"
+  [[ -n "${USER_GROUP:-}" && -n "$CA_PINNED_FILE" && "$CA_PINNED_FILE" != "$dest" ]] || return 0
+  $SUDO mkdir -p "$INSTALL_DIR/data"
+  $SUDO cp "$CA_PINNED_FILE" "$dest"
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$dest"
+  $SUDO chmod 0644 "$dest"
+  rm -f "$CA_PINNED_FILE"
+  CA_PINNED_FILE="$dest"
+}
+
+# Replaces only the MANAGER_URL: line of an agent_config.yaml, atomically, keeping mode and owner.
+_set_manager_url_in_config() {
+  $SUDO python3 - "$1" "$2" <<'PYEOF'
+import json, os, re, sys, tempfile
+path, url = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    lines = f.read().splitlines(keepends=True)
+for i, line in enumerate(lines):
+    m = re.match(rb"^MANAGER_URL:[ \t]*(\"[^\"]*\"|'[^']*'|[^\s#]*)(.*)$", line, re.DOTALL)
+    if m:
+        lines[i] = b"MANAGER_URL: " + json.dumps(url).encode() + m.group(2)
+        break
+else:
+    sys.exit("MANAGER_URL line not found in " + path)
+st = os.stat(path)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".agent_config.")
+try:
+    with os.fdopen(fd, "wb") as f:
+        f.write(b"".join(lines))
+    os.chmod(tmp, st.st_mode & 0o7777)
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except PermissionError:
+        pass
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp)
+    raise
+PYEOF
+}
+
+# Writes the enrollment secret beside the token (0600); an update without a new value keeps the old file.
+_write_enrollment_secret() {
+  local dest="$INSTALL_DIR/data/enrollment-secret"
+  if [[ -z "$ENROLLMENT_SECRET" ]]; then
+    [[ "$DO_UPDATE" == true && -f "$dest" ]] && echo "  ⓘ enrollment secret kept from the previous install"
+    return 0
+  fi
+  $SUDO mkdir -p "$INSTALL_DIR/data"
+  ( umask 077; printf '%s' "$ENROLLMENT_SECRET" | $SUDO tee "$dest" >/dev/null )
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$dest"
+  $SUDO chmod 0600 "$dest"
+  echo "  ✓ enrollment secret stored"
+}
+
 if $DO_UPDATE; then
   echo "── LLM Systems Agent UPDATER ───────────────────────────────────────────"
   echo "  install-dir: $INSTALL_DIR"
@@ -1246,6 +1380,10 @@ if $DO_UPDATE; then
     echo "ERROR: $INSTALL_DIR/agent_config.yaml is missing — refusing to update an" >&2
     echo "       incomplete installation. Run the installer without --update." >&2
     exit 1
+  fi
+  if [[ -n "$CA_FINGERPRINT" ]]; then
+    $MANAGER_URL_EXPLICIT || MANAGER_URL="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" MANAGER_URL)"
+    _pin_manager_ca || exit 1
   fi
 
   # ── 0. Fetch the latest agent/ from upstream. The self-update source
@@ -1286,6 +1424,13 @@ if $DO_UPDATE; then
     exit 1
   fi
   _ensure_agent_state_dir
+  if [[ -n "$CA_FINGERPRINT" ]]; then
+    _install_pinned_ca
+    if [[ "$MANAGER_URL" == https://* ]]; then
+      _set_manager_url_in_config "$INSTALL_DIR/agent_config.yaml" "$MANAGER_URL" || exit 1
+      echo "  ✓ agent_config.yaml now points at $MANAGER_URL"
+    fi
+  fi
   # Same home-dir resolution as the install path (needed for the
   # plist refresh on macOS).
   USER_HOME="$(eval echo "~$USER_ARG" 2>/dev/null || true)"
@@ -1505,6 +1650,7 @@ if $DO_UPDATE; then
   #    otherwise every --update run was leaving a timestamped .bak even
   #    when nothing changed (operators reported piles of identical .bak
   #    files accumulating in INSTALL_DIR).
+  _write_enrollment_secret
   echo
   echo "── Reconciling live config with agent_config.yaml.example ──────────────"
   # $SUDO so the reconcile can rewrite the 0600 agent_config.yaml when
@@ -1877,6 +2023,7 @@ PYEOF
 
   echo
   echo "── Update complete ─────────────────────────────────────────────────────"
+  echo "  enrollment:  $([[ -f "$INSTALL_DIR/data/enrollment-secret" ]] && echo "secret on file" || echo "no secret")"
   echo "  agent_config.yaml reconciled against the example — your values were kept"
   echo "  and new keys merged in place. See the notes above; changes apply on restart."
   if [[ "$AGENT_OS" == "linux" ]]; then
@@ -1906,7 +2053,7 @@ _probe_http_code() {
     # `-w "%{http_code}"` prints "000" on connection failure but curl still
     # exits non-zero — capture into a var so set -e doesn't fire and so we
     # don't accidentally double-emit "000" via a fallback echo.
-    code="$(curl -s -m 5 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)" || code="${code:-000}"
+    code="$(curl -s -m 5 ${CA_PINNED_FILE:+--cacert "$CA_PINNED_FILE"} -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)" || code="${code:-000}"
     echo "${code:-000}"
   elif command -v python3 >/dev/null 2>&1; then
     code="$(python3 - "$url" 2>/dev/null <<'PYEOF'
@@ -1968,6 +2115,14 @@ if ! $MANAGER_URL_EXPLICIT; then
   fi
 fi
 
+if [[ -z "$ENROLLMENT_SECRET" && -t 0 && "$DO_UPDATE" != true ]]; then
+  echo
+  echo "── Enrollment secret ────────────────────────────────────────────────────"
+  echo "  If the manager requires one, copy it from Admin › Agents → Manage ▾ →"
+  echo "  Enrollment. Press ENTER to skip."
+  read -rsp "  Enrollment secret: " ENROLLMENT_SECRET; echo
+fi
+
 # Normalize: trim whitespace + trailing slash, auto-prepend http:// when
 # missing a scheme, and append the given default port when missing one. So
 # with port 5000, "192.0.2.10" → "http://192.0.2.10:5000" and
@@ -2022,10 +2177,11 @@ _alarm_engine_url_from_manager() {
   if [[ -n "$found" ]]; then
     echo "$found"; return 0
   fi
-  if [[ "$MANAGER_URL" =~ ^(https?://[^:/]+)(:[0-9]+)?(/.*)?$ ]]; then
+  local base="${MANAGER_URL_PRE_PIN:-$MANAGER_URL}"
+  if [[ "$base" =~ ^(https?://[^:/]+)(:[0-9]+)?(/.*)?$ ]]; then
     echo "${BASH_REMATCH[1]}:8081"
   else
-    echo "$MANAGER_URL"
+    echo "$base"
   fi
 }
 
@@ -2086,6 +2242,9 @@ fi
 # brief reachability gap that the operator just needs to wait through
 # (instead of re-running the whole install). On TTY we drop to a
 # Retry/Quit prompt; on non-TTY there's no way to ask so we exit 1.
+if [[ -n "$CA_FINGERPRINT" ]] && ! $DO_UNINSTALL; then
+  _pin_manager_ca || exit 1
+fi
 CHECK_ATTEMPT=0
 MAX_CHECK_ATTEMPTS=3
 RETRY_SLEEP_S=5
@@ -2174,7 +2333,7 @@ _HOSTNAME_TO_REGISTER="${HOSTNAME_OVERRIDE:-$(hostname)}"
 echo
 echo "── Checking hostname uniqueness on the manager ────────────────────────"
 echo "  Hostname this agent will register as: $_HOSTNAME_TO_REGISTER"
-_AGENTS_JSON="$(curl -fsS -m 5 "$MANAGER_URL/api/agents" 2>/dev/null || true)"
+_AGENTS_JSON="$(curl -fsS -m 5 ${CA_PINNED_FILE:+--cacert "$CA_PINNED_FILE"} "$MANAGER_URL/api/agents" 2>/dev/null || true)"
 if [[ -z "$_AGENTS_JSON" ]] || ! printf '%s' "$_AGENTS_JSON" | grep -q '"agents"'; then
   echo "  ⓘ couldn't read the registry (HTTP 401/403 or not JSON) — skipping"
   echo "    check. If the hostname collides at runtime the agent's CRITICAL"
@@ -3624,6 +3783,10 @@ echo "  install-dir:  $INSTALL_DIR"
 echo "  hostname:     ${HOSTNAME_OVERRIDE:-$(hostname) (auto)}"
 echo "  description:  ${DESCRIPTION_OVERRIDE:-(none)}"
 echo "  manager-url:  $MANAGER_URL"
+_enroll_state="no secret"
+[[ -n "$ENROLLMENT_SECRET" || -f "$INSTALL_DIR/data/enrollment-secret" ]] && _enroll_state="secret on file"
+echo "  enrollment:   $_enroll_state"
+echo "  manager CA:   $([[ -n "$CA_PINNED_FILE" ]] && echo "pinned at install" || echo "delivered after approval")"
 echo "  alarm-url:    $(_alarm_engine_url_from_manager)"
 echo "  role:         $ROLE"
 echo "  enable-perf:  $ENABLE_PERF"
@@ -3897,6 +4060,8 @@ if [[ -z "$USER_GROUP" ]]; then
   exit 1
 fi
 
+_install_pinned_ca
+
 USER_HOME="$(eval echo "~$USER_ARG" 2>/dev/null || true)"
 if [[ -z "$USER_HOME" || "$USER_HOME" == "~$USER_ARG" ]]; then
   if command -v getent >/dev/null 2>&1; then
@@ -3914,6 +4079,7 @@ fi
 # 1. Create install dir
 $SUDO mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR"
+_write_enrollment_secret
 
 # Anonymous install and crash report consent: writes state/install-id and state/telemetry.json.
 _tele_py="${PYTHON3:-$(command -v python3 || true)}"
@@ -4394,7 +4560,7 @@ EOF
         if [[ "$(_probe_http_code "$MANAGER_URL/api/agents")" == "200" ]]; then
           # Look up our hostname in the registry.
           _expected_host="${HOSTNAME_OVERRIDE:-$(hostname)}"
-          if curl -fsS "$MANAGER_URL/api/agents" 2>/dev/null \
+          if curl -fsS ${CA_PINNED_FILE:+--cacert "$CA_PINNED_FILE"} "$MANAGER_URL/api/agents" 2>/dev/null \
                | grep -q "\"hostname\":[[:space:]]*\"$_expected_host\""; then
             _registered=true
             break

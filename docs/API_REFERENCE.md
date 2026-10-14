@@ -835,14 +835,14 @@ Manually triggers one reconciler tick (observe current state, replan, refresh pr
 These endpoints manage the pool of monitoring agents. Most are **[Admin]** only. A small number are called internally by agents themselves (marked "Agent-facing") and are not intended for manual use.
 
 ### `GET /api/agents`
-Returns the list of all registered agents with their status, capabilities, and last-seen timestamp, plus `manager_version` and `collect_interval_s` (the configured metrics-collection interval).
+Returns the list of all registered agents with their status, capabilities, and last-seen timestamp, plus `manager_version` and `collect_interval_s` (the configured metrics-collection interval), plus `enrollment_secret_required` (whether new machines must send the enrollment secret), `ca_fingerprint` (SHA-256 of the manager's CA certificate, `sha256:` prefix) and `manager_https_url` (blank when manager TLS is off).
 
 **Access:** [Admin]
 
 ---
 
 ### `POST /api/agents/register`
-Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint. For a re-registration (same hostname + OS as an existing approved or disabled record), the agent must present its prior bearer token or its `fingerprint` body field to re-authenticate. Records last written by an agent older than `v2026.08.16-1` re-authenticate with the bearer token only. A registration that only shares its hostname with records still waiting for approval is accepted as a new waiting record when it comes from a different address; from the same address it gets the waiting record's id back and no new row. The Admin › Agents row shows the address each one came from. A machine the Manager has never seen is accepted only while enrollment is open (see `POST /api/agents/enrollment`); otherwise the reply is `503` with a `Retry-After` header and the agent simply tries again later.
+Registers a new agent with the Manager. Called automatically by the agent on first start; not a UI-facing endpoint. For a re-registration (same hostname + OS as an existing approved or disabled record), the agent must present its prior bearer token or its `fingerprint` body field to re-authenticate. Records last written by an agent older than `v2026.08.16-1` re-authenticate with the bearer token only. A registration that only shares its hostname with records still waiting for approval is accepted as a new waiting record when it comes from a different address; from the same address it gets the waiting record's id back and no new row. The Admin › Agents row shows the address each one came from. A machine the Manager has never seen is accepted only while enrollment is open (see `POST /api/agents/enrollment`); otherwise the reply is `503` with a `Retry-After` header and the agent simply tries again later. When `[manager.agents].enrollment_secret` is set, a machine the Manager does not already know must send it in the `X-Enrollment-Secret` header; otherwise the reply is `403` with `code: enrollment_secret` and nothing is recorded. Approved agents registering again with their token or fingerprint do not need it.
 
 **Limits:** the body may be at most 64 KB, text fields have length limits and `image_gen_port` must be a whole number from 1 to 65535 (`400` otherwise); at most 6 registrations per minute per source address (`429`); at most 100 registrations waiting for approval in total and 10 per source address (`429`). Waiting registrations that have not registered again for 7 days are removed by an hourly sweep; an agent whose record was removed registers again on its own.
 
@@ -863,7 +863,7 @@ Allows an agent to look up its own registration record using its bearer token. N
 ---
 
 ### `POST /api/agents/heartbeat`
-Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent. The body's `ts` (the agent's UTC wall clock, stamped just before the request is sent) is compared with the manager's clock and kept as `last_heartbeat_data.clock_skew_s` (agent minus manager, seconds); the Forecast sampler pushes it as the per-agent `forecast/agent_clock_skew_s` series behind the Agent health check's clock findings.
+Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent. The body's `ts` (the agent's UTC wall clock, stamped just before the request is sent) is compared with the manager's clock and kept as `last_heartbeat_data.clock_skew_s` (agent minus manager, seconds); the Forecast sampler pushes it as the per-agent `forecast/agent_clock_skew_s` series behind the Agent health check's clock findings. The body may carry `csr_pem` (a certificate signing request made by the agent); the certificate in the reply is then issued for that key and no private key is sent. The reply also carries `enrollment_secret` so approved agents keep the current value.
 
 **Access:** (Agent-facing)
 
@@ -998,6 +998,27 @@ Updates global agent settings that apply to all agents (for example, default pol
 Opens or closes enrollment for new machines. Body `{"action": "open"}` opens enrollment for the configured window (`[manager.agents].enrollment_window_min`, default 15 minutes) or, when it is already open with a timer, adds one more window; `{"action": "close"}` closes it. The reply carries the current `enrollment` state, which `GET /api/agents` also returns: `open`, `until`, `mode`, `window_min` and `source` (`setting`, `startup` or `manual`). In `auto` mode a manual open or close lasts until the next Manager start; in `open` or `closed` mode it stays until changed here or until the mode setting changes. Approved agents registering again and the agent on the Manager's own host are never affected by the window.
 
 **Access:** [Admin]
+
+---
+
+### `GET /api/agents/enrollment-secret`
+Returns `{"secret": "...", "set": true|false}` — the value new machines must send to register.
+
+**Access:** [Admin]
+
+---
+
+### `POST /api/agents/enrollment-secret`
+Body `{"action": "rotate"}` makes a new secret, writes it to the configuration and applies it at once. Approved agents receive the new value on their next heartbeat; new installs must use it.
+
+**Access:** [Admin]
+
+---
+
+### `GET /api/pki/ca`
+Returns the Manager's internal CA certificate (`ca_pem`), its SHA-256 fingerprint (`fingerprint`, `sha256:` prefix) and the Manager's https URL (`https_url`, blank when TLS is off). The agent installer reads this when given `--ca-fingerprint` and refuses a certificate whose fingerprint does not match.
+
+**Access:** (no login)
 
 ---
 
