@@ -467,6 +467,8 @@ llm-systems-influx-setup        # onboards InfluxDB, creates the buckets + scope
                                 # tokens, and writes [influxdb.tokens] into the config
 brew services start llm-systems-manager
 brew services start llm-systems-alarm-engine
+llm-systems-admin-password reset   # temporary admin password for the first sign-in;
+                                   # the dashboard asks you to replace it right away
 ```
 
 `llm-systems-influx-setup` (installed by the manager formula) needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships separately). To do it by hand instead: `brew services start influxdb@2`, `influx setup`, create the buckets/tokens, and fill `[influxdb.tokens]` in the TOML.
