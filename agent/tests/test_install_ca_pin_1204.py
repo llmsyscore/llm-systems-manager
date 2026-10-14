@@ -149,9 +149,9 @@ def test_secret_file_written_0600_and_kept_on_update(tmp_path):
     p = inst / "data" / "enrollment-secret"
     assert p.read_text() == "first" and (p.stat().st_mode & 0o777) == 0o600
     r = _bash(base + '\nENROLLMENT_SECRET=""; DO_UPDATE=true; _write_enrollment_secret')
-    assert p.read_text() == "first"
+    assert r.returncode == 0 and p.read_text() == "first"
     r = _bash(base + '\nENROLLMENT_SECRET="second"; DO_UPDATE=true; _write_enrollment_secret')
-    assert p.read_text() == "second"
+    assert r.returncode == 0 and p.read_text() == "second"
     p.unlink()
     r = _bash(base + '\nchmod() { :; }; ENROLLMENT_SECRET="third"; DO_UPDATE=false; _write_enrollment_secret')
     assert r.returncode == 0, r.stderr
