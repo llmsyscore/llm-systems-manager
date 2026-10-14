@@ -401,7 +401,7 @@ jobs:
           # Run the agent installer from the manager's DEPLOYED tree (/opt-mgr,
           # llmsys-readable). `install.sh --mode 5` installs from the raw GH
           # checkout under the runner's HOME, which the llmsys pip step can't read.
-          sudo bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
+          sudo LLMSYS_TELEMETRY=0 bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
             --manager-url "http://$DETECTED_IP:5000" --hostname ci-split-agent < /dev/null
 
       # Approve + full-TLS verification. Admin HTTP calls stay on loopback
