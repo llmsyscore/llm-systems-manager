@@ -287,7 +287,7 @@ def sched(cfg, monkeypatch):
     sent = []
     monkeypatch.setattr(telemetry, "FIRST_DELAY_S", 0)
     monkeypatch.setattr(telemetry, "TICK_S", 0)
-    monkeypatch.setattr(telemetry, "_hb_attempt", 0.0)
+    monkeypatch.setitem(telemetry._hb, "attempt", 0.0)
     monkeypatch.setattr(telemetry, "_channel_cache", {})
     monkeypatch.setattr(telemetry, "_detect_channel", lambda root: "script")
     monkeypatch.setattr(telemetry, "_deliver", lambda p: sent.append(p["event"]) or True)

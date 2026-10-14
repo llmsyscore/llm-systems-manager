@@ -532,17 +532,16 @@ def _heartbeat_age(now: Optional[float] = None) -> float:
         return float("inf")
 
 
-_hb_attempt = 0.0
+_hb = {"attempt": 0.0}
 
 
 def _heartbeat_tick() -> None:
-    global _hb_attempt
     now = time.time()
     if not enabled("heartbeat") or _heartbeat_age(now) < HEARTBEAT_EVERY_S:
         return
-    if now - _hb_attempt < HEARTBEAT_RETRY_S:
+    if now - _hb["attempt"] < HEARTBEAT_RETRY_S:
         return
-    _hb_attempt = now
+    _hb["attempt"] = now
     _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
                            channel=detect_channel(_root)))
 

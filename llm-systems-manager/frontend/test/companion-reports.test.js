@@ -23,8 +23,7 @@ describe('companion reports card', () => {
 describe('companion reports card (jsdom)', () => {
   it('clicking the heartbeat switch PUTs {heartbeat: true}', async () => {
     const { JSDOM } = await import('jsdom');
-    const body = html.replace(/<script\b[^>]*src=[^>]*><\/script>/g, '');
-    const dom = new JSDOM(body, { runScripts: 'dangerously', url: 'http://localhost/companion?tab=settings' });
+    const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/companion?tab=settings' });
     const w = dom.window;
     const calls = [];
     const TELE = { ok: true, install_report: true, crash_reports: true, heartbeat: false, pending: false, last: null };
