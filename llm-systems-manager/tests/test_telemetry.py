@@ -287,7 +287,9 @@ def sched(cfg, monkeypatch):
     sent = []
     monkeypatch.setattr(telemetry, "FIRST_DELAY_S", 0)
     monkeypatch.setattr(telemetry, "TICK_S", 0)
-    monkeypatch.setitem(telemetry._hb, "attempt", 0.0)
+    for k in ("attempt", "sent", "not_before"):
+        monkeypatch.setitem(telemetry._hb, k, 0.0)
+    monkeypatch.setattr(telemetry, "_spread_s", lambda d: 0)
     monkeypatch.setattr(telemetry, "_channel_cache", {})
     monkeypatch.setattr(telemetry, "_detect_channel", lambda root: "script")
     monkeypatch.setattr(telemetry, "_deliver", lambda p: sent.append(p["event"]) or True)
@@ -352,3 +354,88 @@ def test_scheduler_first_start_paths(cfg, sched):
 def test_scheduler_prewarms_channel(cfg, sched):
     sched()
     assert str(Path(telemetry._root).resolve()) in telemetry._channel_cache
+
+
+def test_failed_heartbeat_waits_an_hour_before_the_next_attempt(cfg, monkeypatch):
+    telemetry._settings.manager.telemetry.heartbeat = True
+    _stamp(cfg, 25 * 3600)
+    for k in ("attempt", "sent", "not_before"):
+        monkeypatch.setitem(telemetry._hb, k, 0.0)
+    monkeypatch.setattr(telemetry, "_detect_channel", lambda root: "script")
+    tries = []
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: tries.append(p["event"]) and False)
+    telemetry._heartbeat_tick()
+    telemetry._heartbeat_tick()
+    assert tries == ["heartbeat"]
+    telemetry._hb["attempt"] -= telemetry.HEARTBEAT_RETRY_S + 1
+    telemetry._heartbeat_tick()
+    assert tries == ["heartbeat", "heartbeat"]
+
+
+def test_sent_heartbeat_is_not_repeated_when_the_stamp_write_fails(cfg, monkeypatch):
+    telemetry._settings.manager.telemetry.heartbeat = True
+    _stamp(cfg, 25 * 3600)
+    for k in ("attempt", "sent", "not_before"):
+        monkeypatch.setitem(telemetry._hb, k, 0.0)
+    monkeypatch.setattr(telemetry, "_detect_channel", lambda root: "script")
+    monkeypatch.setattr(telemetry, "send", lambda payload, endpoint, timeout=5.0: True)
+
+    def no_stamp(path, text):
+        raise OSError("read-only")
+    monkeypatch.setattr(telemetry, "_write_stamp", no_stamp)
+    sent = []
+    real = telemetry._deliver
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: sent.append(p["event"]) or real(p))
+    try:
+        telemetry._heartbeat_tick()
+    except OSError:
+        pass  # the stamp write failing is the case under test
+    assert sent == ["heartbeat"] and telemetry._heartbeat_age() > telemetry.HEARTBEAT_EVERY_S
+    telemetry._hb["attempt"] -= telemetry.HEARTBEAT_RETRY_S + 1
+    telemetry._heartbeat_tick()
+    assert sent == ["heartbeat"]
+
+
+def test_heartbeat_spread_is_stable_per_install_and_delays_the_first_tick(cfg, monkeypatch):
+    a = telemetry._spread_s(cfg)
+    assert 0 <= a < telemetry.HEARTBEAT_SPREAD_S and telemetry._spread_s(cfg) == a
+    telemetry._settings.manager.telemetry.heartbeat = True
+    _stamp(cfg, 25 * 3600)
+    for k in ("attempt", "sent"):
+        monkeypatch.setitem(telemetry._hb, k, 0.0)
+    monkeypatch.setitem(telemetry._hb, "not_before", time.time() + 600)
+    tries = []
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: tries.append(p["event"]) or True)
+    telemetry._heartbeat_tick()
+    assert tries == []
+    telemetry._hb["not_before"] = 0.0
+    telemetry._heartbeat_tick()
+    assert tries == ["heartbeat"]
+
+
+def test_send_now_refuses_a_second_concurrent_send(cfg, monkeypatch):
+    import threading
+    gate = threading.Event()
+    results = []
+
+    def slow(p):
+        gate.wait(5)
+        return True
+    monkeypatch.setattr(telemetry, "_deliver", slow)
+    t = threading.Thread(target=lambda: results.append(telemetry.send_now()))
+    t.start()
+    for _ in range(100):
+        if telemetry._send_lock.locked():
+            break
+        time.sleep(0.01)
+    assert telemetry.send_now() == {"ok": False, "error": "busy"}
+    gate.set()
+    t.join(5)
+    assert results[0]["ok"] is True
+
+
+def test_append_log_creates_a_private_file(tmp_path):
+    telemetry._append_log(tmp_path, "x")
+    f = tmp_path / telemetry.LOG
+    assert f.read_text().endswith(" x\n")
+    assert (f.stat().st_mode & 0o777) == 0o600

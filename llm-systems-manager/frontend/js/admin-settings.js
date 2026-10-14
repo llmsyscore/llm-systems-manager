@@ -644,8 +644,8 @@
     redraw();
     try {
       const r = await fetch('/api/admin/telemetry/send', { method: 'POST' });
-      if (!r.ok) { const d = await r.json().catch(() => ({})); err = d.error || 'Send failed'; }
-    } catch (_) { err = 'Send failed'; }
+      if (!r.ok) err = r.status === 409 ? 'A report is already being sent' : 'The report could not be sent';
+    } catch (_) { err = 'The report could not be sent'; }
     _teleSending = false;
     if (err) {
       if (typeof _toastErr === 'function') _toastErr(err);

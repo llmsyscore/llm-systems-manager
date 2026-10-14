@@ -118,6 +118,8 @@ Each Agent is tailored to its host: on a Linux machine with an AMD GPU and liqui
 
 The agent also has `telemetry_report.py`, a standard-library-only module that sends crash reports under the consent given at install time.
 
+Install reports cover modes 1 to 5. An InfluxDB-only host (mode 6) carries no manager tree and sends none, and an install that fails before the data directory exists sends no failure report either; the first report from such a host is the manager's first-start report.
+
 The agent also has its own `stream_pool.py`, separate from the Manager's module of the same name — it caps concurrent long-lived SSE streams served *by the agent* (e.g. log tails) so they cannot exhaust the agent's own worker pool.
 
 ### Metric Buffering

@@ -6,6 +6,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 INSTALLER = Path(__file__).resolve().parents[1]
@@ -212,6 +213,7 @@ def test_report_as_user_runs_through_sudo_with_explicit_env(tmp_path):
     assert argv[:4] == ["-n", "-u", "svc", "env"]
     assert "LLMSYS_TELEMETRY=1" in argv and "LLMSYS_TELEMETRY_RETRY_DELAYS=0 0" in argv
     assert "LLMSYS_TELEMETRY_ENDPOINT=" in argv and "CI=" in argv
+    assert any(a.startswith("LLMSYS_INSTALL_DIR=") for a in argv)
     i = argv.index("bash")
     assert argv[i + 1:] == ["/r/tools/installer/telemetry-report.sh", "--event", "install", "--channel", "script",
                             "--mode", "3", "--outcome", "ok", "--data-dir", f"{tmp_path}/data",
@@ -280,6 +282,9 @@ def test_report_as_user_stages_a_readable_copy_when_root_is_unreadable(tmp_path)
                     '  if [ "$1" = "-o" ]; then shift 2; continue; fi\n  args+=("$1"); shift\ndone\n'
                     f'exec {real_install} "${{args[@]}}"\n')
     inst.chmod(0o755)
+    chown = b / "chown"
+    chown.write_text("#!/usr/bin/env bash\nexit 0\n")
+    chown.chmod(0o755)
     before = set(Path("/tmp").glob("llmsys-telemetry.*"))
     r = run(tmp_path, f'SUDO=""; LLMSYS_TELEMETRY=1 telemetry_report_as_user svc install script 4 ok "{tmp_path}/data" v1 "{REPO}"')
     assert r.returncode == 0, r.stderr
@@ -344,3 +349,49 @@ def test_write_answers_keeps_the_file_mode(tmp_path):
     assert oct(t.stat().st_mode & 0o777) == "0o600"
     assert "install_report = false" in t.read_text()
     assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def _staged_copy():
+    staged = Path(tempfile.mkdtemp(prefix="llmsys-telemetry.", dir="/tmp"))
+    for rel in ("llm-systems-manager/backend/telemetry.py", "tools/installer/lib-common.sh",
+                "tools/installer/telemetry-report.sh", "tools/installer/telemetry-retry.sh"):
+        (staged / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, staged / rel)
+    return staged
+
+
+def test_inline_success_removes_a_staged_root(tmp_path):
+    staged = _staged_copy()
+    data = tmp_path / "data"
+    data.mkdir()
+    try:
+        r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{data}" v1 "{staged}" https://t.example.test/e')
+        assert r.returncode == 0, r.stderr
+        assert (data / "telemetry-last.json").is_file()
+        assert not staged.exists()
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+def test_inline_success_keeps_a_real_root(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 telemetry_report install script 3 ok "{data}" v1 "{REPO}" https://t.example.test/e')
+    assert r.returncode == 0, r.stderr
+    assert (REPO / "tools/installer/telemetry-report.sh").is_file()
+
+
+def test_retry_removes_a_staged_root_when_done(tmp_path):
+    staged = _staged_copy()
+    pend = tmp_path / "telemetry-pending.json"
+    pend.write_text("{}")
+    b = fake_curl(tmp_path)
+    try:
+        subprocess.run(["bash", str(staged / "tools/installer/telemetry-retry.sh"), str(pend),
+                        "https://t.example.test/e", str(tmp_path / "telemetry.log"), sys.executable, str(staged)],
+                       env={**os.environ, "PATH": f"{b}:{os.environ['PATH']}", "LLMSYS_TELEMETRY_RETRY_DELAYS": "0 0"},
+                       check=True, timeout=30)
+        assert (tmp_path / "telemetry-last.json").is_file()
+        assert not staged.exists()
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)

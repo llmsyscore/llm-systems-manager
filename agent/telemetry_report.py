@@ -51,11 +51,11 @@ def load_consent(state_dir):
         return {"crash_reports": False}
 
 
-def write_consent(state_dir, *, install_report, crash_reports, endpoint, install_id, installed_at):
+def write_consent(state_dir, *, install_report, crash_reports, install_id, installed_at):
     os.makedirs(state_dir, exist_ok=True)
     _write_json(os.path.join(state_dir, CONSENT),
                 {"install_report": bool(install_report), "crash_reports": bool(crash_reports),
-                 "endpoint": endpoint, "install_id": install_id, "installed_at": installed_at})
+                 "install_id": install_id, "installed_at": installed_at})
 
 
 def frames_text(tb, root, limit=FRAME_LIMIT):
@@ -144,7 +144,8 @@ def report_exception(exc, tb, *, state_dir, version, root):
                                 uptime_s=int(time.time() - _started))
         if not allow_crash(state_dir, p["crash_hash"]):
             return
-        t = threading.Thread(target=send, args=(p, os.environ.get("LLMSYS_TELEMETRY_ENDPOINT") or c.get("endpoint") or DEFAULT_ENDPOINT), daemon=True)
+        t = threading.Thread(target=send, args=(p, os.environ.get("LLMSYS_TELEMETRY_ENDPOINT") or DEFAULT_ENDPOINT),
+                             daemon=True)
         t.start()
         t.join(2.0)
     except Exception:

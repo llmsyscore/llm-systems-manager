@@ -15,7 +15,6 @@ spec.loader.exec_module(TR)
 def test_consent_roundtrip(tmp_path):
     assert TR.load_consent(str(tmp_path)) == {"crash_reports": False}
     TR.write_consent(str(tmp_path), install_report=True, crash_reports=True,
-                     endpoint="https://t.example.test/v1/event",
                      install_id="123e4567-e89b-12d3-a456-426614174000", installed_at="2026-10-14T00:00:00Z")
     c = TR.load_consent(str(tmp_path))
     assert c["crash_reports"] is True and c["install_id"].startswith("123e")
@@ -23,7 +22,6 @@ def test_consent_roundtrip(tmp_path):
 
 def test_payload_is_sanitised(tmp_path):
     TR.write_consent(str(tmp_path), install_report=True, crash_reports=True,
-                     endpoint="https://t.example.test/v1/event",
                      install_id="123e4567-e89b-12d3-a456-426614174000", installed_at="2026-10-14T00:00:00Z")
     try:
         raise ValueError("host.lan /opt/secret")
@@ -89,3 +87,19 @@ def test_frames_skip_venv_and_site_packages(tmp_path):
     except ValueError as e:
         txt = TR.frames_text(e.__traceback__, str(tmp_path))
     assert txt == "agent/app.py:2:outer"
+
+
+def test_consent_file_endpoint_is_ignored(tmp_path, monkeypatch):
+    TR.write_consent(str(tmp_path), install_report=True, crash_reports=True,
+                     install_id="123e4567-e89b-12d3-a456-426614174000", installed_at="2026-10-14T00:00:00Z")
+    c = json.loads((tmp_path / TR.CONSENT).read_text())
+    c["endpoint"] = "https://evil.example.test/v1/event"
+    (tmp_path / TR.CONSENT).write_text(json.dumps(c))
+    monkeypatch.delenv("LLMSYS_TELEMETRY_ENDPOINT", raising=False)
+    urls = []
+    monkeypatch.setattr(TR, "send", lambda p, ep, timeout=5.0: urls.append(ep) or True)
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        TR.report_exception(e, e.__traceback__, state_dir=str(tmp_path), version="v1", root=str(_AGENT.parent))
+    assert urls == [TR.DEFAULT_ENDPOINT]

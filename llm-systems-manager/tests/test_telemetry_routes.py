@@ -55,6 +55,33 @@ def test_send_failure_is_502(client, monkeypatch):
     assert r.status_code == 502 and r.get_json()["ok"] is False
 
 
+def test_send_busy_is_409(client, monkeypatch):
+    monkeypatch.setattr(telemetry, "send_now", lambda: {"ok": False, "error": "busy"})
+    r = client.post("/api/admin/telemetry/send")
+    assert r.status_code == 409 and r.get_json()["error"] == "busy"
+
+
+def test_operator_reads_switches_and_last_event_without_the_payload(client, monkeypatch):
+    monkeypatch.setattr(auth, "effective_role", lambda: "operator")
+    monkeypatch.setattr(telemetry, "status", lambda: {
+        "install_report": True, "crash_reports": True, "heartbeat": False, "pending": False,
+        "last": {"event": "install", "sent_at": "t", "payload": {"os": "debian", "cpu_model": "secret"}}})
+    r = client.get("/api/admin/telemetry")
+    d = r.get_json()
+    assert r.status_code == 200 and d["read_only"] is True and d["heartbeat"] is False
+    assert d["last"] == {"event": "install", "sent_at": "t"} and "secret" not in r.get_data(as_text=True)
+    assert client.put("/api/admin/telemetry", json={"heartbeat": True}).status_code == 403
+
+
+def test_operator_gate_lets_only_the_telemetry_get_through():
+    with M.app.test_request_context("/api/admin/telemetry", method="GET"):
+        assert auth._operator_denied("/api/admin/telemetry") is False
+    with M.app.test_request_context("/api/admin/telemetry", method="PUT"):
+        assert auth._operator_denied("/api/admin/telemetry") is True
+    with M.app.test_request_context("/api/admin/telemetry/send", method="POST"):
+        assert auth._operator_denied("/api/admin/telemetry/send") is True
+
+
 def test_send_denied_without_admin(client, monkeypatch):
     monkeypatch.setattr(M, "_require_admin", lambda: ("no", 403))
     called = []

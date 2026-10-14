@@ -35,6 +35,7 @@ HEARTBEAT_STAMP = "telemetry-heartbeat"
 FIRST_DELAY_S = 300
 TICK_S = 60
 HEARTBEAT_RETRY_S = 3600
+HEARTBEAT_SPREAD_S = 1800
 
 _settings: Any = None
 _data_dir: Optional[Path] = None
@@ -343,10 +344,10 @@ def _write_json(path: Path, obj) -> None:
 
 
 def _append_log(data_dir: Path, line: str) -> None:
+    # 0600 append, no symlink following.
     try:
-        if os.path.islink(Path(data_dir) / LOG):
-            return
-        with open(Path(data_dir) / LOG, "a") as fh:
+        fd = os.open(Path(data_dir) / LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "a") as fh:
             fh.write(f"{_iso()} {line}\n")
     except Exception:
         pass  # log append is best effort
@@ -461,6 +462,7 @@ def _deliver(payload: dict) -> bool:
         record_sent(_data_dir, payload)
         _append_log(_data_dir, f"sent {payload['event']}")
         if payload["event"] == "heartbeat":
+            _hb["sent"] = time.time()
             _write_stamp(_data_dir / HEARTBEAT_STAMP, payload.get("sent_at") or _iso())
     elif payload["event"] in ("install", "update"):
         write_pending(_data_dir, payload)
@@ -471,7 +473,10 @@ def _deliver(payload: dict) -> bool:
 
 
 def send_now() -> dict:
-    """Sends a heartbeat report immediately, whatever the daily toggle says. Never raises."""
+    """Sends a heartbeat report immediately, whatever the daily toggle says. Never raises.
+    One send at a time; a second caller gets {"ok": False, "error": "busy"}."""
+    if not _send_lock.acquire(blocking=False):
+        return {"ok": False, "error": "busy"}
     try:
         p = build_payload("heartbeat", data_dir=_data_dir, version=_version,
                           channel=detect_channel(_root))
@@ -479,6 +484,8 @@ def send_now() -> dict:
         return {"ok": ok, "event": "heartbeat", "sent_at": p.get("sent_at")}
     except Exception as e:
         return {"ok": False, "error": type(e).__name__}
+    finally:
+        _send_lock.release()
 
 
 # ── crash reporting ──────────────────────────────────────────────────────────
@@ -532,18 +539,33 @@ def _heartbeat_age(now: Optional[float] = None) -> float:
         return float("inf")
 
 
-_hb = {"attempt": 0.0}
+_hb = {"attempt": 0.0, "sent": 0.0, "not_before": 0.0}
+_send_lock = threading.Lock()
+
+
+def _spread_s(data_dir: Optional[Path]) -> int:
+    """Per-install offset, 0..HEARTBEAT_SPREAD_S, so hosts restarted together do not report together."""
+    try:
+        iid, _ = install_identity(data_dir)
+        return int(hashlib.sha256(iid.encode()).hexdigest()[:8], 16) % HEARTBEAT_SPREAD_S
+    except Exception:
+        return 0
 
 
 def _heartbeat_tick() -> None:
     now = time.time()
-    if not enabled("heartbeat") or _heartbeat_age(now) < HEARTBEAT_EVERY_S:
+    if not enabled("heartbeat") or now < _hb["not_before"]:
         return
-    if now - _hb["attempt"] < HEARTBEAT_RETRY_S:
+    if min(_heartbeat_age(now), now - _hb["sent"]) < HEARTBEAT_EVERY_S:
         return
-    _hb["attempt"] = now
-    _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
-                           channel=detect_channel(_root)))
+    if now - _hb["attempt"] < HEARTBEAT_RETRY_S or not _send_lock.acquire(blocking=False):
+        return
+    try:
+        _hb["attempt"] = now
+        _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
+                               channel=detect_channel(_root)))
+    finally:
+        _send_lock.release()
 
 
 def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Thread:
@@ -564,6 +586,7 @@ def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Th
         except Exception as e:
             if _log:
                 _log.debug("telemetry first-start: %s", type(e).__name__)
+        _hb["not_before"] = time.time() + _spread_s(_data_dir)
         while True:
             try:
                 _heartbeat_tick()
