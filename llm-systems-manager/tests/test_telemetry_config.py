@@ -34,9 +34,10 @@ def test_toml_example_matches_model_defaults():
     assert block["heartbeat"] is False
 
 
-def test_old_toml_boots_with_defaults(monkeypatch):
-    # A file without the section parses and falls back to model defaults.
-    from config.unified_config import Settings
-    s = Settings(manager={})
-    assert s.manager.telemetry.install_report is True
-    assert s.manager.telemetry.heartbeat is False
+def test_old_toml_boots_with_defaults():
+    # The plain model carries the defaults; the live TOML must not influence this.
+    from config.unified_config import ManagerConfig
+    t = ManagerConfig().telemetry
+    assert t.install_report is True
+    assert t.crash_reports is True
+    assert t.heartbeat is False
