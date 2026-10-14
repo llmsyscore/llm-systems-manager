@@ -1,1 +1,0 @@
-- The installer now asks whether to send an anonymous install report. Crash reports follow the same answer and a daily diagnostic report is available from Settings › Telemetry & analytics. The README lists every field.
