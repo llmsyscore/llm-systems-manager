@@ -103,7 +103,7 @@ def _allow_crash(state_dir, h, now):
         os.makedirs(state_dir, exist_ok=True)
         _write_json(path, st)
     except Exception:
-        pass
+        pass  # stamp write is best effort
     return True
 
 
@@ -148,7 +148,7 @@ def report_exception(exc, tb, *, state_dir, version, root):
         t.start()
         t.join(2.0)
     except Exception:
-        pass
+        pass  # crash reporting never raises
 
 
 def install_hooks(*, state_dir, version, root):

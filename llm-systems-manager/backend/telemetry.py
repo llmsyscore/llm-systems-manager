@@ -105,7 +105,7 @@ def _write_private(tmp: Path, text: str) -> None:
     try:
         os.unlink(tmp)
     except FileNotFoundError:
-        pass
+        pass  # nothing to remove
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
@@ -137,7 +137,7 @@ def _os_release() -> tuple[str, str]:
             k, _, v = line.partition("=")
             kv[k.strip()] = v.strip().strip('"')
     except Exception:
-        pass
+        pass  # falls back to platform.system()
     return (kv.get("ID") or platform.system().lower() or "unknown"), kv.get("VERSION_ID", "")
 
 
@@ -150,7 +150,7 @@ def _cpu_model() -> str:
             if line.lower().startswith("model name"):
                 return line.split(":", 1)[1].strip()[:128]
     except Exception:
-        pass
+        pass  # falls back to platform.processor()
     return platform.processor()[:128] or "unknown"
 
 
@@ -164,7 +164,7 @@ def _ram_gb() -> Optional[int]:
             if line.startswith("MemTotal:"):
                 return round(int(line.split()[1]) / 2**20)
     except Exception:
-        pass
+        pass  # memory size unknown
     return None
 
 
@@ -187,7 +187,7 @@ def _gpu() -> tuple[str, int]:
             if n:
                 found["nvidia"] = n
         except Exception:
-            pass
+            pass  # nvidia-smi unavailable
     if not found:
         return "none", 0
     vendor = max(found, key=found.get)
@@ -223,13 +223,13 @@ def _detect_channel(root: Path) -> str:
             if subprocess.run(["dpkg-query", "-S", s], capture_output=True, timeout=5).returncode == 0:
                 return "deb"
         except Exception:
-            pass
+            pass  # dpkg-query failed
     if shutil.which("rpm"):
         try:
             if subprocess.run(["rpm", "-qf", s], capture_output=True, timeout=5).returncode == 0:
                 return "rpm"
         except Exception:
-            pass
+            pass  # rpm failed
     return "script"
 
 
@@ -349,7 +349,7 @@ def _append_log(data_dir: Path, line: str) -> None:
         with open(Path(data_dir) / LOG, "a") as fh:
             fh.write(f"{_iso()} {line}\n")
     except Exception:
-        pass
+        pass  # log append is best effort
 
 
 def record_sent(data_dir: Path, payload: dict) -> None:
@@ -405,7 +405,7 @@ def _allow_crash(data_dir: Path, h: str, now: Optional[float] = None) -> bool:
     try:
         _write_json(f, st)
     except Exception:
-        pass
+        pass  # stamp write is best effort
     return True
 
 
@@ -501,7 +501,7 @@ def report_exception(exc, tb, *, component: str) -> None:
         t.start()
         t.join(2.0)
     except Exception:
-        pass
+        pass  # crash reporting never raises
 
 
 def install_excepthooks(component: str) -> None:
@@ -554,7 +554,7 @@ def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Th
         try:
             detect_channel(_root)
         except Exception:
-            pass
+            pass  # channel detection is best effort
         time.sleep(FIRST_DELAY_S)
         try:
             if (_data_dir / PENDING).is_file():
