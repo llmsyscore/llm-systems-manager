@@ -1309,20 +1309,21 @@ _install_pinned_ca() {
   local dest="$INSTALL_DIR/data/tls-ca.pem"
   [[ -n "${USER_GROUP:-}" && -n "$CA_PINNED_FILE" && "$CA_PINNED_FILE" != "$dest" ]] || return 0
   $SUDO mkdir -p "$INSTALL_DIR/data"
-  _place_file "$CA_PINNED_FILE" "$dest" 0644
+  _place_file "$dest" 0644 < "$CA_PINNED_FILE"
   rm -f "$CA_PINNED_FILE"
   CA_PINNED_FILE="$dest"
 }
 
-# Copies SRC to DEST through a root-owned temp + rename, so a planted symlink
-# at DEST is replaced instead of followed. Args: SRC DEST MODE.
+# Writes stdin to DEST (MODE, agent-owned) via a root-owned temp dir beside the
+# install dir and a rename, so a planted symlink at DEST is replaced, never followed.
 _place_file() {
-  local src="$1" dest="$2" mode="$3" tmp
-  tmp="$($SUDO mktemp "$(dirname "$dest")/.place.XXXXXX")"
-  $SUDO cp "$src" "$tmp"
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$tmp"
-  $SUDO chmod "$mode" "$tmp"
-  $SUDO mv -f "$tmp" "$dest"
+  local dest="$1" mode="$2" tdir
+  tdir="$($SUDO mktemp -d "$(dirname "$INSTALL_DIR")/.llmsys-place.XXXXXX")"
+  ( umask 077; $SUDO tee "$tdir/file" >/dev/null )
+  $SUDO chown "$USER_ARG:$USER_GROUP" "$tdir/file"
+  $SUDO chmod "$mode" "$tdir/file"
+  $SUDO mv -f "$tdir/file" "$dest"
+  $SUDO rmdir "$tdir"
 }
 
 # Replaces only the MANAGER_URL: line of an agent_config.yaml, atomically, keeping mode and owner.
@@ -1344,11 +1345,12 @@ fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".agent_conf
 try:
     with os.fdopen(fd, "wb") as f:
         f.write(b"".join(lines))
-    os.chmod(tmp, st.st_mode & 0o7777)
-    try:
-        os.chown(tmp, st.st_uid, st.st_gid)
-    except PermissionError:
-        pass
+        f.flush()
+        os.fchmod(fd, st.st_mode & 0o7777)
+        try:
+            os.fchown(fd, st.st_uid, st.st_gid)
+        except PermissionError:
+            pass
     os.replace(tmp, path)
 except BaseException:
     os.unlink(tmp)
@@ -1364,11 +1366,7 @@ _write_enrollment_secret() {
     return 0
   fi
   $SUDO mkdir -p "$INSTALL_DIR/data"
-  local tmp; tmp="$($SUDO mktemp "$INSTALL_DIR/data/.enroll.XXXXXX")"
-  ( umask 077; printf '%s' "$ENROLLMENT_SECRET" | $SUDO tee "$tmp" >/dev/null )
-  $SUDO chown "$USER_ARG:$USER_GROUP" "$tmp"
-  $SUDO chmod 0600 "$tmp"
-  $SUDO mv -f "$tmp" "$dest"
+  printf '%s' "$ENROLLMENT_SECRET" | _place_file "$dest" 0600
   echo "  ✓ enrollment secret stored"
 }
 

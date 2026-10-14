@@ -140,7 +140,7 @@ def test_update_honours_ca_fingerprint():
 
 
 def test_secret_file_written_0600_and_kept_on_update(tmp_path):
-    fn = _func("_write_enrollment_secret")
+    fn = _func("_write_enrollment_secret") + "\n" + _func("_place_file")
     inst = tmp_path / "inst"
     (inst / "data").mkdir(parents=True)
     base = f'umask 022\n{fn}\nINSTALL_DIR="{inst}"; SUDO=""; USER_ARG="$(id -un)"; USER_GROUP="$(id -gn)"'
@@ -165,14 +165,14 @@ def test_planted_symlinks_are_replaced_not_followed(tmp_path):
     victim = tmp_path / "victim"
     victim.write_text("untouched")
     (inst / "data" / "enrollment-secret").symlink_to(victim)
-    fn = _func("_write_enrollment_secret")
+    fn = _func("_write_enrollment_secret") + "\n" + _func("_place_file")
     base = f'{fn}\nINSTALL_DIR="{inst}"; SUDO=""; USER_ARG="$(id -un)"; USER_GROUP="$(id -gn)"'
     r = _bash(base + '\nENROLLMENT_SECRET="s3cret"; DO_UPDATE=false; _write_enrollment_secret')
     assert r.returncode == 0, r.stderr
     dest = inst / "data" / "enrollment-secret"
     assert not dest.is_symlink() and dest.read_text() == "s3cret"
     assert victim.read_text() == "untouched"
-    assert not list((inst / "data").glob(".enroll.*"))
+    assert not list(tmp_path.glob(".llmsys-place.*"))
     crt = _ca(tmp_path)
     (inst / "data" / "tls-ca.pem").symlink_to(victim)
     resp = {"ok": True, "ca_pem": crt.read_text(), "fingerprint": "sha256:" + _fp(crt), "https_url": ""}
@@ -181,7 +181,7 @@ def test_planted_symlinks_are_replaced_not_followed(tmp_path):
     ca = inst / "data" / "tls-ca.pem"
     assert not ca.is_symlink() and ca.read_text() == crt.read_text()
     assert victim.read_text() == "untouched"
-    assert not list((inst / "data").glob(".place.*"))
+    assert not list(tmp_path.glob(".llmsys-place.*"))
 
 
 def test_flags_and_env_are_parsed():
@@ -192,7 +192,7 @@ def test_flags_and_env_are_parsed():
 
 def test_secret_never_echoed():
     for line in SRC.splitlines():
-        if line.strip() == '( umask 077; printf \'%s\' "$ENROLLMENT_SECRET" | $SUDO tee "$tmp" >/dev/null )':
+        if line.strip() == 'printf \'%s\' "$ENROLLMENT_SECRET" | _place_file "$dest" 0600':
             continue
         if "ENROLLMENT_SECRET" in line and re.search(r"\b(echo|printf|log|_ok|_warn)\b", line):
             assert "$ENROLLMENT_SECRET" not in line and "${ENROLLMENT_SECRET" not in line, line

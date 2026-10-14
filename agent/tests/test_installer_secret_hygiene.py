@@ -161,5 +161,7 @@ def test_universal_installer_has_no_pid_tempfiles():
 def test_enrollment_secret_stays_out_of_argv_and_logs():
     src = AGENT_INSTALL_SH.read_text()
     body = re.search(r"^_write_enrollment_secret\(\) \{.*?^\}", src, re.MULTILINE | re.DOTALL).group(0)
-    assert "tee" in body and 'printf \'%s\' "$ENROLLMENT_SECRET"' in body
+    place = re.search(r"^_place_file\(\) \{.*?^\}", src, re.MULTILINE | re.DOTALL).group(0)
+    # The value is piped into the placer, which writes it with tee from stdin.
+    assert 'printf \'%s\' "$ENROLLMENT_SECRET" | _place_file' in body and "tee" in place
     assert "echo \"$ENROLLMENT_SECRET" not in src and "echo $ENROLLMENT_SECRET" not in src

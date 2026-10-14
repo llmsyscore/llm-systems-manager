@@ -141,12 +141,14 @@ llmsys_agent_write_config() {
 llmsys_agent_write_enrollment_secret() {
   [ -n "${LLMSYS_CFG_ENROLLMENT_SECRET:-}" ] || return 0
   mkdir -p "$LLMSYS_AGENT_DIR/data"
-  # Temp + rename so a planted symlink at the destination is replaced, not followed.
-  tmp="$(mktemp "$LLMSYS_AGENT_DIR/data/.enroll.XXXXXX")"
-  ( umask 077; printf '%s' "$LLMSYS_CFG_ENROLLMENT_SECRET" > "$tmp" )
-  chown "$LLMSYS_RUN_USER:$(id -gn "$LLMSYS_RUN_USER")" "$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$LLMSYS_AGENT_DIR/data/enrollment-secret"
+  # Staged in a root-owned temp dir beside the install dir, then renamed over the
+  # destination, so a planted symlink there is replaced, never followed.
+  tdir="$(mktemp -d "$(dirname "$LLMSYS_AGENT_DIR")/.llmsys-place.XXXXXX")"
+  ( umask 077; printf '%s' "$LLMSYS_CFG_ENROLLMENT_SECRET" > "$tdir/file" )
+  chown "$LLMSYS_RUN_USER:$(id -gn "$LLMSYS_RUN_USER")" "$tdir/file"
+  chmod 0600 "$tdir/file"
+  mv -f "$tdir/file" "$LLMSYS_AGENT_DIR/data/enrollment-secret"
+  rmdir "$tdir"
 }
 
 # Warns when a package upgrade replaced a self-updated binary with an
