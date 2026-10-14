@@ -574,7 +574,7 @@ Backend API endpoints consumed:
 <!-- Admin tab -->
 <link rel="stylesheet" href="/static/css/admin.css?v=2026.09.02-7">
 <link rel="stylesheet" href="/static/css/audit.css?v=2026.09.23-6">
-<link rel="stylesheet" href="/static/css/agents.css?v=2026.10.07-1">
+<link rel="stylesheet" href="/static/css/agents.css?v=2026.10.14-6">
 <link rel="stylesheet" href="/static/css/admin-tabs.css?v=2026.10.13-1">
 <link rel="stylesheet" href="/static/css/health.css?v=2026.10.09-2">
 <div id="adminTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;overflow:auto;background:var(--bg);color:var(--fg);padding:28px 24px;">
@@ -654,6 +654,7 @@ Backend API endpoints consumed:
           <span class="ag-vchip" id="agMgrVer" hidden></span>
           <span class="ag-vchip" id="agAgentVer" hidden></span>
           <span class="ag-vchip ag-enroll" id="agEnrollChip" hidden></span>
+          <span class="ag-vchip ag-secret" id="agSecretChip" hidden></span>
         </div>
         <div class="ag-hdr toolbar">
           <div class="ag-gap"></div>
@@ -671,6 +672,15 @@ Backend API endpoints consumed:
               <button type="button" class="mi-row" data-act="approveall" id="agApproveAll" hidden><span class="mi">✓</span>Approve all pending<span class="cnt"></span></button>
               <button type="button" class="mi-row" data-act="enrollclose" id="agEnrollClose" hidden><span class="mi">⦸</span>Close enrollment</button>
               <button type="button" class="mi-row" data-act="pushca" title="Every approved agent fetches the current cert + key + CA bundle on its next heartbeat"><span class="mi">⤴</span>Push CA to agents</button>
+              <hr>
+              <div class="microlbl mlbl">Enrollment</div>
+              <div class="mrow ag-enroll-row"><span class="sub" id="agSecretState">Secret: —</span></div>
+              <div class="mrow ag-enroll-row ag-secret-val" id="agSecretRow" hidden><code id="agSecretVal"></code></div>
+              <button type="button" class="mi-row" data-act="secretreveal" id="agSecretReveal"><span class="mi">◎</span>Reveal secret</button>
+              <button type="button" class="mi-row" data-act="secretcopy"><span class="mi">⧉</span>Copy secret</button>
+              <button type="button" class="mi-row" data-act="secretrotate"><span class="mi">↻</span>Generate new secret</button>
+              <button type="button" class="mi-row" data-act="cacopy" id="agCaCopy"><span class="mi">⧉</span>Copy CA fingerprint</button>
+              <button type="button" class="mi-row" data-act="installcmd"><span class="mi">⧉</span>Copy agent install command</button>
             </div>
           </div>
         </div>
@@ -2820,8 +2830,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/llmcontrol.js?v=2026.09.14-5"></script>
 <script src="/static/js/sections.js?v=2026.08.30-3"></script>
 <script src="/static/js/openclaw.js?v=2026.08.03-1"></script>
-<script src="/static/js/admin.js?v=2026.10.07-2"></script>
-<script src="/static/js/admin-agents.js?v=2026.10.07-3"></script>
+<script src="/static/js/admin.js?v=2026.10.14-7"></script>
+<script src="/static/js/admin-agents.js?v=2026.10.14-6"></script>
 <script src="/static/js/admin-health.js?v=2026.10.09-3"></script>
 <script src="/static/js/admin-gateway.js?v=2026.09.04-2"></script>
 <script src="/static/js/admin-audit.js?v=2026.09.03-8"></script>

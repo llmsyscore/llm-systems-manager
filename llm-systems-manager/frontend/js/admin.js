@@ -671,6 +671,9 @@ async function adminLoadAgents() {
   try {
     _adminGlobal = d.global || {};
     _adminEnrollment = d.enrollment || null;
+    _adminEnrollSecretRequired = !!d.enrollment_secret_required;
+    _adminCaFingerprint = d.ca_fingerprint || '';
+    _adminManagerHttpsUrl = d.manager_https_url || '';
     if (Array.isArray(d.pool_providers) && d.pool_providers.length) {
       _adminPoolProviders = d.pool_providers;
       if (!_adminPoolProviders.some(p => p.name === _adminProvSel)) _adminProvSel = _adminPoolProviders[0].name;
@@ -814,6 +817,9 @@ async function adminDelete(aid) {
 let _adminAgentsCache = [];
 let _adminGlobal = {};
 let _adminEnrollment = null;
+let _adminEnrollSecretRequired = false;
+let _adminCaFingerprint = '';
+let _adminManagerHttpsUrl = '';
 let _adminHostAutoDetected = false;
 let _latestAgentVersion = null;
 let _adminManagerVersion = null;
@@ -2184,6 +2190,98 @@ async function adminEnrollment(action) {
     _adminLog(`✗ enrollment ${action} failed: ${e.message}`, 'err');
   }
   adminLoadAgents();
+}
+
+async function adminCopyText(label, text) {
+  if (!navigator.clipboard) {
+    _toastErr('Copying needs an HTTPS page; select the value and copy it by hand');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    _themedToast(`${label} copied`);
+  } catch (e) {
+    _toastErr(`Could not copy ${label.toLowerCase()}: ${e.message}`);
+  }
+}
+
+async function _adminFetchEnrollmentSecret() {
+  const r = await fetch('/api/agents/enrollment-secret');
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = await r.json();
+  return d.secret || '';
+}
+
+let _adminSecretRevealTimer = null;
+function _adminSecretRevealClear() {
+  clearTimeout(_adminSecretRevealTimer);
+  _adminSecretRevealTimer = null;
+  const row = document.getElementById('agSecretRow'), val = document.getElementById('agSecretVal');
+  if (row) row.hidden = true;
+  if (val) val.textContent = '';
+}
+
+// Shows text in the hidden secret row; a 60 s timer clears it.
+function _adminSecretRowShow(rowId, valId, text) {
+  const row = document.getElementById(rowId), val = document.getElementById(valId);
+  if (!row || !val) return;
+  val.textContent = text;
+  row.hidden = false;
+  clearTimeout(_adminSecretRevealTimer);
+  _adminSecretRevealTimer = setTimeout(_adminSecretRevealClear, 60000);
+}
+
+async function adminEnrollmentSecretReveal() {
+  try {
+    const s = await _adminFetchEnrollmentSecret();
+    _adminSecretRowShow('agSecretRow', 'agSecretVal', s || '(no secret set)');
+  } catch (e) {
+    _toastErr(`Could not read the enrollment secret: ${e.message}`);
+  }
+}
+
+async function adminEnrollmentSecretCopy() {
+  try {
+    const s = await _adminFetchEnrollmentSecret();
+    if (!s) { _toastErr('No enrollment secret is set. Generate one first.'); return; }
+    await adminCopyText('Enrollment secret', s);
+  } catch (e) {
+    _toastErr(`Could not read the enrollment secret: ${e.message}`);
+  }
+}
+
+async function adminEnrollmentSecretRotate() {
+  const ok = await _themedConfirm({
+    title: 'Generate a new enrollment secret?',
+    bodyHtml: 'Agents already approved keep working and do not hold the secret. ' +
+              'New installs must use the new secret; copy it after this step.',
+    confirmLabel: 'Generate new secret',
+  });
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/agents/enrollment-secret', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'rotate' }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    _adminSecretRevealClear();
+    _themedToast('New enrollment secret in place');
+    _adminLog('✓ enrollment secret rotated — new installs need the new value');
+  } catch (e) {
+    _toastErr(`Could not make a new secret: ${e.message}`);
+  }
+  adminLoadAgents();
+}
+
+async function adminCopyInstallCommand() {
+  try {
+    const s = await _adminFetchEnrollmentSecret();
+    const cmd = window.AgentsView.installCommand({
+      managerHttpsUrl: _adminManagerHttpsUrl, caFingerprint: _adminCaFingerprint, pageOrigin: location.origin,
+    }, s);
+    await adminCopyText('Install command', cmd);
+  } catch (e) {
+    _toastErr(`Could not build the install command: ${e.message}`);
+  }
 }
 
 async function adminPushCaToAgents() {

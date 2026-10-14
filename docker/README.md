@@ -129,6 +129,8 @@ Settings are kept across restarts.
   `docker compose exec alarm-engine cat /opt/llm-systems-manager/llm-systems-alarm-engine/data/docker-tokens.env`.
   Copy the values into `.env` to pin them; setting both to the same value stops
   the containers from starting.
+- `LSM_ENROLLMENT_SECRET` is the secret that new agents must send to register;
+  it is generated once when unset and kept in the same `docker-tokens.env` file.
 
 ## TLS / internal CA
 

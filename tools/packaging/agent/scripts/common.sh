@@ -137,6 +137,20 @@ llmsys_agent_write_config() {
   chmod 0640 "$LLMSYS_AGENT_CFG"
 }
 
+# Stores the enrollment secret beside the token (0600) when the package was given one.
+llmsys_agent_write_enrollment_secret() {
+  [ -n "${LLMSYS_CFG_ENROLLMENT_SECRET:-}" ] || return 0
+  mkdir -p "$LLMSYS_AGENT_DIR/data"
+  # Staged in a root-owned temp dir beside the install dir, then renamed over the
+  # destination, so a planted symlink there is replaced, never followed.
+  tdir="$(mktemp -d "$(dirname "$LLMSYS_AGENT_DIR")/.llmsys-place.XXXXXX")"
+  ( umask 077; printf '%s' "$LLMSYS_CFG_ENROLLMENT_SECRET" > "$tdir/file" )
+  chown "$LLMSYS_RUN_USER:$(id -gn "$LLMSYS_RUN_USER")" "$tdir/file"
+  chmod 0600 "$tdir/file"
+  mv -f "$tdir/file" "$LLMSYS_AGENT_DIR/data/enrollment-secret"
+  rmdir "$tdir"
+}
+
 # Warns when a package upgrade replaced a self-updated binary with an
 # older one (versions are vYYYY.MM.DD-N — sort -V comparable). #416.
 llmsys_agent_downgrade_check() {
@@ -170,6 +184,7 @@ llmsys_agent_configure() {
   install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$grp" "$LLMSYS_AGENT_DIR/data"
   chown -R "$LLMSYS_RUN_USER:$grp" "$LLMSYS_AGENT_DIR"
   llmsys_agent_write_config
+  llmsys_agent_write_enrollment_secret
   llmsys_agent_write_marker "$adopt"
   llmsys_agent_downgrade_check
   if [ -e "/etc/systemd/system/$LLMSYS_AGENT_UNIT" ]; then
@@ -182,7 +197,7 @@ llmsys_agent_configure() {
     systemctl start "$LLMSYS_AGENT_UNIT" \
       || echo "llm-systems-agent: failed to start — check 'journalctl -u llm-systems-agent'" >&2
     if grep -q '^MANAGER_URL: *""' "$LLMSYS_AGENT_CFG" 2>/dev/null; then
-      echo "llm-systems-agent: NOTICE — MANAGER_URL is not set. Edit $LLMSYS_AGENT_CFG, then 'systemctl restart llm-systems-agent'." >&2
+      echo "llm-systems-agent: NOTICE — MANAGER_URL is not set. Edit $LLMSYS_AGENT_CFG, and put the enrollment secret in $LLMSYS_AGENT_DIR/data/enrollment-secret if the manager requires one, then 'systemctl restart llm-systems-agent'." >&2
     fi
   else
     systemctl try-restart "$LLMSYS_AGENT_UNIT" || true

@@ -229,6 +229,7 @@ class ManagerAgents(BaseModel):
     liveness_watch_interval_s: int = 60
     enrollment_mode: str = "auto"
     enrollment_window_min: int = 15
+    enrollment_secret: str = ""
 
 
 class ManagerSecurity(BaseModel):

@@ -40,6 +40,16 @@ resolve_ae_tokens() {
   if [ "$AE_INGEST_TOKEN" = "$AE_MANAGEMENT_TOKEN" ]; then
     echo "[entrypoint] ERROR: LSM_AE_MANAGEMENT_TOKEN must differ from LSM_AE_INGEST_TOKEN (agents hold the ingest token)" >&2; exit 1
   fi
+  ENROLLMENT_SECRET="${LSM_ENROLLMENT_SECRET:-}"
+  [ "$ENROLLMENT_SECRET" = "REPLACE_ME" ] && ENROLLMENT_SECRET=""
+  if [ -z "$ENROLLMENT_SECRET" ]; then
+    if ! grep -q '^LSM_ENROLLMENT_SECRET=' "$TOKEN_STORE" 2>/dev/null; then
+      mkdir -p "$(dirname "$TOKEN_STORE")"
+      ( umask 077; printf 'LSM_ENROLLMENT_SECRET=%s\n' "$(_new_token)" >> "$TOKEN_STORE" )
+      echo "[entrypoint] enrollment secret generated once into $TOKEN_STORE (agents need it to register)"
+    fi
+    ENROLLMENT_SECRET="$(sed -n 's/^LSM_ENROLLMENT_SECRET=//p' "$TOKEN_STORE" | head -n1)"
+  fi
 }
 
 # Prints a [manager.telemetry] boolean from $CFG, or the fallback when missing.
@@ -67,6 +77,7 @@ render_config() {
   resolve_ae_tokens
   local ingest_token="$AE_INGEST_TOKEN"
   local management_token="$AE_MANAGEMENT_TOKEN"
+  local enrollment_secret="$ENROLLMENT_SECRET"
   local ae_url="${LSM_ALARM_ENGINE_URL:-http://alarm-engine:8081}"
   local manager_url="${LSM_MANAGER_URL:-http://manager:5000}"
   local ae_tls="${LSM_AE_TLS_ENABLED:-true}"
@@ -94,7 +105,7 @@ render_config() {
     hb_b="$(_telemetry_key heartbeat "$hb_b")"
   fi
 
-  for v in "$influx_token" "$ingest_token" "$management_token" "$admin_user" \
+  for v in "$influx_token" "$ingest_token" "$management_token" "$enrollment_secret" "$admin_user" \
            "$admin_cidrs_csv" "$public_hosts_csv" "$smtp_server" "$smtp_user" \
            "$smtp_password" "$discord_webhook"; do
     case "$v" in
@@ -143,6 +154,9 @@ image_gen = "auto"
 install_report = $ir_b
 crash_reports = $cr_b
 heartbeat = $hb_b
+
+[manager.agents]
+enrollment_secret = "$enrollment_secret"
 
 [alarm_engine]
 manager_url = "$manager_url"

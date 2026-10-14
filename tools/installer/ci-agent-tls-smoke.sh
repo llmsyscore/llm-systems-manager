@@ -102,5 +102,30 @@ case "$liveness" in
 esac
 pass "agent liveness=$liveness"
 
+echo "── 8. Enrollment secret gate (#1217) ────────────────────────────────"
+MGR_TOML="${MGR_DIR:-/opt/llm-systems-manager}/config/llm-systems.toml"
+SECRET="$(sed -nE 's/^[[:space:]]*enrollment_secret[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' "$MGR_TOML" 2>/dev/null | head -n1)"
+if [ -z "$SECRET" ]; then fail "no enrollment_secret in $MGR_TOML (fresh installs mint one)"; fi
+pass "manager TOML carries an enrollment secret (${#SECRET} chars)"
+PROBE='{"hostname":"ci-probe-box","os":"linux","bind_url":"http://10.0.0.9:8765","fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","version":"v2026.10.14-1"}'
+# The secret rides in a curl config file so it never appears on argv.
+HDR_CFG="$(mktemp)"
+printf 'header = "X-Enrollment-Secret: %s"\n' "$SECRET" > "$HDR_CFG"
+resp="$(curl -s -m 10 -X POST -H 'Content-Type: application/json' -d "$PROBE" "$MGR_URL/api/agents/register" -w '\n%{http_code}' || true)"
+c="$(printf '%s' "$resp" | tail -n1)"; body="$(printf '%s' "$resp" | sed '$d')"
+if [ "$c" != "403" ] || ! printf '%s' "$body" | jq -e '.code == "enrollment_secret"' >/dev/null; then
+  rm -f "$HDR_CFG"; fail "registration without the secret: code=$c body=$body (want 403 enrollment_secret)"
+fi
+pass "registration without the secret → 403 enrollment_secret"
+resp="$(curl -s -m 10 -K "$HDR_CFG" -X POST -H 'Content-Type: application/json' -d "$PROBE" "$MGR_URL/api/agents/register" -w '\n%{http_code}' || true)"
+rm -f "$HDR_CFG"
+c="$(printf '%s' "$resp" | tail -n1)"; body="$(printf '%s' "$resp" | sed '$d')"
+PID_ROW="$(printf '%s' "$body" | jq -r '.agent_id // empty')"
+if [ "$c" != "200" ] || [ -z "$PID_ROW" ]; then fail "registration with the secret: code=$c body=$body (want 200 + agent_id)"; fi
+pass "registration with the secret → 200 (pending row $PID_ROW)"
+dc="$(code -b "$COOKIE_JAR" -X DELETE "$MGR_URL/api/agents/$PID_ROW")"
+if [ "$dc" != "200" ]; then fail "could not delete the probe row $PID_ROW (code=$dc)"; fi
+pass "probe row deleted"
+
 echo
 echo "ALL AGENT-LIFECYCLE ASSERTIONS PASSED ($AID)"

@@ -17,3 +17,10 @@ Type: error
 Description: Invalid URL
  "${value}" is not a usable URL. Enter http[s]://host[:port], a bare
  host/IP (the default port is filled in), or leave the field blank.
+
+Template: llm-systems-agent/enrollment-secret
+Type: password
+Description: Enrollment secret:
+ Value new agents must send to register, shown on the manager's Admin
+ page under Agents → Manage → Enrollment. Leave blank if the manager
+ does not require one.

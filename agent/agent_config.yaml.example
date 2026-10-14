@@ -249,3 +249,4 @@ LOG_WATCH_MAX_BYTES_PER_TICK: 1048576
 #                        #          ~/Library/Logs/llm-systems-agent.log on macOS
 # LOG_LEVEL:   INFO      # DEBUG | INFO | WARNING | ERROR (applies on restart)
 # TOKEN_FILE:  ""        # blank => {AGENT_INSTALL_DIR}/data/token (mode 0600)
+# ENROLLMENT_SECRET_FILE: ""  # blank => {AGENT_INSTALL_DIR}/data/enrollment-secret (mode 0600); the installer writes it

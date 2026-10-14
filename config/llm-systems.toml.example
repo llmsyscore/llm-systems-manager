@@ -257,6 +257,7 @@ down_after_s = 600                                       # heartbeats missed →
 liveness_watch_interval_s = 60                           # how often the watcher loop runs
 enrollment_mode = "auto"                                 # when new machines may register: auto = open for one window after each manager start; open / closed = until changed by hand
 enrollment_window_min = 15                               # minutes enrollment stays open after a start (auto) and per "Open enrollment" click
+enrollment_secret = ""                                   # new machines must send this to register; blank = any machine may register while enrollment is open
 
 [manager.security]
 # CIDR ranges allowed to call admin-only endpoints (rule/channel CRUD, etc.).

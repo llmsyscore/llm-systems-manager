@@ -1066,6 +1066,63 @@ def ingest_token_for_agent() -> str:
     return "" if tok in _INGEST_TOKEN_UNSET else tok
 
 
+_SECRET_UNSET = {"", "REPLACE_ME"}
+
+
+def enrollment_secret() -> str:
+    """The configured enrollment secret; blank when unset or still the placeholder."""
+    cfg = getattr(getattr(_deps.settings, "manager", None), "agents", None)
+    v = str(getattr(cfg, "enrollment_secret", "") or "").strip()
+    return "" if v in _SECRET_UNSET else v
+
+
+def _registration_gate_problem() -> "str | None":
+    """'missing' or 'wrong' when a configured secret was not presented correctly; None when accepted."""
+    secret = enrollment_secret()
+    if not secret:
+        return None
+    supplied = (flask_request.headers.get("X-Enrollment-Secret") or "").strip()
+    # A pasted value often keeps its surrounding quotes.
+    if len(supplied) >= 2 and supplied[0] == supplied[-1] and supplied[0] in "\"'":
+        supplied = supplied[1:-1].strip()
+    if not supplied:
+        return "missing"
+    return None if _hmac.compare_digest(supplied.encode(), secret.encode()) else "wrong"
+
+
+_ca_fp_cache: dict = {}
+
+
+def ca_fingerprint() -> str:
+    """sha256:<hex> of the internal CA certificate (DER), or blank when there is no CA yet."""
+    ca_path = (_deps.data_dir or Path(".")) / "internal-ca.crt"
+    try:
+        st = ca_path.stat()
+    except OSError:
+        _ca_fp_cache.clear()
+        return ""
+    key = (str(ca_path), st.st_mtime_ns, st.st_size)
+    if _ca_fp_cache.get("key") == key:
+        return _ca_fp_cache["value"]
+    try:
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives.serialization import Encoding as _Enc
+        cert = _x509.load_pem_x509_certificate(ca_path.read_bytes())
+        value = "sha256:" + hashlib.sha256(cert.public_bytes(_Enc.DER)).hexdigest()
+    except Exception as e:
+        log.warning("ca fingerprint unavailable: %s", e)
+        return ""
+    _ca_fp_cache["key"] = key
+    _ca_fp_cache["value"] = value
+    return value
+
+
+def manager_https_url() -> str:
+    """https://<host the caller used>:<tls_port>, or blank when manager TLS is off."""
+    port = int(getattr(_deps.settings.manager, "tls_port", 0) or 0)
+    return f"https://{_deps.request_host_no_port()}:{port}" if port > 0 else ""
+
+
 def _agent_stream_key(agent_id: str) -> bytes:
     """Per-agent stream-token key: HMAC(HMAC(manager_secret, "agent-stream-key"), agent_id)."""
     sub = _hmac.new(_deps.manager_secret(), b"agent-stream-key", hashlib.sha256).digest()
@@ -1204,25 +1261,14 @@ def _agent_cert_sans(agent: dict, warn: bool = False) -> "tuple[str, list[str]]"
     return name, ips
 
 
-def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
-    """Run SAN derivation + sign + return the {cert_pem, key_pem, ca_pem, expires_at}
-    block. Returns None when the PKI module is unavailable.
-
-    Both _maybe_issue_tls_bundle (heartbeat-driven) and _agents_issue_cert
-    (admin-tab manual rotation) used to open-code this with subtly different
-    SAN-derivation rules — same bug fix landed twice and had to stay in lockstep.
-    Centralizing the logic here keeps the SAN coverage rule (_agent_cert_sans)
-    in one place.
-
-    The audit-trail write (last_cert_issued_at + clearing force_cert_reissue)
-    stays at the callers because admin rotation does NOT clear force_cert_reissue
-    — only the heartbeat path does that, since the flag is heartbeat-consumed.
-    """
+def _build_and_sign_agent_cert(agent: dict, csr_pem: "str | None" = None) -> "dict | None":
+    """SAN derivation + sign; returns {cert_pem, ca_pem, expires_at} plus key_pem when the manager made the key."""
     ca_cert, ca_key, pki = _deps.pki_ensure_ca()
     if pki is None:
         log.warning("pki_ensure_ca returned None module; cannot sign cert for agent %s",
                     agent.get("agent_id"))
         return None
+    public_key = _csr_public_key(csr_pem, agent) if csr_pem else None
     name, ips = _agent_cert_sans(agent, warn=True)
     cert_pem, key_pem = pki.sign_agent_cert(
         ca_cert, ca_key,
@@ -1231,16 +1277,35 @@ def _build_and_sign_agent_cert(agent: dict) -> "dict | None":
         ip_san=ips[0] if ips else "",
         extra_ip_sans=ips[1:],
         role=pki.ROLE_AGENT,
+        public_key=public_key,
     )
     ca_pem = pki.ca_bundle_pem(_deps.data_dir)
     from cryptography import x509 as _x509
     parsed = _x509.load_pem_x509_certificate(cert_pem.encode("ascii"))
-    return {
-        "cert_pem": cert_pem,
-        "key_pem":  key_pem,
-        "ca_pem":   ca_pem,
-        "expires_at": parsed.not_valid_after_utc.isoformat(),
-    }
+    out = {"cert_pem": cert_pem, "ca_pem": ca_pem, "expires_at": parsed.not_valid_after_utc.isoformat()}
+    if key_pem:
+        out["key_pem"] = key_pem
+    return out
+
+
+def _csr_public_key(csr_pem: str, agent: dict):
+    """Public key of a well-formed, self-signed CSR; None (manager makes the key) otherwise."""
+    try:
+        from cryptography import x509 as _x509
+        from cryptography.hazmat.primitives.asymmetric import ec as _ec, rsa as _rsa
+        csr = _x509.load_pem_x509_csr(csr_pem.encode("ascii"))
+        if not csr.is_signature_valid:
+            raise ValueError("CSR signature invalid")
+        pub = csr.public_key()
+        if not isinstance(pub, (_rsa.RSAPublicKey, _ec.EllipticCurvePublicKey)):
+            raise ValueError("unsupported key type")
+        if isinstance(pub, _rsa.RSAPublicKey) and pub.key_size < 2048:
+            raise ValueError("RSA key too small")
+        return pub
+    except Exception as e:
+        log.warning("agent %s sent an unusable CSR (%s); issuing a manager-made key instead",
+                    str(agent.get("agent_id") or "")[:8], e)
+        return None
 
 
 # ── Private: TLS bundle issuance ─────────────────────────────────────
@@ -1347,7 +1412,8 @@ def _maybe_issue_tls_bundle(agent: dict, body: dict) -> "dict | None":
         if not needs_new:
             return None
 
-        bundle = _build_and_sign_agent_cert(agent)
+        bundle = _build_and_sign_agent_cert(
+            agent, csr_pem=body.get("csr_pem") if isinstance(body.get("csr_pem"), str) else None)
         if bundle is None:
             return None
         # `reason_hint` set above based on which gate triggered: first
@@ -1689,6 +1755,15 @@ def _agents_register():
                 **({"token": agent["token"]} if agent.get("status") == "approved" and agent.get("token") else {}),
             })
 
+        problem = _registration_gate_problem()
+        if problem:
+            log.warning("agent registration refused: enrollment secret %s (hostname=%s from=%s)",
+                        "missing" if problem == "missing" else "wrong", hostname, remote)
+            return jsonify({"ok": False,
+                            "error": "enrollment secret missing or wrong; install the agent with "
+                                     "the current secret shown on Admin › Agents",
+                            "code": "enrollment_secret"}), 403
+
         # An approved or disabled record owns the hostname; pending ones do not,
         # so a fresh registration may sit beside them until an admin picks one.
         blocking = next(((aid, a) for aid, a in matches if a.get("status") != "pending"), None)
@@ -2004,10 +2079,7 @@ def _agents_heartbeat():
     # from the host the agent actually used + the configured tls_port; blank
     # when TLS is disabled. The agent probes it before switching, so a wrong
     # value can't strand the heartbeat.
-    _mgr_tls_port = int(_deps.settings.manager.tls_port or 0)
-    manager_https_url = (
-        f"https://{_deps.request_host_no_port()}:{_mgr_tls_port}" if _mgr_tls_port > 0 else ""
-    )
+    manager_https_url_ = manager_https_url()
 
     return jsonify({
         "ok": True,
@@ -2016,7 +2088,7 @@ def _agents_heartbeat():
         # Agents consume this on first heartbeat after process start and
         # ignore subsequent values — restart picks up later changes.
         "alarm_engine_url": ae_url_for_agent,
-        "manager_https_url": manager_https_url,
+        "manager_https_url": manager_https_url_,
         # Shared ingest token for the alarm engine's metric POST routes. Blank
         # when ingest auth is off; agents attach it as the bearer on their
         # BufferedMetricClient pushes. Read live so a rotation propagates on the
@@ -2094,6 +2166,9 @@ def _agents_list():
         "agents": safe,
         "global": data.get("global", {"auth_disabled": False}),
         "enrollment": enrollment_state(data),
+        "enrollment_secret_required": bool(enrollment_secret()),
+        "ca_fingerprint": ca_fingerprint(),
+        "manager_https_url": manager_https_url(),
         "host_auto_detected": host_auto_detected,
         "latest_agent_version": latest,
         "manager_version": _deps.version,

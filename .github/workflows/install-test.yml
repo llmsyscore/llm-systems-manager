@@ -401,8 +401,13 @@ jobs:
           # Run the agent installer from the manager's DEPLOYED tree (/opt-mgr,
           # llmsys-readable). `install.sh --mode 5` installs from the raw GH
           # checkout under the runner's HOME, which the llmsys pip step can't read.
-          sudo LLMSYS_TELEMETRY=0 bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
-            --manager-url "http://$DETECTED_IP:5000" --hostname ci-split-agent < /dev/null
+          # The mode-3 manager minted an enrollment secret; a new machine must
+          # send it. Pin the manager CA too so the agent enrols over TLS (#1217, #1204).
+          _secret="$(sudo sed -nE 's/^[[:space:]]*enrollment_secret[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' /opt/llm-systems-manager-mgr/config/llm-systems.toml | head -n1)"
+          [ -n "$_secret" ] || { echo "no enrollment_secret in the mode-3 manager TOML"; exit 1; }
+          _cafp="$(sudo openssl x509 -noout -fingerprint -sha256 -in /opt/llm-systems-manager-mgr/data/internal-ca.crt | sed -E 's/.*=//' | tr -d ':')"
+          sudo LLMSYS_TELEMETRY=0 LLMSYS_ENROLLMENT_SECRET="$_secret" bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
+            --manager-url "http://$DETECTED_IP:5000" --ca-fingerprint "$_cafp" --hostname ci-split-agent < /dev/null
 
       # Approve + full-TLS verification. Admin HTTP calls stay on loopback
       # (127.0.0.1 is always in admin_cidrs); the agent itself dials the LAN IP.

@@ -56,5 +56,8 @@ ask_url() {
 
 ask_url manager-url high 5000
 ask_url alarm-engine-url medium 8081
+db_input high llm-systems-agent/enrollment-secret || true
+# shellcheck disable=SC2119
+db_go || true
 
 exit 0

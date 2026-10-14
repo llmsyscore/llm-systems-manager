@@ -105,6 +105,15 @@ def _fresh_anon_budget():
 
 
 @pytest.fixture(autouse=True)
+def _no_enrollment_secret(monkeypatch):
+    """Registration tests assume no enrollment secret unless they set one."""
+    import agent_registry
+    cfg = getattr(getattr(agent_registry._deps.settings, "manager", None), "agents", None)
+    if cfg is not None and hasattr(cfg, "enrollment_secret"):
+        monkeypatch.setattr(cfg, "enrollment_secret", "")
+
+
+@pytest.fixture(autouse=True)
 def _tower_checks_stubbed(monkeypatch):
     """Stops /api/tower/state from starting a real capability probe against the live fleet."""
     import tower

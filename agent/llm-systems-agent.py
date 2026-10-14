@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.14-2"
+VERSION = "v2026.10.14-4"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -525,6 +525,7 @@ class AgentConfig:
     LOG_FILE: str = ""
     LOG_LEVEL: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
     TOKEN_FILE: str = ""
+    ENROLLMENT_SECRET_FILE: str = ""
 
     @classmethod
     def load(cls) -> "AgentConfig":
@@ -620,6 +621,8 @@ class AgentConfig:
             cfg.LOG_FILE = _default_log_file(cfg.AGENT_INSTALL_DIR)
         if not cfg.TOKEN_FILE:
             cfg.TOKEN_FILE = os.path.join(cfg.AGENT_INSTALL_DIR, "data", "token")
+        if not cfg.ENROLLMENT_SECRET_FILE:
+            cfg.ENROLLMENT_SECRET_FILE = os.path.join(cfg.AGENT_INSTALL_DIR, "data", "enrollment-secret")
         if not cfg.AGENT_REPO_DIR:
             cfg.AGENT_REPO_DIR = os.path.join(cfg.AGENT_INSTALL_DIR, "src")
         # Scheme is required; bare "host:port" yields opaque `requests` errors.
@@ -1036,6 +1039,88 @@ def _ca_bundle_path() -> Path:
     if not ca_path.is_absolute():
         ca_path = Path(CONFIG.AGENT_INSTALL_DIR) / ca_path
     return ca_path
+
+
+def _ca_fingerprint_of(pem_text: str) -> str:
+    """sha256:<hex> of a PEM certificate via openssl; blank when it cannot be parsed."""
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-noout", "-fingerprint", "-sha256"],
+            input=pem_text, capture_output=True, text=True, timeout=5, check=True,
+        ).stdout
+        digest = out.split("=", 1)[1].strip().replace(":", "").lower()
+        return "sha256:" + digest if len(digest) == 64 else ""
+    except Exception:
+        return ""
+
+
+def _https_hold_check() -> bool:
+    """True when a token may be sent over MANAGER_URL: no CA on disk, already https, manager TLS off,
+    or the https URL from /api/pki/ca verified against the stored CA (MANAGER_URL is switched to it)."""
+    ca_path = _ca_bundle_path()
+    if not ca_path.is_file() or (CONFIG.MANAGER_URL or "").lower().startswith("https://"):
+        return True
+    base_url = CONFIG.MANAGER_URL
+    base = (base_url or "").rstrip("/")
+    try:
+        resp = _post_session.get(f"{base}/api/pki/ca", timeout=5)
+        if resp.status_code == 404:
+            return True
+        if not 200 <= resp.status_code < 300:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        info = resp.json()
+        if not isinstance(info, dict) or not info.get("ok"):
+            raise ValueError("reply is not an ok JSON object")
+    except Exception as e:
+        _diag_throttle("tls_first_info", "control channel: holding the token until %s/api/pki/ca answers (%s: %s)",
+                       base, type(e).__name__, e, level=logging.WARNING)
+        return False
+    try:
+        return _https_switch_if_verified(info, ca_path)
+    except Exception as e:
+        CONFIG.MANAGER_URL = base_url
+        _diag_throttle("tls_first_error", "control channel: holding the token, TLS switch check failed (%s: %s)",
+                       type(e).__name__, e, level=logging.WARNING)
+        return False
+
+
+def _https_switch_if_verified(info, ca_path) -> bool:
+    """Switch MANAGER_URL to the advertised https URL once its CA matches and /health answers over TLS."""
+    if not isinstance(info, dict):
+        raise ValueError(f"/api/pki/ca returned {type(info).__name__}, not an object")
+    https_url = str(info.get("https_url") or "").strip().rstrip("/")
+    if not https_url.lower().startswith("https://"):
+        return True
+    served = _ca_fingerprint_of(str(info.get("ca_pem") or ""))
+    stored = _ca_fingerprint_of(ca_path.read_text())
+    if not served or served != stored:
+        _diag_throttle("tls_first_ca_mismatch",
+                       "control channel: the manager's CA (%s) differs from the stored one (%s); holding the token. "
+                       "Re-run the agent installer: sudo bash install.sh --mode 5 -- --update --ca-fingerprint <new fingerprint>",
+                       served[:23] or "?", stored[:23] or "?", level=logging.WARNING)
+        return False
+    try:
+        r = _role_get("manager", f"{https_url}/health", timeout=4, verify=str(ca_path))
+        if not r.ok:
+            raise RuntimeError(f"HTTP {r.status_code}")
+    except Exception as e:
+        _diag_throttle("tls_first_probe",
+                       "control channel: %s advertised but not reachable over TLS (%s: %s); holding the token, retrying",
+                       https_url, type(e).__name__, e, level=logging.WARNING)
+        return False
+    old = CONFIG.MANAGER_URL
+    CONFIG.MANAGER_URL = https_url
+    _configure_manager_tls_verify()
+    with _runtime_lock:
+        _state["mgr_url_applied"] = https_url
+    logger.warning("control channel: switched to TLS before sending the token: %s -> %s", old, https_url)
+    return True
+
+
+def _hold_for_https() -> None:
+    """Block until _https_hold_check allows the token to be sent."""
+    while not _https_hold_check():
+        time.sleep(15)
 
 
 def _configure_ae_tls_verify() -> None:
@@ -1876,6 +1961,57 @@ def _tls_paths() -> tuple[Path, Path]:
     return crt, key
 
 
+def _tls_next_key_path() -> Path:
+    """The private key waiting for a certificate; promoted to TLS_KEY_FILE when the cert arrives."""
+    return Path(str(_tls_paths()[1]) + ".next")
+
+
+_tls_csr_cache: dict = {}
+
+
+def _tls_csr_pem() -> Optional[str]:
+    """CSR for the pending key (made on first use); None when openssl is unavailable."""
+    nxt = _tls_next_key_path()
+    try:
+        if not nxt.is_file():
+            nxt.parent.mkdir(parents=True, exist_ok=True)
+            tmp = nxt.with_name(nxt.name + ".tmp")
+            tmp.unlink(missing_ok=True)
+            os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            try:
+                subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+                                "-out", str(tmp)], capture_output=True, timeout=60, check=True)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, nxt)
+            finally:
+                tmp.unlink(missing_ok=True)
+        st = nxt.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        if _tls_csr_cache.get("key") == key:
+            return _tls_csr_cache["csr"]
+        try:
+            csr = subprocess.run(["openssl", "req", "-new", "-key", str(nxt), "-subj",
+                                  f"/CN={CONFIG.AGENT_HOSTNAME or 'agent'}"],
+                                 capture_output=True, text=True, timeout=30, check=True).stdout
+        except subprocess.CalledProcessError:
+            nxt.unlink(missing_ok=True)
+            raise
+        _tls_csr_cache.update(key=key, csr=csr)
+        return csr
+    except Exception as e:
+        _diag_throttle("tls_csr", "could not build a certificate request (%s: %s); the manager will issue a key",
+                       type(e).__name__, e, level=logging.WARNING)
+        return None
+
+
+def _tls_pubkey_pem(args: list) -> str:
+    """Public key PEM printed by an openssl command; blank on failure."""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except Exception:
+        return ""
+
+
 def _tls_enabled() -> bool:
     """True when both cert and key files exist and are readable. The
     operator drops the trio in via the manager's cert-bundle endpoint;
@@ -1982,11 +2118,32 @@ def _tls_write_bundle(tls: dict) -> None:
     cert_pem = tls.get("cert_pem") or ""
     key_pem  = tls.get("key_pem")  or ""
     ca_pem   = tls.get("ca_pem")   or ""
-    if not (cert_pem and key_pem and ca_pem):
+    if not (cert_pem and ca_pem):
         logger.warning("heartbeat-ack TLS block incomplete; ignoring")
         return
-    atomic_write_text(crt_path, cert_pem, mode=0o644)
-    atomic_write_text(key_path, key_pem,  mode=0o600)
+    if key_pem:
+        atomic_write_text(key_path, key_pem, mode=0o600)
+        atomic_write_text(crt_path, cert_pem, mode=0o644)
+    else:
+        nxt = _tls_next_key_path()
+        if not nxt.is_file():
+            logger.warning("heartbeat-ack certificate arrived without a pending key; ignoring")
+            return
+        tmp_cert = crt_path.with_name(crt_path.name + ".tmp")
+        try:
+            atomic_write_text(tmp_cert, cert_pem, mode=0o644)
+            cert_pub = _tls_pubkey_pem(["openssl", "x509", "-noout", "-pubkey", "-in", str(tmp_cert)])
+            key_pub = _tls_pubkey_pem(["openssl", "pkey", "-pubout", "-in", str(nxt)])
+            if not cert_pub or cert_pub != key_pub:
+                logger.warning("heartbeat-ack certificate does not match the pending key; ignoring")
+                return
+            os.chmod(nxt, 0o600)
+            # Key and cert renamed back to back so the pair on disk always matches.
+            os.replace(nxt, key_path)
+            os.replace(tmp_cert, crt_path)
+        finally:
+            tmp_cert.unlink(missing_ok=True)
+        _tls_csr_cache.clear()
     atomic_write_text(ca_path,  ca_pem,   mode=0o644)
     if hasattr(_tls_cert_expiry_iso, "_cache_key"):
         delattr(_tls_cert_expiry_iso, "_cache_key")
@@ -2152,7 +2309,7 @@ def _post_registration(body: dict, tok: str) -> bool:
     rr = _post_session.post(
         f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
         json=body, timeout=5,
-        headers={"Authorization": f"Bearer {tok}"},
+        headers=_enrollment_headers({"Authorization": f"Bearer {tok}"}),
     )
     if rr.ok:
         _note_advertised(body)
@@ -2209,12 +2366,44 @@ def _load_token() -> Optional[str]:
         return None
 
 
+def _load_enrollment_secret() -> Optional[str]:
+    p = Path(CONFIG.ENROLLMENT_SECRET_FILE)
+    if not p.is_file():
+        return None
+    try:
+        v = p.read_text().strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def _discard_enrollment_secret() -> None:
+    """Remove the installer's enrollment secret once this agent is approved; it is only for enrolling."""
+    p = Path(CONFIG.ENROLLMENT_SECRET_FILE)
+    try:
+        if p.is_file():
+            p.unlink()
+            logger.info("enrollment secret removed; this agent is approved and no longer needs it")
+    except Exception as e:
+        logger.warning("could not remove the enrollment secret at %s: %s", p, e)
+
+
+def _enrollment_headers(extra: Optional[dict] = None) -> dict:
+    """Request headers for a registration: the enrollment secret when the agent has one."""
+    out = dict(extra or {})
+    secret = _load_enrollment_secret()
+    if secret:
+        out["X-Enrollment-Secret"] = secret
+    return out
+
+
 def registry_register_blocking() -> None:
     """Register with the manager, then poll until approved.
 
     Uses a cached token if present and validated. Once approved, sets
     _state['approved']=True and _state['token']=<bearer>.
     """
+    _hold_for_https()
     cached = _load_token()
     if cached:
         try:
@@ -2231,6 +2420,7 @@ def registry_register_blocking() -> None:
                         _state["token"] = cached
                         _state["agent_id"] = d.get("agent_id")
                     logger.info("token cache validated; agent_id=%s", d.get("agent_id"))
+                    _discard_enrollment_secret()
                     # Re-POST registration so bind_url (http→https) refreshes; manager matches by (hostname, os) and updates in place.
                     try:
                         _refresh_registration(cached)
@@ -2242,12 +2432,12 @@ def registry_register_blocking() -> None:
 
     body = _registration_body()
     # Cached token (if any) rides along as the re-registration auth factor.
-    reg_headers = {"Authorization": f"Bearer {cached}"} if cached else {}
     while True:
         try:
             r = _post_session.post(
                 f"{CONFIG.MANAGER_URL.rstrip('/')}/api/agents/register",
-                json=body, timeout=10, headers=reg_headers,
+                json=body, timeout=10,
+                headers=_enrollment_headers({"Authorization": f"Bearer {cached}"} if cached else None),
             )
             if r.ok:
                 _note_advertised(body)
@@ -2264,6 +2454,7 @@ def registry_register_blocking() -> None:
                             _state["approved"] = True
                             _state["token"] = tok
                         logger.info("registered + auto-approved (agent_id=%s)", agent_id)
+                        _discard_enrollment_secret()
                         return
                 logger.info(
                     "registration accepted; status=%s agent_id=%s — waiting for admin approval",
@@ -2281,6 +2472,17 @@ def registry_register_blocking() -> None:
                             err_body = r.json() or {}
                         except Exception:
                             err_body = {}
+                        if err_body.get("code") == "enrollment_secret":
+                            logger.critical(
+                                "registration BLOCKED: the manager requires an enrollment secret and this "
+                                "agent's copy is missing or wrong.\n"
+                                "      Copy the current secret from Admin › Agents (Manage ▾ → Enrollment) and run:\n"
+                                "        sudo bash install.sh --mode 5 -- --update --no-pull --enrollment-secret <secret>\n"
+                                "      (run it from a copy of the manager's tools/installer/install.sh)\n"
+                                "      Will keep retrying every 15s; next reminder in 5 min."
+                            )
+                            time.sleep(15)
+                            continue
                         stale_id = err_body.get("agent_id") or "<unknown>"
                         stale_status = err_body.get("status") or "<unknown>"
                         base = (CONFIG.MANAGER_URL or "").rstrip("/")
@@ -2340,6 +2542,7 @@ def registry_register_blocking() -> None:
                             _state["approved"] = True
                             _state["token"] = tok
                         logger.info("approved by admin; agent_id=%s", agent_id)
+                        _discard_enrollment_secret()
                         return
             elif r.status_code == 404:
                 # The manager dropped the pending record (expired or deleted): register again.
@@ -2404,6 +2607,8 @@ def heartbeat_loop() -> None:
                 first = True
                 time.sleep(1)
                 continue
+            if not (CONFIG.MANAGER_URL or "").lower().startswith("https://"):
+                _hold_for_https()
             body = {
                 "agent_id": aid,
                 "collection_enabled": CONFIG.COLLECTION_ENABLED,
@@ -2417,6 +2622,7 @@ def heartbeat_loop() -> None:
                 "control_channel_tls": (CONFIG.MANAGER_URL or "").lower().startswith("https://"),
                 "tls_cert_has_role": _tls_cert_has_role(),
                 "tls_serves_role": _SERVED_ROLE,
+                "csr_pem": _tls_csr_pem(),
                 "providers": _provider_specs(),
             }
             # Wall clock stamped last, right before the POST (#1091).

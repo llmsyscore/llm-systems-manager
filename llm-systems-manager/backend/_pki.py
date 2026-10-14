@@ -191,14 +191,16 @@ def sign_agent_cert(
     extra_dns_sans: "list[str] | None" = None,
     extra_ip_sans:  "list[str] | None" = None,
     role: str = ROLE_AGENT,
-) -> Tuple[str, str]:
+    public_key=None,
+) -> Tuple[str, "str | None"]:
     """Sign a leaf cert for one member; the SAN gains that role's reserved name.
-    Returns (cert_pem, key_pem)."""
+    Returns (cert_pem, key_pem); key_pem is None when the caller supplied public_key."""
     supplied = [hostname, *(extra_dns_sans or [])]
     if any(in_role_zone(n) for n in supplied):
         raise ValueError("caller-supplied name lies in the reserved role zone")
     role_dns = role_name(role, agent_id)
-    leaf_key = _generate_rsa_key()
+    leaf_key = None if public_key is not None else _generate_rsa_key()
+    leaf_pub = public_key if public_key is not None else leaf_key.public_key()
     now = datetime.datetime.now(datetime.timezone.utc)
 
     san_entries: list[x509.GeneralName] = []
@@ -234,7 +236,7 @@ def sign_agent_cert(
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_cert.subject)
-        .public_key(leaf_key.public_key())
+        .public_key(leaf_pub)
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(hours=1))
         .not_valid_after(now + datetime.timedelta(days=days))
@@ -276,18 +278,20 @@ def sign_agent_cert(
         # but it's what every well-formed cert ships and it makes
         # `openssl x509 -text` output match expectations.
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            x509.SubjectKeyIdentifier.from_public_key(leaf_pub),
             critical=False,
         )
     )
     crt = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
 
     cert_pem = crt.public_bytes(Encoding.PEM).decode("ascii")
-    key_pem = leaf_key.private_bytes(
-        encoding=Encoding.PEM,
-        format=PrivateFormat.PKCS8,
-        encryption_algorithm=NoEncryption(),
-    ).decode("ascii")
+    key_pem = None
+    if leaf_key is not None:
+        key_pem = leaf_key.private_bytes(
+            encoding=Encoding.PEM,
+            format=PrivateFormat.PKCS8,
+            encryption_algorithm=NoEncryption(),
+        ).decode("ascii")
     return cert_pem, key_pem
 
 

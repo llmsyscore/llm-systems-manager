@@ -280,3 +280,26 @@ def test_agent_sibling_imports_are_installed():
     body = _extract_func(AGENT_INSTALL_SH, "_compute_required_install_files")
     missing = sorted(m for m in siblings if f'/{m}.py"' not in body)
     assert not missing, f"not in _compute_required_install_files: {missing}"
+
+
+# ── #1217: co-located agent gets the enrollment secret via env, never argv ──
+
+def test_manager_installer_hands_enrollment_secret_via_env(tmp_path):
+    text = (REPO_ROOT / "tools" / "installer" / "install.sh").read_text()
+    assert text.count("    agent_enrollment_handoff\n") == 2
+    assert text.count('LLMSYS_ENROLLMENT_SECRET="$AGENT_ENROLL_SECRET" "${AGENT_CMD[@]}"') == 2
+    assert "--enrollment-secret" not in text and "export LLMSYS_ENROLLMENT_SECRET" not in text
+    func = _extract_func(REPO_ROOT / "tools" / "installer" / "install.sh", "agent_enrollment_handoff")
+    reader = _extract_func(LIB_COMMON_SH, "read_toml_key")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "internal-ca.crt").write_text("not a cert\n")
+    toml = tmp_path / "config" / "llm-systems.toml"
+    script = (f'set -euo pipefail\nSUDO=""\nLLMSYS_INSTALL_DIR="{tmp_path}"\n{reader}\n{func}\n'
+              'AGENT_CMD=(bash x)\nagent_enrollment_handoff\n'
+              'printf "%s|%s|%s\\n" "$AGENT_ENROLL_SECRET" "${LLMSYS_ENROLLMENT_SECRET-unset}" "${AGENT_CMD[*]}"\n')
+    env = {k: v for k, v in os.environ.items() if k != "LLMSYS_ENROLLMENT_SECRET"}
+    toml.write_text('[manager.agents]\nenrollment_secret = ""   # blank\n')
+    assert _bash(script, env).stdout.strip() == "|unset|bash x"
+    toml.write_text('[manager.agents]\nenrollment_secret = "s3cr3t"   # set\n')
+    assert _bash(script, env).stdout.strip() == "s3cr3t|unset|bash x"

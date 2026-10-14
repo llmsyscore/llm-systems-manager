@@ -84,7 +84,7 @@ BODY = {"has_tls_cert": True, "tls_expires_at": "2099-01-01T00:00:00+00:00", "tl
 def test_agent_without_a_role_cert_gets_one_once(registry, monkeypatch):
     calls = []
     monkeypatch.setattr(ar, "_build_and_sign_agent_cert",
-                        lambda agent: calls.append(1) or {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
+                        lambda agent, csr_pem=None: calls.append(1) or {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
                                                           "expires_at": "2099-01-01T00:00:00+00:00"})
     agent = registry["agents"][AID]
     out = ar._maybe_issue_tls_bundle(agent, BODY)
@@ -121,7 +121,7 @@ def test_fixture_certificates_are_not_signed_by_the_live_ca(data):
 
 def _signer(monkeypatch, calls):
     monkeypatch.setattr(ar, "_build_and_sign_agent_cert",
-                        lambda agent: calls.append(1) or {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
+                        lambda agent, csr_pem=None: calls.append(1) or {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
                                                           "expires_at": "2099-01-01T00:00:00+00:00"})
 
 
@@ -141,7 +141,7 @@ def test_agent_that_reports_no_role_cert_is_sent_one_again(registry, monkeypatch
 
 
 def test_resend_waits_between_attempts(registry, monkeypatch):
-    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent, csr_pem=None: pytest.fail("reissued"))
     agent = registry["agents"][AID]
     agent["cert_role_sent_at"] = _ago(minutes=2)
     assert ar._maybe_issue_tls_bundle(agent, {**BODY, "tls_cert_has_role": False}) is None
@@ -149,7 +149,7 @@ def test_resend_waits_between_attempts(registry, monkeypatch):
 
 @pytest.mark.parametrize("extra", [{"tls_cert_has_role": True}, {}, {"tls_cert_has_role": None}, {"tls_cert_has_role": 0}])
 def test_no_resend_unless_the_agent_says_it_lacks_the_certificate(registry, monkeypatch, extra):
-    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent: pytest.fail("reissued"))
+    monkeypatch.setattr(ar, "_build_and_sign_agent_cert", lambda agent, csr_pem=None: pytest.fail("reissued"))
     agent = registry["agents"][AID]
     agent["cert_role_sent_at"] = _ago(minutes=30)
     assert ar._maybe_issue_tls_bundle(agent, {**BODY, **extra}) is None

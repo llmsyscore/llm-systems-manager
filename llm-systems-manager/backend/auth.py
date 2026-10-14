@@ -68,7 +68,7 @@ DEFAULT_AUTH_USER = "llmadmin"
 # health, and the auth routes themselves. Other agent endpoints are exempted
 # dynamically by their bearer token (see _auth_gate).
 AUTH_OPEN_PATHS = frozenset({
-    "/health", "/login", "/logout", "/api/agents/register",
+    "/health", "/login", "/logout", "/api/agents/register", "/api/pki/ca",
     # PWA manifest + service worker (#522) — fetched without credentials.
     "/manifest.webmanifest", "/sw.js",
     # Alarm-engine web-push bridge (#538): self-gated on a bearer token, and
@@ -421,7 +421,7 @@ def _agent_bearer_allowed(path: str, method: "str | None" = None) -> bool:
 
 
 # ── Anonymous request budget (#1216) ─────────────────────────────────
-_ANON_BUDGET_PATHS = frozenset({"/api/agents/register", "/login"})
+_ANON_BUDGET_PATHS = frozenset({"/api/agents/register", "/login", "/api/pki/ca"})
 _ANON_BUDGET_WINDOW_S = 60
 
 

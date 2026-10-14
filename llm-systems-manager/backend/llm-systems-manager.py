@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-3"
+__version__ = "v2026.10.14-7"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3911,6 +3911,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "agent.host-role": "Changed the manager host role",
     "agent.global-config": "Changed agent auth settings", "agent.push-ca": "Pushed the CA bundle to agents",
     "agent.collection": "Paused or resumed collection",
+    "agent.enrollment-secret": "Changed the agent enrollment secret",
     "service.restart": "Restarted a service", "auth.mode-change": "Changed the login mode",
     "auth.login": "Signed in", "auth.logout": "Signed out",
     "account.password": "Changed own password",
@@ -3982,6 +3983,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/role-primary$"), "agent.role-primary", "agent.roles"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/host-role$"),    "agent.host-role",    "agent.roles"),
     ("POST",   re.compile(r"^/api/agents/global$"),                    "agent.global-config", "agent.roles"),
+    ("POST",   re.compile(r"^/api/agents/enrollment-secret$"),         "agent.enrollment-secret", "agent.lifecycle"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart",      "agent.control"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update",  "agent.control"),
     ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file",  "agent.config"),
@@ -7855,7 +7857,7 @@ def _forecast_reload_config() -> None:
 _HOT_RELOADERS["manager.forecast."] = _forecast_reload_config
 
 
-_AGENTS_HOT_KEYS = ("enrollment_mode", "enrollment_window_min")
+_AGENTS_HOT_KEYS = ("enrollment_mode", "enrollment_window_min", "enrollment_secret")
 
 
 def _agents_reload_config() -> None:
@@ -7872,6 +7874,41 @@ def _agents_reload_config() -> None:
 
 
 _HOT_RELOADERS["manager.agents."] = _agents_reload_config
+
+
+@app.route("/api/agents/enrollment-secret", methods=["GET", "POST"])
+def agents_enrollment_secret():
+    """Admin: read the enrollment secret, or mint a new one and apply it without a restart."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    if flask_request.method == "GET":
+        cur = agent_registry.enrollment_secret()
+        return jsonify({"ok": True, "secret": cur, "set": bool(cur)})
+    body = flask_request.get_json(silent=True) or {}
+    if body.get("action") != "rotate":
+        return jsonify({"ok": False, "error": "action must be rotate"}), 400
+    new = secrets.token_hex(32)
+    try:
+        settings_toml_io.apply_patches({"manager.agents.enrollment_secret": new})
+    except settings_toml_io.SettingsIOError as e:
+        return _err_json("config file unreadable", 500, exc=e)
+    _agents_reload_config()
+    log.warning("enrollment secret rotated by %s", flask_request.remote_addr)
+    return jsonify({"ok": True, "secret": new, "set": True})
+
+
+@app.route("/api/pki/ca", methods=["GET"])
+def pki_ca():
+    """Public: the internal CA certificate, its fingerprint and the manager's https URL."""
+    ca_cert, _ca_key, _pki = _pki_ensure_ca()
+    from cryptography.hazmat.primitives.serialization import Encoding as _Enc
+    pem = ca_cert.public_bytes(_Enc.PEM).decode("ascii")
+    resp = jsonify({"ok": True, "ca_pem": pem,
+                    "fingerprint": agent_registry.ca_fingerprint(),
+                    "https_url": agent_registry.manager_https_url()})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def _validate_nightly_at(value: str) -> "str | None":

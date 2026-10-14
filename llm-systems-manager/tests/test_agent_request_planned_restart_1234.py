@@ -67,7 +67,7 @@ def registry(monkeypatch):
     monkeypatch.setattr(ar, "load_agents", lambda: store)
     monkeypatch.setattr(ar, "save_agents", lambda d: None)
     monkeypatch.setattr(ar, "_build_and_sign_agent_cert",
-                        lambda agent: {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
+                        lambda agent, csr_pem=None: {"cert_pem": "c", "key_pem": "k", "ca_pem": "a",
                                        "expires_at": "2099-01-01T00:00:00+00:00"})
     return store
 
