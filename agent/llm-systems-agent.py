@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.14-3"
+VERSION = "v2026.10.14-4"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2377,18 +2377,15 @@ def _load_enrollment_secret() -> Optional[str]:
         return None
 
 
-def _persist_enrollment_secret(value: str) -> None:
-    """Store a non-blank secret from the manager; unchanged or blank values are skipped."""
-    value = (value or "").strip()
-    if not value or value == _load_enrollment_secret():
-        return
+def _discard_enrollment_secret() -> None:
+    """Remove the installer's enrollment secret once this agent is approved; it is only for enrolling."""
     p = Path(CONFIG.ENROLLMENT_SECRET_FILE)
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(p, value, mode=0o600)
-        logger.info("enrollment secret updated from the manager")
+        if p.is_file():
+            p.unlink()
+            logger.info("enrollment secret removed; this agent is approved and no longer needs it")
     except Exception as e:
-        logger.warning("failed to persist enrollment secret to %s: %s", p, e)
+        logger.warning("could not remove the enrollment secret at %s: %s", p, e)
 
 
 def _enrollment_headers(extra: Optional[dict] = None) -> dict:
@@ -2423,6 +2420,7 @@ def registry_register_blocking() -> None:
                         _state["token"] = cached
                         _state["agent_id"] = d.get("agent_id")
                     logger.info("token cache validated; agent_id=%s", d.get("agent_id"))
+                    _discard_enrollment_secret()
                     # Re-POST registration so bind_url (http→https) refreshes; manager matches by (hostname, os) and updates in place.
                     try:
                         _refresh_registration(cached)
@@ -2456,6 +2454,7 @@ def registry_register_blocking() -> None:
                             _state["approved"] = True
                             _state["token"] = tok
                         logger.info("registered + auto-approved (agent_id=%s)", agent_id)
+                        _discard_enrollment_secret()
                         return
                 logger.info(
                     "registration accepted; status=%s agent_id=%s — waiting for admin approval",
@@ -2543,6 +2542,7 @@ def registry_register_blocking() -> None:
                             _state["approved"] = True
                             _state["token"] = tok
                         logger.info("approved by admin; agent_id=%s", agent_id)
+                        _discard_enrollment_secret()
                         return
             elif r.status_code == 404:
                 # The manager dropped the pending record (expired or deleted): register again.
@@ -2643,7 +2643,6 @@ def heartbeat_loop() -> None:
                         _tls_write_bundle(tls)
                     except Exception as e:
                         logger.exception("TLS bundle write failed: %s", e)
-                _persist_enrollment_secret(ack.get("enrollment_secret") or "")
                 with _runtime_lock:
                     was_approved = _state.get("approved")
                     _state["last_heartbeat_at"] = _now_iso()

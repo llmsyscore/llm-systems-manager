@@ -271,7 +271,7 @@ launchctl start com.llm-systems-agent
 
 New machines can register only while enrollment is open. Enrollment is open for 15 minutes after each manager start; after that, open it from **Admin › Agents** with **Open enrollment** before starting the agent (each click adds 15 minutes, and **Close enrollment** sits in the **Manage ▾** menu). The header chip shows whether enrollment is open and how long remains. An agent that registers while enrollment is closed keeps trying on its own and appears as soon as enrollment opens.
 
-New agents must then be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting. A new secret made on Admin › Agents reaches approved agents by itself; only machines installed later need the new value.
+New agents must then be approved before the manager will accept their data. The agent should appear in the dashboard within about 30 seconds of starting. Approved agents do not keep the secret: the agent deletes its copy once it is approved, so a new secret made on Admin › Agents only matters for machines installed later. An agent whose row you delete from Admin › Agents must be installed again with the current secret before it can enrol.
 
 1. Open the dashboard in your browser
 2. Go to the **Admin** tab

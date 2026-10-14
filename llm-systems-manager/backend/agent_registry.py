@@ -2097,7 +2097,6 @@ def _agents_heartbeat():
         # require_ingest_token treats as "ingest open" — so agents never POST
         # a meaningless bearer when the operator hasn't filled it in.
         "ingest_token": ingest_token_for_agent(),
-        "enrollment_secret": enrollment_secret(),
         # The list of providers this agent is the default for — agents read
         # this to decide whether to publish state-change broadcasts as the
         # provider's "default" agent. PR2: agents fall back to is_primary_llama

@@ -2253,7 +2253,7 @@ async function adminEnrollmentSecretCopy() {
 async function adminEnrollmentSecretRotate() {
   const ok = await _themedConfirm({
     title: 'Generate a new enrollment secret?',
-    bodyHtml: 'Agents already approved keep working and pick up the new value on their next heartbeat. ' +
+    bodyHtml: 'Agents already approved keep working and do not hold the secret. ' +
               'New installs must use the new secret; copy it after this step.',
     confirmLabel: 'Generate new secret',
   });

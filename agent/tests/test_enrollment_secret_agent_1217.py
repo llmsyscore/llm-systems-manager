@@ -1,5 +1,5 @@
 """#1217: the agent sends the install-time enrollment secret on registration and keeps the
-value the manager hands it in the heartbeat ack."""
+drops its copy once approved; the manager never hands it out."""
 from __future__ import annotations
 
 import logging
@@ -26,7 +26,7 @@ def _ns(tmp_path) -> dict:
         if mode is not None:
             Path(path).chmod(mode)
     ns["atomic_write_text"] = atomic_write_text
-    for fn in ("_load_enrollment_secret", "_persist_enrollment_secret", "_enrollment_headers"):
+    for fn in ("_load_enrollment_secret", "_discard_enrollment_secret", "_enrollment_headers"):
         exec(compile(_extract(fn), str(AGENT_PY), "exec"), ns)
     return ns
 
@@ -44,21 +44,15 @@ def test_file_value_is_sent_stripped(tmp_path):
     assert ns["_enrollment_headers"]() == {"X-Enrollment-Secret": "abc123"}
 
 
-def test_persist_writes_0600_and_skips_unchanged(tmp_path):
+def test_discard_removes_the_file_and_tolerates_absence(tmp_path):
     ns = _ns(tmp_path)
-    ns["_persist_enrollment_secret"]("new")
+    (tmp_path / "data").mkdir()
     p = tmp_path / "data" / "enrollment-secret"
-    assert p.read_text() == "new" and (p.stat().st_mode & 0o777) == 0o600
-    before = p.stat().st_mtime_ns
-    ns["_persist_enrollment_secret"]("new")
-    assert p.stat().st_mtime_ns == before
-
-
-def test_blank_ack_value_leaves_the_file_alone(tmp_path):
-    ns = _ns(tmp_path)
-    ns["_persist_enrollment_secret"]("keep")
-    ns["_persist_enrollment_secret"]("")
-    assert (tmp_path / "data" / "enrollment-secret").read_text() == "keep"
+    p.write_text("abc123")
+    ns["_discard_enrollment_secret"]()
+    assert not p.exists()
+    ns["_discard_enrollment_secret"]()
+    assert ns["_enrollment_headers"]() == {}
 
 
 def test_config_default_resolves_beside_the_token():
@@ -79,6 +73,8 @@ def test_403_with_enrollment_code_logs_the_fix():
     assert "/install/install.sh" not in body
 
 
-def test_heartbeat_persists_the_ack_secret():
-    body = _extract("heartbeat_loop")
-    assert '_persist_enrollment_secret(ack.get("enrollment_secret") or "")' in body
+def test_heartbeat_never_stores_a_secret_and_approval_discards_it():
+    hb = _extract("heartbeat_loop")
+    assert "enrollment_secret" not in hb and "_persist_enrollment_secret" not in SRC
+    reg = _extract("registry_register_blocking")
+    assert reg.count("_discard_enrollment_secret()") == 3

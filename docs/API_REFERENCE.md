@@ -863,7 +863,7 @@ Allows an agent to look up its own registration record using its bearer token. N
 ---
 
 ### `POST /api/agents/heartbeat`
-Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent. The body's `ts` (the agent's UTC wall clock, stamped just before the request is sent) is compared with the manager's clock and kept as `last_heartbeat_data.clock_skew_s` (agent minus manager, seconds); the Forecast sampler pushes it as the per-agent `forecast/agent_clock_skew_s` series behind the Agent health check's clock findings. The body may carry `csr_pem` (a certificate signing request made by the agent); the certificate in the reply is then issued for that key and no private key is sent. The reply also carries `enrollment_secret` so approved agents keep the current value.
+Receives a heartbeat from an agent, updating its last-seen timestamp and returning configuration updates (such as a new ingest URL or TLS bundle). Called automatically every 60 seconds by each agent. The body's `ts` (the agent's UTC wall clock, stamped just before the request is sent) is compared with the manager's clock and kept as `last_heartbeat_data.clock_skew_s` (agent minus manager, seconds); the Forecast sampler pushes it as the per-agent `forecast/agent_clock_skew_s` series behind the Agent health check's clock findings. The body may carry `csr_pem` (a certificate signing request made by the agent); the certificate in the reply is then issued for that key and no private key is sent.
 
 **Access:** (Agent-facing)
 
@@ -1009,7 +1009,7 @@ Returns `{"secret": "...", "set": true|false}` — the value new machines must s
 ---
 
 ### `POST /api/agents/enrollment-secret`
-Body `{"action": "rotate"}` makes a new secret, writes it to the configuration and applies it at once. Approved agents receive the new value on their next heartbeat; new installs must use it.
+Body `{"action": "rotate"}` makes a new secret, writes it to the configuration and applies it at once. Approved agents do not hold the secret and keep working; new installs must use the new value.
 
 **Access:** [Admin]
 

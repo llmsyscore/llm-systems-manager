@@ -153,7 +153,7 @@ class TestPayloads:
         secret("")
         assert c.get("/api/agents").get_json()["enrollment_secret_required"] is False
 
-    def test_heartbeat_ack_carries_the_secret(self, store, secret, monkeypatch):
+    def test_heartbeat_ack_never_carries_the_secret(self, store, secret, monkeypatch):
         secret(SECRET)
         store["agents"]["a1"] = _approved()
         agent = store["agents"]["a1"]
@@ -164,7 +164,8 @@ class TestPayloads:
             r = c.post("/api/agents/heartbeat", json={"agent_id": "a1"},
                        headers={"Authorization": "Bearer tok-a1"},
                        environ_base={"REMOTE_ADDR": "10.0.0.9"})
-        assert r.status_code == 200 and r.get_json()["enrollment_secret"] == SECRET
+        assert r.status_code == 200 and "enrollment_secret" not in r.get_json()
+        assert SECRET not in r.get_data(as_text=True)
 
 
 class TestAdminRoutes:
