@@ -49,6 +49,7 @@
 #admin-agents .mc-menu button.mc-toggle .tlbl { display: block; }
 #admin-agents .mc-menu .mi { width: 20px; flex-shrink: 0; color: var(--fg-dim); text-align: center; font-family: var(--font-mono); }
 #admin-agents .mc-menu .mi-row.warn { color: var(--warn); }
+#admin-agents .mc-menu .mi-row:disabled { color: var(--fg-faint); cursor: default; }
 #admin-agents .mc-menu .cnt { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent); border-radius: 999px; padding: 0 7px; }
 
 /* pills (exception states only) */
@@ -104,7 +105,8 @@
 #admin-agents .ag-ep { min-width: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
 #admin-agents .ag-ep .ip { font-size: 11.5px; color: var(--fg-muted); }
 #admin-agents .ag-ep .ver { font-size: 10.5px; color: var(--fg-dim); margin-top: 2px; }
-#admin-agents .ag-ep .ver .up { color: var(--warn); font-size: 11px; font-weight: 600; cursor: help; }
+#admin-agents .ag-ep .ag-upd { font-size: 10.5px; color: var(--warn); font-weight: 600; margin-top: 2px; white-space: normal; line-height: 1.3; }
+#admin-agents .ag-ep .ag-upd .v { white-space: nowrap; }
 #admin-agents .ag-ep .ver .cur { color: var(--fg-faint); }
 #admin-agents .ag-seen { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 2px; }
 #admin-agents .ag-seen .lbl { font-weight: 600; }

@@ -300,9 +300,10 @@
     const item = (act, glyph, label, cls, extra) =>
       `<button type="button" class="mi-row${cls ? ' ' + cls : ''}" data-act="${act}" data-aid="${aid}"${extra || ''}><span class="mi">${glyph}</span>${label}</button>`;
     const items = [];
+    const busy = typeof _adminUpdateBusy !== 'undefined' && _adminUpdateBusy ? ' disabled' : '';
     if (a.status === 'approved') {
       if (a.update_available) {
-        items.push(item('update', '⇈', `Update to ${esc(c.latest || '?')}`, 'warn'), '<hr>');
+        items.push(item('update', '⇈', busy ? 'Update running…' : `Update to ${esc(c.latest || '?')}`, 'warn', busy), '<hr>');
       }
       items.push(item('ping', '⟁', 'Ping agent'), item('log', '≣', 'Stream log'));
       const provs = c.providers.filter(p => (a.capabilities || {})[p.capability_key]);
@@ -310,7 +311,7 @@
         provs.length > 1 ? `Open in LLM Control · ${esc(p.name)}` : 'Open in LLM Control',
         '', ` data-prov="${esc(p.name)}"`)));
       items.push('<hr>');
-      if (!a.update_available) items.push(item('update', '⇈', 'Re-deploy current version'));
+      if (!a.update_available) items.push(item('update', '⇈', busy ? 'Update running…' : 'Re-deploy current version', '', busy));
       items.push(item('config', '✎', 'Edit agent config…'), '<hr>', item('disable', '⊘', 'Disable agent'));
     }
     items.push(item('delete', '⊗', 'Delete agent', 'danger'));
@@ -342,10 +343,9 @@
     else if (state === 'paused') pill = '<span class="ag-pill dim">paused</span>';
     else if (state === 'disabled') pill = '<span class="ag-pill dim">disabled</span>';
     const ver = a.version
-      ? esc(a.version) + (a.update_available
-        ? ` <span class="up" title="${esc(c.latest || '?')} available — see Warnings">↑</span>`
-        : (c.latest && a.version === c.latest ? ' <span class="cur">current</span>' : ''))
+      ? esc(a.version) + (!a.update_available && c.latest && a.version === c.latest ? ' <span class="cur">current</span>' : '')
       : '<span class="cur">no version</span>';
+    const upd = a.update_available ? `<div class="ag-upd">↑ update to <span class="v">${esc(c.latest || '?')}</span></div>` : '';
     const meta = [esc(a.os || '?'), esc(a.role || '?')].join('<i>·</i>');
     let seen = '';
     if (a.status === 'approved' && (a.liveness === 'down' || a.liveness === 'stale')) {
@@ -360,7 +360,7 @@
         <div class="sub">${showDesc(a) ? `<div class="d">${esc(a.description)}</div>` : ''}<div class="m">${meta}</div></div>
       </div>
       <div class="ag-caps">${capsHtml(a)}</div>
-      <div class="ag-ep"><div class="ip">${esc(ipOf(a))}</div><div class="ver">${ver}</div>${seen}</div>
+      <div class="ag-ep"><div class="ip">${esc(ipOf(a))}</div><div class="ver">${ver}</div>${upd}${seen}</div>
       <div class="ag-act">${actionsHtml(a)}</div>
       ${open ? drawerHtml(a) : ''}
     </div>`;

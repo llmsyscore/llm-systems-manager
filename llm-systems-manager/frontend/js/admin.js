@@ -1752,6 +1752,10 @@ function _toastErr(message) { _themedToast(String(message), { kind: 'err', ms: 6
 // its restart. Uses fetch+ReadableStream rather than EventSource so we
 // can issue POST (EventSource only does GET).
 async function adminUpdate(aid) {
+  if (_adminUpdateBusy) {
+    _themedToast('An agent update is already running', { kind: 'warn' });
+    return;
+  }
   const name = _adminAgentName(aid);
   const agent = (_adminAgentsCache || []).find(a => a.agent_id === aid) || {};
   const curV = agent.version || '?';
@@ -1768,11 +1772,17 @@ async function adminUpdate(aid) {
     confirmLabel: 'Update',
     cancelLabel:  'Cancel',
   });
-  if (!ok) return;
+  if (!ok || _adminUpdateBusy) return;
 
+  _adminSetUpdateBusy(true);
   _adminUpdateOpen(name);
   _adminUpdateLog(`Updating ${curV} → ${newV}`, 'stage');
-  const res = await _adminStreamUpdate(aid);
+  let res;
+  try {
+    res = await _adminStreamUpdate(aid);
+  } finally {
+    _adminSetUpdateBusy(false);
+  }
   if (res.transport) return;
   if (res.ok === true) {
     _adminUpdateLog(res.noRestart
@@ -1876,12 +1886,21 @@ async function _adminAwaitAgentVersion(aid, targetV, timeoutMs = 120000) {
   return false;
 }
 
+// True while any agent update (single or Update all) is running; repaints the agents roster and System Health.
+let _adminUpdateBusy = false;
+function _adminSetUpdateBusy(on) {
+  _adminUpdateBusy = !!on;
+  try {
+    if (window.AgentsView && typeof AgentsView.render === 'function') AgentsView.render();
+    if (typeof adminLoadHealth === 'function') adminLoadHealth();
+  } catch (_) { /* repaint only; the flag is already set */ }
+}
+
 // #637: sequential fleet-wide update — one agent at a time, each verified back on the new version;
 // a failed download is retried once; failures carry on except a missed version check, which stops the run (#1108).
-let _adminUpdateAllRunning = false;
 async function adminUpdateAll() {
-  if (_adminUpdateAllRunning) {
-    _themedToast('Update all is already running', { kind: 'warn' });
+  if (_adminUpdateBusy) {
+    _themedToast('An agent update is already running', { kind: 'warn' });
     return;
   }
   const newV = _latestAgentVersion;
@@ -1908,9 +1927,9 @@ async function adminUpdateAll() {
     confirmLabel: 'Update all',
     cancelLabel: 'Cancel',
   });
-  if (!ok) return;
+  if (!ok || _adminUpdateBusy) return;
 
-  _adminUpdateAllRunning = true;
+  _adminSetUpdateBusy(true);
   _adminUpdateOpen(`all agents (${todo.length})`);
   const results = off.map(a => ({ name: a.hostname || a.agent_id.slice(0, 8), state: 'skipped' }));
   for (const r of results) _adminUpdateLog(`– ${r.name}: disabled, skipped`);
@@ -1948,7 +1967,7 @@ async function adminUpdateAll() {
       }
     }
   } finally {
-    _adminUpdateAllRunning = false;
+    _adminSetUpdateBusy(false);
   }
   const updated = results.filter(r => r.state === 'updated').map(r => r.name);
   const failed = results.filter(r => r.state === 'failed').map(r => r.name);

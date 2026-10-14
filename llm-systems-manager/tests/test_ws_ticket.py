@@ -41,6 +41,11 @@ class TestTicketRejection:
     def test_none_rejected(self):
         assert M._verify_ws_ticket(None) is False
 
+    def test_expiry_beyond_configured_lifetime_rejected(self):
+        far = M._issue_ws_ticket(ttl=M._ws_ticket_ttl() + 3600)
+        assert M._verify_ws_ticket(far) is False
+        assert M._verify_ws_ticket(M._issue_ws_ticket(ttl=M._ws_ticket_ttl())) is True
+
     def test_expired_rejected(self):
         assert M._verify_ws_ticket(M._issue_ws_ticket(ttl=-1)) is False
 

@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.14-4"
+VERSION = "v2026.10.14-5"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3004,6 +3004,11 @@ def _log_watch_post(rule: dict, line: str) -> None:
         logger.warning("log-watch[%s]: ingest POST failed: %s", name, e)
 
 
+def _log_watch_self_echo(name: str, line: str) -> bool:
+    """True when the line is the alarm engine's own record of this rule's alert (carries rule=<name>)."""
+    return bool(name) and re.search(rf"rule={re.escape(name)}(?![\w.-])", line) is not None
+
+
 def _log_watch_scan_rule(rule: dict) -> None:
     global _log_watch_dirty
     name = str(rule.get("name") or "").strip()
@@ -3078,7 +3083,7 @@ def _log_watch_scan_rule(rule: dict) -> None:
         fired = 0
         for raw in lines:
             line = raw.rstrip("\r\n")
-            if not line or not cre.search(line):
+            if not line or not cre.search(line) or _log_watch_self_echo(name, line):
                 continue
             _log_watch_post(rule, line)
             last_fire = now
