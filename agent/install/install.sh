@@ -545,6 +545,7 @@ _compute_required_install_files() {
     "$SRC_DIR/buffered_metric_client.py"
     "$SRC_DIR/_utils.py"
     "$SRC_DIR/_best_effort.py"
+    "$SRC_DIR/telemetry_report.py"
     "$SRC_DIR/_bench_replay.py"
     "$SRC_DIR/agent_context.py"
     "$SRC_DIR/stream_pool.py"
@@ -1414,7 +1415,8 @@ if $DO_UPDATE; then
   # Same stage-then-rename swap for the top-level .py files.
   for _f in llm-systems-agent.py buffered_metric_client.py _utils.py \
             _best_effort.py _bench_replay.py agent_context.py \
-            stream_pool.py frozen_self_update.py unified_config_reader.py; do
+            stream_pool.py frozen_self_update.py unified_config_reader.py \
+            telemetry_report.py; do
     $SUDO cp "$SRC_DIR/$_f" "$INSTALL_DIR/$_f.new"
     $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_f.new"
     $SUDO mv "$INSTALL_DIR/$_f.new" "$INSTALL_DIR/$_f"
@@ -3913,6 +3915,42 @@ fi
 $SUDO mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/state"
 $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR"
 
+# Anonymous install and crash report consent: writes state/install-id and state/telemetry.json.
+_tele_py="${PYTHON3:-$(command -v python3 || true)}"
+if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
+  _tele_t="${LLMSYS_TELEMETRY:-}"
+  if [[ -z "$_tele_t" ]]; then
+    if [[ -t 0 ]]; then
+      read -rp "  Send anonymous install and crash reports (OS, hardware, version; no names or paths)? [Y/n] " _a
+      case "$(printf '%s' "${_a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) _tele_t=0 ;; *) _tele_t=1 ;; esac
+    else
+      _tele_t=1
+    fi
+  fi
+  [[ "$_tele_t" == "1" ]] || _tele_t=0
+  _run_as "$USER_ARG" "$_tele_py" -I - "$INSTALL_DIR/state" "$_tele_t" <<'PY' || true
+import json, os, sys, time, uuid
+d, t = sys.argv[1], sys.argv[2] == "1"
+def put(name, text, mode):
+    tmp = os.path.join(d, ".%s.%d.tmp" % (name, os.getpid()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, os.path.join(d, name))
+idf = os.path.join(d, "install-id")
+iid = ""
+if os.path.isfile(idf) and not os.path.islink(idf):
+    iid = open(idf).read().strip()
+if not iid:
+    iid = str(uuid.uuid4())
+    put("install-id", iid + "\n", 0o644)
+at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.stat(idf).st_mtime))
+put("telemetry.json", json.dumps({"install_report": t, "crash_reports": t,
+                                  "install_id": iid, "installed_at": at}, indent=1), 0o600)
+PY
+  export LLMSYS_TELEMETRY="$_tele_t"
+fi
+
 if [[ "$AGENT_OS" == "linux" ]]; then
   $SUDO mkdir -p /var/log/llm-systems-manager
   $SUDO chown "$USER_ARG:$USER_GROUP" /var/log/llm-systems-manager
@@ -3937,6 +3975,7 @@ $SUDO cp "$SRC_DIR/agent_context.py"          "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/stream_pool.py"            "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/frozen_self_update.py"     "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/unified_config_reader.py"  "$INSTALL_DIR/"
+$SUDO cp "$SRC_DIR/telemetry_report.py"        "$INSTALL_DIR/"
 $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/llm-systems-agent.py" \
   "$INSTALL_DIR/buffered_metric_client.py" \
@@ -3946,7 +3985,8 @@ $SUDO chown "$USER_ARG:$USER_GROUP" \
   "$INSTALL_DIR/stream_pool.py" \
   "$INSTALL_DIR/frozen_self_update.py" \
   "$INSTALL_DIR/agent_context.py" \
-  "$INSTALL_DIR/unified_config_reader.py"
+  "$INSTALL_DIR/unified_config_reader.py" \
+  "$INSTALL_DIR/telemetry_report.py"
 _ok "agent code installed to $INSTALL_DIR"
 
 # Optional CUDA-gated vLLM install — flips ENABLE_VLLM on success, so it must
@@ -4584,3 +4624,29 @@ if [[ "$MANAGER_URL" =~ ^https?://(127\.0\.0\.1|localhost)(:[0-9]+)?/?$ ]]; then
 fi
 echo "  Approve at:     $APPROVE_URL/  → Admin tab → Agents"
 echo "─────────────────────────────────────────────────────────────────────────"
+
+# Agent-only install report (Mode 5 or standalone); full installs report from install.sh.
+if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
+      && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
+  _tele_root="$(cd "$SRC_DIR/.." && pwd)"
+  _tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)"
+  _tele_ver="${_tele_ver:-$VERSION}"
+  # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
+  if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
+    _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
+      && $SUDO chmod 0755 "$_tele_tmp" \
+      && $SUDO install -d -m 0755 -o "$USER_ARG" "$_tele_tmp/llm-systems-manager/backend" "$_tele_tmp/tools/installer" \
+      && $SUDO install -m 0644 -o "$USER_ARG" "$_tele_root/llm-systems-manager/backend/telemetry.py" "$_tele_tmp/llm-systems-manager/backend/" \
+      && $SUDO install -m 0755 -o "$USER_ARG" "$_tele_root/tools/installer/lib-common.sh" \
+           "$_tele_root/tools/installer/telemetry-report.sh" "$_tele_root/tools/installer/telemetry-retry.sh" \
+           "$_tele_tmp/tools/installer/" \
+      && _tele_root="$_tele_tmp" || _tele_root=""
+  fi
+  if [[ -n "$_tele_root" ]]; then
+    _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
+      LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
+      LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+      bash "$_tele_root/tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
+      --data-dir "$INSTALL_DIR/state" --version "$_tele_ver" --root "$_tele_root" </dev/null || true
+  fi
+fi

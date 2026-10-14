@@ -33,6 +33,7 @@
     try { localStorage.setItem(NAV_STATE_KEY, JSON.stringify({ open: [..._navOpen], closed: [..._navClosed] })); } catch (_) { /* private mode */ }
   }
   let _towerState = null, _towerBusy = false, _towerAt = 0, _towerPoll = 0;
+  let _teleState = null, _teleAt = 0, _teleSending = false;
   // Conversation eval + curated models (#1047): one read each, polled while a job runs.
   let _towerGetHidden = '', _towerGetKey = '', _towerGetAgent = '';
   let _towerEval = null, _towerModels = null, _towerExtrasAt = 0, _towerExtrasPoll = 0, _towerActBusy = '';
@@ -46,6 +47,7 @@
     _dirty.clear();
     _invalid.clear();
     _towerAt = 0; _towerExtrasAt = 0;   // the Tower rows re-read on every entry too
+    _teleAt = 0;
     const root = $('adminSettingsRoot');
     if (!root) return;
     try {
@@ -600,6 +602,62 @@
       + '<div class="help">Whether the primary and fallback models answer with a tool call, and how the primary model takes the Thinking levels. Runs when Tower is switched on or a model changes; Verify runs it again now. Hover a status for the model.</div>'
       + `<div class="st-ct">${control}</div></div>`;
   }
+  function teleAge(iso) {
+    const str = String(iso || '');
+    const t = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(str) ? str : str + 'Z');
+    if (Number.isNaN(t)) return '\u2014';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 90) return 'just now';
+    if (s < 5400) return `${Math.round(s / 60)}m ago`;
+    if (s < 172800) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  }
+  function telemetryStatusHtml() {
+    const s = _teleState;
+    let text = 'Loading…', btn = '';
+    if (s && s.failed) text = 'Status unavailable';
+    else if (s && !s.last) text = s.pending ? 'One report is waiting to be sent' : 'No report sent yet';
+    else if (s) {
+      text = `Last report: ${esc(s.last.event)} · ${esc(teleAge(s.last.sent_at))}`;
+      btn = '<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetryView">View</button>';
+    }
+    btn += `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetrySend"${_teleSending ? ' disabled' : ''}>${_teleSending ? 'Sending…' : 'Send now'}</button>`;
+    return '<div class="settings-row st-fld st-checkrow" id="stTelemetryStatus">'
+      + '<div class="st-lb"><label>Last report</label></div>'
+      + '<div class="help">What left this machine most recently. View shows the exact fields.</div>'
+      + `<div class="st-ct"><div class="row"><span class="d">${text}</span>${btn}</div></div></div>`;
+  }
+  async function loadTelemetryState(force) {
+    if (!force && _teleState && Date.now() - _teleAt < 15000) return;
+    _teleAt = Date.now();
+    let st = null;
+    try { const r = await fetch('/api/admin/telemetry'); if (r.ok) st = await r.json(); } catch (_) { /* offline */ }
+    _teleState = st && st.ok !== false ? st : { failed: true };
+    const el = $('stTelemetryStatus');
+    if (el) el.outerHTML = telemetryStatusHtml();
+  }
+  async function sendTelemetryNow() {
+    if (_teleSending) return;
+    _teleSending = true;
+    let err = '';
+    const redraw = () => { const el = $('stTelemetryStatus'); if (el) el.outerHTML = telemetryStatusHtml(); };
+    redraw();
+    try {
+      const r = await fetch('/api/admin/telemetry/send', { method: 'POST' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); err = d.error || 'Send failed'; }
+    } catch (_) { err = 'Send failed'; }
+    _teleSending = false;
+    if (err) {
+      if (typeof _toastErr === 'function') _toastErr(err);
+      else if (typeof window._themedToast === 'function') window._themedToast(err, { kind: 'err' });
+      redraw();
+    } else await loadTelemetryState(true);
+  }
+  function viewTelemetryPayload() {
+    const p = _teleState && _teleState.last && _teleState.last.payload;
+    if (!p || typeof window._themedAlert !== 'function') return;
+    window._themedAlert({ title: 'Last report sent', bodyHtml: `<pre class="st-pre">${esc(JSON.stringify(p, null, 1))}</pre>` });
+  }
   function towerPending(s) {
     const p = c => !!(c && c.grade === 'pending');
     return !!s && (p(s.check) || (s.fallback && p(s.fallback.check)));
@@ -870,7 +928,8 @@
     return `<div class="card" data-group="${esc(g.key)}">`
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
       + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? [{ after: 'manager.tower.tool_mode', html: towerCheckHtml() },
-                                                                                          { after: 'manager.tower.model', html: towerEvalHtml() + towerModelsHtml() }] : null)}</div></div>`;
+                                                                                          { after: 'manager.tower.model', html: towerEvalHtml() + towerModelsHtml() }]
+        : g.key === 'telemetry' ? [{ after: 'manager.telemetry.heartbeat', html: telemetryStatusHtml() }] : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {
@@ -899,6 +958,7 @@
     renderSummary();
     bindOnce(root);
     if (root.querySelector('#stTowerCheck')) { loadTowerState(); loadTowerExtras(); }
+    if (root.querySelector('#stTelemetryStatus')) loadTelemetryState();
   }
 
   function renderSummary() {
@@ -1130,6 +1190,8 @@
 
   function onClick(ev) {
     if (ev.target.closest('#stTowerCheckBtn')) { ev.preventDefault(); runTowerCheck(); return; }
+    if (ev.target.closest('#stTelemetrySend')) { ev.preventDefault(); sendTelemetryNow(); return; }
+    if (ev.target.closest('#stTelemetryView')) { ev.preventDefault(); viewTelemetryPayload(); return; }
     if (onTowerExtrasClick(ev)) return;
     const tedit = ev.target.closest('.st-tools [data-tools-edit]');
     if (tedit) {

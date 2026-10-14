@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.11-1"
+__version__ = "v2026.10.14-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -224,6 +224,7 @@ import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cyc
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
 import settings_toml_io  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
+import telemetry  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1266
 
 
 def _patch_cheroot_flush_noise() -> None:
@@ -941,6 +942,7 @@ def _log_unhandled(e):
     if isinstance(e, HTTPException):
         return e
     log.exception("unhandled exception in %s %s", _flask_request.method, _flask_request.path)
+    telemetry.report_exception(e, e.__traceback__, component="manager")
     return jsonify({"ok": False, "error": "internal server error"}), 500
 
 # ---------------------------------------------------------------------------
@@ -3917,6 +3919,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "backup.export": "Exported an encrypted archive", "backup.import-apply": "Imported an archive",
     "backup.run": "Ran a backup now", "backup.download": "Downloaded a retained archive",
     "config.gateway": "Turned the inference gateway on/off",
+    "config.telemetry": "Changed report settings",
+    "config.telemetry-send": "Sent a diagnostic report now",
     "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
@@ -3996,6 +4000,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/admin/import/manager/apply$"),       "backup.import-apply", "backup"),
     ("PUT",    re.compile(r"^/api/admin/settings$"),                   "config.settings",    "config.settings"),
     ("PUT",    re.compile(r"^/api/admin/gateway$"),                    "config.gateway",     "config.settings"),
+    ("PUT",    re.compile(r"^/api/admin/telemetry$"),                  "config.telemetry",   "config.settings"),
+    ("POST",   re.compile(r"^/api/admin/telemetry/send$"),             "config.telemetry-send", "config.settings"),
     ("POST",   re.compile(r"^/api/admin/backup-now$"),                 "backup.run",         "backup"),
     ("GET",    re.compile(r"^/api/admin/backup-archive/(?P<t>.+)$"),   "backup.download",    "backup"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
@@ -5079,7 +5085,8 @@ def _gateway_reload_config() -> None:
 
 # Sections whose live values re-read the file after a save (backup registers below).
 _HOT_RELOADERS = {"manager.audit.": _audit_reload_config,
-                  "manager.gateway.": _gateway_reload_config}
+                  "manager.gateway.": _gateway_reload_config,
+                  "manager.telemetry.": telemetry.reload}
 
 # Path-specific checks a save must pass beyond the catalog's type coercion.
 _SETTINGS_VALIDATORS: dict = {}
@@ -6446,6 +6453,76 @@ _bench_watcher = bench_baseline.Watcher(
     alert=_ae_ingest_alert, push_metrics=_push_bench_metrics, log=log)
 bench_baseline.register_routes(app, _bench_watcher, primary_agent=_request_agent)
 companion.register_routes(app, ctx, static_dir=STATIC_DIR)
+
+
+def _telemetry_agent_count() -> int:
+    return sum(1 for a in agent_registry.load_agents()["agents"].values()
+               if a.get("status") == "approved")
+
+
+def _telemetry_provider_mix() -> dict:
+    mix: dict = {}
+    for a in agent_registry.load_agents()["agents"].values():
+        if a.get("status") != "approved":
+            continue
+        for cap in ("llama", "lms", "vllm"):
+            if (a.get("capabilities") or {}).get(cap):
+                mix[cap] = mix.get(cap, 0) + 1
+    return mix
+
+
+def _telemetry_agent_versions() -> dict:
+    mix: dict = {}
+    for a in agent_registry.load_agents()["agents"].values():
+        v = a.get("version")
+        if a.get("status") == "approved" and v:
+            mix[str(v)] = mix.get(str(v), 0) + 1
+    return mix
+
+
+def _telemetry_ae_version():
+    _refresh_infra_versions()
+    return _infra_version_cache.get("ae")
+
+
+telemetry.configure(settings=settings, data_dir=DATA_DIR, version=__version__, root=_REPO_ROOT_PATH,
+                    agent_count_fn=_telemetry_agent_count, provider_mix_fn=_telemetry_provider_mix,
+                    release_fn=lambda: companion._installed_release()["tag"],
+                    manager_version_fn=lambda: __version__,
+                    alarm_engine_version_fn=_telemetry_ae_version,
+                    agent_versions_fn=_telemetry_agent_versions, log=log)
+telemetry.install_excepthooks("manager")
+
+_TELEMETRY_TOGGLES = ("install_report", "crash_reports", "heartbeat")
+
+
+@app.route("/api/admin/telemetry", methods=["GET", "PUT"])
+def admin_telemetry():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    if flask_request.method == "PUT":
+        body = flask_request.get_json(silent=True) or {}
+        if not body or any(k not in _TELEMETRY_TOGGLES for k in body):
+            return jsonify({"ok": False, "error": "allowed keys: " + ", ".join(_TELEMETRY_TOGGLES)}), 400
+        changes = {f"manager.telemetry.{k}": bool(v) for k, v in body.items()}
+        _audit_stash_settings_before(changes)
+        _flask_g._audit_extra = {"changes": changes}
+        try:
+            settings_toml_io.apply_patches(changes, removals=[])
+        except settings_toml_io.SettingsIOError as e:
+            return _err_json("config file unreadable", 500, exc=e)
+        telemetry.reload()
+    return jsonify({"ok": True, **telemetry.status()})
+
+
+@app.route("/api/admin/telemetry/send", methods=["POST"])
+def admin_telemetry_send():
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    r = telemetry.send_now()
+    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 502)
 
 
 _RUN_CONFIG_KEYS = {"benchmark": ("bench", "osl", "limit", "concurrency", "levels", "bench_tool"),
@@ -9962,6 +10039,9 @@ if __name__ == "__main__":
     _threading.Thread(
         target=stream_health.loop, name="stream-health", daemon=True,
     ).start()
+
+    # Install / diagnostic reports: pending flush on start, then one heartbeat a day when on.
+    telemetry.start_scheduler(lambda: _shutting_down)
 
     # OpenClaw budget metrics → AE ingest (#216); no-op unless [openclaw]
     # sets monthly_budget_usd or notify_cost_anomalies.

@@ -513,6 +513,8 @@ trap '$SUDO rm -f "${_CB_VALS:-}"' EXIT
   printf 'MGR_MGMT_TOKEN_PASTE=%s\n'        "$MGR_MGMT_TOKEN_PASTE"
   printf 'INFLUX_HOSTNAME=%s\n'             "$INFLUX_HOSTNAME"
   printf 'INFLUX_PORT=%s\n'                 "$INFLUX_PORT"
+  printf 'TELEMETRY_REPORT=%s\n'            "$([[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] && echo true || echo false)"
+  printf 'TELEMETRY_HEARTBEAT=%s\n'         "$([[ "${LLMSYS_HEARTBEAT:-0}" == "1" ]] && echo true || echo false)"
 } > "$_CB_VALS"
 $SUDO chown "$LLMSYS_RUN_USER" "$_CB_VALS"
 as_run_user python3 - "$REAL" "$_CB_VALS" <<'PYEOF'
@@ -545,6 +547,14 @@ def sub_numeric_in_section(text, section, key, new_value):
     return re.sub(
         r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(\d+)',
         lambda m: m.group(1) + str(new_value).strip(),
+        text, count=1, flags=re.MULTILINE | re.DOTALL,
+    )
+
+def sub_bool_in_section(text, section, key, new_value):
+    """Replace the first 'key = true|false' line inside [section]."""
+    return re.sub(
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(true|false)\b',
+        lambda m: m.group(1) + new_value,
         text, count=1, flags=re.MULTILINE | re.DOTALL,
     )
 
@@ -671,6 +681,12 @@ if influx_host:
     text = sub_in_section(text, "influxdb", "host", influx_host)
 if influx_port:
     text = sub_numeric_in_section(text, "influxdb", "port", influx_port)
+
+tele_report = "true" if vals.get("TELEMETRY_REPORT") == "true" else "false"
+tele_beat = "true" if vals.get("TELEMETRY_HEARTBEAT") == "true" else "false"
+text = sub_bool_in_section(text, "manager.telemetry", "install_report", tele_report)
+text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", tele_report)
+text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", tele_beat)
 
 path.write_text(text)
 print(f"  rewrote {path}")

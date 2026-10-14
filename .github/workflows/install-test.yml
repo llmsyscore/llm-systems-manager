@@ -70,7 +70,7 @@ jobs:
       # default, and the local agent installs after the manager is up.
       # --no-self-update pins the run to the PR's installer, not upstream's.
       - name: Run installer (mode 1)
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
 
       # The Next steps banner shows a temporary admin password; it must sign in
       # once and force a change before anything else works (#1160).
@@ -92,7 +92,7 @@ jobs:
         run: sudo bash tools/installer/ci-plant-stale-fixture.sh tools/installer/removed-paths.manifest
 
       - name: Reinstall over existing tree (mode 1)
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/reinstall.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/reinstall.log
 
       # A reinstall keeps the admin's own password (#1160).
       - name: Reinstall kept the admin password
@@ -151,7 +151,7 @@ jobs:
 
       - name: Install baseline (mode 1)
         working-directory: base
-        run: sudo bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null
 
       - name: Record pre-upgrade manager version
         run: |
@@ -184,7 +184,7 @@ jobs:
       # restarted service self-reports the freshly deployed version and
       # exits non-zero on mismatch or failed units.
       - name: Upgrade to head
-        run: sudo REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update.log
+        run: sudo CI=true LLMSYS_TELEMETRY=0 REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update.log
 
       - name: Update replaced the old shipped password with a temporary one
         run: |
@@ -259,7 +259,7 @@ jobs:
       - name: Install from release tarball (mode 1)
         run: |
           cp tools/installer/install.sh "${RUNNER_TEMP}/install.sh"
-          sudo LLMSYS_RELEASE_TAG="${TAG}" \
+          sudo LLMSYS_TELEMETRY=0 LLMSYS_RELEASE_TAG="${TAG}" \
                LLMSYS_RELEASE_BASE_URL="file://${RUNNER_TEMP}/serve" \
                bash "${RUNNER_TEMP}/install.sh" --mode 1 --no-self-update < /dev/null
 
@@ -317,7 +317,7 @@ jobs:
       - name: Install from the published tarball with THIS install.sh (mode 3)
         run: |
           cp tools/installer/install.sh "$RUNNER_TEMP/install.sh"
-          sudo LLMSYS_RELEASE_TAG="$TAG" \
+          sudo LLMSYS_TELEMETRY=0 LLMSYS_RELEASE_TAG="$TAG" \
                bash "$RUNNER_TEMP/install.sh" --mode 3 --no-self-update < /dev/null 2>&1 \
             | tee /tmp/main-vs-release.log
 
@@ -380,12 +380,12 @@ jobs:
       # takes its non-interactive skip path; the AE serves plain HTTP (no cert
       # yet) and its /health returns 200 regardless, so the install passes.
       - name: Install alarm engine (mode 4)
-        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
 
       # Manager-only. On start it auto-issues the AE TLS cert into its own data
       # dir (the AE is remote) and health-checks only itself.
       - name: Install manager (mode 3)
-        run: sudo LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
 
       # A remote monitoring agent pointed at the mode-3 manager's LAN IP — the
       # real split shape (registers "pending", not loopback-auto-approved). Wait
@@ -401,7 +401,7 @@ jobs:
           # Run the agent installer from the manager's DEPLOYED tree (/opt-mgr,
           # llmsys-readable). `install.sh --mode 5` installs from the raw GH
           # checkout under the runner's HOME, which the llmsys pip step can't read.
-          sudo bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
+          sudo LLMSYS_TELEMETRY=0 bash /opt/llm-systems-manager-mgr/agent/install/install.sh \
             --manager-url "http://$DETECTED_IP:5000" --hostname ci-split-agent < /dev/null
 
       # Approve + full-TLS verification. Admin HTTP calls stay on loopback
@@ -444,7 +444,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends jq rsync wget gnupg ca-certificates openssl
 
       - name: Install InfluxDB only (mode 6)
-        run: sudo bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
 
       # Mode 6 gets the OOM drop-in and 0s fsync but no GOMEMLIMIT (dedicated host).
       - name: Assert fresh mode-6 tuning
@@ -464,7 +464,7 @@ jobs:
       - name: Run update.sh on the DB-only host
         run: |
           set -o pipefail
-          sudo bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update.log
+          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update.log
           if grep -q 'nothing to update' /tmp/update.log; then echo 'ERROR: update.sh skipped the InfluxDB-only host'; exit 1; fi
           grep -q 'InfluxDB host tuning' /tmp/update.log
 
@@ -478,7 +478,7 @@ jobs:
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8086/health >/dev/null && break; sleep 1; done
           curl -fsS http://127.0.0.1:8086/health | jq .
           # A second run is a no-op: nothing changed, no restart.
-          sudo bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update2.log
+          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update2.log
           grep -q 'already current' /tmp/update2.log
 
       - name: Collect service logs on failure
@@ -513,7 +513,7 @@ jobs:
 
       - name: Install from the local tree (mode 1, --source local)
         run: |
-          sudo bash "${RUNNER_TEMP}/extract/tools/installer/install.sh" \
+          sudo LLMSYS_TELEMETRY=0 bash "${RUNNER_TEMP}/extract/tools/installer/install.sh" \
             --mode 1 --source local < /dev/null 2>&1 | tee /tmp/local-install.log
 
       - name: Assert the offline path was actually taken
@@ -577,7 +577,7 @@ jobs:
       - name: Install via git clone (mode 1, --source git)
         run: |
           cp tools/installer/install.sh "${RUNNER_TEMP}/install.sh"
-          sudo bash "${RUNNER_TEMP}/install.sh" \
+          sudo LLMSYS_TELEMETRY=0 bash "${RUNNER_TEMP}/install.sh" \
             --mode 1 --source git --no-self-update < /dev/null 2>&1 | tee /tmp/git-install.log
 
       - name: Assert the git path was actually taken and deployed THIS tree

@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20260830001
+_INSTALL_SH_REVISION=20261014002
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -761,6 +761,43 @@ fi
 # shellcheck source=tools/installer/lib-common.sh
 . "$REPO_SRC/tools/installer/lib-common.sh"
 
+# ── Anonymous install report consent (install modes only; update/uninstall never ask) ─
+# Compat no-op helpers when an older release tarball's lib-common lacks them.
+_TELEMETRY_DONE=0
+if ! declare -F telemetry_report >/dev/null; then
+  telemetry_consent() { export LLMSYS_TELEMETRY=0 LLMSYS_HEARTBEAT=0 LLMSYS_TELEMETRY_REASON=unsupported; }
+  telemetry_payload() { return 1; }
+  telemetry_report() { return 0; }
+  telemetry_endpoint() { :; }
+fi
+if ! declare -F telemetry_report_as_user >/dev/null; then
+  telemetry_pick_root() { return 1; }
+  telemetry_report_as_user() { return 0; }
+fi
+_TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
+if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
+  _tele_preview_dir="$(mktemp -d)"
+  LLMSYS_TELEMETRY_PREVIEW="$(telemetry_payload install script "$MODE" ok "$_tele_preview_dir" "$_TELEMETRY_VERSION" "$REPO_SRC" 2>/dev/null \
+    | python3 -c 'import json,sys; p=json.load(sys.stdin); p.pop("install_id", None); print(json.dumps(p, indent=1))' 2>/dev/null || true)"
+  rm -rf "$_tele_preview_dir"
+  export LLMSYS_TELEMETRY_PREVIEW
+  telemetry_consent
+fi
+
+# EXIT-trap hook: on a non-zero exit, report the failed stage unless a final report already ran.
+_telemetry_on_exit() {
+  local rc=$?
+  (( rc != 0 )) || return 0
+  (( _TELEMETRY_DONE )) && return 0
+  [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
+  local d="${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/data"
+  [[ -d "$d" && ! -L "$d" ]] || return 0
+  local stage; stage="$(printf '%s' "${LLMSYS_STAGE:-unknown}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-100)"
+  local root; root="$(telemetry_pick_root "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}" "$REPO_SRC")" || return 0
+  telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" "failed:$stage" "$d" \
+    "$_TELEMETRY_VERSION" "$root" >/dev/null 2>&1 || true
+}
+
 # Compat shims: a main install.sh may pair with an older release tarball's
 # lib-common.sh (default --source release), so newer helpers get fallbacks.
 if ! declare -F detect_primary_ip >/dev/null; then
@@ -830,6 +867,7 @@ case "$MODE" in
       ok "removed staging tree $LLMSYS_CLONE_TMP"
     fi
   fi
+  _TELEMETRY_DONE=1
   exit "$_rc"
   ;;
 esac
@@ -896,7 +934,7 @@ export LLMSYS_INSTALL_MODE="$MODE"
 # cleanup trap before either mktemp so a mid-sequence failure still cleans up.
 LLMSYS_INFLUXDB_TOKEN_FILE=""
 export LLMSYS_INFLUXDB_TOKEN_FILE LLMSYS_APT_STAMP
-trap 'rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
+trap '_telemetry_on_exit; rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
 LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
 # Keep the preflight stamp when it exists; otherwise start an empty one.
@@ -1488,13 +1526,22 @@ echo "  ────────────────────────
 echo "    Repository:       github.com/llmsyscore/llm-systems-manager"
 echo
 
+_TELEMETRY_DONE=1
+if [[ "$MODE" != "6" && ! -e "$LLMSYS_INSTALL_DIR/data" ]]; then
+  $SUDO install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/data" 2>/dev/null || true
+fi
+_tele_root="$(telemetry_pick_root "$LLMSYS_INSTALL_DIR" "$REPO_SRC" || true)"
 if (( FAIL == 0 )); then
+  [[ -n "$_tele_root" ]] && telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" ok \
+    "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$_tele_root"
   if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
     ok "Installation succeeded; ${LLMSYS_WARN_COUNT} [WARN] line(s) above worth a look."
   else
     ok "Installation succeeded."
   fi
 else
+  [[ -n "$_tele_root" ]] && telemetry_report_as_user "$LLMSYS_RUN_USER" install script "$MODE" "failed:health_checks" \
+    "$LLMSYS_INSTALL_DIR/data" "$_TELEMETRY_VERSION" "$_tele_root"
   err "Installation completed with ${FAIL} failed health check(s)."
   exit 1
 fi

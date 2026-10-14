@@ -1,4 +1,5 @@
 # deb postinst body — concatenated after common.sh by build-packages.sh.
+LLMSYS_PKG_FORMAT=deb
 case "$1" in
   configure)
     # Pull debconf answers into the LLMSYS_CFG_* overrides the config
@@ -14,9 +15,21 @@ case "$1" in
         db_get "llm-systems-manager/${pair%%:*}" || true
         if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
       done
+      # Report answers on a fresh install only; values set in the environment win.
+      if [ -z "${2:-}" ]; then
+        for pair in telemetry:LLMSYS_TELEMETRY heartbeat:LLMSYS_HEARTBEAT; do
+          RET=""
+          _var="${pair##*:}"
+          [ -n "${!_var:-}" ] && continue
+          db_get "llm-systems-manager/${pair%%:*}" || true
+          case "${RET:-}" in true) export "${pair##*:}=1" ;; false) export "${pair##*:}=0" ;; esac
+        done
+      fi
       db_reset llm-systems-manager/admin-password || true
       db_reset llm-systems-manager/smtp-password || true
       db_stop || true
+    else
+      llmsys_default_telemetry "${2:-}"
     fi
     llmsys_configure "${2:-}"
     ;;

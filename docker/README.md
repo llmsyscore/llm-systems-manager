@@ -108,6 +108,13 @@ Set `LSM_SMTP_*` and/or `LSM_DISCORD_WEBHOOK_URL` to wire up alert delivery;
 they are only written to the config when provided. Anything else (Twilio,
 per-rule channels) is configured via a bind-mounted TOML.
 
+## Anonymous reports
+
+`LSM_TELEMETRY=0` turns off the anonymous install and crash reports;
+`LSM_HEARTBEAT=1` turns on the daily diagnostic report. See the README section
+*What the reports contain*. The `.env` values seed a new config; later changes from
+Settings are kept across restarts.
+
 ## Hardening notes
 
 - The quickstart uses the single InfluxDB admin token (`LSM_INFLUX_TOKEN`) for

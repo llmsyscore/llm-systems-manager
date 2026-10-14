@@ -923,7 +923,7 @@ if $HAVE_AGENT && component_wanted "agent"; then
   # any change that didn't bump VERSION (buffered_metric_client.py edits,
   # systemd unit template tweaks, etc.).
   _agent_changed=0
-  for _f in llm-systems-agent.py buffered_metric_client.py _utils.py agent_context.py; do
+  for _f in llm-systems-agent.py buffered_metric_client.py _utils.py agent_context.py telemetry_report.py; do
     [[ -f "$REPO_SRC/agent/$_f" && -f "$AGENT_INSTALL_DIR/$_f" ]] || { _agent_changed=1; break; }
     if ! cmp -s "$REPO_SRC/agent/$_f" "$AGENT_INSTALL_DIR/$_f"; then
       _agent_changed=1; break
@@ -1056,6 +1056,15 @@ if $HAVE_MANAGER || $HAVE_AE; then
   _example_toml="$REPO_SRC/config/llm-systems.toml.example"
   if [[ -f "$_live_toml" && -f "$_example_toml" ]]; then
     log "merging new keys from $(basename "$_example_toml") → $(basename "$_live_toml")"
+    # Config without the report section: ask when a human is present, else keep the example defaults.
+    _tele_new=0; _tele_ask=0
+    if ! $SUDO grep -q '^\[manager.telemetry\]' "$_live_toml" 2>/dev/null; then
+      _tele_new=1
+      if [[ -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] \
+         || { [[ -t 0 ]] && (( ! ASSUME_YES )); }; then
+        (( DRY_RUN )) || { telemetry_consent; _tele_ask=1; }
+      fi
+    fi
     if (( DRY_RUN )); then
       log "[dry-run] would back up live TOML and append any missing keys"
     else
@@ -1090,6 +1099,12 @@ if $HAVE_MANAGER || $HAVE_AE; then
         $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$_live_toml"
         ok "merged $_added_count new key(s) into $_live_toml:"
         grep -E '^\s*\+' "$_TOML_MERGE_TMP" | sed 's/^/    /'
+        if (( _tele_new && _tele_ask )); then
+          telemetry_write_answers "$_live_toml" "${LLMSYS_TELEMETRY:-0}" "${LLMSYS_HEARTBEAT:-0}" \
+            || warn "could not write the report answers into $_live_toml"
+        elif (( _tele_new )); then
+          log "Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Telemetry & analytics or set install_report = false in llm-systems.toml"
+        fi
         rm -f "$_TOML_MERGE_TMP"
         $HAVE_MANAGER && RESTART_UNITS+=("llm-systems-manager.service")
         $HAVE_AE      && RESTART_UNITS+=("llm-systems-alarm-engine.service")
@@ -1350,6 +1365,17 @@ else
 fi
 (( _backup_root_made )) && log "backups under: $BACKUP_ROOT"
 log "health: $PASS pass / $FAIL fail"
+# Anonymous update report under the install-time answer; never prompts.
+_live_toml="$LLMSYS_INSTALL_DIR/config/llm-systems.toml"
+if [[ -z "${CI:-}" && "$(read_toml_key install_report "$_live_toml")" == "true" ]]; then
+  export LLMSYS_TELEMETRY=1
+  _upd_outcome=ok; (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )) && _upd_outcome="failed:update"
+  _upd_ver="${MGR_V_NEW:-$(_extract_version "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null || true)}"
+  if _tele_root="$(telemetry_pick_root "$LLMSYS_INSTALL_DIR" "$REPO_SRC")"; then
+    telemetry_report_as_user "$LLMSYS_RUN_USER" update script "" "$_upd_outcome" "$LLMSYS_INSTALL_DIR/data" \
+      "${_upd_ver:-unknown}" "$_tele_root"
+  fi
+fi
 (( PARANOID_VERIFY )) && log "md5 verify: $VERIFY_FAILURES mismatch(es)"
 if (( VERIFY_FAILURES > 0 )); then
   err "$VERIFY_FAILURES md5 verification failure(s) above — investigate"

@@ -167,6 +167,17 @@ The deb prompts (debconf) for the manager URL; the rpm takes defaults — set `M
 
 Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/build-agent-package.sh` (fpm) — see those scripts for the build-from-source path.
 
+### Anonymous reports
+
+The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily diagnostic report to no. The README section "What the install, crash and diagnostic reports contain" lists every field, including the product release and the manager, alarm engine and agent versions.
+
+- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
+- Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
+- Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
+- Nothing is sent when a `CI` variable is set.
+- Updating from a release without these settings: the updater asks once from a terminal; unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch.
+- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen. The Send now button next to the last report sends a diagnostic report immediately.
+
 ### Mixing install methods
 
 **Install methods do not mix on one host** — the script installer, the native packages, Docker, and the agent binary tarball each own the install tree, the systemd units, and the `llmsys` user differently, and mixing them shadows units or desyncs the package database. Both sides now guard against it:
@@ -315,6 +326,9 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.discord].allow_model_control` | Whether the bot may load/unload models | `false` |
 | `[manager.companion].push_contact` | Contact address browser push services see (the VAPID `sub` claim) | `mailto:admin@example.com` |
 | `[manager.companion].release_check` | Opt-in GitHub check for a newer release, shown in the companion | `false` |
+| `[manager.telemetry].install_report` | Send the anonymous install report | `true` |
+| `[manager.telemetry].crash_reports` | Send anonymous crash reports | `true` |
+| `[manager.telemetry].heartbeat` | Send the daily diagnostic report | `false` |
 
 ### Applying Changes
 
@@ -669,6 +683,13 @@ The companion at `/companion` installs to a phone's home screen and receives ala
 push_contact = "mailto:you@example.com"   # VAPID contact browser push services see
 release_check = false                     # opt-in GitHub release check (Settings toggle)
 push_notify_token = ""                    # blank = fall back to the alarm-engine tokens
+```
+
+```toml
+[manager.telemetry]
+install_report = true    # anonymous install report
+crash_reports = true     # anonymous crash reports
+heartbeat = false        # daily diagnostic report
 ```
 
 Setup:

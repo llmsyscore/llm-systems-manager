@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import importlib.util
 import json
 import math
 import logging
@@ -73,7 +74,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.11-1"
+__version__ = "v2026.10.13-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -797,6 +798,37 @@ async def _validation_error_response(_request, exc: RequestValidationError) -> J
         return v
     errors = [{k: _safe(v) for k, v in e.items() if k != "ctx"} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": errors})
+
+
+_TELEMETRY_MOD = None
+
+
+def _telemetry():
+    """Load the manager's telemetry module by path; None when the tree is AE-only."""
+    global _TELEMETRY_MOD
+    if _TELEMETRY_MOD is not None:
+        return _TELEMETRY_MOD or None
+    path = Path(_REPO_ROOT) / "llm-systems-manager" / "backend" / "telemetry.py"
+    try:
+        spec = importlib.util.spec_from_file_location("telemetry", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.configure(settings=settings, data_dir=Path(__file__).resolve().parent.parent / "data",
+                      version=__version__, root=Path(_REPO_ROOT), log=logger)
+        _TELEMETRY_MOD = mod
+    except Exception:
+        _TELEMETRY_MOD = False
+    return _TELEMETRY_MOD or None
+
+
+@app.exception_handler(Exception)
+async def _report_unhandled(request, exc: Exception) -> JSONResponse:
+    """Log, report to telemetry and answer 500 for any unhandled route error."""
+    logger.exception("unhandled exception in %s %s", request.method, request.url.path)
+    mod = _telemetry()
+    if mod is not None:
+        mod.report_exception(exc, exc.__traceback__, component="alarm_engine")
+    return JSONResponse(status_code=500, content={"ok": False, "error": "internal server error"})
 
 
 # Body cap sits inside CORS (added first = inner); 0 disables it.
@@ -1849,6 +1881,9 @@ def main() -> None:
     # signal, so it never reaches this path.
     # Keep-alive raised past the dashboards' poll gaps so the manager's
     # pooled connections stay valid between requests (#534).
+    mod = _telemetry()
+    if mod is not None:
+        mod.install_excepthooks("alarm_engine")
     uvicorn.run(
         app, host=host, port=port,
         log_level="warning",

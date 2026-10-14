@@ -134,3 +134,11 @@ def test_colocated_cors_uses_browser_facing_ip(tmp_path):
         "http://localhost:5000,https://localhost:5443,"
         "http://192.0.2.10:8081,https://192.0.2.10:8081"
     )
+
+
+def test_telemetry_keys_substitute(tmp_path):
+    vals = dict(MODE3_VALS, TELEMETRY_REPORT="false", TELEMETRY_HEARTBEAT="true")
+    doc = run_bootstrap_python(tmp_path, vals)
+    assert doc["manager"]["telemetry"]["install_report"] is False
+    assert doc["manager"]["telemetry"]["heartbeat"] is True
+    assert doc["manager"]["telemetry"]["crash_reports"] is False

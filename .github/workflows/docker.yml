@@ -47,6 +47,7 @@ jobs:
             echo "LSM_INFLUX_PASSWORD=$(openssl rand -hex 12)"
             echo "LSM_INFLUX_TOKEN=$(openssl rand -hex 32)"
             echo "LSM_AE_INGEST_TOKEN=$(openssl rand -hex 32)"
+            echo "LSM_TELEMETRY=0"
             echo "LSM_MANAGER_PUBLIC_HOST=192.168.99.99"
             # Locally-built images — never re-pull from ghcr (#433 pull_policy).
             echo "LSM_PULL_POLICY=missing"
@@ -224,6 +225,7 @@ jobs:
             echo "LSM_INFLUX_PASSWORD=$(openssl rand -hex 12)"
             echo "LSM_INFLUX_TOKEN=$(openssl rand -hex 32)"
             echo "LSM_AE_INGEST_TOKEN=$(openssl rand -hex 32)"
+            echo "LSM_TELEMETRY=0"
             echo "LSM_IMAGE_TAG=latest"
             # Phase 1 pulls released :latest (absent locally → "missing" still
             # pulls); phase 2 recreates onto locally-built pr-test images.

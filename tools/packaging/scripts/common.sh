@@ -133,8 +133,9 @@ llmsys_build_venvs() {
 # Merges new example keys into an existing live config via toml_reconcile.py,
 # then corrects the alarm engine's allowed-origin list.
 llmsys_reconcile_config() {
-  local py merged fixed tmp grp
+  local py merged fixed tmp grp tele_new=0
   py="$(llmsys_pick_python)" || return 0
+  grep -q '^\[manager.telemetry\]' "$LLMSYS_CFG" 2>/dev/null || tele_new=1
   if ! merged="$("$py" "$LLMSYS_INSTALL_DIR/tools/installer/toml_reconcile.py" merge \
                  "$LLMSYS_CFG" "$LLMSYS_INSTALL_DIR/config/llm-systems.toml.example" 2>/dev/null)"; then
     echo "llm-systems-manager: config reconcile failed — existing config left untouched" >&2
@@ -150,6 +151,23 @@ llmsys_reconcile_config() {
   chown "$LLMSYS_RUN_USER:$grp" "$tmp"
   chmod 0600 "$tmp"
   mv "$tmp" "$LLMSYS_CFG"
+  if [ "$tele_new" = "1" ] && grep -q '^\[manager.telemetry\]' "$LLMSYS_CFG"; then
+    llmsys_telemetry_answers
+  fi
+}
+
+# New [manager.telemetry] on upgrade: writes LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT when set, else says reports are on.
+llmsys_telemetry_answers() {
+  local t="${LLMSYS_TELEMETRY:-}" h="${LLMSYS_HEARTBEAT:-}"
+  if [ -n "$t" ] || [ -n "$h" ]; then
+    [ "${t:-1}" = "1" ] && t=1 || t=0
+    [ "$h" = "1" ] && h=1 || h=0
+    SUDO="" bash -c '. "$1/tools/installer/lib-common.sh" && telemetry_write_answers "$2" "$3" "$4"' \
+      _ "$LLMSYS_INSTALL_DIR" "$LLMSYS_CFG" "$t" "$h" >/dev/null 2>&1 \
+      || echo "llm-systems-manager: could not write the report answers into $LLMSYS_CFG" >&2
+    [ "$t" = "1" ] || return 0
+  fi
+  echo "llm-systems-manager: Anonymous install and crash reports are on after this upgrade; turn them off in Settings › Telemetry & analytics or set install_report = false in llm-systems.toml"
 }
 
 # Refreshes the live unified_config.py schema from the packaged example
@@ -276,11 +294,34 @@ llmsys_admin_signin() {
   esac
 }
 
+# Fresh install without an answer (no debconf, rpm): report on, heartbeat off.
+llmsys_default_telemetry() {
+  [ -z "${1:-}" ] || return 0
+  if [ -n "${LLMSYS_TELEMETRY:-}" ] || [ -n "${CI:-}" ]; then return 0; fi
+  export LLMSYS_TELEMETRY=1
+  echo "llm-systems-manager: Anonymous install report on; set LLMSYS_TELEMETRY=0 before installing to turn it off"
+}
+
+# Sends the install/update report as the run-as user under the config's answer; never fails the caller.
+llmsys_telemetry_report() {
+  local upgrade="$1" event=install
+  [ "${LLMSYS_TELEMETRY:-}" = "0" ] && return 0
+  [ -n "$upgrade" ] && event=update
+  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" \
+    LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
+    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+    bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \
+    --channel "$LLMSYS_PKG_FORMAT" --mode 2 --data-dir "$LLMSYS_INSTALL_DIR/data" \
+    --root "$LLMSYS_INSTALL_DIR" --toml "$LLMSYS_CFG" </dev/null || true
+  return 0
+}
+
 # Full configure pass. $1 empty = fresh install, non-empty = upgrade.
 # Marker backfill: on fresh, a pre-existing config means adoption; on
 # upgrade (pre-#416 packages have no marker) only script units do.
 llmsys_configure() {
   local upgrade="${1:-}" grp adopt=clean u
+  LLMSYS_PKG_FORMAT="${LLMSYS_PKG_FORMAT:-pkg}"
   if [ ! -f "$LLMSYS_PKG_MARKER" ]; then
     if [ -z "$upgrade" ]; then
       [ -f "$LLMSYS_CFG" ] && adopt=adopted
@@ -298,6 +339,7 @@ llmsys_configure() {
   llmsys_build_venvs
   llmsys_write_config
   llmsys_write_marker "$adopt"
+  llmsys_telemetry_report "$upgrade"
   llmsys_warn_if_shadowed
   if [ -z "$upgrade" ]; then
     llmsys_enable_start

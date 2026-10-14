@@ -159,3 +159,22 @@ def test_upgrade_keeps_operator_values_when_merging(tmp_path):
     after = tomllib.loads(cfg.read_text())["alarm_engine"]
     assert after["ingest_token"] == tokens["ingest_token"]
     assert after["management_token"] == tokens["management_token"]
+
+
+def test_upgrade_adds_the_report_section_and_says_reports_are_on(tmp_path):
+    cfg, _ = seed(tmp_path)
+    text = cfg.read_text()
+    start = text.index("[manager.telemetry]")
+    end = text.index("\n[", start + 1)
+    cfg.write_text(text[:start] + text[end + 1:])
+    assert "telemetry" not in tomllib.loads(cfg.read_text())["manager"]
+    _, out = seed(tmp_path)
+    assert tomllib.loads(cfg.read_text())["manager"]["telemetry"]["install_report"] is True
+    assert "Anonymous install and crash reports are on" in out
+
+
+def test_upgrade_without_a_new_section_prints_no_report_notice(tmp_path):
+    cfg, _ = seed(tmp_path)
+    _drop_line(cfg, "ca_file")
+    _, out = seed(tmp_path)
+    assert "merged 1 new key" in out and "Anonymous install" not in out

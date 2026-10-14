@@ -45,6 +45,8 @@ err()  { printf '%s[ERR ]%s  %s\n'  "$LLMSYS_C_RED" "$LLMSYS_C_RST" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
 banner() {
+  # shellcheck disable=SC2034
+  LLMSYS_STAGE="$*"
   local title="$1"
   printf '\n%s── %s %s\n' "$LLMSYS_C_BLU" "$title" \
     "$(printf '─%.0s' $(seq 1 $((72 - ${#title}))))${LLMSYS_C_RST}"
@@ -124,14 +126,13 @@ enable_unit() {
   $SUDO systemctl enable "$1"
 }
 
-# read_toml_key <key> <toml_file> — echo the double-quoted value of the first
-# top-level `<key> = "..."` line. Empty on missing key/file. Uses $SUDO so it
-# can read a 0600 operator-owned config; safe under set -o pipefail.
+# read_toml_key <key> <toml_file> — echo the quoted (else bare) value of the first
+# top-level `<key> = ...` line; empty on missing key/file. Reads via $SUDO; pipefail-safe.
 read_toml_key() {
   local key="$1" file="$2"
   $SUDO test -f "$file" 2>/dev/null || { echo ""; return 0; }
   { $SUDO grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null || true; } \
-    | head -n1 | sed -E 's/[^"]*"([^"]+)".*/\1/'
+    | head -n1 | sed -E -e 's/[^"]*"([^"]+)".*/\1/;t' -e 's/^[^=]*=[[:space:]]*//;s/[[:space:]]*(#.*)?$//'
 }
 
 # ── Systemd unit + sudoers templating ───────────────────────────────────────
@@ -1282,4 +1283,197 @@ report_service_health() {
     err "$label  → $url  ($why)"
     return 1
   fi
+}
+
+# ── Telemetry: consent, payload preview, send, retry job ───────────────────
+LLMSYS_TELEMETRY_DEFAULT_ENDPOINT="https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+
+# Python with the stdlib the payload builder needs (3.11+ for tomllib is not required here).
+telemetry_python() {
+  local c
+  for c in "${LLMSYS_INSTALL_DIR:-/opt/llm-systems-manager}/llm-systems-manager/venv/bin/python3" python3; do
+    command -v "$c" >/dev/null 2>&1 && { printf '%s\n' "$c"; return 0; }
+  done
+  return 1
+}
+
+# telemetry_endpoint — report endpoint: https env override or the default.
+telemetry_endpoint() {
+  case "${LLMSYS_TELEMETRY_ENDPOINT:-}" in
+    https://*) printf '%s\n' "$LLMSYS_TELEMETRY_ENDPOINT" ;;
+    *) printf '%s\n' "$LLMSYS_TELEMETRY_DEFAULT_ENDPOINT" ;;
+  esac
+}
+
+# telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout; release from RELEASE.
+telemetry_payload() {
+  local py rel="" f; py="$(telemetry_python)" || return 1
+  for f in "$7/RELEASE" "${LLMSYS_INSTALL_DIR:-/nonexistent}/RELEASE"; do
+    [[ -f "$f" ]] || continue
+    rel="$(head -n1 "$f" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$rel" && "$rel" != \$Format* ]] && break
+    rel=""
+  done
+  "$py" -I "$7/llm-systems-manager/backend/telemetry.py" payload --event "$1" --channel "$2" \
+    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7" --release "$rel"
+}
+
+# telemetry_consent — exports LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT (0|1) and LLMSYS_TELEMETRY_REASON.
+telemetry_consent() {
+  local t="${LLMSYS_TELEMETRY:-}" h="${LLMSYS_HEARTBEAT:-}" reason="default"
+  if [[ -n "${CI:-}" ]]; then
+    t=0; h=0; reason="ci"
+    log "Install report skipped: CI is set"
+  elif [[ -n "$t" || -n "$h" ]]; then
+    reason="env"
+    [[ "${t:-1}" == "1" ]] && t=1 || t=0
+    [[ "$h" == "1" ]] || h=0
+  elif [[ -t 0 ]]; then
+    reason="prompt"
+    echo
+    echo "  Anonymous reports help us learn which systems the product runs on."
+    echo "  Nothing in them identifies you: no names, addresses, paths or tokens."
+    if [[ -n "${LLMSYS_TELEMETRY_PREVIEW:-}" ]]; then
+      echo "  This is the install report that would be sent:"
+      printf '%s\n' "$LLMSYS_TELEMETRY_PREVIEW" | sed 's/^/    /'
+    fi
+    local a
+    read -rp "  Send anonymous install and crash reports? [Y/n] " a
+    case "$(printf '%s' "${a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) t=0 ;; *) t=1 ;; esac
+    read -rp "  Also send a daily diagnostic report (version, OS, hardware, agent count, uptime)? [y/N] " a
+    case "$(printf '%s' "${a:-n}" | tr '[:upper:]' '[:lower:]')" in y|yes) h=1 ;; *) h=0 ;; esac
+  else
+    t=1; h=0
+  fi
+  export LLMSYS_TELEMETRY="$t" LLMSYS_HEARTBEAT="$h" LLMSYS_TELEMETRY_REASON="$reason"
+}
+
+# telemetry_log LOGF LINE — append a line unless LOGF is a symlink.
+telemetry_log() {
+  [[ -L "$1" ]] && return 0
+  printf '%s\n' "$2" >> "$1" 2>/dev/null || true
+}
+
+# telemetry_report EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT ENDPOINT — never fails the caller.
+telemetry_report() {
+  [[ -z "${CI:-}" ]] || return 0
+  [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
+  local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
+  local py tmp pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
+  py="$(telemetry_python)" || return 0
+  [[ -L "$dir" || ! -d "$dir" ]] && return 0
+  tmp="$(mktemp "$dir/.telemetry-pending.XXXXXX")" || return 0
+  telemetry_payload "$event" "$channel" "$mode" "$outcome" "$dir" "$ver" "$root" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp"; return 0; }
+  mv -f "$tmp" "$pend" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  if curl -fsS --max-time 5 -o /dev/null -H 'Content-Type: application/json' --data-binary "@$pend" "$ep" 2>/dev/null; then
+    mv -f "$pend" "$dir/telemetry-last.json"
+    telemetry_log "$logf" "$(date -u +%FT%TZ) attempt 1 ok ($event)"
+    ok "${event} report sent"
+  else
+    telemetry_log "$logf" "$(date -u +%FT%TZ) attempt 1 failed ($event)"
+    log "${event} report queued; retrying in the background"
+    setsid nohup bash "$root/tools/installer/telemetry-retry.sh" "$pend" "$ep" "$logf" "$py" "$root" \
+      >/dev/null 2>&1 < /dev/null &
+  fi
+  return 0
+}
+
+# telemetry_pick_root DIR... — first DIR holding telemetry-report.sh and the payload builder.
+telemetry_pick_root() {
+  local d
+  for d in "$@"; do
+    if [[ -f "$d/tools/installer/telemetry-report.sh" && -f "$d/llm-systems-manager/backend/telemetry.py" ]]; then
+      printf '%s\n' "$d"; return 0
+    fi
+  done
+  return 1
+}
+
+# telemetry_as_user_prefix USER — prints the user-switch prefix, one word per line; rc 1 when none works.
+telemetry_as_user_prefix() {
+  if [[ "$(id -un)" == "$1" ]]; then
+    return 0
+  elif [[ "$(id -u)" == "0" ]]; then
+    printf '%s\n' runuser -u "$1" --
+  elif command -v sudo >/dev/null 2>&1; then
+    printf '%s\n' sudo -n -u "$1"
+  else
+    return 1
+  fi
+}
+
+# telemetry_readable_root USER ROOT — echoes ROOT, or a throwaway /tmp copy of the report files USER can read.
+telemetry_readable_root() {
+  local user="$1" root="$2" tmp f run=() priv=()
+  [[ "$(id -un)" == "$user" ]] && { printf '%s\n' "$root"; return 0; }
+  mapfile -t run < <(telemetry_as_user_prefix "$user") && (( ${#run[@]} )) || return 1
+  if "${run[@]}" test -r "$root/llm-systems-manager/backend/telemetry.py" 2>/dev/null; then
+    printf '%s\n' "$root"; return 0
+  fi
+  [[ "$(id -u)" == "0" ]] || priv=(sudo -n)
+  tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" || return 1
+  chmod 0755 "$tmp" || return 1
+  ${priv[@]+"${priv[@]}"} install -d -m 0755 -o "$user" "$tmp/llm-systems-manager/backend" "$tmp/tools/installer" || return 1
+  ${priv[@]+"${priv[@]}"} install -m 0644 -o "$user" "$root/llm-systems-manager/backend/telemetry.py" "$tmp/llm-systems-manager/backend/" || return 1
+  for f in lib-common.sh telemetry-report.sh telemetry-retry.sh; do
+    ${priv[@]+"${priv[@]}"} install -m 0755 -o "$user" "$root/tools/installer/$f" "$tmp/tools/installer/" || return 1
+  done
+  printf '%s\n' "$tmp"
+}
+
+# telemetry_report_as_user USER EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — sends as USER; never fails.
+telemetry_report_as_user() {
+  local user="$1" root run=()
+  if [[ "$(id -un)" != "$user" ]]; then
+    mapfile -t run < <(telemetry_as_user_prefix "$user") && (( ${#run[@]} )) || return 0
+  fi
+  root="$(telemetry_readable_root "$user" "$8")" || return 0
+  ${run[@]+"${run[@]}"} env LLMSYS_TELEMETRY="${LLMSYS_TELEMETRY:-0}" \
+    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+    LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" CI="${CI:-}" \
+    bash "$root/tools/installer/telemetry-report.sh" --event "$2" --channel "$3" --mode "$4" \
+    --outcome "$5" --data-dir "$6" --version "$7" --root "$root" </dev/null || true
+  return 0
+}
+
+# telemetry_write_answers TOML REPORT_01 HEARTBEAT_01 — sets the [manager.telemetry] booleans.
+telemetry_write_answers() {
+  local tb=false hb=false
+  [[ "$2" == "1" ]] && tb=true
+  [[ "$3" == "1" ]] && hb=true
+  ${SUDO:-} python3 - "$1" "$tb" "$hb" <<'PYEOF'
+import os, re, secrets, stat, sys
+
+def sub_bool_in_section(text, section, key, new_value):
+    """Replace the first 'key = true|false' line inside [section]."""
+    return re.sub(
+        r'(^\[' + re.escape(section) + r'\](?:(?!^\[)[\s\S])*?\n' + re.escape(key) + r'\s*=\s*)(true|false)\b',
+        lambda m: m.group(1) + new_value,
+        text, count=1, flags=re.MULTILINE | re.DOTALL,
+    )
+
+path = sys.argv[1]
+if os.path.islink(path):
+    sys.exit("refusing a symlinked config: " + path)
+fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+with os.fdopen(fd) as fh:
+    st = os.fstat(fh.fileno())
+    text = fh.read()
+text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
+tmp = os.path.join(os.path.dirname(path) or ".", ".%s.%s.tmp" % (os.path.basename(path), secrets.token_hex(8)))
+wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(st.st_mode))
+try:
+    with os.fdopen(wfd, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        if os.geteuid() == 0:
+            os.fchown(fh.fileno(), st.st_uid, st.st_gid)
+    os.replace(tmp, path)
+except BaseException:
+    os.unlink(tmp)
+    raise
+PYEOF
 }

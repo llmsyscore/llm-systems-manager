@@ -26,3 +26,17 @@ Template: llm-systems-manager/smtp-password
 Type: password
 Description: SMTP app-password:
  Leave blank to disable email alerts.
+
+Template: llm-systems-manager/telemetry
+Type: boolean
+Default: true
+Description: Send an anonymous install and crash report?
+ One report of the product version, operating system, CPU, memory and GPU
+ model, plus the error type and code location of unexpected crashes. No
+ names, addresses, paths or tokens. The field list is in the README.
+
+Template: llm-systems-manager/heartbeat
+Type: boolean
+Default: false
+Description: Send a daily anonymous diagnostic report?
+ Version, agent count, provider mix and uptime, once a day.

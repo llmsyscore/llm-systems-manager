@@ -51,6 +51,7 @@ import frozen_self_update  # type: ignore
 # collectors.configure_all(CONFIG) + providers.configure_all(ctx) called from main().
 import collectors  # type: ignore
 import providers  # type: ignore
+import telemetry_report  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_sample_block  # type: ignore
@@ -79,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.09-5"
+VERSION = "v2026.10.14-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -4491,6 +4492,9 @@ def main() -> None:
         os.makedirs(os.path.join(CONFIG.AGENT_INSTALL_DIR, "state"), exist_ok=True)
     except OSError as e:
         logger.warning("could not create the agent state dir: %s", e)
+    telemetry_report.install_hooks(
+        state_dir=os.path.join(CONFIG.AGENT_INSTALL_DIR, "state"), version=VERSION,
+        root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     providers.llama.set_reconcile_hook(_collector_wake.set)
     power_arbiter.configure(
         enabled=bool(CONFIG.PERF_CONTROLLER_ENABLED), is_linux=(CONFIG.AGENT_OS == "linux"),

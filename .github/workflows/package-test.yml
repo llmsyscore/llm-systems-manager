@@ -101,7 +101,7 @@ jobs:
           path: dist
 
       - name: Install .deb (fresh)
-        run: sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb 2>&1 | tee /tmp/deb-install-fresh.log
+        run: sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb 2>&1 | tee /tmp/deb-install-fresh.log
 
       # The postinst probes the configured InfluxDB and prints a loud notice
       # when it's unreachable (#385). No InfluxDB runs here, so it MUST fire.
@@ -187,7 +187,7 @@ jobs:
           # An older install's allowed-origin list: http only.
           sudo sed -i -E 's|^(cors_origins[[:space:]]*=[[:space:]]*)"[^"]*"|\1"http://192.0.2.10:5000,http://localhost:5000,http://192.0.2.10:8081"|' \
             /opt/llm-systems-manager/config/llm-systems.toml
-          sudo DEBIAN_FRONTEND=noninteractive LLMSYS_INFLUX_HEALTH_WAIT=3 apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive LLMSYS_INFLUX_HEALTH_WAIT=3 apt-get install -y ./dist/llm-systems-manager_0.0.2_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 0.0.2
           sudo grep -q 'ci-upgrade-marker' /opt/llm-systems-manager/config/llm-systems.toml
           sudo grep -qF 'cors_origins = "http://192.0.2.10:5000,https://192.0.2.10:5443,http://localhost:5000,https://localhost:5443,http://192.0.2.10:8081,https://192.0.2.10:8081"' \
@@ -260,7 +260,7 @@ jobs:
             | sudo tee /etc/systemd/system/llm-systems-manager.service >/dev/null
           set +e
           # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g1.log 2>&1; RC=$?
           set -e
           cat /tmp/g1.log
@@ -283,7 +283,7 @@ jobs:
           ss -ltnH | awk '{print $4}' | grep -qE '[:.]5000$' || { echo 'ERROR: fixture never bound 5000'; exit 1; }
           set +e
           # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ./dist/llm-systems-manager_0.0.1_all.deb >/tmp/g2.log 2>&1; RC=$?
           set -e
           kill "$SRV" 2>/dev/null || true
@@ -297,7 +297,7 @@ jobs:
         run: |
           sudo mkdir -p /opt/llm-systems-manager/config
           echo '# sim-foreign-config' | sudo tee /opt/llm-systems-manager/config/llm-systems.toml >/dev/null
-          sudo LLMSYS_PACKAGE_FORCE=1 DEBIAN_FRONTEND=noninteractive \
+          sudo LLMSYS_TELEMETRY=0 LLMSYS_PACKAGE_FORCE=1 DEBIAN_FRONTEND=noninteractive \
             apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
           sudo grep -q '^adopted=1' /opt/llm-systems-manager/.llmsys-package-state
           sudo grep -q 'sim-foreign-config' /opt/llm-systems-manager/config/llm-systems.toml
@@ -309,7 +309,7 @@ jobs:
 
       - name: Script tools refuse a package-managed host
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
           # <label> <rc> <log> <expected message>: exit 2 AND the refusal text.
           assert_refused() {
             echo "--- $1 exited $2; output:"; cat "$3" || true
@@ -319,11 +319,11 @@ jobs:
           }
           set +e
           # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
-          sudo bash tools/installer/update.sh --yes </dev/null >/tmp/upd.log 2>&1; RC_UPD=$?
+          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh --yes </dev/null >/tmp/upd.log 2>&1; RC_UPD=$?
           # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
           sudo bash tools/installer/uninstall.sh </dev/null >/tmp/uni.log 2>&1; RC_UNI=$?
           # shellcheck disable=SC2024  # sudo output goes to /tmp (user-writable); a pipe would drop the RC=$? capture
-          sudo bash tools/installer/install.sh --mode 3 --source local --no-self-update </dev/null >/tmp/ins.log 2>&1; RC_INS=$?
+          sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 3 --source local --no-self-update </dev/null >/tmp/ins.log 2>&1; RC_INS=$?
           set -e
           assert_refused update.sh    "$RC_UPD" /tmp/upd.log 'managed by the native'
           assert_refused uninstall.sh "$RC_UNI" /tmp/uni.log 'installed as native package'
@@ -370,12 +370,12 @@ jobs:
 
       - name: Install v1.0.6 (pre-marker), then upgrade to the PR build
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./old/llm-systems-manager_1.0.6_all.deb
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./old/llm-systems-manager_1.0.6_all.deb
           # v1.0.6 predates the marker — it must not exist yet.
           if sudo test -e /opt/llm-systems-manager/.llmsys-package-state; then
             echo 'ERROR: v1.0.6 should not have written a marker'; exit 1
           fi
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_1.0.7_all.deb
+          sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_1.0.7_all.deb
           dpkg-query -W -f='${Version}' llm-systems-manager | grep -qx 1.0.7
 
       - name: Marker backfilled as clean (not adopted)
@@ -425,7 +425,7 @@ jobs:
           if [ -n "$(ls -A /opt 2>/dev/null)" ]; then
             echo 'NOTE: /opt not empty in this image — purge-scope assert weakened:'; ls -la /opt
           fi
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
+          LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb
           test -d /opt/llm-systems-manager
           DEBIAN_FRONTEND=noninteractive apt-get purge -y llm-systems-manager
           test -d /opt
@@ -451,7 +451,7 @@ jobs:
           echo '# sim-script-install' > /opt/llm-systems-manager/config/llm-systems.toml
           printf '[Unit]\nDescription=sim\n' > /etc/systemd/system/llm-systems-manager.service
           set +e
-          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm >/tmp/g1.log 2>&1; RC=$?
+          LLMSYS_TELEMETRY=0 dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm >/tmp/g1.log 2>&1; RC=$?
           set -e
           cat /tmp/g1.log
           if [ "$RC" = "0" ]; then echo 'ERROR: install should have been refused'; exit 1; fi
@@ -467,7 +467,7 @@ jobs:
       - name: Install .rpm
         run: |
           set -o pipefail
-          dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm 2>&1 | tee /tmp/rpm-install.log
+          LLMSYS_TELEMETRY=0 dnf install -y ./dist/llm-systems-manager-0.0.1-1.noarch.rpm 2>&1 | tee /tmp/rpm-install.log
           # No admin exists yet: the scriptlet names the command that creates one (#1160).
           grep -F 'admin_password.py reset' /tmp/rpm-install.log
 
