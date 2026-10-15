@@ -13,19 +13,29 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 
 from config.unified_config import settings  # type: ignore[import-not-found]
 
 log = logging.getLogger("llm-systems-manager.stream_pool")
 
+# Refusals younger than this count as "recent" in stats()/System Health.
+REFUSAL_WINDOW_S = 600.0
+
 
 class StreamPool:
-    def __init__(self) -> None:
+    def __init__(self, now=time.monotonic) -> None:
         self._lock = threading.Lock()
+        self._now = now
         self._active = 0
         self._peak = 0          # high-water mark since boot (survives self-heal)
         self._refusals = 0      # total try_acquire failures (= browser "Stream error"s)
+        self._recent: deque[float] = deque()   # refusal timestamps inside REFUSAL_WINDOW_S
         self._last_warn = 0.0
+
+    def _prune(self, now: float) -> None:
+        while self._recent and now - self._recent[0] > REFUSAL_WINDOW_S:
+            self._recent.popleft()
 
     def limit(self) -> int:
         """Max concurrent SSE streams = pool size minus the reserve kept free
@@ -40,7 +50,9 @@ class StreamPool:
             lim = self.limit()
             if self._active >= lim:
                 self._refusals += 1
-                now = time.monotonic()
+                now = self._now()
+                self._recent.append(now)
+                self._prune(now)
                 if now - self._last_warn > 10.0:
                     self._last_warn = now
                     log.warning("SSE stream pool at capacity: active=%d limit=%d "
@@ -63,8 +75,10 @@ class StreamPool:
 
     def stats(self) -> dict:
         with self._lock:
+            self._prune(self._now())
             return {"active": self._active, "limit": self.limit(),
-                    "peak": self._peak, "refusals": self._refusals}
+                    "peak": self._peak, "refusals": self._refusals,
+                    "refusals_recent": len(self._recent)}
 
 
 POOL = StreamPool()
