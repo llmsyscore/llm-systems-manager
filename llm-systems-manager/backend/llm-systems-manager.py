@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-13"
+__version__ = "v2026.10.15-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1026,13 +1026,56 @@ def _stamp_static_urls(html: str) -> str:
     return _STATIC_URL_RE.sub(_sub, html)
 
 
+# "page" -> stamped index.html plus the (tag, hidden tag) pair per hide id;
+# rebuilt when index.html or any referenced /static asset changes.
+_PAGE_CACHE: dict[str, dict] = {}
+_STYLE_ATTR_RE = re.compile(r'(\bstyle=")([^"]*)(")')
+
+
+def _file_key(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _hidden_tag(tag: str, el_id: str) -> str:
+    """`tag` with display:none appended to its style attribute (or a new one after the id)."""
+    if _STYLE_ATTR_RE.search(tag):
+        return _STYLE_ATTR_RE.sub(r'\1\2;display:none\3', tag, count=1)
+    return tag.replace(f'id="{el_id}"', f'id="{el_id}" style="display:none"', 1)
+
+
+def _prepared_page() -> dict:
+    """Cached {deps, html, hides} for index.html; validated by stat of every dependency."""
+    cache = _PAGE_CACHE.get("page")
+    if cache and all(_file_key(STATIC_DIR / rel) == key for rel, key in cache["deps"].items()):
+        return cache
+    deps = {"index.html": _file_key(STATIC_DIR / "index.html")}
+    raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for m in _STATIC_URL_RE.finditer(raw):
+        rel = m.group(2)[len("/static/"):]
+        deps.setdefault(rel, _file_key(STATIC_DIR / rel))
+    html = _stamp_static_urls(raw)
+    hides: dict[str, tuple[str, str]] = {}
+    for el_id, _cap in _INITIAL_HIDE_IDS:
+        m = re.search(rf'<[a-zA-Z][^<>]*\bid="{re.escape(el_id)}"[^<>]*>', html)
+        if m:
+            hides[el_id] = (m.group(0), _hidden_tag(m.group(0), el_id))
+    cache = {"deps": deps, "html": html, "hides": hides}
+    _PAGE_CACHE["page"] = cache
+    return cache
+
+
 @app.route("/")
 def index():
     """Serves index.html with conditional tabs/pills pre-hidden inline so the
     browser paints the correct state immediately — checkConfig() polling
     continues to handle dynamic updates while the page is open. Avoids the
     visible-then-hidden flash on fresh installs with no approved agents."""
-    html = _stamp_static_urls((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    page = _prepared_page()
+    html = page["html"]
     with best_effort("index: session user"):
         tower.session_user(_flask_session)   # one id per bypass session before any parallel API call
     visible = agent_registry.approved_agent_caps()
@@ -1057,28 +1100,10 @@ def index():
     html = html.replace(
         "</head>", f"<style>{_brand_css_vars(_brand_palette())}</style>\n</head>", 1)
     for el_id, cap in _INITIAL_HIDE_IDS:
-        if visible[cap]:
+        pair = page["hides"].get(el_id)
+        if visible[cap] or pair is None:
             continue
-        # Inject display:none on the opening tag. Two cases: element has an
-        # existing style attribute (append `;display:none` to its value) or it
-        # doesn't (add a new style attribute). The pre-element regex captures
-        # the tag opener through the id attribute so we anchor only on our
-        # known IDs and ignore everything else.
-        existing = re.sub(
-            rf'(<[a-zA-Z]+[^>]*\bid="{re.escape(el_id)}"[^>]*\bstyle=")([^"]*)(")',
-            r'\1\2;display:none\3',
-            html,
-            count=1,
-        )
-        if existing != html:
-            html = existing
-            continue
-        html = re.sub(
-            rf'(<[a-zA-Z]+[^>]*\bid="{re.escape(el_id)}")',
-            r'\1 style="display:none"',
-            html,
-            count=1,
-        )
+        html = html.replace(pair[0], pair[1], 1)
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
