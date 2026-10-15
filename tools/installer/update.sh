@@ -535,10 +535,12 @@ component_wanted() {
 
 # is_installed_<component> — return 0/1. Reads world-readable paths only,
 # so detection works in a dry-run / non-TTY context without sudo elevation.
-is_installed_manager()       { [[ -f /etc/systemd/system/llm-systems-manager.service \
-                                || -d "$LLMSYS_INSTALL_DIR/llm-systems-manager" ]]; }
-is_installed_alarm_engine()  { [[ -f /etc/systemd/system/llm-systems-alarm-engine.service \
-                                || -d "$LLMSYS_INSTALL_DIR/llm-systems-alarm-engine" ]]; }
+# _unit_in_tree <unit> — the unit file exists and runs out of $LLMSYS_INSTALL_DIR.
+_unit_in_tree() { [[ -f "$1" ]] && grep -qF -- "=$LLMSYS_INSTALL_DIR/" "$1" 2>/dev/null; }
+is_installed_manager()       { _unit_in_tree /etc/systemd/system/llm-systems-manager.service \
+                                || [[ -d "$LLMSYS_INSTALL_DIR/llm-systems-manager" ]]; }
+is_installed_alarm_engine()  { _unit_in_tree /etc/systemd/system/llm-systems-alarm-engine.service \
+                                || [[ -d "$LLMSYS_INSTALL_DIR/llm-systems-alarm-engine" ]]; }
 is_installed_influxdb()      { have influx \
                               || systemctl list-unit-files --type=service 2>/dev/null \
                                  | grep -q '^influxdb\.service'; }
@@ -588,6 +590,13 @@ if ! $HAVE_MANAGER && ! $HAVE_AE && ! $HAVE_AGENT; then
   die "nothing to update — run install.sh to install components first"
 fi
 
+# Manager host of a split install: remember the alarm engine certificate's
+# timestamp so the Next steps can tell whether this update re-issued it.
+_AE_CRT_MTIME_BEFORE=0
+if $HAVE_MANAGER && ! $HAVE_AE; then
+  _AE_CRT_MTIME_BEFORE="$($SUDO stat -c %Y "$LLMSYS_INSTALL_DIR/data/ae-tls.crt" 2>/dev/null || echo 0)"
+fi
+
 # Pick the default backup root now that HAVE_* are known. On DB-only or
 # agent-only hosts the only thing the updater touches is the agent, so
 # anchor backups inside AGENT_INSTALL_DIR rather than carving out an
@@ -616,6 +625,9 @@ ok "source tree at $REPO_SRC"
 RESTART_UNITS=()
 UPDATED_COMPONENTS=()
 FAILED_UNITS=()
+_RESTART_DEFERRED=0
+_DEFERRED_UNITS=()
+_MANAGER_RESTARTED=0
 VERIFY_FAILURES=0
 NEED_DAEMON_RELOAD=0
 
@@ -1155,6 +1167,7 @@ fi
 if (( ${#RESTART_UNITS[@]} == 0 )); then
   log "nothing to restart"
 elif (( SKIP_RESTART )); then
+  _RESTART_DEFERRED=1; _DEFERRED_UNITS=("${RESTART_UNITS[@]}")
   warn "--skip-restart set; restart manually with:"
   for u in "${RESTART_UNITS[@]}"; do warn "    sudo systemctl restart $u"; done
 elif (( DRY_RUN )); then
@@ -1164,6 +1177,7 @@ else
     for u in "${RESTART_UNITS[@]}"; do
       log "restarting $u"
       $SUDO systemctl restart "$u" || warn "$u restart returned non-zero"
+      [[ "$u" == "llm-systems-manager.service" ]] && _MANAGER_RESTARTED=1
       sleep 2
       if $SUDO systemctl is-active --quiet "$u"; then
         ok "$u active"
@@ -1173,6 +1187,7 @@ else
       fi
     done
   else
+    _RESTART_DEFERRED=1; _DEFERRED_UNITS=("${RESTART_UNITS[@]}")
     warn "left services as-is; restart manually when ready"
   fi
 fi
@@ -1337,21 +1352,139 @@ if $HAVE_MANAGER && (( ! DRY_RUN )) && [[ "$(admin_pw_tool status)" == "reset-re
     TEMP_ADMIN="$(admin_pw_tool reset --yes --porcelain)"
   fi
   if [[ -n "$TEMP_ADMIN" ]]; then
-    echo
-    while read -r _u _p; do
-      [[ -n "$_p" ]] || continue
-      echo "    Sign in as:           ${_u}"
-      echo "    Temporary password:   ${_p}"
-    done <<< "$TEMP_ADMIN"
-    echo "    You set your own password at the next sign-in. The temporary one is shown only here."
-    echo
+    ok "temporary password set — shown once under Next steps below"
   else
     warn "left as-is; to get a temporary password later run:"
     warn "    sudo $LLMSYS_INSTALL_DIR/llm-systems-manager/venv/bin/python $LLMSYS_INSTALL_DIR/llm-systems-manager/backend/admin_password.py reset"
   fi
 fi
 
-# ── Summary ───────────────────────────────────────────────────────────────
+# ── Next steps ────────────────────────────────────────────────────────────
+# Host-by-host actions still owed after this update. collect_next_steps fills
+# NEXT_STEPS from the HAVE_* layout; print_next_steps renders the numbered list.
+NEXT_STEPS=()
+_ns_add() { local IFS=$'\n'; NEXT_STEPS+=("$*"); }
+_file_mtime() { $SUDO stat -c %Y "$1" 2>/dev/null || echo 0; }
+_url_host() { printf '%s' "$1" | sed -E 's|^[a-z]+://([^:/]+).*|\1|'; }
+
+# _toml_section_key <section> <key> <file> — the key's value inside [section] only.
+_toml_section_key() {
+  $SUDO test -f "$3" 2>/dev/null || { echo ""; return 0; }
+  { $SUDO cat "$3" 2>/dev/null || true; } | awk -v s="[$1]" -v k="$2" '
+    /^[[:space:]]*\[/ { h=$0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", h); in_s = (h == s); next }
+    in_s && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+      sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*(#.*)?$/, ""); gsub(/^"|"$/, ""); print; exit }'
+}
+
+# _ae_cert_has_role <crt> — 0 when the certificate names the alarm engine role,
+# 1 when it does not, 2 when it cannot be read.
+_ae_cert_has_role() {
+  local text
+  have openssl || return 2
+  text="$($SUDO openssl x509 -in "$1" -noout -text 2>/dev/null)" || return 2
+  grep -q 'DNS:alarm-engine\.role\.llmsys\.internal' <<<"$text"
+}
+
+# _ns_cert_copy_lines <from-label> <to-label> <there-label>
+_ns_cert_copy_lines() {
+  local ae_data="$LLMSYS_INSTALL_DIR/llm-systems-alarm-engine/data"
+  printf '%s\n' \
+    "  $1  $LLMSYS_INSTALL_DIR/data/ae-tls.crt  and  ae-tls.key" \
+    "  $2  $ae_data/" \
+    "  $3  sudo chown $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP $ae_data/ae-tls.{crt,key}" \
+    "                sudo systemctl restart llm-systems-alarm-engine"
+}
+
+collect_next_steps() {
+  local live_toml="$LLMSYS_INSTALL_DIR/config/llm-systems.toml"
+  local ae_host mgr_host db_host crt dash_ip _u _p
+  NEXT_STEPS=()
+
+  if (( _RESTART_DEFERRED )); then
+    _ns_add "Restart the updated services:" \
+      "$(for _u in ${_DEFERRED_UNITS[@]+"${_DEFERRED_UNITS[@]}"}; do echo "  sudo systemctl restart $_u"; done)"
+  fi
+
+  if [[ -n "$TEMP_ADMIN" ]]; then
+    _ns_add "Sign in with the temporary admin password (shown only here):" \
+      "$(while read -r _u _p; do [[ -n "$_p" ]] || continue
+           echo "  Sign in as:           $_u"; echo "  Temporary password:   $_p"; done <<< "$TEMP_ADMIN")" \
+      "  You set your own password at the next sign-in."
+  fi
+
+  if { $HAVE_MANAGER || $HAVE_AE; } && ! $HAVE_INFLUX; then
+    db_host="$(_toml_section_key influxdb host "$live_toml")"
+    _ns_add "Refresh the InfluxDB tuning on the InfluxDB host (${db_host:-<influxdb-host>}):" \
+      "  run install.sh --update there (on an InfluxDB-only host it refreshes the tuning and asks to restart InfluxDB)."
+  fi
+
+  if $HAVE_MANAGER && ! $HAVE_AE; then
+    ae_host="$(_url_host "$(read_toml_key alarm_engine_url "$live_toml")")"
+    ae_host="${ae_host:-<alarm-engine-host>}"
+    crt="$LLMSYS_INSTALL_DIR/data/ae-tls.crt"
+    if [[ "$(_file_mtime "$crt")" != "0" && "$(_file_mtime "$crt")" != "$_AE_CRT_MTIME_BEFORE" ]]; then
+      _ns_add "Copy the new alarm engine certificate to the alarm engine host ($ae_host)." \
+        "The manager issued a new alarm engine certificate at this restart. Until it is in place and the" \
+        "alarm engine has restarted, every agent reports that the alarm engine certificate has no role." \
+        "$(_ns_cert_copy_lines "from here:  " "to there:   " "then there: ")"
+    elif (( _RESTART_DEFERRED )) \
+         && printf '%s\n' ${_DEFERRED_UNITS[@]+"${_DEFERRED_UNITS[@]}"} | grep -qx llm-systems-manager.service; then
+      _ns_add "After the manager restarts, check whether it issued a new alarm engine certificate:" \
+        "  sudo journalctl -u llm-systems-manager -n 200 --no-pager | grep -i 'alarm-engine tls cert'" \
+        "If it did, copy the certificate to the alarm engine host ($ae_host):" \
+        "$(_ns_cert_copy_lines "from here:  " "to there:   " "then there: ")"
+    fi
+    _ns_add "Update the alarm engine host ($ae_host): run install.sh --update there."
+  fi
+
+  if $HAVE_AE && ! $HAVE_MANAGER; then
+    mgr_host="$(_url_host "$(read_toml_key manager_url "$live_toml")")"
+    mgr_host="${mgr_host:-<manager-host>}"
+    crt="$LLMSYS_INSTALL_DIR/llm-systems-alarm-engine/data/ae-tls.crt"
+    _ae_cert_has_role "$crt" && _role_rc=0 || _role_rc=$?
+    case "$_role_rc" in
+      1)
+        _ns_add "Install the alarm engine certificate the manager issued during its update." \
+          "The certificate here carries no role name yet. Until the new one is in place and the alarm" \
+          "engine has restarted, every agent reports that the alarm engine certificate has no role." \
+          "$(_ns_cert_copy_lines "from the manager host ($mgr_host):" "to here:    " "then here:  ")"
+        ;;
+      2)
+        _ns_add "If the manager host issued a new alarm engine certificate during its update, copy it here:" \
+          "$(_ns_cert_copy_lines "from the manager host ($mgr_host):" "to here:    " "then here:  ")"
+        ;;
+    esac
+  fi
+
+  if $HAVE_MANAGER; then
+    dash_ip="$(detect_primary_ip 2>/dev/null || true)"
+    _ns_add "Update the agents: open http://${dash_ip:-<manager-host>}:5000/ then Admin › Agents › Manage ▾ › Update all."
+  elif $HAVE_AE; then
+    _ns_add "Update the agents from the manager's dashboard: Admin › Agents › Manage ▾ › Update all."
+  elif $HAVE_AGENT; then
+    _ns_add "Nothing more on this host. The manager's Admin › Agents shows the new agent version after its next heartbeat."
+  fi
+}
+
+print_next_steps() {
+  local i=1 step first line
+  echo "  Next steps"
+  echo "  ─────────────────────────────────────────────────────────────────"
+  if (( ${#NEXT_STEPS[@]} == 0 )); then
+    echo "    Nothing more is owed on this host."
+  fi
+  for step in ${NEXT_STEPS[@]+"${NEXT_STEPS[@]}"}; do
+    first=1
+    while IFS= read -r line; do
+      if (( first )); then printf '    %d. %s\n' "$i" "$line"; first=0
+      else printf '       %s\n' "$line"; fi
+    done <<<"$step"
+    i=$((i+1))
+  done
+  echo
+}
+
+# ── Closing banner ────────────────────────────────────────────────────────
 banner "Update summary"
 if (( ${#UPDATED_COMPONENTS[@]} > 0 )); then
   ok "updated: ${UPDATED_COMPONENTS[*]}"
@@ -1386,6 +1519,40 @@ fi
 if (( ${LLMSYS_WARN_COUNT:-0} > 0 )); then
   warn "${LLMSYS_WARN_COUNT} [WARN] line(s) above — review before trusting this update"
 fi
+
+if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
+  STATUS_TITLE="Update finished with errors"
+  STATUS_LINE="$FAIL failed health check(s), ${#FAILED_UNITS[@]} failed component(s), $VERIFY_FAILURES verify mismatch(es) — see above."
+elif (( DRY_RUN )); then
+  STATUS_TITLE="Dry run complete"
+  STATUS_LINE="Nothing was changed."
+else
+  STATUS_TITLE="Update complete"
+  STATUS_LINE="$PASS service(s) passed health checks."
+fi
+_HERE=""
+$HAVE_MANAGER && _HERE+="manager "
+$HAVE_AE      && _HERE+="alarm-engine "
+$HAVE_INFLUX  && _HERE+="influxdb "
+$HAVE_AGENT   && _HERE+="agent"
+cat <<BANNER
+
+  ╭───────────────────────────────────────────────────────────────────╮
+  │                                                                   │
+  │              L L M   S Y S T E M S   M A N A G E R                │
+  │                                                                   │
+  │$(printf '%*s%s%*s' $(( (67 - ${#STATUS_TITLE}) / 2 )) '' "$STATUS_TITLE" $(( (67 - ${#STATUS_TITLE} + 1) / 2 )) '')│
+  │                                                                   │
+  ╰───────────────────────────────────────────────────────────────────╯
+
+         Host   ·  $(hostname)
+         Here   ·  ${_HERE% }
+         Result ·  ${STATUS_LINE}
+
+BANNER
+collect_next_steps
+print_next_steps
+
 if (( FAIL > 0 || ${#FAILED_UNITS[@]} > 0 || VERIFY_FAILURES > 0 )); then
   err "Update finished with failures."
   err "Staging tree preserved at $REPO_SRC for inspection."

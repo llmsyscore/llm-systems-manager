@@ -739,6 +739,7 @@ The update process:
 - Reloads systemd units and restarts affected services
 - Refreshes the [InfluxDB memory settings](#influxdb-memory-settings) on hosts that run InfluxDB (on an InfluxDB-only host this is the whole update)
 - Runs the smoke test to confirm the update succeeded
+- Ends with a **Next steps** list for this host: restarts you deferred, a temporary admin password when one was set, and, on a multi-host install, which hosts still need the update, whether the alarm engine certificate has to be copied to the alarm engine host, where to refresh the InfluxDB tuning, and the **Update all** step for the agents
 
 Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.
 
