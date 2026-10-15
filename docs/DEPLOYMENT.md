@@ -309,6 +309,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | Setting path | What it controls | Default |
 |---|---|---|
 | `[manager].port` | Port the manager web interface listens on | `5000` |
+| `[manager].listen_backlog` | How many browser connections may wait in the operating system's queue while the manager is busy accepting; the kernel caps it at `net.core.somaxconn` | `1024` |
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
 | `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
 | `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
@@ -320,6 +321,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
 | `[alarm_engine].tls_enabled` | Whether the alarm engine uses HTTPS | `true` |
+| `[alarm_engine].cors_origins` | Browser origins allowed to call the alarm engine directly (its own page on port 8081); requests through the manager are not affected. The installer writes the `http://` and `https://` origins of the manager, `localhost` and the alarm engine host, and updates add the `https://` entries to an older list. Set `LLMSYS_PRIMARY_IP` before an update when browsers reach a host with several interfaces on a different one | *(set at install)* |
 | `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open. Docker installs generate it on first start when `.env` leaves it blank | *(set by installer)* |
 | `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install and must differ from `ingest_token` (the engine refuses to start when they are equal). Docker installs generate it on first start when `.env` leaves it blank. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
 | `[alarm_engine.caches].max_hosts_per_metric` | How many machines the alarm engine keeps in its recent-history cache for each metric. Raise it when the fleet is larger than this; the engine logs one warning per metric when the cap is reached | `256` |
@@ -741,6 +743,8 @@ The update process:
 Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.
 
 You do not need to stop services first — the updater handles restarts.
+
+When the update spans more than one host, update the manager host first, then the alarm engine host, then the agents (**Admin → Agents → Manage ▾ → Update all**). Certificates issued since v3.1.0 name what they belong to, and each side starts requiring that name once it has seen it, so this order keeps every connection working during the update. The updater also corrects the alarm engine's allowed-origins list (see `[alarm_engine].cors_origins` in the configuration table) and, when run from a terminal on a host that has never answered the question, asks once about the [anonymous reports](#anonymous-reports).
 
 Releases up to v3.0.0 created the first admin account with a fixed password. If that account still has it, the updater tells you, asks to continue, and replaces it with a temporary password that it shows once. Sign in with it and set your own. If you answer no, or update without the installer (a `git pull`, a package upgrade, a new Docker image), that account cannot sign in until you run the `admin_password.py reset` command from [Step 5](#step-5-open-the-dashboard).
 
