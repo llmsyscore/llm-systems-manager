@@ -225,6 +225,7 @@ jobs:
             echo "LSM_INFLUX_PASSWORD=$(openssl rand -hex 12)"
             echo "LSM_INFLUX_TOKEN=$(openssl rand -hex 32)"
             echo "LSM_AE_INGEST_TOKEN=$(openssl rand -hex 32)"
+            echo "LSM_ENROLLMENT_SECRET=$(openssl rand -hex 32)"
             echo "LSM_TELEMETRY=0"
             echo "LSM_IMAGE_TAG=latest"
             # Phase 1 pulls released :latest (absent locally → "missing" still
@@ -251,7 +252,7 @@ jobs:
             -d '{"metrics":[{"source":"cpu","metric_name":"cpu_usage","value":77.0,"unit":"%","hostname":"ci-persist-host"}]}'
           # Registered agent into the manager-data volume.
           aid="$(curl -fsS -X POST http://localhost:5000/api/agents/register \
-            -H 'Content-Type: application/json' \
+            -H 'Content-Type: application/json' -H "X-Enrollment-Secret: $LSM_ENROLLMENT_SECRET" \
             -d '{"hostname":"ci-persist-agent","os":"linux"}' | jq -r '.agent_id')"
           { [ -n "$aid" ] && [ "$aid" != "null" ]; } || { echo "agent registration failed" >&2; exit 1; }
           echo "SEED_AGENT_ID=$aid" >> "$GITHUB_ENV"
