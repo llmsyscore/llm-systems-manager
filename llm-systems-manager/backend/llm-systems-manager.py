@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.15-2"
+__version__ = "v2026.10.15-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6009,11 +6009,18 @@ def admin_system_health():
                 )
 
     _sp = stream_pool.POOL.stats()
-    if _sp["refusals"] > 0 or _sp["active"] >= _sp["limit"]:
+    _sp_fix = ("close unused dashboards, or raise manager.http_threads / lower "
+               "manager.stream_reserve_threads for more slots")
+    if _sp["active"] >= _sp["limit"]:
         health["warnings"].append(
-            f"SSE stream pool saturated: active={_sp['active']}/{_sp['limit']} "
-            f"peak={_sp['peak']} refusals={_sp['refusals']} — new streams get 503 "
-            f"('Stream error'); restart clears it")
+            f"SSE stream pool full: active={_sp['active']}/{_sp['limit']} — new streams "
+            f"get 503 ('Stream error') until a stream closes; {_sp_fix}")
+    elif _sp["refusals_recent"] > 0:
+        _n = _sp["refusals_recent"]
+        health["warnings"].append(
+            f"SSE stream pool refused {_n} stream{'s' if _n != 1 else ''} in the last "
+            f"{int(stream_pool.REFUSAL_WINDOW_S // 60)} min (active={_sp['active']}/{_sp['limit']}, "
+            f"peak={_sp['peak']}, refusals since start={_sp['refusals']}) — {_sp_fix}")
 
     try:
         summ = _jobs_service.summary()
@@ -9896,6 +9903,17 @@ def openclaw_ws_ticket():
 
 # Largest WebSocket message the bridge relays in either direction.
 _WS_BRIDGE_MAX_SIZE = 64 * 1024 * 1024
+_WS_CLOSE_EXPECTED = frozenset({1000, 1001, 1005, 1006})
+
+
+def _log_ws_relay_close(side: str, exc) -> None:
+    """One line per relayed close: DEBUG for an expected code, WARNING otherwise."""
+    frame = getattr(exc, "rcvd", None)
+    code = frame.code if frame is not None else 1006
+    reason = (frame.reason if frame is not None else "") or ""
+    level = logging.DEBUG if code in _WS_CLOSE_EXPECTED else logging.WARNING
+    log.log(level, "WS proxy: %s side closed the relay (code %d%s)",
+            side, code, f" {reason}" if reason else "")
 
 
 def _maybe_start_alarm_ws_proxy() -> None:
@@ -9965,10 +9983,18 @@ def _maybe_start_alarm_ws_proxy() -> None:
         else:
             log.info("  WS proxy:    serving ws://0.0.0.0:%d → %s", ws_port, ae_ws_url or "(no AE)")
 
-        async def _pipe(src, dst) -> None:
+        async def _pipe(src, dst, src_side: str, dst_side: str) -> None:
             with best_effort("ws proxy: pipe frames", log=log):
-                async for msg in src:
-                    await dst.send(msg)
+                try:
+                    async for msg in src:
+                        try:
+                            await dst.send(msg)
+                        except websockets.ConnectionClosed as e:
+                            _log_ws_relay_close(dst_side, e)
+                            return
+                    log.debug("WS proxy: %s side closed the relay (code %s)", src_side, src.close_code)
+                except websockets.ConnectionClosed as e:
+                    _log_ws_relay_close(src_side, e)
 
         async def _handler(client_ws) -> None:
             # websockets v13+ passes the request target (path + query) on
@@ -9986,10 +10012,12 @@ def _maybe_start_alarm_ws_proxy() -> None:
             # /ws/openclaw → the OpenClaw gateway with the browser's Origin;
             # /ws/alarm → the AE with the manager's bearer.
             if _ws_bridge_path(req_target) == "/ws/openclaw":
+                up_side = "openclaw"
                 up_url, up_ssl, up_headers = _openclaw_ws_url(), None, None
                 origin = getattr(req, "headers", {}).get("Origin") or None
                 ws_extra = {}
             else:
+                up_side = "engine"
                 up_url, up_ssl, origin = ae_ws_url, ae_ssl, None
                 ws_extra = _ae_ws_tls_extra(up_ssl)
                 up_headers = {"Authorization": f"Bearer {_AE_BEARER}"} if _AE_BEARER else None
@@ -10001,8 +10029,8 @@ def _maybe_start_alarm_ws_proxy() -> None:
                                               additional_headers=up_headers,
                                               max_size=_WS_BRIDGE_MAX_SIZE, **ws_extra) as up:
                     await asyncio.gather(
-                        _pipe(client_ws, up),
-                        _pipe(up, client_ws),
+                        _pipe(client_ws, up, "dashboard", up_side),
+                        _pipe(up, client_ws, up_side, "dashboard"),
                         return_exceptions=True,
                     )
             except Exception as e:

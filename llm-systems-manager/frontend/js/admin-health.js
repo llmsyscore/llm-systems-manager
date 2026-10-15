@@ -508,8 +508,9 @@
         ['version', dash(mgr.version)],
         ['up', dash(upStr(mgr.uptime_s))],
         ['streams', streams.limit != null
-          ? `${streams.active} / ${streams.limit} · peak ${streams.peak} · refusals ${streams.refusals}` : '—',
-          near >= 0.9 || streams.refusals ? 'warn' : ''],
+          ? `${streams.active} / ${streams.limit} · peak ${streams.peak} · refusals ${streams.refusals}`
+            + (streams.refusals_recent ? ` (${streams.refusals_recent} recent)` : '') : '—',
+          near >= 0.9 || streams.refusals_recent ? 'warn' : ''],
         ['browsers', nodeSubs(d).nBr],
         ['agent links', dash(conns.agents)],
         ['worker threads', total != null ? `${busy} / ${total} busy` : '—',
