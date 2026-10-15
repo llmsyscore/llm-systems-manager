@@ -94,9 +94,9 @@ Full details for every method, including split installs, offline installs, and u
 
 ## Screenshots
 
-**Video tour** — sign-in, Overall, every dashboard including Forecast, Tower, LLM Control, the Tools launcher with a Live benchmark, chat, image generation, the alarm console, every Admin page including Jobs, and the settings drawer:
+**Video tour** — sign-in, Overall, every dashboard including Forecast, Tower, LLM Control, the Tools launcher with a Live benchmark, chat, image generation, the alarm console, every Admin page including System Health, agent enrollment and Jobs, and the settings drawer:
 
-https://github.com/user-attachments/assets/99408fbd-b7dc-4a54-a1ba-89786d5e8b35
+https://github.com/user-attachments/assets/b2da9caf-9437-4001-acdc-cd12567fa786
 
 <img width="1920" height="1080" alt="Sign-in screen" src="docs/screenshots/login.webp" />
 
@@ -358,17 +358,19 @@ The eleven headline capabilities plus everything else that ships in the box:
 - **Every host in one pane.** A picker switches views and controls per agent, and the **Overall** tab rolls combined throughput, hottest GPU, total power, and active models into one view.
 - **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant — a bare host just reports system metrics, all over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats.
-- **Alerting.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email, toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
+- **Alerting.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email (with the mail server's certificate verified), toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
 - **Incident correlation.** Several rules triggering on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
 - **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab. A separate run-activity dot on **LLM Control → Tools** tracks tool runs globally.
 - **Phone companion (PWA).** An installable app at `/companion` — Home, Alerts, Tower (ask, prompts and insights), Energy, Models, Admin, and Settings screens sized for a phone, with alarm-engine alerts delivered as native push notifications even when the app is closed. Model swaps, pins, autopilot approvals, and service restarts each sit behind a confirm sheet, restricted to the admin role. See [Phone companion](#phone-companion-pwa).
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
 - **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
 - **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image creation.
-- **Multi-user access control.** **Admin** / **Operator** roles — operators can manage LLMs and watch dashboards, without access to the Admin tab, agent management, secrets, and shells. Self-service password change plus username + source-IP lockout.
+- **Multi-user access control.** **Admin** / **Operator** roles — operators can manage LLMs and watch dashboards, without access to the Admin tab, agent management, secrets, shells, or the Save buttons of service settings. There is no built-in password: the installer creates a temporary one for the first sign-in, and `admin_password.py reset` makes a new one at any time. Self-service password change plus username + source-IP lockout.
 - **Admin audit log.** Every mutating admin action is recorded and browsable in **Admin → Audit Log**. Rows are purged past a configurable retention window (60 days by default) behind a 100,000-row backstop, categorized against an event catalog with per-event toggles, searchable and filterable, and exportable to CSV.
 - **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. Each run writes a manager archive and, when `[alarm_engine].management_token` is set, an alarm-engine archive alongside it. Archives restore through **Restore…** and can be downloaded straight from the Backups card.
-- **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA. Every manager response carries baseline browser-hardening headers (`nosniff`, same-origin framing, strict referrer policy).
+- **Encrypted everywhere.** All agent ↔ manager and agent ↔ alarm-engine traffic runs over TLS, with per-agent leaf certs signed by the manager's internal CA. Each certificate names what it belongs to (the manager, the alarm engine or one agent) and each side requires the role it expects. Every manager response carries baseline browser-hardening headers (`nosniff`, same-origin framing, strict referrer policy).
+- **Controlled agent enrollment.** New agents need the enrollment secret and the manager's certificate fingerprint, both on **Admin → Agents → Manage ▾ → Enrollment** next to a ready-made install command, and are accepted only while enrollment is open (a 15-minute window after each manager start, or Open / Extend / Close by hand). Registration requests are size-limited, rate-limited per address and capped while waiting for approval, and the routes that need no login share a request budget that System Health reports.
+- **System Health.** A live data-flow diagram of the manager, alarm engine, InfluxDB and every agent with status pills per service, warnings with advice, and, when all is quiet, three views of the last day: Recent operations from the audit log, Capacity bars for CPU, memory, disk and worker threads, and Trends for request volume and latency. The manager and alarm engine logs are readable from the same page.
 - **Bring your own TLS certificate.** Point `[manager].tls_cert_file`/`tls_key_file` at a public or corporate-CA cert and the HTTPS port serves it via SNI for the hostnames it covers, while agents pinned to the internal CA keep working untouched. Required for installing the phone companion from another device.
 
 
@@ -753,7 +755,7 @@ InfluxDB v2 is the database for the **time-series metrics** — raw samples plus
 ### Security model
 
 - **Login and roles.** Named users with two roles: **Admin** (everything) and **Operator** (run models and watch dashboards, no Admin tab, agents, secrets or shells). Admins manage accounts in **Admin → Access Control**; every user can change their own password. Passwords are stored as hashes, repeated failed logins lock the username and source IP for a while, and the first admin signs in with a temporary password from the installer or the admin password tool and sets their own before continuing. Login mode can be `required`, `trusted_cidr`, `disabled` or `auto`.
-- **Agents.** Each agent gets a bearer token at registration and a TLS certificate signed by the manager's internal CA on approval, and presents a hardware fingerprint when it checks in.
+- **Agents.** A new agent registers with the enrollment secret while enrollment is open, checks the manager's certificate fingerprint first, and makes its own private key; the manager signs it on approval. Each agent gets a bearer token at registration, a TLS certificate that names it, and presents a hardware fingerprint when it checks in. Registration is rate-limited per address, and the routes that need no login share a request budget.
 - **TLS.** The manager serves HTTPS on `[manager].tls_port` (default `5443`) with a certificate from the internal CA, and agents move to it once approved. You can point `[manager].tls_cert_file` / `tls_key_file` at your own certificate; it is served for the hostnames it covers while agents keep using the internal CA. HTTPS sessions use their own `__Secure-session` cookie, HSTS is available with `[manager].hsts_max_age_s`, and every response carries the standard browser-hardening headers.
 - **Alarm engine.** Agents send metrics to the alarm engine with a shared token (`[alarm_engine].ingest_token`) over HTTPS (`[alarm_engine].tls_enabled`). The dashboard reaches its WebSocket through a manager-side bridge (`[manager].ws_proxy_port`, `ws_proxy_tls_port`) that requires a short-lived ticket for each connection.
 - **Gateway keys.** The OpenAI-compatible gateway accepts dashboard sessions, or bearer keys from `[manager.gateway].api_keys` for outside clients, and reuses the agent TLS channel to reach backends.
@@ -793,6 +795,8 @@ sudo bash /opt/llm-systems-manager/tools/installer/install.sh --update
 ```
 
 Or pick **mode 7 (Update)** from the interactive menu. Update preserves the run-as user that was already in place — you don't need to re-pass `--user`.
+
+On a multi-host install, update the manager host first, then the alarm engine host, then push the new agent to every host from **Admin → Agents → Manage ▾ → Update all**. The updater refreshes the InfluxDB tuning on hosts that run InfluxDB, replaces a first admin account that still has the password older releases shipped with a temporary one (shown once), and asks once about the anonymous reports when run from a terminal. Package, Docker and Homebrew upgrades refresh the tuning as well but leave the admin password alone: if the first sign-in fails after one of those upgrades, run `admin_password.py reset` (Homebrew: `llm-systems-admin-password reset`). See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#updating) for each path.
 
 ---
 

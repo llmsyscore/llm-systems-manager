@@ -190,6 +190,17 @@ Current agents additionally present a hardware fingerprint on the approval-statu
 re-registration; records last written by an older agent keep the previous behaviour until that
 agent upgrades.
 
+Every certificate the internal CA issues names what it belongs to — the Manager, the Alarm Engine
+or one specific Agent — and each side that checks a certificate requires the name it expects once it
+has seen it, so a certificate issued to one agent cannot be presented by another. An agent that has
+checked the Manager's name stays on HTTPS from then on. New machines reach the registration route
+only while enrollment is open (a window after each Manager start, or opened by an administrator),
+must send the enrollment secret when one is set, and can verify the Manager's certificate
+fingerprint before sending anything, so an agent installed with the fingerprint never speaks plain
+HTTP. Registration requests are size-limited, rate-limited per source address and capped while
+waiting for approval, and the routes that need no login or token share a per-minute request budget
+(`[manager.security].anon_request_budget_per_min`) that System Health and the audit log report.
+
 ### Two exceptions worth knowing about
 
 The dashboard itself is served over plain HTTP on port 5000 unless you enable
