@@ -435,8 +435,8 @@ describe('#793 row + drawer markup', () => {
 
 describe('#793 wiring', () => {
   test('index.html loads agents.css + admin-agents.js and drops the old table ids', () => {
-    expect(indexSrc).toMatch(/css\/agents\.css\?v=[\w.-]+/);
-    expect(indexSrc).toMatch(/js\/admin-agents\.js\?v=[\w.-]+/);
+    expect(indexSrc).toContain('href="/static/css/agents.css"');
+    expect(indexSrc).toContain('src="/static/js/admin-agents.js"');
     for (const id of ['adminAgentsTable', 'adminAuthDisabled', 'adminLatestVersion', 'adminAgentsCount', 'adminLastRefresh', 'adminHealthRefresh', 'auStamp', 'agStamp', 'agFoot']) {
       expect(indexSrc).not.toContain(`id="${id}"`);
     }

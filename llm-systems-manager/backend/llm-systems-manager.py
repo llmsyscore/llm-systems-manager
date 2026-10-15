@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-12"
+__version__ = "v2026.10.14-13"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -935,6 +935,25 @@ def _baseline_security_headers(resp):
     return resp
 
 
+# Versioned /static URLs (?v=<content hash>) may be cached for a year; fonts
+# and icons carry no stamp and get a day.
+_STATIC_IMMUTABLE_CC = "private, max-age=31536000, immutable"
+_STATIC_DAY_CC = "private, max-age=86400"
+_STATIC_DAY_PREFIXES = ("/static/fonts/", "/static/icons/")
+
+
+@app.after_request
+def _static_cache_headers(resp):
+    path = _flask_request.path
+    if not path.startswith("/static/") or resp.status_code not in (200, 304):
+        return resp
+    if "v" in _flask_request.args:
+        resp.headers["Cache-Control"] = _STATIC_IMMUTABLE_CC
+    elif path.startswith(_STATIC_DAY_PREFIXES):
+        resp.headers["Cache-Control"] = _STATIC_DAY_CC
+    return resp
+
+
 @app.errorhandler(Exception)
 def _log_unhandled(e):
     # Werkzeug HTTPExceptions carry their own status code; let them through.
@@ -976,13 +995,44 @@ _INITIAL_HIDE_IDS = (
     ("subTabBtnLlmLmstudio",  "lms"),
 )
 
+# rel path -> ((mtime_ns, size), 10-hex sha256 prefix) for serve-time ?v= stamps.
+_ASSET_HASH_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+_STATIC_URL_RE = re.compile(r'((?:src|href)=")(/static/[^"?#]+)(?:\?[^"#]*)?(")')
+
+
+def _asset_stamp(rel: str) -> str | None:
+    """Short content hash of STATIC_DIR/<rel>, cached until the file's mtime or size changes."""
+    path = STATIC_DIR / rel
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _ASSET_HASH_CACHE.get(rel)
+    if hit and hit[0] == key:
+        return hit[1]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+    _ASSET_HASH_CACHE[rel] = (key, digest)
+    return digest
+
+
+def _stamp_static_urls(html: str) -> str:
+    """Rewrites every src/href /static URL to ?v=<content hash>; unknown files are left as-is."""
+    def _sub(m: re.Match) -> str:
+        stamp = _asset_stamp(m.group(2)[len("/static/"):])
+        if stamp is None:
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}?v={stamp}{m.group(3)}"
+    return _STATIC_URL_RE.sub(_sub, html)
+
+
 @app.route("/")
 def index():
     """Serves index.html with conditional tabs/pills pre-hidden inline so the
     browser paints the correct state immediately — checkConfig() polling
     continues to handle dynamic updates while the page is open. Avoids the
     visible-then-hidden flash on fresh installs with no approved agents."""
-    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = _stamp_static_urls((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
     with best_effort("index: session user"):
         tower.session_user(_flask_session)   # one id per bypass session before any parallel API call
     visible = agent_registry.approved_agent_caps()

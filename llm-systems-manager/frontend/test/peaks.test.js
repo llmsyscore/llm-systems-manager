@@ -92,7 +92,7 @@ describe('llama card wiring (#590)', () => {
 
   it('index.html loads the peaks lib before charts.js', () => {
     const peaksAt = html.indexOf('js/lib/peaks.js');
-    const chartsAt = html.indexOf('js/charts.js?v');
+    const chartsAt = html.indexOf('js/charts.js"');
     expect(peaksAt).toBeGreaterThan(-1);
     expect(peaksAt).toBeLessThan(chartsAt);
   });
