@@ -281,4 +281,22 @@ describe('audit deep link', () => {
     expect(win.__second).toContain('offset=0');
     expect(win.__second).toContain('group=agent');
   });
+  it('a later entry re-reads an audit link set after the first load', async () => {
+    const boot = `
+      window.__urls = [];
+      window.fetch = async (url) => {
+        window.__urls.push(String(url));
+        if (String(url).includes('/stats')) return { ok: true, json: async () => ({ ok: true, total: 1, actors: [] }) };
+        return { ok: true, json: async () => ({ ok: true, total: 1, page_size: 25, entries: [${JSON.stringify(entry(0))}] }) };
+      };
+      window.__done = adminAuditLoad(0).then(() => {
+        window.location.hash = '#audit?since_hours=24';
+        return adminAuditLoad(0);
+      }).then(() => { window.__second = window.__urls.filter(u => u.includes('audit-log?')).pop(); });
+    `;
+    const win = run(boot);
+    await win.__done;
+    expect(win.__second).toContain('since_hours=24');
+    expect(win.document.querySelector('#auRange button.on').dataset.h).toBe('24');
+  });
 });

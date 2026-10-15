@@ -129,10 +129,10 @@ describe('HealthView warnings panel', () => {
     expect(out).toContain('endpoint unreachable');
   });
 
-  test('no warnings and a quiet release check render the mono None', () => {
+  test('no warnings and a quiet release check render the Recent view', () => {
     const out = render({ warnings: [] }, { enabled: true, update_available: false });
-    expect(out).toContain('w-none');
-    expect(out).toContain('None');
+    expect(out).toContain('hc-ev-none');
+    expect(out).not.toContain('class="w ');
   });
 
   test('an available update renders the note row, with no info row', () => {

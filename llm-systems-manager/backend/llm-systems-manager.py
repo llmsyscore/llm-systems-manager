@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-8"
+__version__ = "v2026.10.14-12"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3882,7 +3882,8 @@ AUDIT_EVENT_GROUPS: list[dict] = [
         {"key": "model.downloads", "label": "Downloads · cache prune", "default_on": False}]},
     {"key": "service", "title": "Services", "events": [
         {"key": "service.restart", "label": "Service restart", "default_on": True},
-        {"key": "alarm.actions", "label": "Alarm acknowledge · rules", "default_on": True}]},
+        {"key": "alarm.actions", "label": "Alarm acknowledge · rules", "default_on": True},
+        {"key": "security.flood", "label": "Request flood on the open routes", "default_on": True}]},
     {"key": "auto", "title": "Autopilot", "events": [
         {"key": "autopilot.toggle", "label": "Enable / disable", "default_on": True},
         {"key": "autopilot.proposal", "label": "Proposal apply / dismiss", "default_on": True},
@@ -3913,6 +3914,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "agent.global-config": "Changed agent auth settings", "agent.push-ca": "Pushed the CA bundle to agents",
     "agent.collection": "Paused or resumed collection",
     "agent.enrollment-secret": "Changed the agent enrollment secret",
+    "security.flood": "Request flood on the open routes",
     "service.restart": "Restarted a service", "auth.mode-change": "Changed the login mode",
     "auth.login": "Signed in", "auth.logout": "Signed out",
     "account.password": "Changed own password",
@@ -4116,7 +4118,8 @@ def _audit_reload_config() -> None:
 
 _AUDIT_EVENT_BY_ACTION: dict[str, str] = {"tower.violation": "tower.violation", "tower.playbook.auto": "tower.action",
                                           "jobs.failed": "jobs", "forecast.run": "forecast.run",
-                                          "forecast.dismiss": "forecast.dismiss"}
+                                          "forecast.dismiss": "forecast.dismiss",
+                                          "security.flood": "security.flood"}
 
 
 def _audit_event_for(action: str) -> str:
@@ -4299,6 +4302,20 @@ def _audit_record(entry: tuple) -> None:
     conn.commit()
 
 
+def _audit_flood(requests: int, refused: int, limit: int) -> None:
+    """One security.flood row per refused open-route window (#1273)."""
+    if "security.flood" in _AUDIT_CFG["disabled"]:
+        return
+    try:
+        _audit_record((
+            datetime.now(timezone.utc).isoformat(timespec="seconds"), "", "", "-", "internal", "", "",
+            "security.flood", None, 429, "denied",
+            json.dumps({"requests": int(requests), "refused": int(refused), "budget": int(limit)}),
+            "security.flood"))
+    except Exception:
+        log.warning("audit row dropped for security.flood", exc_info=True)
+
+
 def _audit_purge(now=None) -> int:
     """Delete rows older than retention_days; returns the count removed."""
     days = int(_AUDIT_CFG.get("retention_days") or 0)
@@ -4387,7 +4404,7 @@ def _audit_after_request(resp):
 _AUDIT_GROUP_PREFIXES = {
     "agent": ("agent.",), "user": ("user.", "auth.", "account."),
     "config": ("config.", "backup.", "admin."), "model": ("llama.", "lms.", "vllm.", "model."),
-    "service": ("service.", "alarm."), "auto": ("autopilot",),
+    "service": ("service.", "alarm.", "security."), "auto": ("autopilot",),
     "tool": ("terminal.", "reportcard.", "tools."), "tower": ("tower.",),
 }
 def _csv_safe(v):
@@ -4619,6 +4636,7 @@ def _brand_css_vars(p: dict) -> str:
 
 
 import auth  # type: ignore[import-not-found]  # sibling module; script dir is on sys.path
+auth.on_window_refused = _audit_flood
 # auth.register_auth(app, ctx, ...) is called further down — alongside
 # agent_registry.set_deps + register_routes — so both modules share the
 # same Context built once after every dep callable (manager_secret,
@@ -5348,6 +5366,44 @@ def _fetch_ae_settings_state() -> "tuple[dict | None, bool | None, dict | None, 
     return flat, (bool(pending) if pending is not None else None), secrets, None
 
 
+_SELF_PROC = None
+
+
+def _self_process_stats() -> dict:
+    """{cpu_pct, rss_mb, ram_pct} for the manager process via psutil."""
+    global _SELF_PROC
+    import psutil
+    if _SELF_PROC is None:
+        _SELF_PROC = psutil.Process()
+        _SELF_PROC.cpu_percent(None)
+    rss = _SELF_PROC.memory_info().rss
+    total = psutil.virtual_memory().total or 0
+    return {"cpu_pct": round(_SELF_PROC.cpu_percent(None) / (psutil.cpu_count() or 1), 1), "rss_mb": round(rss / 1048576.0, 1),
+            "ram_pct": round(rss / total * 100.0, 1) if total else None}
+
+
+# Primes the CPU baseline so the first health poll reads a real value.
+try:
+    _self_process_stats()
+except Exception:  # noqa: BLE001
+    pass
+
+
+def _host_ram_total_mb() -> "float | None":
+    try:
+        import psutil
+        return round(psutil.virtual_memory().total / 1048576.0, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _manager_hostname() -> str:
+    """The registered host agent's hostname, else this machine's."""
+    hid = agent_registry.designated_host_agent_id()
+    a = agent_registry.resolve_agent_by_id(hid) if hid else None
+    return str((a or {}).get("hostname") or _HOSTNAME)
+
+
 def _manager_connections() -> dict:
     """Browser / agent connection + Cheroot worker counts for the flow card."""
     snap = stream_health.snapshot() or {}
@@ -5357,6 +5413,122 @@ def _manager_connections() -> dict:
         "worker_threads": snap.get("worker_threads") or 0,
         "worker_threads_busy": snap.get("worker_threads_busy") or 0,
     }
+
+
+# Audit actions the System Health Recent column shows (#1273): action → (title, kind).
+_RECENT_ACTIONS: dict[str, tuple] = {
+    "service.restart": ("{svc} restarted", "ok"),
+    "agent.self-update": ("Agent updated", "ok"),
+    "agent.restart": ("Agent restarted", "ok"),
+    "agent.approve": ("Agent approved", "ok"),
+    "agent.disable": ("Agent disabled", "ok"),
+    "agent.delete": ("Agent removed", "ok"),
+    "agent.push-ca": ("CA bundle pushed to agents", "ok"),
+    "agent.enrollment-secret": ("Enrollment secret changed", "ok"),
+    "backup.run": ("Backup ran", "ok"),
+    "backup.export": ("Backup exported", "ok"),
+    "backup.import-apply": ("Backup imported", "ok"),
+    "jobs.failed": ("Job failed", "warn"),
+    "jobs.cancel": ("Job cancelled", "ok"),
+    "forecast.run": ("Forecast run", "ok"),
+    "security.flood": ("Request flood on the open routes", "warn"),
+}
+_RECENT_PLURAL = {"Agent updated": "{n} agents updated", "Agent restarted": "{n} agents restarted",
+                  "Agent approved": "{n} agents approved", "Agent removed": "{n} agents removed",
+                  "Job failed": "{n} jobs failed", "Job cancelled": "{n} jobs cancelled",
+                  "Backup ran": "{n} backups ran", "Backup exported": "{n} backups exported",
+                  "Forecast run": "{n} forecast runs", "Manager restarted": "Manager restarted {n} times",
+                  "Alarm Engine restarted": "Alarm Engine restarted {n} times"}
+_RECENT_SVC = {"manager": "Manager", "alarm_engine": "Alarm Engine"}
+_RECENT_WINDOW_S = 86400
+_RECENT_GROUP_S = 600
+_RECENT_MAX = 6
+_RECENT_CACHE: dict = {"at": 0.0, "rows": []}
+
+
+def _recent_agent_name(detail: dict, target) -> str:
+    name = str(detail.get("agent") or target or "")
+    if len(name) == 36 and name.count("-") == 4:
+        a = agent_registry.resolve_agent_by_id(name)
+        return str((a or {}).get("hostname") or name[:8])
+    return name
+
+
+def _recent_row(r) -> "dict | None":
+    action = r["action"] or ""
+    spec = _RECENT_ACTIONS.get(action)
+    if not spec:
+        return None
+    title, k = spec
+    # Refused anonymous attempts are not operations; skip them.
+    if (r["outcome"] or "ok") == "denied" and not (r["actor"] or "") and action != "security.flood":
+        return None
+    if (r["actor"] or "") in _AUDIT_CFG["automated_actors"]:
+        return None
+    try:
+        detail = json.loads(r["detail"]) if r["detail"] else {}
+    except (TypeError, ValueError):
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    text = ""
+    if action == "service.restart":
+        title = title.format(svc=_RECENT_SVC.get(str(r["target"] or ""), "Service"))
+    elif action.startswith("agent.") and action not in ("agent.push-ca", "agent.enrollment-secret"):
+        text = _recent_agent_name(detail, r["target"])
+    elif action in ("jobs.failed", "jobs.cancel"):
+        text = str(detail.get("label") or r["target"] or "")
+        if action == "jobs.failed" and detail.get("message"):
+            text = f"{text} — {detail['message']}" if text else str(detail["message"])
+    elif action == "security.flood":
+        text = f"{int(detail.get('requests') or 0)}/min, {int(detail.get('refused') or 0)} refused"
+    if (r["outcome"] or "ok") in ("denied", "error") and action not in ("jobs.failed", "security.flood"):
+        title, k = title + " failed", "warn"
+    return {"ts": r["ts"], "k": k, "title": title, "detail": text, "actor": str(r["actor"] or ""),
+            "_action": action}
+
+
+def _recent_group(rows: list) -> list:
+    """Consecutive same-action rows within 10 min collapse into one row with a count."""
+    out: list = []
+    for row in rows:
+        last = out[-1] if out else None
+        if (last and last["_action"] == row["_action"] and last["_base"] == row["title"]
+                and last["_t"] - _ts_epoch(row["ts"]) <= _RECENT_GROUP_S):
+            last["_n"] += 1
+            last["title"] = _RECENT_PLURAL.get(last["_base"], "{n} × " + last["_base"]).format(n=last["_n"])
+            last["detail"] = ""
+            continue
+        out.append({**row, "_base": row["title"], "_n": 1, "_t": _ts_epoch(row["ts"])})
+    return [{k: v for k, v in r.items() if not k.startswith("_")} for r in out[:_RECENT_MAX]]
+
+
+def _ts_epoch(ts: str) -> float:
+    try:
+        return datetime.fromisoformat(ts).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recent_events(now: "float | None" = None) -> list:
+    """Up to six operations events from the last 24 h, newest first; cached 5 s."""
+    now = time.time() if now is None else now
+    if now - _RECENT_CACHE["at"] < 5.0:
+        return list(_RECENT_CACHE["rows"])
+    try:
+        since = datetime.fromtimestamp(now - _RECENT_WINDOW_S, tz=timezone.utc).isoformat(timespec="seconds")
+        rows = get_audit_db().execute(
+            "SELECT ts, actor, auth, action, target, outcome, detail FROM audit_log"
+            " WHERE ts >= ? AND action IN (%s) AND COALESCE(auth,'') <> 'test'"
+            " ORDER BY ts DESC, id DESC LIMIT 60" % _sql_in(list(_RECENT_ACTIONS)),
+            [since] + list(_RECENT_ACTIONS)).fetchall()
+        parsed = [p for p in (_recent_row(r) for r in rows) if p]
+        out = _recent_group(parsed)
+    except Exception as e:  # noqa: BLE001 — health never fails because the audit DB is unreadable
+        log.debug("recent events unavailable: %s", type(e).__name__)
+        out = []
+    _RECENT_CACHE.update(at=now, rows=out)
+    return list(out)
 
 
 def _agent_update_state(agents: list) -> dict:
@@ -5426,6 +5598,9 @@ def admin_system_health():
             "connections": _manager_connections(),
             "push_subscriptions": companion.subscription_count(),
             "ws_relay": _ws_relay_state["status"],
+            "process": None,
+            "hostname": _manager_hostname(),
+            "ram_total_mb": _host_ram_total_mb(),
         },
         "services": [],
         "agents": [],
@@ -5444,6 +5619,10 @@ def admin_system_health():
             "via": "systemctl" if topo["ae_local_unit"] else "self-restart",
         },
     }
+    try:
+        health["manager"]["process"] = _self_process_stats()
+    except Exception as e:  # noqa: BLE001
+        log.debug("manager process stats unavailable: %s", type(e).__name__)
 
     # ── Alarm engine reachability (cheap GET) ──
     # Anti-flap: track consecutive failures. A single slow /health response
@@ -5500,6 +5679,7 @@ def admin_system_health():
                 "ingest_points_per_s": info.get("ingest_points_per_s"),
                 "active_alerts": info.get("active_alerts"),
                 "otlp": _comps.get("otlp") if isinstance(_comps.get("otlp"), dict) else None,
+                "process": _comps.get("process") if isinstance(_comps.get("process"), dict) else None,
                 "auth": _auth_status,
                 "auth_detail": _auth_raw,
                 "bearer_configured": _bearer_sent,
@@ -5782,6 +5962,7 @@ def admin_system_health():
     _anon = auth.anon_request_stats()
     health["flow"]["anon_req_per_min"] = _anon["anon_requests_per_min"]
     health["flow"]["anon_refused_per_min"] = _anon["anon_refused_per_min"]
+    health["flow"]["anon_budget_per_min"] = auth._anon_budget_limit()
     if _anon["anon_refused_per_min"]:
         health["warnings"].append(
             f"open routes: {_anon['anon_refused_per_min']} of {_anon['anon_requests_per_min']} requests "
@@ -5792,6 +5973,7 @@ def admin_system_health():
     health["restart_pending"] = _settings_restart_pending(
         settings_catalog.file_catalog_values(), _ae_health_state.get("restart_pending"))
 
+    health["recent"] = _recent_events(now)
     health["overall"] = "ok" if not health["warnings"] else ("warn" if all("stale" not in w and "unreachable" not in w and "down" not in w for w in health["warnings"]) else "down")
     return jsonify(health)
 

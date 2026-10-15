@@ -196,10 +196,10 @@ describe('overall pill wording', () => {
 });
 
 describe('warnings column', () => {
-  test('empty renders the mono None only', () => {
+  test('empty renders the Recent view (no events, no budget)', () => {
     const doc = card(HEALTHY);
     const html = doc.getElementById('adminHealthWarnings').innerHTML;
-    expect(html).toBe('<div class="w-none">None</div>');
+    expect(html).toBe('<div class="hc-ev-none">Nothing in the last 24 h</div>');
   });
 
   test('crit / warn / note / info order with the right glyphs', () => {
