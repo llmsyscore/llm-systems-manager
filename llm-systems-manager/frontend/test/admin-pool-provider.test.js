@@ -136,9 +136,9 @@ describe('provider-parameterized pool/pins admin UI', () => {
     expect(win.__onAfter).toBe('vllm');
   });
 
-  // wiring (unexecutable): source-text check of the cache-bust query string.
-  it('admin.js has a cache-bust query in index.html', () => {
-    expect(indexSrc).toMatch(/js\/admin\.js\?v=[\w.-]+/);
+  // wiring (unexecutable): source-text check that index.html loads admin.js.
+  it('admin.js is loaded by index.html', () => {
+    expect(indexSrc).toContain('src="/static/js/admin.js"');
   });
 });
 

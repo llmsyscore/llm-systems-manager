@@ -160,10 +160,9 @@ describe('dashboard-manager badge wiring (#456)', () => {
     expect(rowHtml).toContain('var(--crit');
   });
 
-  // wiring (unexecutable): asserts a version-string pairing between two files,
-  // not code the harness can meaningfully "execute".
-  it('index.html cache-busts the touched scripts with a fresh version', () => {
-    expect(indexSrc).toMatch(/js\/lib\/series\.js\?v=2026\.08\.04-2/);
-    expect(indexSrc).toMatch(/js\/dashboard-manager\.js\?v=2026\.10\.09-1/);
+  // wiring (unexecutable): index.html loads both halves of the stream pool.
+  it('index.html loads series.js and dashboard-manager.js', () => {
+    expect(indexSrc).toContain('src="/static/js/lib/series.js"');
+    expect(indexSrc).toContain('src="/static/js/dashboard-manager.js"');
   });
 });

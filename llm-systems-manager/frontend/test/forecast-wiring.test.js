@@ -3,9 +3,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { srcFile, loadSwitchSubTab } from './helpers/harness.js';
 
-const LIB_V = '2026.09.21-6';
-const CSS_V = '2026.09.28-1';
-const V = '2026.09.21-7';
 const indexSrc = srcFile('index.html');
 const bootSrc = srcFile('js/boot.js');
 const swSrc = srcFile('sw.js');
@@ -72,22 +69,22 @@ describe('Forecast markup (#1031)', () => {
 });
 
 describe('Forecast assets (#1031)', () => {
-  it('loads lib/forecast.js before js/forecast.js, both cache-busted', () => {
-    const lib = indexSrc.indexOf(`/static/js/lib/forecast.js?v=${LIB_V}`);
-    const page = indexSrc.indexOf(`/static/js/forecast.js?v=${V}`);
+  it('loads lib/forecast.js before js/forecast.js', () => {
+    const lib = indexSrc.indexOf('src="/static/js/lib/forecast.js"');
+    const page = indexSrc.indexOf('src="/static/js/forecast.js"');
     expect(lib).toBeGreaterThan(-1);
     expect(page).toBeGreaterThan(-1);
     expect(lib).toBeLessThan(page);
   });
 
-  it('links css/forecast.css with its own cache-buster', () => {
-    expect(indexSrc).toContain(`/static/css/forecast.css?v=${CSS_V}`);
+  it('links css/forecast.css', () => {
+    expect(indexSrc).toContain('href="/static/css/forecast.css"');
   });
 
-  it('bumps the cache-buster of every edited script', () => {
-    expect(indexSrc).toContain('/static/js/boot.js?v=2026.09.23-5');
-    expect(indexSrc).toContain('/static/js/overall.js?v=2026.09.29-6');
-    expect(indexSrc).toMatch(/\/static\/js\/foundation\.js\?v=2026\.(09\.29-[6-9]|1[0-2]\.\d\d-\d+)/);
+  it('loads the scripts the forecast tab depends on', () => {
+    expect(indexSrc).toContain('src="/static/js/boot.js"');
+    expect(indexSrc).toContain('src="/static/js/overall.js"');
+    expect(indexSrc).toContain('src="/static/js/foundation.js"');
   });
 
   it('wraps long unbroken tokens instead of overflowing the page', () => {
