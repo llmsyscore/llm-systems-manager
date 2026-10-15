@@ -178,7 +178,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.15-1"
+__version__ = "v2026.10.15-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1026,9 +1026,9 @@ def _stamp_static_urls(html: str) -> str:
     return _STATIC_URL_RE.sub(_sub, html)
 
 
-# Stamped index.html plus the (tag, hidden tag) pair per hide id; rebuilt when
-# index.html or any referenced /static asset changes.
-_PAGE_CACHE: dict | None = None
+# "page" -> stamped index.html plus the (tag, hidden tag) pair per hide id;
+# rebuilt when index.html or any referenced /static asset changes.
+_PAGE_CACHE: dict[str, dict] = {}
 _STYLE_ATTR_RE = re.compile(r'(\bstyle=")([^"]*)(")')
 
 
@@ -1049,8 +1049,7 @@ def _hidden_tag(tag: str, el_id: str) -> str:
 
 def _prepared_page() -> dict:
     """Cached {deps, html, hides} for index.html; validated by stat of every dependency."""
-    global _PAGE_CACHE
-    cache = _PAGE_CACHE
+    cache = _PAGE_CACHE.get("page")
     if cache and all(_file_key(STATIC_DIR / rel) == key for rel, key in cache["deps"].items()):
         return cache
     deps = {"index.html": _file_key(STATIC_DIR / "index.html")}
@@ -1064,7 +1063,8 @@ def _prepared_page() -> dict:
         m = re.search(rf'<[a-zA-Z][^<>]*\bid="{re.escape(el_id)}"[^<>]*>', html)
         if m:
             hides[el_id] = (m.group(0), _hidden_tag(m.group(0), el_id))
-    _PAGE_CACHE = cache = {"deps": deps, "html": html, "hides": hides}
+    cache = {"deps": deps, "html": html, "hides": hides}
+    _PAGE_CACHE["page"] = cache
     return cache
 
 
