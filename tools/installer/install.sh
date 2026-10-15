@@ -1491,9 +1491,15 @@ case "$MODE" in
   3)
     echo "    1. Open the dashboard:       ${DASHBOARD_URL}"
     signin_step
-    echo "    2. Confirm the remote alarm-engine URL set in [manager].alarm_engine_url"
-    echo "    3. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
-    echo "    4. Installing agents elsewhere: the enrollment secret and CA fingerprint are on"
+    echo "    2. Copy the alarm engine certificate to the alarm engine host (${_AE_HOST_FOR_HINT})."
+    echo "       The manager issues it on its first start (see the AE TLS cert section above)."
+    echo "         from here:   ${LLMSYS_INSTALL_DIR}/data/ae-tls.{crt,key}"
+    echo "         to there:    ${LLMSYS_INSTALL_DIR}/llm-systems-alarm-engine/data/"
+    echo "         then there:  sudo chown ${LLMSYS_RUN_USER}:${LLMSYS_RUN_GROUP} ${LLMSYS_INSTALL_DIR}/llm-systems-alarm-engine/data/ae-tls.{crt,key}"
+    echo "                      sudo systemctl restart llm-systems-alarm-engine"
+    echo "    3. Confirm the remote alarm-engine URL set in [manager].alarm_engine_url"
+    echo "    4. Review configuration:     ${LLMSYS_INSTALL_DIR}/config/llm-systems.toml"
+    echo "    5. Installing agents elsewhere: the enrollment secret and CA fingerprint are on"
     echo "       Admin › Agents → Manage ▾ → Enrollment (also printed above by the config step)"
     ;;
   4)

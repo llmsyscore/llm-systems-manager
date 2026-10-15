@@ -9,6 +9,9 @@ name: Install tests
 #   and ci-smoke re-verifies. This is the only job that catches the
 #   "new agent/*.py missing from an install file-list → crash-loop only
 #   after upgrade" class of bug (gotcha #24).
+# - split-upgrade: the base commit's mode-3 + mode-4 trees on one runner, wired,
+#   then each tree updated to head; asserts the update's Next steps name the
+#   certificate copy and the InfluxDB host (#1283).
 # - release-install: mode 1 through the DEFAULT source path — a checksum-
 #   verified release tarball built (and served over file://) exactly like
 #   release.yml. The other two jobs use the local checkout / a preset
@@ -430,6 +433,141 @@ jobs:
         if: failure()
         run: |
           for u in llm-systems-alarm-engine llm-systems-manager llm-systems-agent; do
+            echo "════ journalctl -u $u ════"
+            sudo journalctl -u "$u" -n 200 --no-pager || true
+          done
+
+  split-upgrade:
+    name: split upgrade (modes 3 + 4, base → head)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The split shape of the upgrade job (#1283): the base commit's mode-4 and
+    # mode-3 installs on ONE runner in two trees, wired by ci-split-smoke.sh,
+    # then each tree updated to head on its own. update.sh tells the trees
+    # apart by the install dir the unit files run from. The manager's copy of
+    # the alarm engine certificate is removed first and the alarm engine gets a
+    # certificate without a role name, so each update's Next steps must name
+    # the certificate copy, the InfluxDB host and the Update all step.
+    steps:
+      - name: Checkout base (upgrade-from)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          path: base
+
+      - name: Checkout head (upgrade-to)
+        uses: actions/checkout@v7
+        with:
+          path: head
+          fetch-depth: 0   # tags, for the RELEASE stamp
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            jq rsync wget gnupg ca-certificates openssl sqlite3 \
+            python3-venv python3-pip python3-dev build-essential
+
+      - name: Pick the shared runner IP
+        run: |
+          ip="$(hostname -I | awk '{print $1}')"
+          case "${ip:-}" in
+            ""|169.254.*) echo "no routable runner IP: '${ip:-}'"; exit 1 ;;
+          esac
+          echo "DETECTED_IP=$ip" >> "$GITHUB_ENV"
+          echo "shared runner IP: $ip"
+
+      - name: Install the base alarm engine (mode 4)
+        working-directory: base
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae bash tools/installer/install.sh --mode 4 --no-self-update < /dev/null
+
+      - name: Install the base manager (mode 3)
+        working-directory: base
+        run: sudo LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr bash tools/installer/install.sh --mode 3 --no-self-update < /dev/null
+
+      - name: Wire the two trees (certificate copy, tokens)
+        run: |
+          sudo AE_DIR=/opt/llm-systems-manager-ae \
+               MGR_DIR=/opt/llm-systems-manager-mgr \
+               DETECTED_IP="$DETECTED_IP" \
+               bash head/tools/installer/ci-split-smoke.sh
+
+      # The manager re-issues the certificate at its next start when its copy is
+      # gone; the alarm engine's copy loses its role name. Both are the states an
+      # install from before certificate roles is in.
+      - name: Plant the pre-upgrade certificate state
+        run: |
+          sudo rm -f /opt/llm-systems-manager-mgr/data/ae-tls.crt /opt/llm-systems-manager-mgr/data/ae-tls.key
+          d=/opt/llm-systems-manager-ae/llm-systems-alarm-engine/data
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=alarm-engine' \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:$DETECTED_IP" \
+            -keyout "$d/ae-tls.key" -out "$d/ae-tls.crt" 2>/dev/null
+          sudo chown llmsys:llmsys "$d/ae-tls.crt" "$d/ae-tls.key"
+          sudo chmod 0644 "$d/ae-tls.crt"; sudo chmod 0600 "$d/ae-tls.key"
+          sudo openssl x509 -in "$d/ae-tls.crt" -noout -text | grep -qF 'alarm-engine.role' && { echo 'planted certificate carries a role name'; exit 1; }
+          echo 'manager copy removed; alarm engine copy has no role name'
+          # A byte of drift in each installed tree makes the update sync and restart
+          # both services, as a real upgrade does.
+          echo '# split-upgrade drift' | sudo tee -a /opt/llm-systems-manager-mgr/llm-systems-manager/backend/llm-systems-manager.py >/dev/null
+          echo '# split-upgrade drift' | sudo tee -a /opt/llm-systems-manager-ae/llm-systems-alarm-engine/backend/alarm_engine.py >/dev/null
+
+      - name: Update the manager tree to head
+        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-mgr.log
+
+      - name: Manager update names the certificate copy, the InfluxDB host and Update all
+        run: |
+          grep -F 'Here   ·  manager' /tmp/update-mgr.log
+          grep -F 'Next steps' /tmp/update-mgr.log
+          grep -F "Copy the new alarm engine certificate to the alarm engine host ($DETECTED_IP)" /tmp/update-mgr.log
+          grep -F 'InfluxDB tuning on the InfluxDB host (' /tmp/update-mgr.log
+          grep -F "Update the alarm engine host ($DETECTED_IP)" /tmp/update-mgr.log
+          grep -F 'Update all' /tmp/update-mgr.log
+          sudo test -f /opt/llm-systems-manager-mgr/data/ae-tls.crt
+
+      - name: Update the alarm engine tree to head
+        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae.log
+
+      - name: Alarm engine update says its certificate has no role name yet
+        run: |
+          grep -F 'Here   ·  alarm-engine' /tmp/update-ae.log
+          grep -F 'Next steps' /tmp/update-ae.log
+          grep -F 'The certificate here carries no role name yet' /tmp/update-ae.log
+          grep -F "from the manager host ($DETECTED_IP)" /tmp/update-ae.log
+          grep -F 'InfluxDB tuning on the InfluxDB host (' /tmp/update-ae.log
+          grep -F 'Update all' /tmp/update-ae.log
+
+      - name: Copy the new certificate across and restart the alarm engine
+        run: |
+          d=/opt/llm-systems-manager-ae/llm-systems-alarm-engine/data
+          sudo cp /opt/llm-systems-manager-mgr/data/ae-tls.crt /opt/llm-systems-manager-mgr/data/ae-tls.key "$d/"
+          sudo chown llmsys:llmsys "$d/ae-tls.crt" "$d/ae-tls.key"
+          sudo chmod 0644 "$d/ae-tls.crt"; sudo chmod 0600 "$d/ae-tls.key"
+          sudo systemctl restart llm-systems-alarm-engine
+          for _ in $(seq 1 30); do
+            [ "$(curl -sk -o /dev/null -w '%{http_code}' -m 5 "https://$DETECTED_IP:8081/health")" = 200 ] && exit 0
+            sleep 1
+          done
+          echo 'alarm engine not serving HTTPS after the certificate copy'; exit 1
+
+      - name: A second alarm engine update no longer asks for the certificate
+        run: |
+          sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae2.log
+          grep -F 'Next steps' /tmp/update-ae2.log
+          ! sed -n '/Next steps/,$p' /tmp/update-ae2.log | grep -qiF 'certificate'
+
+      - name: Both trees run the head version
+        run: |
+          want="$(grep -E '^__version__' head/llm-systems-manager/backend/llm-systems-manager.py | sed -E 's/.*"([^"]+)".*/\1/')"
+          got="$(curl -fsS -m 10 http://127.0.0.1:5000/health | jq -r .version)"
+          echo "manager: running=$got head=$want"; test "$got" = "$want"
+          want="$(grep -E '^__version__' head/llm-systems-alarm-engine/backend/alarm_engine.py | sed -E 's/.*"([^"]+)".*/\1/')"
+          got="$(curl -fsSk -m 10 https://127.0.0.1:8081/health | jq -r .version)"
+          echo "alarm engine: running=$got head=$want"; test "$got" = "$want"
+
+      - name: Collect service logs on failure
+        if: failure()
+        run: |
+          for u in llm-systems-alarm-engine llm-systems-manager; do
             echo "════ journalctl -u $u ════"
             sudo journalctl -u "$u" -n 200 --no-pager || true
           done
