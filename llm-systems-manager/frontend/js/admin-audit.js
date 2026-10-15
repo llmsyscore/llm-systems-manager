@@ -120,6 +120,14 @@
     if (p.get('dir')) state.dir = p.get('dir');
     if (p.get('page')) state.page = Math.max(1, Number(p.get('page')) || 1);
   }
+  // Puts the search box, filter selects, range buttons and automated toggle back in line with state.
+  function syncFilterControls() {
+    const q = $('auQ'); if (q) q.value = state.q;
+    [['auGroup', 'group'], ['auActor', 'actor'], ['auOutcome', 'outcome']].forEach(([id, k]) => { const el = $(id); if (el) el.value = state[k]; });
+    document.querySelectorAll('#auRange button').forEach(b => b.classList.toggle('on', Number(b.dataset.h) === state.hours));
+    const hide = $('auHideAuto');
+    if (hide) { hide.classList.toggle('on', state.hideAuto); hide.setAttribute('aria-pressed', String(state.hideAuto)); }
+  }
   function writeHash() {
     if (typeof _subTabState !== 'undefined' && _subTabState.admin !== 'audit') return;
     const p = queryParams(state, null, 1);
@@ -134,7 +142,10 @@
     const first = !bound;
     if (!bind()) return;
     // Sub-tab entry resets to page 1, except the very first load, which keeps the deep link.
-    if (offset === 0 && !first) { state.page = 1; state.sel = null; }
+    if (offset === 0 && !first) {
+      if ((window.location.hash || '').startsWith('#audit?')) { readHash(); syncFilterControls(); }
+      state.page = 1; state.sel = null;
+    }
     else if (offset == null && (state.sel != null || document.activeElement === $('auQ'))) return;
     const mySeq = ++seq;
     const tbody = $('adminAuditTbody');

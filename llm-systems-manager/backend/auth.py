@@ -433,6 +433,20 @@ def _anon_budget_limit() -> int:
         return 600
 
 
+# Called once per rolled window that refused requests: (requests, refused, limit).
+on_window_refused: "Optional[Callable[[int, int, int], None]]" = None
+
+
+def _notify_window_refused(requests: int, refused: int, limit: int) -> None:
+    hook = on_window_refused
+    if hook is None:
+        return
+    try:
+        hook(requests, refused, limit)
+    except Exception as e:  # noqa: BLE001 — a reporting hook never breaks a request
+        log.debug("flood hook failed: %s", e)
+
+
 class _AnonBudget:
     """Fixed-window counter over the anonymous routes; logs once per window."""
 
@@ -445,29 +459,31 @@ class _AnonBudget:
         self._prev_count = 0
         self._prev_refused = 0
 
-    def _roll(self, now: float) -> int:
-        """Moves to the clock's current minute cell; returns the refusals of the cell left behind."""
+    def _roll(self, now: float) -> "tuple[int, int]":
+        """Moves to the clock's current minute cell; returns (requests, refusals) of the cell left behind."""
         cell = int(now // _ANON_BUDGET_WINDOW_S)
         if cell == self._cell:
-            return 0
-        refused = self._refused
+            return 0, 0
+        count, refused = self._count + self._refused, self._refused
         # Only the cell right before this one counts as the last full minute.
         if cell == self._cell + 1:
-            self._prev_count, self._prev_refused = self._count + refused, refused
+            self._prev_count, self._prev_refused = count, refused
         else:
             self._prev_count, self._prev_refused = 0, 0
         self._cell, self._count, self._refused = cell, 0, 0
-        return refused
+        return count, refused
 
     def stats(self) -> dict:
         """Requests and refusals on the open routes in the last full minute."""
         with self._lock:
-            summary = self._roll(self._now())
+            requests, summary = self._roll(self._now())
             out = {"anon_requests_per_min": self._prev_count,
                    "anon_refused_per_min": self._prev_refused}
         if summary:
+            limit = _anon_budget_limit()
             log.warning("refused %d anonymous requests in the last minute (budget %d/min)",
-                        summary, _anon_budget_limit())
+                        summary, limit)
+            _notify_window_refused(requests, summary, limit)
         return out
 
     def allow(self) -> bool:
@@ -476,7 +492,7 @@ class _AnonBudget:
             return True
         first = False
         with self._lock:
-            summary = self._roll(self._now())
+            requests, summary = self._roll(self._now())
             if self._count < limit:
                 self._count += 1
                 allowed = True
@@ -487,6 +503,7 @@ class _AnonBudget:
         if summary:
             log.warning("refused %d anonymous requests in the last minute (budget %d/min)",
                         summary, limit)
+            _notify_window_refused(requests, summary, limit)
         if first:
             log.warning("anonymous request budget spent (budget %d/min) — refusing "
                         "registrations, status polls and logins until the window rolls", limit)

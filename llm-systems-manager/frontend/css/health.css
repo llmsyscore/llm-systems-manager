@@ -120,6 +120,64 @@
 #adminHealthCard .w .lnk:hover { text-decoration: underline; }
 #adminHealthCard .w .lnk:disabled { color: var(--fg-faint); cursor: default; text-decoration: none; }
 
+/* ── Recent / Capacity / Trends views (#1273) ── */
+#adminHealthCard .hc-col > .microlbl .hc-vs { margin-left: auto; align-self: center; display: inline-flex; padding: 2px; border-radius: 999px; background: var(--bg-card-alt); border: 1px solid var(--border-soft); }
+#adminHealthCard .hc-vs button { width: 22px; height: 16px; border: 0; border-radius: 999px; background: transparent; color: var(--fg-faint); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: background .15s, color .15s; }
+#adminHealthCard .hc-vs button:hover { color: var(--fg-muted); }
+#adminHealthCard .hc-vs button[aria-pressed="true"] { background: var(--bg-card); color: var(--accent); box-shadow: 0 0 0 1px var(--border-strong); }
+#adminHealthCard .hc-vs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#adminHealthCard .hc-vs svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#adminHealthCard .hc-ev { display: flex; flex-direction: column; gap: 6px; }
+#adminHealthCard .hc-evr { display: grid; grid-template-columns: 58px 8px minmax(0, 1fr); column-gap: 8px; align-items: start; font-size: 12.5px; line-height: 1.4; color: var(--fg); padding: 4px 0; }
+#adminHealthCard .hc-evr time { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; line-height: 1.35; padding-top: 1px; white-space: nowrap; }
+#adminHealthCard .hc-evr time small { display: block; font-size: 9.5px; color: var(--fg-faint); }
+#adminHealthCard .hc-evr .dot { width: 7px; height: 7px; margin-top: 5px; box-shadow: none; }
+#adminHealthCard .hc-evr .dot.ok { background: var(--ok); }
+#adminHealthCard .hc-evr .dot.warn { background: var(--warn); }
+#adminHealthCard .hc-evr .t { min-width: 0; color: var(--fg-muted); overflow-wrap: anywhere; }
+#adminHealthCard .hc-evr .t b { color: var(--fg); font-weight: 600; }
+#adminHealthCard .hc-evr .t .m { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+#adminHealthCard .hc-evr .t .by { color: var(--fg-dim); }
+#adminHealthCard .hc-ev-none { font-family: var(--font-mono); font-size: 12px; color: var(--fg-dim); padding: 6px 0; }
+#adminHealthCard .hc-ev-all { align-self: flex-start; font-size: 11px; color: var(--accent); text-decoration: none; padding: 2px 0 0 66px; }
+#adminHealthCard .hc-ev-all:hover { text-decoration: underline; }
+#adminHealthCard .hc-bud { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border-soft); display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; align-items: baseline; font-size: 11.5px; }
+#adminHealthCard .hc-bud .l { color: var(--fg-muted); }
+#adminHealthCard .hc-bud .l em { font-style: normal; font-size: 10.5px; color: var(--fg-faint); margin-left: 6px; }
+#adminHealthCard .hc-bud .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+#adminHealthCard .hc-bud .n.warn { color: var(--warn); }
+#adminHealthCard .hc-bud .n.crit { color: var(--crit); }
+#adminHealthCard .hc-bud .tr { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: var(--bg-card-alt); overflow: hidden; }
+#adminHealthCard .hc-bud .fi { height: 100%; border-radius: 3px; background: var(--ok); min-width: 2px; transition: width .4s; }
+#adminHealthCard .hc-bud .fi.warn { background: var(--warn); }
+#adminHealthCard .hc-bud .fi.crit { background: var(--crit); }
+#adminHealthCard .hc-bud .fi.idle { background: var(--border-strong); }
+#adminHealthCard .hc-cap { display: flex; flex-direction: column; gap: 9px; }
+#adminHealthCard .hc-cap .hc-cg { font-size: 9.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--fg-faint); margin-top: 4px; }
+#adminHealthCard .hc-cap .hc-cg:first-child { margin-top: 0; }
+#adminHealthCard .hc-cr { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: baseline; font-size: 11.5px; }
+#adminHealthCard .hc-cr .l { color: var(--fg-muted); }
+#adminHealthCard .hc-cr .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+#adminHealthCard .hc-cr .n.warn { color: var(--warn); }
+#adminHealthCard .hc-cr .n.crit { color: var(--crit); }
+#adminHealthCard .hc-cr .tr { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--bg-card-alt); overflow: hidden; }
+#adminHealthCard .hc-cr .fi { height: 100%; border-radius: 2px; background: var(--ok); min-width: 2px; }
+#adminHealthCard .hc-cr .fi.warn { background: var(--warn); }
+#adminHealthCard .hc-cr .fi.crit { background: var(--crit); }
+#adminHealthCard .hc-cr .fi.idle { background: var(--border-strong); }
+#adminHealthCard .hc-cap-foot { font-size: 10.5px; color: var(--fg-faint); line-height: 1.4; margin-top: 2px; }
+#adminHealthCard .hc-tr { display: flex; flex-direction: column; gap: 9px; }
+#adminHealthCard .hc-sp { display: grid; gap: 2px; }
+#adminHealthCard .hc-sp .h { display: flex; justify-content: space-between; align-items: baseline; font-size: 11.5px; }
+#adminHealthCard .hc-sp .h .l { color: var(--fg-muted); }
+#adminHealthCard .hc-sp .h .n { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+#adminHealthCard .hc-sp .h .n.warn { color: var(--warn); }
+#adminHealthCard .hc-sp svg { width: 100%; height: 30px; display: block; }
+#adminHealthCard .hc-sp svg .base { stroke: var(--border-strong); stroke-width: .6; }
+#adminHealthCard .hc-sp svg .area { fill: var(--accent); fill-opacity: .12; }
+#adminHealthCard .hc-sp svg .line { fill: none; stroke: var(--accent); stroke-width: 1.2; }
+#adminHealthCard .hc-sp svg .seg { fill: none; stroke: var(--crit); stroke-width: 2; }
+#adminHealthCard .hc-sp svg circle { fill: var(--accent); }
 #adminHealthCard .hc-jobs { padding: 12px 16px 14px; border-top: 1px solid var(--border-soft); }
 #adminHealthCard .hc-jobs > .microlbl { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 #adminHealthCard .hc-jobs > .microlbl em { font-style: normal; font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 10.5px; color: var(--fg-faint); }

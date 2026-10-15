@@ -74,7 +74,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.13-1"
+__version__ = "v2026.10.14-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -331,6 +331,7 @@ async def _on_startup() -> None:
     global db_client, ae_settings_db, ae_alarms_db, _startup_ts
 
     _startup_ts = time.time()
+    _process_stats()
 
     # ── Startup banner (mirrors the manager's style) ──────────────
     _ae = settings.alarm_engine
@@ -911,6 +912,59 @@ def _active_alert_count() -> int:
         return 0
 
 
+# Process CPU/RSS for the manager's Capacity view; stdlib only.
+_PROC_CPU_PREV: dict = {"cpu": None, "wall": None}
+
+
+def _process_rss_bytes() -> int:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass  # no /proc: fall back to getrusage
+    import resource
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(rss if sys.platform == "darwin" else rss * 1024)
+
+
+def _host_ram_bytes() -> int:
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass  # no /proc: fall back to sysconf
+    return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+
+
+def _process_stats() -> dict:
+    """{cpu_pct, rss_mb, ram_pct} for this process; None where a reader fails."""
+    out: dict = {"cpu_pct": None, "rss_mb": None, "ram_pct": None}
+    try:
+        t = os.times()
+        cpu, wall = t.user + t.system, time.monotonic()
+        prev_cpu, prev_wall = _PROC_CPU_PREV["cpu"], _PROC_CPU_PREV["wall"]
+        _PROC_CPU_PREV.update(cpu=cpu, wall=wall)
+        if prev_wall is not None and wall > prev_wall:
+            out["cpu_pct"] = round(max(0.0, (cpu - prev_cpu) / (wall - prev_wall) / (os.cpu_count() or 1)) * 100.0, 1)
+        else:
+            out["cpu_pct"] = 0.0
+    except Exception as e:  # noqa: BLE001 — a health read never fails on a stats reader
+        logger.debug("process cpu read failed: %s", e)
+    try:
+        rss = _process_rss_bytes()
+        out["rss_mb"] = round(rss / 1048576.0, 1)
+        total = _host_ram_bytes()
+        if total > 0:
+            out["ram_pct"] = round(rss / total * 100.0, 1)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("process rss read failed: %s", e)
+    return out
+
+
 @app.get("/health")
 async def health_check(authorization: Optional[str] = Header(default=None)) -> dict:
     """Health check endpoint.
@@ -958,6 +1012,7 @@ async def health_check(authorization: Optional[str] = Header(default=None)) -> d
             "tls": _tls_status,
             "auth": auth,
             "otlp": otlp_receiver.stats(),
+            "process": _process_stats(),
         },
     }
 

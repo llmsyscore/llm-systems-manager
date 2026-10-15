@@ -46,6 +46,209 @@
     if (worst && worst !== _mutedNode && !_selNode) { _selNode = worst; _autoNode = worst; }
   }
   let _last = null;
+  let _lastRel = null;
+  let _view = 'recent';      // column view while there are no warnings; never saved
+  const VIEW_LABEL = { recent: ['Recent', 'last 24 h'], capacity: ['Capacity', 'how close to each limit'], trends: ['Trends', 'last hour'] };
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  // {clock: '5:35 PM', day: 'Oct 13' | ''} — day only when the event is from an earlier calendar day.
+  function fmtEventTime(iso, nowMs) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return { clock: '—', day: '' };
+    let h = d.getHours();
+    const ap = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    const clock = `${h}:${String(d.getMinutes()).padStart(2, '0')} ${ap}`;
+    const now = new Date(nowMs == null ? Date.now() : nowMs);
+    const same = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return { clock, day: same ? '' : `${MON[d.getMonth()]} ${d.getDate()}` };
+  }
+  function pctClass(p) { return p >= 90 ? 'crit' : p >= 60 ? 'warn' : ''; }
+
+  // ── Recent view ──────────────────────────────────────────────────────
+  function recentHtml(d) {
+    const list = (d && Array.isArray(d.recent)) ? d.recent : [];
+    if (!list.length) return '<div class="hc-ev-none">Nothing in the last 24 h</div>';
+    const rows = list.map(e => {
+      const t = fmtEventTime(e.ts);
+      return `<div class="hc-evr"><time datetime="${esc(e.ts)}">${esc(t.clock)}${t.day ? `<small>${esc(t.day)}</small>` : ''}</time>`
+        + `<span class="dot ${e.k === 'warn' ? 'warn' : 'ok'}"></span><div class="t"><b>${esc(e.title)}</b>`
+        + (e.detail ? ` <span class="m">${esc(e.detail)}</span>` : '')
+        + (e.actor ? ` <span class="by">· ${esc(e.actor)}</span>` : '') + '</div></div>';
+    });
+    return `<div class="hc-ev">${rows.join('')}<a class="hc-ev-all" href="#audit?since_hours=24" data-act="allevents">All events</a></div>`;
+  }
+  function budgetHtml(d) {
+    const flow = (d && d.flow) || {};
+    const limit = Number(flow.anon_budget_per_min) || 0;
+    if (limit <= 0) return '';
+    const used = Math.max(0, Number(flow.anon_req_per_min) || 0);
+    const pct = Math.min(100, Math.round(used / limit * 100));
+    const cls = pctClass(pct);
+    return `<div class="hc-bud"><span class="l">Open-route budget<em>last minute</em></span><span class="n ${cls}">${used} / ${limit}</span>`
+      + `<div class="tr"><div class="fi ${cls}${used === 0 ? ' idle' : ''}" style="width:${pct}%"></div></div></div>`;
+  }
+  // The column's HTML for the current view (no warnings).
+  function viewHtml(d) {
+    if (_view === 'capacity') return capacityHtml(d, _capCache.rows);
+    if (_view === 'trends') return trendsHtml(_trendCache.series);
+    return recentHtml(d) + budgetHtml(d);
+  }
+  function setView(name) {
+    _view = VIEW_LABEL[name] ? name : 'recent';
+    if (_view === 'capacity') loadCapacityExtra();
+    if (_view === 'trends') loadTrends();
+    const vs = $('adminHealthView');
+    if (vs) vs.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === _view)));
+    if (_last) render(_last, _lastRel);
+  }
+  // ── Capacity view ────────────────────────────────────────────────────
+  let _capCache = { at: 0, rows: null };     // {influx_bytes, influx_rss_mb, influx_host, disk_pct, influx_ram_total_mb}
+  const n = v => (v == null || v === '' ? NaN : Number(v));
+  function gb(b) { return b == null ? null : (b / 1e9).toFixed(1).replace(/\.0$/, '') + ' GB'; }
+  function capRow(group, label, num, pct, forceIdle) {
+    const p = pct == null || !isFinite(pct) ? 0 : Math.max(0, Math.min(100, Math.round(pct)));
+    const idle = forceIdle || pct == null || !isFinite(pct);
+    return { group, label, num: num == null ? '—' : num, pct: p, cls: idle ? 'idle' : pctClass(p) };
+  }
+  function procRows(group, p) {
+    if (!p || typeof p !== 'object') return [capRow(group, 'CPU', null, null, true), capRow(group, 'Memory', null, null, true)];
+    const cpu = n(p.cpu_pct), ram = n(p.ram_pct), rss = n(p.rss_mb);
+    return [
+      capRow(group, 'CPU', isFinite(cpu) ? `${Math.round(cpu)} %` : null, isFinite(cpu) ? cpu : null),
+      capRow(group, 'Memory', isFinite(rss) ? `${Math.round(rss)} MB${isFinite(ram) ? ` · ${Math.round(ram)} % of RAM` : ''}` : null, isFinite(ram) ? ram : null),
+    ];
+  }
+  function capacityRows(d, extra) {
+    const mgr = (d && d.manager) || {};
+    const ae = svcOf(d, 'alarm_engine');
+    const x = extra || {};
+    const rows = [...procRows('Manager', mgr.process), ...procRows('Alarm Engine', ae && ae.process)];
+    const disk = n(x.disk_pct), bytes = n(x.influx_bytes);
+    rows.push(capRow('InfluxDB', 'On disk', isFinite(bytes)
+      ? `${gb(bytes)}${isFinite(disk) ? ` · disk ${Math.round(disk)} % used` : ''}` : null, isFinite(disk) ? disk : null));
+    const rss = n(x.influx_rss_mb), ownTotal = n(x.influx_ram_total_mb), mgrTotal = n(mgr.ram_total_mb);
+    const sameHost = x.influx_host && mgr.hostname && x.influx_host === mgr.hostname;
+    const total = ownTotal > 0 ? ownTotal : (sameHost ? mgrTotal : null);
+    const ramPct = isFinite(rss) && total > 0 ? rss / total * 100 : null;
+    rows.push(capRow('InfluxDB', 'Memory', isFinite(rss) ? `${Math.round(rss)} MB${ramPct != null ? ` · ${Math.round(ramPct)} % of RAM` : ''}` : null, ramPct, ramPct == null));
+    const s = mgr.streams || {}, c = mgr.connections || {};
+    const limRow = (label, used, lim) => (isFinite(used) && isFinite(lim)
+      ? capRow('Limits', label, `${used} / ${lim}`, lim > 0 ? used / lim * 100 : null)
+      : capRow('Limits', label, null, null, true));
+    rows.push(limRow('Live streams', n(s.active), n(s.limit)));
+    rows.push(limRow('Worker threads busy', n(c.worker_threads_busy), n(c.worker_threads)));
+    return rows;
+  }
+  function capacityHtml(d, extra) {
+    let group = null, out = '<div class="hc-cap">';
+    for (const r of capacityRows(d, extra)) {
+      if (r.group !== group) { group = r.group; out += `<div class="hc-cg">${esc(group)}</div>`; }
+      out += `<div class="hc-cr"><span class="l">${esc(r.label)}</span><span class="n ${r.cls === 'idle' ? '' : r.cls}">${esc(r.num)}</span>`
+        + `<div class="tr"><div class="fi ${r.cls}" style="width:${r.pct}%"></div></div></div>`;
+    }
+    return out + '<div class="hc-cap-foot">Amber at 60 % of a limit, red at 90 %; the matching warning appears at the same moment.</div></div>';
+  }
+  // InfluxDB on-disk bytes and RSS from the stored metrics, cached 60 s.
+  async function loadCapacityExtra() {
+    if (Date.now() - _capCache.at < 60000) return;
+    _capCache.at = Date.now();
+    const get = async u => { try { const r = await fetch(u); return r.ok ? await r.json() : []; } catch (_) { return []; } };
+    const [inf, procs, sys] = await Promise.all([
+      get('/api/alarm/metrics?source=influxdb&limit=50'), get('/api/alarm/metrics?source=processes&limit=300'),
+      get('/api/alarm/metrics?source=system&limit=600'),
+    ]);
+    const bytes = (Array.isArray(inf) ? inf : []).find(r => r.metric_name === 'bytes_on_disk');
+    const host = bytes && bytes.hostname;
+    const rss = (Array.isArray(procs) ? procs : []).find(r => r.metric_name === 'influxdb_rss_mb' && (!host || r.hostname === host));
+    const sysHost = host || (_last && _last.manager && _last.manager.hostname) || null;
+    const sysRow = name => (Array.isArray(sys) ? sys : []).find(r => r.metric_name === name && (!sysHost || r.hostname === sysHost));
+    const disk = sysRow('disk_root_percent'), ram = sysRow('ram_total_bytes');
+    _capCache.rows = { influx_bytes: bytes ? bytes.latest_value : null, influx_rss_mb: rss ? rss.latest_value : null,
+                       influx_host: host || null, disk_pct: disk ? disk.latest_value : null,
+                       influx_ram_total_mb: ram && isFinite(Number(ram.latest_value)) ? Number(ram.latest_value) / 1048576 : null };
+    if (_view === 'capacity' && _last) render(_last, _lastRel);
+  }
+  // ── Trends view ──────────────────────────────────────────────────────
+  let _trendCache = { at: 0, series: null };   // {anon, refused, api, ing, influx, rule} → [{t, v}]
+  const TREND_DEFS = [
+    ['anon', 'Open-route requests /min', 'manager_self_monitor/manager_anon_requests_per_min', ''],
+    ['api', 'Manager API latency', 'manager_self_monitor/manager_api_latency_ms', 'ms'],
+    ['ing', 'Alarm Engine ingest latency', 'manager_self_monitor/ae_ingest_latency_ms', 'ms'],
+    ['rule', 'Alarm Engine rule evaluation', 'manager_self_monitor/rule_eval_cycle_ms', 'ms'],
+    ['influx', 'InfluxDB write latency', 'manager_self_monitor/influx_write_latency_ms', 'ms'],
+  ];
+  function trendSeries(raw) {
+    const out = {};
+    for (const k of Object.keys(raw || {})) {
+      out[k] = (Array.isArray(raw[k]) ? raw[k] : [])
+        .map(p => ({ t: new Date(p.timestamp).getTime(), v: Number(p.value) }))
+        .filter(p => isFinite(p.t) && isFinite(p.v)).sort((a, b) => a.t - b.t);
+    }
+    return out;
+  }
+  // [[x, y]] for each value, scaled into a w × h box.
+  function sparkXY(values, w, h) {
+    const max = Math.max(...values, 0) * 1.08 || 1;
+    return values.map((v, i) => [+(values.length === 1 ? w : i / (values.length - 1) * w).toFixed(1),
+      +(h - 2 - (v / max) * (h - 6)).toFixed(1)]);
+  }
+  function sparkPath(values, w, h) {
+    return sparkXY(values, w, h).map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join(' ');
+  }
+  // One amber sub-path per marked point: previous point → it → next point.
+  function sparkSvg(key, pts, segIdx) {
+    const W = 240, H = 30, vals = pts.map(p => p.v);
+    const xy = sparkXY(vals, W, H);
+    const line = sparkPath(vals, W, H);
+    let seg = '';
+    if (segIdx && segIdx.length && xy.length > 1) {
+      seg = segIdx.map(i => xy.slice(Math.max(0, i - 1), Math.min(xy.length, i + 2))
+        .map(([x, y], k) => `${k ? 'L' : 'M'}${x},${y}`).join(' ')).join(' ');
+    }
+    const end = xy.length ? `<circle cx="${W}" cy="${xy[xy.length - 1][1]}" r="2"/>` : '';
+    return `<svg data-sp="${esc(key)}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">`
+      + `<line class="base" x1="0" y1="${H - 2}" x2="${W}" y2="${H - 2}"/>`
+      + (line ? `<path class="area" d="${line} L${W},${H - 2} L0,${H - 2} Z"/><path class="line" d="${line}"/>` : '')
+      + (seg ? `<path class="seg" d="${seg}"/>` : '') + end + '</svg>';
+  }
+  function trendsHtml(series) {
+    if (!series) return '<div class="hc-ev-none">Loading…</div>';
+    if (series.error) return '<div class="hc-ev-none">Not available</div>';
+    const refused = new Set((series.refused || []).filter(p => p.v > 0).map(p => Math.round(p.t / 60000)));
+    return '<div class="hc-tr">' + TREND_DEFS.map(([key, label, , unit]) => {
+      const pts = series[key] || [];
+      const last = pts.length ? pts[pts.length - 1].v : null;
+      let num = '—', cls = '';
+      if (key === 'anon') {
+        const segIdx = pts.map((_, i) => i).filter(i => refused.has(Math.round(pts[i].t / 60000)));
+        if (segIdx.length) {
+          const peak = pts.reduce((a, p) => (p.v > a.v ? p : a), pts[0]);
+          num = `peak ${Math.round(peak.v)} at ${fmtEventTime(new Date(peak.t).toISOString()).clock}`; cls = 'warn';
+        } else if (last != null) num = `${Math.round(last)}/min now`;
+        return `<div class="hc-sp"><div class="h"><span class="l">${esc(label)}</span><span class="n ${cls}">${esc(num)}</span></div>${sparkSvg(key, pts, segIdx)}</div>`;
+      }
+      if (last != null) num = unit === 'ms' ? `${last.toFixed(1)} ms now` : `${Math.round(last)} % now`;
+      return `<div class="hc-sp"><div class="h"><span class="l">${esc(label)}</span><span class="n">${esc(num)}</span></div>${sparkSvg(key, pts, null)}</div>`;
+    }).join('') + '</div>';
+  }
+  async function loadTrends() {
+    if (Date.now() - _trendCache.at < 60000) return;
+    _trendCache.at = Date.now();
+    const url = p => `/api/alarm/metrics/${p}?since_minutes=60&limit=120`;
+    const get = async u => { const r = await fetch(u); if (!r.ok) throw new Error(String(r.status)); return r.json(); };
+    try {
+      const [anon, refused, api, ing, influx, rule] = await Promise.all([
+        get(url('manager_self_monitor/manager_anon_requests_per_min')), get(url('manager_self_monitor/manager_anon_refused_per_min')),
+        get(url('manager_self_monitor/manager_api_latency_ms')), get(url('manager_self_monitor/ae_ingest_latency_ms')),
+        get(url('manager_self_monitor/influx_write_latency_ms')), get(url('manager_self_monitor/rule_eval_cycle_ms')),
+      ]);
+      _trendCache.series = trendSeries({ anon, refused, api, ing, influx, rule });
+    } catch (_) {
+      _trendCache.series = { error: true };
+    }
+    if (_view === 'trends' && _last) render(_last, _lastRel);
+  }
 
   // ── formatting ───────────────────────────────────────────────────────
   // Shrinks, then ellipsises, an SVG text run so it stays inside its box.
@@ -483,6 +686,7 @@
 
   function render(d, rel) {
     _last = d || {};
+    _lastRel = rel;
     const rows = warnRows(_last, rel);
 
     const pill = $('adminHealthOverall');
@@ -570,18 +774,37 @@
 
     const warnEl = $('adminHealthWarnings');
     if (warnEl) {
-      warnEl.innerHTML = rows.length
-        ? rows.map(r => `<div class="w ${r.k}${r.ack ? ' ack' : ''}"><span class="g">${r.g}</span><div>${r.t}</div>`
+      const lbl = $('adminHealthColLabel'), em = $('adminHealthColEm'), vs = $('adminHealthView');
+      if (rows.length) {
+        if (lbl) lbl.textContent = 'Warnings';
+        if (em) em.textContent = '';
+        if (vs) vs.hidden = true;
+        warnEl.innerHTML = rows.map(r => `<div class="w ${r.k}${r.ack ? ' ack' : ''}"><span class="g">${r.g}</span><div>${r.t}</div>`
           + (r.ack ? `<button type="button" class="ib" data-ack-job="${esc(r.ack)}" aria-label="Dismiss failed job" title="Dismiss">✕</button>` : '')
-          + '</div>').join('')
-        : '<div class="w-none">None</div>';
+          + '</div>').join('');
+      } else {
+        const [name, sub] = VIEW_LABEL[_view];
+        if (lbl) lbl.textContent = name;
+        if (em) em.textContent = sub;
+        if (vs) { vs.hidden = false; vs.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === _view))); }
+        if (_view === 'capacity') loadCapacityExtra();
+        if (_view === 'trends') loadTrends();
+        warnEl.innerHTML = viewHtml(_last);
+      }
       if (!warnEl._hcBound) {
         warnEl._hcBound = true;
         warnEl.addEventListener('click', e => {
           if (e.target.closest('[data-act="updateall"]') && typeof adminUpdateAll === 'function') adminUpdateAll();
+          const all = e.target.closest('[data-act="allevents"]');
+          if (all) { e.preventDefault(); try { window.location.hash = '#audit?since_hours=24'; } catch (_) { /* harness */ } if (typeof switchSubTab === 'function') switchSubTab('admin', 'audit'); }
           const ack = e.target.closest('[data-ack-job]');
           if (ack) { ack.disabled = true; ackJob(ack.getAttribute('data-ack-job')); }
         });
+      }
+      const vsEl = $('adminHealthView');
+      if (vsEl && !vsEl._hcBound) {
+        vsEl._hcBound = true;
+        vsEl.addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
       }
     }
 
@@ -618,6 +841,8 @@
   window.HealthView = {
     render, svcRows, svcRowHtml, edgeStates, nodeSubs, detailRows, warnRows, pillOf, upStr, num, authState,
     jobsRows, jobsHtml, jobsSummary,
+    recentHtml, budgetHtml, fmtEventTime, viewHtml, setView, view: () => _view,
+    capacityHtml, capacityRows, trendsHtml, trendSeries, sparkPath, loadCapacityExtra, loadTrends,
     select: n => { _selNode = n; _autoNode = null; renderDetail(); },
     selected: () => _selNode,
   };
