@@ -23,6 +23,15 @@ LEGACY_EXPORT_ENTRY = f"data/{LEGACY_NAME}"
 
 ENERGY_KEY = ("hour_ts", "agent_id")
 AUDIT_SAME = ("ts", "actor", "action", "target")
+# Legacy tables merged into the split files by natural key; anything else stays in the aside file.
+LEGACY_MERGE = (
+    ("model_benchmarks", "manager", ("model_id", "agent_id", "provider")),
+    ("tool_runs", "manager", ("tool", "model_id", "agent_id", "provider", "ts")),
+    ("report_cards", "manager", ("ts", "agent_id", "provider", "mode")),
+    ("audit_log", "audit", AUDIT_SAME),
+    ("energy_hourly", "energy", ENERGY_KEY),
+    ("energy_model_hourly", "energy", ("hour_ts", "agent_id", "model")),
+)
 
 
 def resolve_paths(data_dir: Path, env=None) -> dict[str, Path]:
@@ -36,17 +45,48 @@ def resolve_paths(data_dir: Path, env=None) -> dict[str, Path]:
     return {"manager": main, "audit": audit, "energy": energy}
 
 
-def rename_legacy_file(main: Path) -> bool:
-    """Rename metrics.db and its sidecars to `main` when `main` is absent."""
-    legacy = main.parent / LEGACY_NAME
-    if main.name == LEGACY_NAME or main.exists() or not legacy.exists():
+def _user_tables(conn: sqlite3.Connection) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+
+
+def _is_empty_db(path: Path) -> bool:
+    """True for a zero-byte file or a SQLite file whose tables all hold no rows."""
+    try:
+        if path.stat().st_size == 0:
+            return True
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
+        try:
+            return all(conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] == 0
+                       for t in _user_tables(conn))
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
         return False
+
+
+def _move_with_sidecars(src: Path, dst: Path) -> list[str]:
     moved = []
     for suffix in SIDECARS:
-        src = legacy.with_name(legacy.name + suffix)
-        if src.exists():
-            os.replace(src, main.with_name(main.name + suffix))
-            moved.append(src.name)
+        f = src.with_name(src.name + suffix)
+        if f.exists():
+            os.replace(f, dst.with_name(dst.name + suffix))
+            moved.append(f.name)
+    return moved
+
+
+def rename_legacy_file(main: Path) -> bool:
+    """Rename metrics.db and its sidecars to `main` when `main` is absent or holds no rows."""
+    legacy = main.parent / LEGACY_NAME
+    if main.name == LEGACY_NAME or not legacy.exists():
+        return False
+    if main.exists():
+        if not _is_empty_db(main):
+            return False
+        empty = main.with_name(main.name + ".empty")
+        _move_with_sidecars(main, empty)
+        log.info("moved empty %s aside to %s so the legacy file can take its place", main, empty)
+    moved = _move_with_sidecars(legacy, main)
     log.info("renamed %s -> %s (moved: %s)", legacy, main, ", ".join(moved))
     return True
 
@@ -62,9 +102,10 @@ def _columns(conn: sqlite3.Connection, table: str, schema: str = "main") -> list
 
 
 def split_table(main_path: Path, dst_path: Path, table: str, *, key: tuple[str, ...],
-                same: tuple[str, ...] = ()) -> int | None:
+                same: tuple[str, ...] = (), merge: bool = False) -> int | None:
     """Move `table` rows from main_path into dst_path (table must exist there), then
-    drop the source; None when already done. Keyed upsert, or append when `same` clashes."""
+    drop the source; None when already done. Keyed upsert, or append when `same` clashes.
+    `merge`: only rows whose key is absent from dst are copied, ids renumber."""
     if not main_path.exists():
         return None
     conn = sqlite3.connect(str(main_path), timeout=30.0, isolation_level=None)
@@ -77,9 +118,14 @@ def split_table(main_path: Path, dst_path: Path, table: str, *, key: tuple[str, 
         dst_cols = set(_columns(conn, table, "dst"))
         cols = [c for c in _columns(conn, table) if c in dst_cols]
         n = conn.execute(f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
-        match = " AND ".join(f"d.{k} = m.{k}" for k in key)
+        if merge:
+            key = tuple(k for k in key if k in cols)
+            if not key:
+                raise RuntimeError(f"{table}: no key column shared with {dst_path}")
+            cols = [c for c in cols if c != "id" or c in key]
+        match = " AND ".join(f"d.{k} IS m.{k}" for k in key)
         keep_key = True
-        if same:
+        if same and not merge:
             # Rows whose key already exists in dst with different content force append mode.
             differ = " OR ".join(f"d.{c} IS NOT m.{c}" for c in same if c in cols)
             clash = conn.execute(f"SELECT COUNT(*) FROM main.{table} m JOIN dst.{table} d "
@@ -89,9 +135,14 @@ def split_table(main_path: Path, dst_path: Path, table: str, *, key: tuple[str, 
             cols = [c for c in cols if c not in key]
         col_sql = ", ".join(cols)
         conn.execute("BEGIN")
-        verb = "INSERT OR REPLACE" if keep_key else "INSERT"
-        cur = conn.execute(f"{verb} INTO dst.{table} ({col_sql}) "
-                           f"SELECT {col_sql} FROM main.{table} ORDER BY rowid")
+        if merge:
+            cur = conn.execute(f"INSERT OR IGNORE INTO dst.{table} ({col_sql}) "
+                               f"SELECT {col_sql} FROM main.{table} m WHERE NOT EXISTS "
+                               f"(SELECT 1 FROM dst.{table} d WHERE {match}) ORDER BY rowid")
+        else:
+            verb = "INSERT OR REPLACE" if keep_key else "INSERT"
+            cur = conn.execute(f"{verb} INTO dst.{table} ({col_sql}) "
+                               f"SELECT {col_sql} FROM main.{table} ORDER BY rowid")
         if keep_key:
             missing = conn.execute(
                 f"SELECT COUNT(*) FROM main.{table} m WHERE NOT EXISTS "
@@ -106,10 +157,41 @@ def split_table(main_path: Path, dst_path: Path, table: str, *, key: tuple[str, 
         conn.execute("COMMIT")
         conn.execute("DETACH DATABASE dst")
         log.info("moved %d %s rows from %s to %s%s", n, table, main_path.name, dst_path.name,
-                 "" if keep_key else " (appended; keys clashed)")
+                 f" ({cur.rowcount} new)" if merge else "" if keep_key else " (appended; keys clashed)")
         return n
     finally:
         conn.close()
+
+
+def merge_legacy_file(paths: dict[str, Path]) -> bool:
+    """Carry a leftover metrics.db into the split files (rows the new files lack), then
+    move it aside as metrics.db.merged-<stamp>; a failure leaves it for the next boot."""
+    main = paths["manager"]
+    legacy = main.parent / LEGACY_NAME
+    if main.name == LEGACY_NAME or not legacy.exists():
+        return False
+    for table, dst_key, key in LEGACY_MERGE:
+        try:
+            split_table(legacy, paths[dst_key], table, key=key, merge=True)
+        except (sqlite3.Error, RuntimeError, OSError):
+            log.exception("merge of %s from %s failed; will retry next boot", table, legacy)
+            return False
+    try:
+        conn = sqlite3.connect(str(legacy), timeout=30.0)
+        try:
+            left = _user_tables(conn)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("could not inspect %s after the merge; will retry next boot", legacy)
+        return False
+    aside = legacy.with_name(f"{legacy.name}.merged-{time.strftime('%Y%m%d-%H%M%S')}")
+    _move_with_sidecars(legacy, aside)
+    if left:
+        log.warning("legacy tables not merged, kept in %s: %s", aside, ", ".join(sorted(left)))
+    log.info("merged legacy %s into the split files; file moved aside to %s", legacy, aside)
+    return True
 
 
 def _scalar(conn: sqlite3.Connection, sql: str):

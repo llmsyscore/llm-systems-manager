@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.16-1"
+__version__ = "v2026.10.16-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -456,6 +456,8 @@ def init_db():
     conn.commit()
     # One-time move of audit_log / energy_hourly out of manager.db (#1037).
     manager_db.split_write_heavy_tables(_DB_PATHS)
+    # A metrics.db left behind by a skipped rename is merged in and moved aside (#1289).
+    manager_db.merge_legacy_file(_DB_PATHS)
 
 init_db()
 
