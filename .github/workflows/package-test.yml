@@ -403,7 +403,7 @@ jobs:
     name: deb purge leaves /opt (empty-/opt host)
     runs-on: ubuntu-latest
     needs: build
-    container: debian:12
+    container: mirror.gcr.io/library/debian:12
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v8
@@ -435,7 +435,7 @@ jobs:
     name: rpm install/erase (dnf, rocky 9)
     runs-on: ubuntu-latest
     needs: build
-    container: rockylinux:9
+    container: mirror.gcr.io/library/rockylinux:9
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v8

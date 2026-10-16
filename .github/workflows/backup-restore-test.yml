@@ -42,7 +42,7 @@ jobs:
   colocated:
     name: co-located (mode 1, encrypted)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,7 +80,7 @@ jobs:
   split:
     name: split (modes 3 + 4, plaintext)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:

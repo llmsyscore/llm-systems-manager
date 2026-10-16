@@ -54,7 +54,7 @@ jobs:
     name: fresh install (mode 1)
     runs-on: ubuntu-latest
     # Covers the initial install AND a reinstall-over-stale-tree pass (#352).
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,7 +129,7 @@ jobs:
   upgrade:
     name: upgrade (base → head)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       # On pull_request, base.sha is the upgrade-from baseline; scheduled and
       # manual runs fall back to main → main (a no-op-update drift check).
@@ -215,7 +215,7 @@ jobs:
   release-install:
     name: release-tarball install (mode 1)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     # TAG is a throwaway CI-only version; the tarball is built + served
     # locally, never published. Matches the installer's asset-name contract:
     # llm-systems-manager-<tag>.tar.gz with a llm-systems-manager-<tag>/ prefix.
@@ -280,7 +280,7 @@ jobs:
   main-vs-release:
     name: main install.sh + latest release tarball (mode 3)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     # The curl-pipe pairing (#748): a self-updated MAIN install.sh stages the
     # LATEST PUBLISHED release tarball and sources ITS lib-common.sh, so a
     # helper added to lib-common after the last tag is missing at runtime
@@ -348,7 +348,7 @@ jobs:
   split-install:
     name: split install (modes 3 + 4)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     # Cross-host split install on ONE runner: mode 4 (alarm engine) into one
     # tree, mode 3 (manager) into another. Both installs share the runner's IP,
     # so the config-bootstrap non-interactive branch auto-wires the two URLs.
@@ -440,7 +440,7 @@ jobs:
   split-upgrade:
     name: split upgrade (modes 3 + 4, base → head)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     # The split shape of the upgrade job (#1283): the base commit's mode-4 and
     # mode-3 installs on ONE runner in two trees, wired by ci-split-smoke.sh,
     # then each tree updated to head on its own. update.sh tells the trees
@@ -575,7 +575,7 @@ jobs:
   influxdb-only:
     name: InfluxDB-only host (mode 6) + update
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     # A DB-only host carries no app code, so update.sh must refresh the
     # InfluxDB host tuning instead of exiting "nothing to update" (#1249).
     steps:
@@ -631,7 +631,7 @@ jobs:
   source-local-install:
     name: --source local install (mode 1, offline source)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     # The air-gapped path (#389/#408): install from an extracted source tree,
     # no download, no clone, no self-update. Simulated exactly like a real
     # operator: git archive (same as the release tarball) extracted to a
@@ -688,7 +688,7 @@ jobs:
   source-git-install:
     name: --source git install (mode 1, clone main)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     # The clone-main path. Hermetic: a url.insteadOf redirect points the
     # installer's fixed https URL at a local repo serving THIS PR's tree, so
     # the job tests the PR's code (not upstream main) and needs no network for
