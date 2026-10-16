@@ -2,9 +2,15 @@
 sign-in, in sandboxed frames; the dashboard refuses the old routes and foreign-origin writes."""
 from __future__ import annotations
 
-import manager_mod as M  # noqa: F401  (loads the manager module for later tasks)
+import time
+
+import pytest
+
+import auth
+import manager_mod as M
+import proxies
 import settings_catalog
-from config.unified_config import ManagerConfig
+from config.unified_config import ManagerConfig, ManagerSecurity, settings
 
 
 class TestConfigKeys:
@@ -18,8 +24,6 @@ class TestConfigKeys:
         assert {"manager.tools_port", "manager.tools_tls_port"} <= paths
 
 
-import pytest
-from config.unified_config import settings
 
 
 @pytest.fixture
@@ -101,7 +105,6 @@ class TestToolListenerStartup:
         assert started == []
 
 
-import time
 
 
 def _admin(c, host="localhost", scheme="http"):
@@ -143,7 +146,7 @@ class TestToolCookie:
         with M.app.test_request_context(f"/proxy/openclaw/?tool_ticket={t}&x=1", base_url="http://localhost:5447"):
             resp = M._exchange_tool_ticket(t)
         assert resp.status_code == 302
-        assert resp.headers["Location"] == "/proxy/openclaw/?x=1"
+        assert resp.headers["Location"] == "/proxy/openclaw/"
         cookie = resp.headers.get("Set-Cookie", "")
         assert cookie.startswith(M._TOOL_COOKIE + "=") and "HttpOnly" in cookie and "SameSite=Lax" in cookie
 
@@ -247,7 +250,6 @@ class TestToolFrameAncestors:
                 f"http://{want} https://{want} http://{want}:* https://{want}:*")
 
 
-import auth
 
 TOOLS_URL = "http://localhost:5447"
 
@@ -272,7 +274,6 @@ def _tool_cookie_for(user="alice", role="admin"):
 @pytest.fixture
 def proxy_stub(monkeypatch):
     """Every proxy target resolves and the helpers answer 200 with the role seen."""
-    import proxies
     from flask import g as _g, jsonify as _j
     monkeypatch.setattr(proxies, "resolve_proxy_target", lambda name: "http://10.0.0.7:1234")
     for name in ("_proxy_openclaw", "_proxy_llmchat", "_proxy_imggen", "_proxy_sdcpp"):
@@ -416,8 +417,6 @@ class TestOriginCheck:
         assert r.status_code != 403
 
 
-import proxies
-from config.unified_config import ManagerSecurity
 
 DEFAULT_CSP = ManagerSecurity().proxy_html_csp
 

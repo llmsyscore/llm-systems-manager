@@ -10064,16 +10064,13 @@ def _tool_cookie_claims() -> "tuple[str, str] | None":
 
 
 def _exchange_tool_ticket(ticket):
-    """302 to the same URL without the ticket, setting the tool cookie; None when the ticket is bad."""
-    from urllib.parse import urlencode
+    """302 to the ticket's tool page root, setting the tool cookie; None when the ticket is bad."""
     claims = _consume_tool_ticket(ticket)
     if claims is None:
         return None
     cookie = _sign_tool_claims({"u": claims["u"], "r": claims["r"],
                                 "e": int(time.time()) + _TOOL_COOKIE_TTL_S}, b"tool-cookie-key")
-    args = {k: v for k, v in flask_request.args.to_dict(flat=False).items() if k != "tool_ticket"}
-    clean = flask_request.path + (("?" + urlencode(args, doseq=True)) if args else "")
-    resp = redirect(clean, code=302)
+    resp = redirect(f"/proxy/{claims['t']}/", code=302)
     resp.set_cookie(_tool_cookie_name(), cookie, max_age=_TOOL_COOKIE_TTL_S, httponly=True,
                     samesite="Lax", secure=bool(flask_request.is_secure), path="/")
     return resp
