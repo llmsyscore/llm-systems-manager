@@ -37,7 +37,7 @@ jobs:
   compose-smoke:
     name: build images + compose up smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -192,7 +192,7 @@ jobs:
   compose-upgrade:
     name: released → PR upgrade keeps state
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
@@ -345,7 +345,7 @@ jobs:
     name: arm64 image build (no push)
     runs-on: ubuntu-latest
     if: ${{ !inputs.skip_arm64 }}
-    timeout-minutes: 45
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 

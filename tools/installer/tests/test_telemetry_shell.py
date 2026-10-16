@@ -88,7 +88,9 @@ def test_report_sends_inline_and_records(tmp_path):
 
 
 def test_report_failure_leaves_pending_and_spawns_retry(tmp_path):
-    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 LLMSYS_TELEMETRY_RETRY_DELAYS="0 0" telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event; sleep 2',
+    # The retry helper runs in the background; wait up to 15 s for its last attempt to be logged.
+    wait_log = f'for _ in $(seq 1 150); do grep -q "attempt 3 failed" "{tmp_path}/telemetry.log" 2>/dev/null && break; sleep 0.1; done'
+    r = run(tmp_path, f'LLMSYS_TELEMETRY=1 LLMSYS_TELEMETRY_RETRY_DELAYS="0 0" telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" https://t.example.test/v1/event; {wait_log}',
             {"_CURL_RC": 7})
     assert r.returncode == 0, r.stderr
     log = (tmp_path / "telemetry.log").read_text()
