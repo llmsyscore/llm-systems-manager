@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+import tomllib
+from pathlib import Path
 
 import pytest
+import tomlkit
 
 import settings_toml_io as sio
 
@@ -106,3 +110,74 @@ def test_backup_prune_ignores_foreign_files(cfg):
     for i in range(13):
         sio.apply_patches({"manager.port": 5100 + i}, config_path=cfg)
     assert foreign.read_text() == "keep me"
+
+
+EXAMPLE = Path(__file__).resolve().parents[2] / "config" / "llm-systems.toml.example"
+
+
+def _example_cfg(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    shutil.copy(EXAMPLE, p)
+    return p
+
+
+def _line_of(lines, pred):
+    return next(i for i, ln in enumerate(lines) if pred(ln))
+
+
+def test_new_subtable_lands_above_the_next_banner(tmp_path):
+    p = _example_cfg(tmp_path)
+    before = tomllib.loads(p.read_text())
+    sio.apply_patches({"manager.timeouts.generic_http": 45.0}, config_path=p)
+    lines = p.read_text().splitlines()
+    hdr = lines.index("[manager.timeouts]")
+    banner = _line_of(lines, lambda ln: ln.startswith("#") and "ALARM ENGINE" in ln)
+    last_mgr = max(i for i, ln in enumerate(lines)
+                   if ln.startswith("[manager.") and i != hdr)
+    assert last_mgr < hdr < banner
+    before["manager"].setdefault("timeouts", {})["generic_http"] = 45.0
+    assert tomllib.loads(p.read_text()) == before
+
+
+def test_new_ae_subtable_lands_above_influx_banner(tmp_path):
+    p = _example_cfg(tmp_path)
+    before = tomllib.loads(p.read_text())
+    sio.apply_patches({"alarm_engine.api_limits.history_max_response_points": 2000},
+                      config_path=p)
+    lines = p.read_text().splitlines()
+    hdr = lines.index("[alarm_engine.api_limits]")
+    banner = _line_of(lines, lambda ln: ln.startswith("#") and "INFLUXDB" in ln)
+    assert lines.index("[alarm_engine]") < hdr < banner
+    before["alarm_engine"].setdefault("api_limits", {})["history_max_response_points"] = 2000
+    assert tomllib.loads(p.read_text()) == before
+
+
+def test_existing_table_write_is_unchanged_by_lift(tmp_path):
+    p = _example_cfg(tmp_path)
+    old = p.read_text().splitlines()
+    sio.apply_patches({"manager.port": 5099}, config_path=p)
+    new = p.read_text().splitlines()
+    assert len(old) == len(new)
+    diff = [(a, b) for a, b in zip(old, new) if a != b]
+    assert len(diff) == 1 and "5099" in diff[0][1]
+
+
+def test_lift_keeps_data_identical():
+    text = ('[a]\nx = 1\n\n[a.b]\ny = 2\n\n\n# ──── NEXT ────\n# about next\n\n'
+            '[a.new]\nz = 3\n[c]\nw = 4\n')
+    lifted = sio._lift_new_sections(text, {"a.new"})
+    assert lifted != text
+    assert tomllib.loads(lifted) == tomllib.loads(text)
+    lines = lifted.splitlines()
+    assert lines.index("[a.new]") < lines.index("# ──── NEXT ────") < lines.index("[c]")
+
+
+def test_new_subtable_without_banner_is_left_in_place(tmp_path):
+    p = tmp_path / "llm-systems.toml"
+    p.write_text(SAMPLE)
+    sio.apply_patches({"manager.energy.price_kwh": 0.12}, config_path=p)
+    text = p.read_text()
+    doc = tomlkit.parse(SAMPLE)
+    doc["manager"]["energy"] = tomlkit.table()
+    doc["manager"]["energy"]["price_kwh"] = 0.12
+    assert text == tomlkit.dumps(doc)

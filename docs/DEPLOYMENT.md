@@ -297,13 +297,15 @@ config/llm-systems.toml
 
 It is readable only by the service user (file permission 0600).
 
-A fully documented template showing every available setting is located at:
+A reference file listing every setting and its default is located at:
 
 ```
-config/llm-systems.toml.example
+config/llm-systems.toml.reference
 ```
 
-Refer to that file when you need to understand what a setting does or when adding a new key.
+The installer writes a short file with only the settings it needs; any setting not in your file uses its built-in default.
+
+Refer to the reference when you need to understand what a setting does or when adding a new key.
 
 ### Key Settings
 
@@ -311,6 +313,13 @@ Refer to that file when you need to understand what a setting does or when addin
 |---|---|---|
 | `[manager].port` | Port the manager web interface listens on | `5000` |
 | `[manager].listen_backlog` | How many browser connections may wait in the operating system's queue while the manager is busy accepting; the kernel caps it at `net.core.somaxconn` | `1024` |
+| `[manager].public_hosts` | Extra host names or addresses that reach this manager from outside (for example behind NAT or Docker); added to the HTTPS certificate and used in the addresses agents are given | `[]` |
+| `[manager].http_threads` | How many requests the dashboard can handle at once | `64` |
+| `[manager].stream_keepalive_s` | Seconds between pings that keep a live-update connection open | `8.0` |
+| `[manager].stream_max_lifetime_s` | Seconds a live-update connection stays open before the browser reconnects | `120.0` |
+| `[manager].stream_reserve_threads` | Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once | `24` |
+| `[manager.uploads].max_content_length` | Largest upload the dashboard accepts, in bytes | `104857600` |
+| `[manager.timeouts].generic_http` | Seconds to wait for a proxied tool page to answer | `30.0` |
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
 | `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
 | `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
@@ -319,6 +328,9 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.agents].enrollment_mode` | When new machines may register and wait for approval: `auto` opens enrollment for one window after each manager start, `open` keeps it open and `closed` keeps it closed until changed here or on Admin › Agents (in `auto`, a change made on Admin › Agents lasts until the next manager start). Applies without a restart | `auto` |
 | `[manager.agents].enrollment_window_min` | Minutes enrollment stays open after a start in `auto` mode, and per **Open enrollment** click | `15` |
 | `[manager.agents].enrollment_secret` | Value new machines must send to register. Blank lets any machine register while enrollment is open. Made at install on new managers; Admin › Agents can make a new one. Applies without a restart | blank |
+| `[manager.agents].stale_after_s` | Seconds without a report before an agent is shown as stale | `150` |
+| `[manager.agents].down_after_s` | Seconds without a report before an agent is shown as down | `600` |
+| `[manager.agents].liveness_watch_interval_s` | How often, in seconds, the manager checks whether agents are still reporting | `60` |
 | `[manager.security].anon_request_budget_per_min` | How many requests per minute the manager answers on the pages and routes that need no login or token (agent registration, the waiting-agent status check, the login page). Past the budget it answers "too many requests" until the minute is over. `0` turns the limit off. See [Protecting the Manager from Request Floods](#protecting-the-manager-from-request-floods) | `600` |
 | `[manager.auth].mode` | Login requirement: `required`, `trusted_cidr`, `disabled`, or `auto` (hands live control to the Access Control card; a manual TOML edit stays authoritative until you switch to `auto`) | `auto` |
 | `[manager].alarm_engine_url` | Network address where the Manager can reach the Alarm Engine | `http://localhost:8081` |
@@ -327,9 +339,17 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[alarm_engine].ingest_token` | Shared token agents use to send metrics; blank means open. Docker installs generate it on first start when `.env` leaves it blank | *(set by installer)* |
 | `[alarm_engine].management_token` | Token the manager presents on the engine's rules/alerts/notifications/config API; must be the same value on both hosts of a split install and must differ from `ingest_token` (the engine refuses to start when they are equal). Docker installs generate it on first start when `.env` leaves it blank. With neither token set the engine logs `ALARM ENGINE AUTH` at startup, reports `auth: "open"` on `/health`, and Admin → System Health flags the alarm-engine row | *(set by installer; required on split installs)* |
 | `[alarm_engine.caches].max_hosts_per_metric` | How many machines the alarm engine keeps in its recent-history cache for each metric. Raise it when the fleet is larger than this; the engine logs one warning per metric when the cap is reached | `256` |
+| `[alarm_engine.caches].metric_catalog_warmup_days` | Days of past data scanned at start-up to learn which metrics exist | `7` |
+| `[alarm_engine.history.downsampling].rollup_enabled` | Serve long history ranges from pre-summarized data so charts load faster | `true` |
+| `[alarm_engine.history.downsampling].rollup_every` | How coarse the pre-summarized history data is: `1m`, `5m`, `10m`, `30m` or `1h`. Takes effect after the existing rollup task is deleted in InfluxDB and the alarm engine is restarted | `1m` |
+| `[alarm_engine.api_limits].history_since_minutes_max` | Longest time range a history chart can request, in minutes | `43200` |
+| `[alarm_engine.api_limits].history_max_response_points` | Most data points returned per history chart; `0` means no limit | `1500` |
+| `[alarm_engine.api_limits].export_since_minutes_max` | Longest time range a data export can cover, in minutes | `43200` |
 | `[notifications.smtp].server` | SMTP server hostname for email alarm notifications | *(not set)* |
 | `[notifications.smtp].user` | Account / sender address used to send alarm emails | *(not set)* |
 | `[notifications.smtp].ca_file` | The mail server's certificate is always checked against the system trust store. Set this to a CA certificate file when the relay uses a private certificate | *(blank)* |
+| `[notifications.timeouts].http` | Seconds to wait for a webhook or SMS service before giving up on a notification | `10.0` |
+| `[notifications.timeouts].smtp` | Seconds to wait for the mail server before giving up on an email | `15.0` |
 | `[influxdb].host` | InfluxDB server address | `localhost` |
 | `[influxdb].port` | InfluxDB port | `8086` |
 | `[manager.gateway].enabled` | OpenAI-compatible inference gateway | `true` |
@@ -348,6 +368,9 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager.telemetry].install_report` | Send the anonymous install report | `true` |
 | `[manager.telemetry].crash_reports` | Send anonymous crash reports | `true` |
 | `[manager.telemetry].heartbeat` | Send the daily diagnostic report | `false` |
+| `[openclaw].metrics_push_interval_s` | How often, in seconds, OpenClaw budget figures are sent to the alarm engine (30 at the least) | `300.0` |
+| `[paths].log_max_bytes` | Size in bytes at which a service log file is rotated to a new one | `52428800` |
+| `[paths].log_backup_count` | How many rotated log files are kept for each service | `5` |
 
 ### Applying Changes
 
@@ -366,6 +389,20 @@ sudo systemctl restart llm-systems-alarm-engine
 ```
 
 If you changed a setting used by both (such as InfluxDB credentials), restart both.
+
+### Trim your config file
+
+An older install may have a config file that lists every setting, most of them at their default values. The `slim` command prints a shorter copy that keeps only the settings you changed. Secrets and the settings the installer wrote are kept.
+
+```bash
+sudo -u llmsys bash -c 'umask 077; /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3 \
+  /opt/llm-systems-manager/tools/installer/toml_reconcile.py slim \
+  /opt/llm-systems-manager/config/llm-systems.toml \
+  /opt/llm-systems-manager/config/llm-systems.toml.reference \
+  > /opt/llm-systems-manager/config/llm-systems.toml.slim'
+```
+
+The removed settings are listed on screen. Review the new file, keep a copy of the original, then copy the new file over `config/llm-systems.toml` and restart both services.
 
 ### InfluxDB Memory Settings
 

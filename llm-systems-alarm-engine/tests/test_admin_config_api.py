@@ -71,6 +71,18 @@ def test_put_writes_whitelisted_change(monkeypatch, cfg):
     assert "evaluation_interval = 20" in cfg.read_text()
 
 
+def test_paths_section_is_readable_and_writable(monkeypatch, cfg):
+    # [paths] holds "both services" log-rotation keys (#1290).
+    _set_tokens(monkeypatch, management="mgmt-secret")
+    cfg.write_text(SAMPLE + '\n[paths]\nlog_backup_count = 5\n')
+    r = _client().get(PATH, headers={"Authorization": "Bearer mgmt-secret"})
+    assert r.json()["sections"]["paths"]["log_backup_count"] == 5
+    r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},
+                      json={"changes": {"paths.log_backup_count": 7}})
+    assert r.status_code == 200 and r.json()["applied"] == ["paths.log_backup_count"]
+    assert "log_backup_count = 7" in cfg.read_text()
+
+
 def test_put_requires_changes(monkeypatch, cfg):
     _set_tokens(monkeypatch, management="mgmt-secret")
     r = _client().put(PATH, headers={"Authorization": "Bearer mgmt-secret"},

@@ -74,7 +74,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.14-1"
+__version__ = "v2026.10.16-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1490,7 +1490,7 @@ async def ae_self_restart(_auth: None = Depends(require_management_token)):
 
 
 # Sections the manager's Settings tab may read/write on this host (#606).
-_AE_CONFIG_PREFIXES = ("alarm_engine", "influxdb", "notifications", "logging")
+_AE_CONFIG_PREFIXES = ("alarm_engine", "influxdb", "notifications", "logging", "paths")
 
 
 def _config_sections_snapshot() -> "dict | None":

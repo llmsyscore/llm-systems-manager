@@ -1,4 +1,4 @@
-"""#1010: config/llm-systems.toml.example must track config/unified_config.py.example."""
+"""#1010/#1290: the TOML reference and slim example must track config/unified_config.py.example."""
 from __future__ import annotations
 
 import importlib.util
@@ -14,9 +14,10 @@ from pydantic import BaseModel
 
 _REPO = Path(__file__).resolve().parents[2]
 _PY_EXAMPLE = _REPO / "config" / "unified_config.py.example"
+_TOML_REFERENCE = _REPO / "config" / "llm-systems.toml.reference"
 _TOML_EXAMPLE = _REPO / "config" / "llm-systems.toml.example"
 
-# TOML example ships a placeholder here on purpose; the model default is blank.
+# TOML files ship a placeholder here on purpose; the model default is blank.
 _PLACEHOLDERS = {
     "alarm_engine.ingest_token",
     "influxdb.tokens.metrics",
@@ -29,8 +30,30 @@ _PLACEHOLDERS = {
 # Shipped value intentionally differs from the model default.
 _SHIPPED_OVERRIDES = {
     "manager.security.admin_cidrs": "installer swaps the placeholder /24 for the detected LAN",
-    "manager.bench_baselines.nightly_at": "model default blank so the Settings field can be cleared",
 }
+
+# Keys the slim install template holds; everything else runs on its default.
+SLIM_KEYS = frozenset({
+    "manager.host", "manager.port", "manager.tls_port",
+    "manager.tls_cert_file", "manager.tls_key_file",
+    "manager.alarm_engine_url",
+    "manager.agents.enrollment_secret",
+    "manager.security.admin_cidrs",
+    "manager.auth.username", "manager.auth.password_hash",
+    "manager.telemetry.install_report", "manager.telemetry.crash_reports", "manager.telemetry.heartbeat",
+    "alarm_engine.host", "alarm_engine.port", "alarm_engine.tls_enabled",
+    "alarm_engine.manager_url", "alarm_engine.cors_origins",
+    "alarm_engine.ingest_token", "alarm_engine.management_token",
+    "influxdb.host", "influxdb.port", "influxdb.org",
+    "influxdb.metrics_bucket", "influxdb.metrics_rollup_bucket",
+    "influxdb.tokens.metrics", "influxdb.tokens.metrics_rollup", "influxdb.tokens.admin",
+    "notifications.smtp.server", "notifications.smtp.port",
+    "notifications.smtp.user", "notifications.smtp.password",
+    "notifications.twilio.account_sid", "notifications.twilio.auth_token", "notifications.twilio.from_number",
+    "notifications.discord.webhook_url",
+    "paths.log_dir",
+    "logging.level",
+})
 
 
 @pytest.fixture(scope="module")
@@ -55,10 +78,30 @@ def example_settings(tmp_path_factory):
             os.environ["LLM_SYSTEMS_CONFIG"] = saved
 
 
+def _load_toml(path: Path):
+    text = path.read_text(encoding="utf-8")
+    return tomllib.loads(text), text
+
+
+@pytest.fixture(scope="module")
+def toml_reference():
+    return _load_toml(_TOML_REFERENCE)
+
+
 @pytest.fixture(scope="module")
 def toml_example():
-    text = _TOML_EXAMPLE.read_text(encoding="utf-8")
-    return tomllib.loads(text), text
+    return _load_toml(_TOML_EXAMPLE)
+
+
+def _flatten(table: dict, prefix: str = "") -> dict:
+    out = {}
+    for key, value in table.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            out.update(_flatten(value, path))
+        else:
+            out[path] = value
+    return out
 
 
 def _section_body(text: str, section: str) -> str:
@@ -102,22 +145,58 @@ def _walk(model: BaseModel, prefix: str, table, text: str, problems: list[str]) 
                 problems.append(f"{prefix}.{key} is in the TOML example but not in the schema")
 
 
-def test_toml_example_matches_schema_defaults(example_settings, toml_example):
-    data, text = toml_example
+def test_reference_matches_schema_defaults(example_settings, toml_reference):
+    data, text = toml_reference
     problems: list[str] = []
     _walk(example_settings, "", data, text, problems)
     assert not problems, "\n".join(problems)
 
 
-def test_placeholders_and_overrides_still_exist(example_settings, toml_example):
-    data, _ = toml_example
+def test_placeholders_and_overrides_still_exist(example_settings, toml_reference):
+    data, _ = toml_reference
     for path in sorted(_PLACEHOLDERS | set(_SHIPPED_OVERRIDES)):
         node = data
         for part in path.split("."):
             assert isinstance(node, dict) and part in node, f"{path} allow-listed but absent from the TOML example"
             node = node[part]
     assert data["alarm_engine"]["ingest_token"] == "REPLACE_ME"
-    assert data["manager"]["bench_baselines"]["nightly_at"] == "03:00"
+
+
+def test_slim_example_keys_exist_in_schema_at_defaults(example_settings, toml_example):
+    data, _ = toml_example
+    problems: list[str] = []
+    for path, got in _flatten(data).items():
+        node = example_settings
+        missing = False
+        for part in path.split("."):
+            if not isinstance(node, BaseModel) or part not in type(node).model_fields:
+                missing = True
+                break
+            node = getattr(node, part)
+        if missing:
+            problems.append(f"{path} is in the slim example but not in the schema")
+            continue
+        if got == node or path in _PLACEHOLDERS or path in _SHIPPED_OVERRIDES:
+            continue
+        if node is None and got == "":
+            continue
+        problems.append(f"{path}: model default {node!r} != slim example {got!r}")
+    assert not problems, "\n".join(problems)
+
+
+def test_slim_example_holds_exactly_the_bootstrap_keys(toml_example):
+    data, _ = toml_example
+    keys = set(_flatten(data))
+    assert keys == SLIM_KEYS, f"extra: {sorted(keys - SLIM_KEYS)} missing: {sorted(SLIM_KEYS - keys)}"
+
+
+def test_slim_example_is_a_strict_subset_of_the_reference(toml_example, toml_reference):
+    slim = _flatten(toml_example[0])
+    ref = _flatten(toml_reference[0])
+    problems = [f"{p}: slim {v!r} != reference {ref.get(p, '<absent>')!r}"
+                for p, v in slim.items() if p not in ref or ref[p] != v]
+    assert not problems, "\n".join(problems)
+    assert set(slim) < set(ref)
 
 
 def test_live_loader_matches_example():

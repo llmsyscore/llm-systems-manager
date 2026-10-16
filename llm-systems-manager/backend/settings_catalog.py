@@ -15,6 +15,7 @@ _UNSET_SECRETS = {"", "REPLACE_ME"}
 GROUPS: list[tuple[str, str]] = [
     ("network", "Network & TLS"),
     ("polling", "Polling"),
+    ("timeouts", "Timeouts & limits"),
     ("auth", "Auth & Security"),
     ("history", "History"),
     ("energy", "Energy & Pricing"),
@@ -97,6 +98,12 @@ CATALOG: list[dict] = [
     _e("manager.tools_port", "int", "Tool pages port", "Serves the Tools tab pages on their own origin; browsers need it open. 0 = serve them on the dashboard port.", "network", MANAGER, min=0, max=65535),
     _e("manager.tools_tls_port", "int", "Tool pages HTTPS port", "https twin of the tool pages port for https dashboards; 0 disables.", "network", MANAGER, min=0, max=65535),
     _e("manager.stream_proxy_port", "int", "SSE daemon port", "Standalone llama-state SSE daemon; 0 = fall back to the main pool.", "network", MANAGER, min=0, max=65535),
+    _e("manager.public_hosts", "list", "Public host names", "One host name or address per line.", "network", MANAGER),
+    _e("manager.http_threads", "int", "Worker threads", "How many requests the dashboard can handle at once.", "network", MANAGER, min=8, max=1024),
+    _e("manager.listen_backlog", "int", "Waiting connections", "How many incoming connections can queue up while all worker threads are busy.", "network", MANAGER, min=16, max=65535),
+    _e("manager.stream_keepalive_s", "float", "Live-update ping (s)", "Seconds between pings that keep a live-update connection open.", "network", MANAGER, min=1, max=86400),
+    _e("manager.stream_max_lifetime_s", "float", "Live-update max age (s)", "Seconds a live-update connection stays open before the browser reconnects.", "network", MANAGER, min=1, max=86400),
+    _e("manager.stream_reserve_threads", "int", "Live-update threads", "Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once.", "network", MANAGER, min=8, max=1024),
     _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER, common=True),
     _e("manager.hsts_max_age_s", "int", "HSTS max-age (s)", "Strict-Transport-Security on HTTPS responses; 0 = off. Keep off while the plain-HTTP port is used on the same hostname.", "network", MANAGER, min=0, max=63072000),
     # polling
@@ -114,6 +121,9 @@ CATALOG: list[dict] = [
     _e("manager.agents.enrollment_secret", "str", "Enrollment secret",
        "New machines must send this value to register. Blank lets any machine register while enrollment is open. Admin › Agents shows it and can make a new one.",
        "agents", MANAGER, secret=True, hot=True),
+    _e("manager.agents.stale_after_s", "int", "Agent stale after (s)", "Seconds without a report before an agent is shown as stale.", "agents", MANAGER, min=1, max=86400, hot=True),
+    _e("manager.agents.down_after_s", "int", "Agent down after (s)", "Seconds without a report before an agent is shown as down.", "agents", MANAGER, min=1, max=86400, hot=True),
+    _e("manager.agents.liveness_watch_interval_s", "int", "Agent check interval (s)", "How often the manager checks whether agents are still reporting.", "agents", MANAGER, min=1, max=86400, hot=True),
     _e("manager.auth.mode", "choice", "Auth mode", "auto = UI-managed via the Access Control card; any other value overrides that card on restart.", "auth", MANAGER, choices=["auto", "required", "trusted_cidr", "disabled"], common=True),
     _e("manager.auth.session_lifetime_days", "int", "Session lifetime (days)", "Browser session validity.", "auth", MANAGER, min=1, max=365, common=True),
     _e("manager.auth.bypass_role", "choice", "Bypass role", "Role granted to sessions that skip login (trusted CIDR / disabled mode).", "auth", MANAGER, choices=["admin", "operator"]),
@@ -256,6 +266,7 @@ CATALOG: list[dict] = [
     _e("openclaw.monthly_budget_usd", "float", "Monthly budget (USD)", "0 disables budget metrics + seeded rules.", "openclaw", MANAGER, min=0, max=1000000),
     _e("openclaw.budget_warning_pct", "float", "Warning at (%)", "Warn at this percent of budget.", "openclaw", MANAGER, min=1, max=100),
     _e("openclaw.notify_cost_anomalies", "bool", "Cost anomaly alerts", "Alert when a session's cost is >2x the rolling average.", "openclaw", MANAGER),
+    _e("openclaw.metrics_push_interval_s", "float", "Budget update interval (s)", "How often budget figures are sent to the alarm engine; 30 seconds at the least.", "openclaw", MANAGER, min=30, max=86400),
     # branding
     _e("manager.branding.palette", "choice", "Accent palette", "Login page + logo accent.", "branding", MANAGER, choices=["teal", "indigo", "forest", "steel"]),
     # alarm engine
@@ -303,10 +314,25 @@ CATALOG: list[dict] = [
     _e("notifications.twilio.auth_token", "str", "Twilio auth token", "Twilio API token.", "notifications", BOTH, secret=True),
     _e("notifications.twilio.from_number", "str", "Twilio from number", "Sender number for SMS alerts.", "notifications", BOTH),
     _e("notifications.discord.webhook_url", "str", "Discord webhook", "Blank disables Discord channel notifications.", "notifications", BOTH, secret=True),
+    _e("notifications.timeouts.http", "float", "Webhook timeout (s)", "Seconds to wait for a webhook or SMS service before giving up on a notification.", "notifications", AE, min=1, max=86400),
+    _e("notifications.timeouts.smtp", "float", "Email timeout (s)", "Seconds to wait for the mail server before giving up on an email.", "notifications", AE, min=1, max=86400),
     # logging
     _e("logging.level", "choice", "Default log level", "Both services; per-service overrides below.", "logging", BOTH, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], common=True),
     _e("manager.log_level", "choice", "Manager log level", "Falls back to the default level.", "logging", MANAGER, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
     _e("alarm_engine.log_level", "choice", "AE log level", "Falls back to the default level.", "logging", AE, choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+    _e("paths.log_max_bytes", "int", "Log file size limit", "Size in bytes at which a log file is rotated to a new one.", "logging", BOTH, min=1048576, max=10737418240),
+    _e("paths.log_backup_count", "int", "Old log files kept", "How many rotated log files are kept for each service.", "logging", BOTH, min=1, max=1000),
+    # timeouts & limits
+    _e("manager.uploads.max_content_length", "int", "Max upload size", "Largest upload the dashboard accepts, in bytes.", "timeouts", MANAGER, min=1048576, max=10737418240),
+    _e("manager.timeouts.generic_http", "float", "Proxied page timeout (s)", "Seconds to wait for a proxied tool page to answer.", "timeouts", MANAGER, min=1, max=86400),
+    # history & alarm engine tuning
+    _e("alarm_engine.history.downsampling.rollup_enabled", "bool", "Use summary history", "Serve long history ranges from pre-summarized data so charts load faster.", "history", AE),
+    _e("alarm_engine.history.downsampling.rollup_every", "choice", "Summary interval", "How coarse the pre-summarized history data is. Takes effect after the existing rollup task is deleted in InfluxDB and the alarm engine is restarted.", "history", AE, choices=["1m", "5m", "10m", "30m", "1h"]),
+    _e("alarm_engine.api_limits.history_since_minutes_max", "int", "Max history range (min)", "Longest time range a history chart can request, in minutes.", "history", AE, min=1, max=525600),
+    _e("alarm_engine.api_limits.history_max_response_points", "int", "Max chart points", "Most data points returned per history chart; 0 means no limit.", "history", AE, min=0, max=100000),
+    _e("alarm_engine.api_limits.export_since_minutes_max", "int", "Max export range (min)", "Longest time range a data export can cover, in minutes.", "history", AE, min=1, max=525600),
+    _e("alarm_engine.caches.max_hosts_per_metric", "int", "Hosts kept per metric", "Most hosts the alarm engine remembers for each metric.", "alarm_engine", AE, min=1, max=100000),
+    _e("alarm_engine.caches.metric_catalog_warmup_days", "int", "Metric lookback (days)", "Days of past data scanned at start-up to learn which metrics exist.", "alarm_engine", AE, min=1, max=365),
 ]
 
 _BY_PATH = {e["path"]: e for e in CATALOG}

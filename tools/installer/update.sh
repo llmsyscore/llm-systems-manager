@@ -1033,9 +1033,11 @@ if $HAVE_MANAGER || $HAVE_AE; then
   #   - unified_config.py            ← upstream unified_config.py.example
   #   - unified_config.py.example    ← same (refresh the reference copy)
   #   - llm-systems.toml.example     ← same
+  #   - llm-systems.toml.reference   ← same
   for pair in "unified_config.py:unified_config.py.example" \
               "unified_config.py.example:unified_config.py.example" \
-              "llm-systems.toml.example:llm-systems.toml.example"; do
+              "llm-systems.toml.example:llm-systems.toml.example" \
+              "llm-systems.toml.reference:llm-systems.toml.reference"; do
     dst_name="${pair%%:*}"
     src_name="${pair##*:}"
     src="$REPO_SRC/config/$src_name"
@@ -1129,9 +1131,9 @@ if $HAVE_MANAGER || $HAVE_AE; then
   # Prune upstream-removed keys (manifest toml-key entries) from the live TOML.
   prune_removed_toml_keys "$_live_toml" "$REPO_SRC/tools/installer/toml_reconcile.py"
 
-  # Restore the example's layout for anything an older merge misplaced (#528).
+  # Restore the reference's layout for anything an older merge misplaced (#528).
   reorder_live_toml "$_live_toml" \
-    "$REPO_SRC/tools/installer/toml_reconcile.py" "$_example_toml"
+    "$REPO_SRC/tools/installer/toml_reconcile.py" "$REPO_SRC/config/llm-systems.toml.reference"
 
   if $HAVE_AE; then
     fix_ae_origins "$_live_toml" "$REPO_SRC/tools/installer/toml_reconcile.py"

@@ -56,13 +56,15 @@ def _load_doc(path: Path):
     return tomlkit.document()
 
 
-def _set_dotted(doc, dotted: str, value) -> None:
+def _set_dotted(doc, dotted: str, value, created: Optional[set] = None) -> None:
     tomlkit = _tomlkit()
     parts = dotted.split(".")
     node = doc
-    for key in parts[:-1]:
+    for i, key in enumerate(parts[:-1]):
         if key not in node:
             node[key] = tomlkit.table()
+            if created is not None:
+                created.add(".".join(parts[:i + 1]))
         node = node[key]
     try:
         node[parts[-1]] = value
@@ -79,6 +81,59 @@ def _remove_dotted(doc, dotted: str) -> None:
         del node[parts[-1]]
     except (KeyError, TypeError):
         pass  # absent path or non-table intermediate: nothing to remove
+
+
+_BANNER_RE = re.compile(r'^#\s*(?:[─═]{2,}|-{3,})')
+
+
+def _lift_once(lines: list[str], header: str) -> bool:
+    """Move one new section above a banner comment block sitting directly over it."""
+    try:
+        h = lines.index(header)
+    except ValueError:
+        return False
+    j = h - 1
+    while j >= 0 and not lines[j].strip():
+        j -= 1
+    k = j
+    while k >= 0 and lines[k].lstrip().startswith("#"):
+        k -= 1
+    block = lines[k + 1:j + 1]
+    if not block or not any(_BANNER_RE.match(ln.strip()) for ln in block):
+        return False
+    e = h + 1
+    while e < len(lines) and not lines[e].lstrip().startswith("["):
+        e += 1
+    section = lines[h:e]
+    while section and not section[-1].strip():
+        section.pop()
+    p = k + 1
+    while p > 0 and not lines[p - 1].strip():
+        p -= 1
+    head = lines[:p] + ([""] if p else [])
+    lines[:] = head + section + lines[p:j + 1] + lines[j + 1:h] + lines[e:]
+    return True
+
+
+def _lift_new_sections(text: str, created: set) -> str:
+    """Place newly created table headers above the next section's banner comment."""
+    if not created:
+        return text
+    lines = text.splitlines()
+    moved = False
+    for path in sorted(created):
+        moved |= _lift_once(lines, f"[{path}]")
+    if not moved:
+        return text
+    lifted = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    try:
+        same = tomllib.loads(lifted) == tomllib.loads(text)
+    except Exception:
+        same = False
+    if not same:
+        log.warning("settings layout lift changed the data; keeping tomlkit layout")
+        return text
+    return lifted
 
 
 def _validate(text: str) -> None:
@@ -134,11 +189,12 @@ def apply_patches(changes: dict[str, object],
     path = Path(config_path) if config_path else resolve_config_path()
     with _LOCK:
         doc = _load_doc(path)
+        created: set = set()
         for dotted, value in changes.items():
-            _set_dotted(doc, dotted, value)
+            _set_dotted(doc, dotted, value, created)
         for dotted in removals:
             _remove_dotted(doc, dotted)
-        text = _tomlkit().dumps(doc)
+        text = _lift_new_sections(_tomlkit().dumps(doc), created)
         _validate(text)
         _backup(path)
         _atomic_write(path, text)

@@ -662,3 +662,196 @@ def test_origins_refuses_a_multi_line_value(tmp_path):
     assert r.returncode == 3
     assert "VALIDATE_FAILED" in r.stderr
     assert r.stdout == ""
+
+
+CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+
+
+def test_merge_full_default_live_against_slim_example_adds_nothing(tmp_path):
+    reference = (CONFIG_DIR / "llm-systems.toml.reference").read_text()
+    live = write(tmp_path, "live.toml", reference)
+    example = str(CONFIG_DIR / "llm-systems.toml.example")
+    r = run("merge", live, example)
+    assert r.returncode == 0
+    assert "ADDED=0" in r.stderr
+    assert r.stdout == reference
+
+
+def test_reorder_slim_live_against_reference_is_a_no_op(tmp_path):
+    slim = (CONFIG_DIR / "llm-systems.toml.example").read_text()
+    live = write(tmp_path, "live.toml", slim)
+    reference = str(CONFIG_DIR / "llm-systems.toml.reference")
+    r = run("reorder", live, reference)
+    assert r.returncode == 0
+    assert "MOVED=0" in r.stderr
+    assert "STALE_COMMENT" not in r.stderr
+    assert r.stdout == slim
+
+
+SLIM_REF = """\
+[manager]
+port = 5000
+# Idle cadence.
+poll_interval = 60
+stream_keepalive_s = 8.0
+
+[alarm_engine]
+ingest_token = "REPLACE_ME"
+"""
+
+SLIM_EXAMPLE = """\
+[alarm_engine]
+ingest_token = "REPLACE_ME"
+"""
+
+
+def slim_files(tmp_path, live_text, ref_text=SLIM_REF, ex_text=SLIM_EXAMPLE):
+    live = write(tmp_path, "live.toml", live_text)
+    ref = write(tmp_path, "llm-systems.toml.reference", ref_text)
+    write(tmp_path, "llm-systems.toml.example", ex_text)
+    return live, ref
+
+
+def test_slim_removes_keys_equal_to_reference(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager]\nport = 5000\npoll_interval = 60\n"
+                           "\n[alarm_engine]\ningest_token = \"x\"\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=2" in r.stderr
+    assert "- manager.poll_interval" in r.stderr
+    assert "- manager.port" in r.stderr
+    assert tomllib.loads(r.stdout) == {"alarm_engine": {"ingest_token": "x"}}
+
+
+def test_slim_keeps_operator_values(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager]\npoll_interval = 30\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=0" in r.stderr
+    assert r.stdout == "[manager]\npoll_interval = 30\n"
+
+
+def test_slim_keeps_keep_list_keys_even_at_default(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager]\nport = 5000\npoll_interval = 60\n",
+                           ex_text="[manager]\nport = 5000\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=1" in r.stderr
+    assert "- manager.port" not in r.stderr
+    assert r.stdout == "[manager]\nport = 5000\n"
+
+
+def test_slim_keeps_keys_missing_from_reference(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager]\ncustom_key = 60\npoll_interval = 60\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=1" in r.stderr
+    assert r.stdout == "[manager]\ncustom_key = 60\n"
+
+
+def test_slim_type_strict_equality(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager]\nstream_keepalive_s = 8\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=0" in r.stderr
+    assert r.stdout == "[manager]\nstream_keepalive_s = 8\n"
+
+
+def test_slim_preserves_kept_line_verbatim(tmp_path):
+    text = ("[manager]\npoll_interval = 60\n\n"
+            "[alarm_engine]\n# token\ningest_token = \"x\"   # note\n")
+    live, ref = slim_files(tmp_path, text)
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "[alarm_engine]\n# token\ningest_token = \"x\"   # note\n"
+
+
+def test_slim_drops_emptied_sections_and_their_comments(tmp_path):
+    text = ("# ──── MANAGER ────\n[manager]\n# Idle cadence.\npoll_interval = 60\n\n"
+            "# ──── ALARM ENGINE ────\n[alarm_engine]\ningest_token = \"x\"\n")
+    live, ref = slim_files(tmp_path, text)
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=1" in r.stderr
+    assert r.stdout == "# ──── ALARM ENGINE ────\n[alarm_engine]\ningest_token = \"x\"\n"
+    assert "MANAGER" not in r.stdout and "Idle cadence" not in r.stdout
+
+
+def test_slim_never_touches_array_of_tables(tmp_path):
+    tiers = ("[[alarm_engine.history.downsampling.tiers]]\nage_s = 3600\nstep_s = 60\n")
+    live, ref = slim_files(tmp_path, tiers, ref_text=SLIM_REF + "\n" + tiers)
+    r = run("slim", live, ref)
+    assert r.returncode == 0, r.stderr
+    assert "REMOVED=0" in r.stderr
+    assert r.stdout == tiers
+
+
+def test_slim_output_parses_and_effective_config_is_unchanged(tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_settings")
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+
+    reference_text = (CONFIG_DIR / "llm-systems.toml.reference").read_text()
+    live_text = reference_text.replace(
+        "poll_interval = 60 ", "poll_interval = 30 ", 1)
+    assert live_text != reference_text
+    live = write(tmp_path, "live.toml", live_text)
+    r = run("slim", live, str(CONFIG_DIR / "llm-systems.toml.reference"),
+            str(CONFIG_DIR / "llm-systems.toml.example"))
+    assert r.returncode == 0, r.stderr
+    assert "VALIDATE_FAILED" not in r.stderr
+    assert "REMOVED=0" not in r.stderr
+    out = tomllib.loads(r.stdout)
+    assert out["manager"]["poll_interval"] == 30
+    slimmed = write(tmp_path, "slim.toml", r.stdout)
+
+    def dump(path, name):
+        monkeypatch.setenv("LLM_SYSTEMS_CONFIG", path)
+        loader = SourceFileLoader(name, str(CONFIG_DIR / "unified_config.py.example"))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+        sys.modules[name] = mod
+        try:
+            loader.exec_module(mod)
+            return mod.Settings().model_dump()
+        finally:
+            sys.modules.pop(name, None)
+
+    assert dump(live, "uc_slim_live_1290") == dump(slimmed, "uc_slim_out_1290")
+
+
+def test_slim_model_guard_rejects_a_changed_effective_config(tmp_path):
+    pytest.importorskip("pydantic_settings")
+    if not (CONFIG_DIR / "unified_config.py").exists():
+        pytest.skip("config/unified_config.py not present")
+    # Reference value differs from the model default (60), so removal would change it.
+    ref = SLIM_REF.replace("poll_interval = 60", "poll_interval = 30")
+    live, ref_path = slim_files(tmp_path, "[manager]\npoll_interval = 30\n", ref_text=ref)
+    r = run("slim", live, ref_path)
+    assert r.returncode == 3
+    assert "VALIDATE_FAILED" in r.stderr
+    assert r.stdout == ""
+
+
+def test_slim_warns_when_the_model_guard_is_skipped(tmp_path):
+    lone = tmp_path / "lone"
+    lone.mkdir()
+    script = lone / "toml_reconcile.py"
+    script.write_text(SCRIPT.read_text())
+    live, ref = slim_files(tmp_path, "[manager]\nport = 5000\n")
+    r = subprocess.run([sys.executable, str(script), "slim", live, ref], capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+    assert "WARN: model guard skipped" in r.stderr
+
+
+def test_slim_parse_failure_exits_2(tmp_path):
+    live, ref = slim_files(tmp_path, "[manager\nport = 5000\n")
+    r = run("slim", live, ref)
+    assert r.returncode == 2
+    assert "PARSE_FAILED" in r.stderr
+    assert r.stdout == ""
+
+
+def test_slim_usage_exit_64():
+    r = run("slim")
+    assert r.returncode == 64
+    assert "slim <live.toml> <reference.toml> [<example.toml>]" in r.stderr
