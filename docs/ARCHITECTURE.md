@@ -43,6 +43,7 @@ GPU Report Card. See "Manager Feature Subsystems" below.
   │         │                │  │  (Flask)     │◄─────────│  (FastAPI)   │           │
   │         │  :5444 (WS)    │  └──────┬───────┘  proxy/  └──────┬───────┘           │
   │         │───────────────►│  WS proxy thread    push          │ :8086             │
+  │         │  :5447 / 5448  │  Tools listener ──► proxy/ ──► agent hosts            │
   └─────────┘                │  (standalone)                     ▼                   │
                              │         │                 ┌────────────────┐          │
                              │         │                 │    InfluxDB    │          │
@@ -66,6 +67,7 @@ GPU Report Card. See "Manager Feature Subsystems" below.
   :5444 is a separate `websockets` server running in its own daemon thread inside the Manager
   process — Cheroot (serving :5000/:5443) cannot speak WebSocket, so alert events reach the
   browser through this dedicated port instead, which bridges to the Alarm Engine's own /ws.
+  The Tools tab pages are served on `[manager].tools_port` / `tools_tls_port` by two more listeners in the manager. They serve only the tool pages and sign in through the dashboard, so the pages run on their own origin.
 ```
 
 ---

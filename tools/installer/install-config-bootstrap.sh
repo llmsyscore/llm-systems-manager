@@ -893,6 +893,8 @@ cat <<EOF
     [manager].tls_port      = 5443     # manager HTTPS (internal-CA cert)
     [manager].ws_proxy_port = 5444     # browser → AE WS proxy
     [manager].stream_proxy_port = 5445 # off-pool llama-state SSE daemon
+    [manager].tools_port = 5447        # Tools tab pages (own port, open it for browsers)
+    [manager].tools_tls_port = 5448    # same, for https dashboards
     [alarm_engine].tls_enabled = true  # AE HTTPS (cert pre-issued above)
     [alarm_engine].ingest_token = <set by installer>  # agent push auth
     [alarm_engine].management_token = <set by installer>  # rules/alerts auth

@@ -86,6 +86,7 @@ Local endpoints served:
 # box (3.13) bit us once already.
 from __future__ import annotations
 
+import base64
 import functools
 import hashlib
 import hmac
@@ -162,7 +163,7 @@ import signal
 
 import requests
 import socket
-from flask import Flask, jsonify, request as flask_request, Response, send_file
+from flask import Flask, jsonify, request as flask_request, Response, send_file, redirect, g, has_request_context
 
 
 _HOSTNAME = socket.gethostname()
@@ -178,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.15-3"
+__version__ = "v2026.10.15-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -667,6 +668,41 @@ def _wss_bridge_port() -> int:
     return int(getattr(settings.manager, "ws_proxy_tls_port", 0) or 0)
 
 
+# Ports the tool-origin listeners actually bound at startup.
+_TOOL_LISTENER_PORTS: set[int] = set()
+
+
+def _tools_ports() -> "tuple[int, int]":
+    """(plain, tls) tool-origin ports from config; 0 = disabled."""
+    return (int(getattr(settings.manager, "tools_port", 0) or 0),
+            int(getattr(settings.manager, "tools_tls_port", 0) or 0))
+
+
+def _tools_origin_enabled() -> bool:
+    return any(p > 0 for p in _tools_ports())
+
+
+def _listener_kind() -> str:
+    """"tools" when the request arrived on a started tool-origin port, else "dashboard"."""
+    try:
+        port = int(flask_request.environ.get("SERVER_PORT") or 0)
+    except (TypeError, ValueError):
+        return "dashboard"
+    return "tools" if port in _TOOL_LISTENER_PORTS else "dashboard"
+
+
+def _host_for_url(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _tool_frame_ancestors() -> str:
+    """frame-ancestors sources for tool pages: this request's host, any port, either scheme."""
+    host = _host_for_url(_request_host_no_port())
+    if not host:
+        return "'self'"
+    return f"http://{host} https://{host} http://{host}:* https://{host}:*"
+
+
 # ---------------------------------------------------------------------------
 # Alarm Engine — reachable for read-only queries from /api/admin/system-health,
 # /api/history, and /api/alert.
@@ -929,8 +965,14 @@ _BASELINE_SECURITY_HEADERS = (
 
 @app.after_request
 def _baseline_security_headers(resp):
-    """Adds the baseline security headers unless the response already carries one."""
+    """Adds the baseline security headers unless the response already carries one.
+    Tool-listener HTML frames from the dashboard host and skips X-Frame-Options."""
+    on_tools = has_request_context() and g.get("listener") == "tools"
     for name, value in _BASELINE_SECURITY_HEADERS:
+        if on_tools and name == "X-Frame-Options":
+            continue
+        if on_tools and name == "Content-Security-Policy" and "text/html" in (resp.content_type or "").lower():
+            value = f"frame-ancestors {_tool_frame_ancestors()}"
         resp.headers.setdefault(name, value)
     return resp
 
@@ -6306,6 +6348,8 @@ proxies.register_routes(
     request_is_https=_request_is_https,
     wss_bridge_port=_wss_bridge_port,
     ws_ticket=lambda path: _issue_ws_ticket(path=path),
+    listener_kind=_listener_kind,
+    tool_frame_ancestors=_tool_frame_ancestors,
 )
 import openclaw  # type: ignore[import-not-found]  # sibling; PR M5
 openclaw.register_routes(app, ctx)
@@ -9691,13 +9735,15 @@ def _listen_backlog() -> int:
     return int(getattr(settings.manager, "listen_backlog", 1024) or 1024)
 
 
-def _new_cheroot_server(bind_addr):
-    """Cheroot WSGI server for `app` with the configured worker count and
+def _new_cheroot_server(bind_addr, numthreads: "int | None" = None):
+    """Cheroot WSGI server for `app` with the given (default: configured) worker count and
     listen backlog; the kernel caps the backlog at net.core.somaxconn."""
     from cheroot.wsgi import Server as _CherootServer
+    if numthreads is None:
+        numthreads = int(getattr(settings.manager, "http_threads", 64) or 64)
     srv = _CherootServer(
         bind_addr, app,
-        numthreads=int(getattr(settings.manager, "http_threads", 64) or 64),
+        numthreads=numthreads,
         request_queue_size=_listen_backlog(),
     )
     # Cheroot keeps only 10 idle keep-alive connections by default and answers
@@ -9734,6 +9780,28 @@ def _push_stream_metrics(points: "list[dict]") -> None:
         log.debug("stream metric push failed: %s", e)
 
 
+def _manager_ssl_adapter(custom: "tuple[Path, Path] | None"):
+    """Cheroot SSL adapter for the manager cert, serving the operator cert to the SNI names it covers."""
+    from cheroot.ssl.builtin import BuiltinSSLAdapter
+    adapter = BuiltinSSLAdapter(str(DATA_DIR / "manager-tls.crt"), str(DATA_DIR / "manager-tls.key"))
+    if custom is not None:
+        import ssl as _ssl
+        c_crt, c_key = custom
+        sans = _cert_san_hostnames(c_crt)
+        cctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        cctx.load_cert_chain(str(c_crt), str(c_key))
+
+        def _pick_cert(sslobj, servername, _ctx, _cctx=cctx, _sans=sans):
+            if _sni_matches(servername, _sans):
+                sslobj.context = _cctx
+            return None
+
+        adapter.context.sni_callback = _pick_cert
+        log.info("  Manager TLS: operator cert active for %s (internal-CA cert for other names/IPs)",
+                 ", ".join(sans) or "(no DNS SANs)")
+    return adapter
+
+
 def _maybe_start_manager_tls_server() -> None:
     """When MANAGER_TLS_PORT is set, start a second werkzeug server on
     that port serving the same Flask app over HTTPS. The cert is
@@ -9761,33 +9829,12 @@ def _maybe_start_manager_tls_server() -> None:
         log.exception("manager server cert generation failed; skipping HTTPS: %s", e)
         return
 
-    crt = DATA_DIR / "manager-tls.crt"
-    key = DATA_DIR / "manager-tls.key"
     custom = _custom_manager_tls_files()
 
     def _serve_tls() -> None:
-        from cheroot.ssl.builtin import BuiltinSSLAdapter
         try:
             srv = _new_cheroot_server(("0.0.0.0", tls_port))
-            adapter = BuiltinSSLAdapter(str(crt), str(key))
-            # Operator cert is served only to SNI hostnames it covers; the
-            # internal-CA cert stays the default so CA-pinned agents keep working.
-            if custom is not None:
-                import ssl as _ssl
-                c_crt, c_key = custom
-                sans = _cert_san_hostnames(c_crt)
-                cctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
-                cctx.load_cert_chain(str(c_crt), str(c_key))
-
-                def _pick_cert(sslobj, servername, _ctx, _cctx=cctx, _sans=sans):
-                    if _sni_matches(servername, _sans):
-                        sslobj.context = _cctx
-                    return None
-
-                adapter.context.sni_callback = _pick_cert
-                log.info("  Manager TLS: operator cert active for %s (internal-CA cert for other names/IPs)",
-                         ", ".join(sans) or "(no DNS SANs)")
-            srv.ssl_adapter = adapter
+            srv.ssl_adapter = _manager_ssl_adapter(custom)
             log.info("  Manager TLS: listening on https://0.0.0.0:%d", tls_port)
             _cheroot_serve_with_keepalive(srv)
         except Exception as e:
@@ -9796,6 +9843,47 @@ def _maybe_start_manager_tls_server() -> None:
     import threading as _threading
     t = _threading.Thread(target=_serve_tls, name="manager-tls-server", daemon=True)
     t.start()
+
+
+# Worker count for each tool listener: a quarter of http_threads, at least 8.
+def _tool_listener_threads() -> int:
+    return max(8, int(getattr(settings.manager, "http_threads", 64) or 64) // 4)
+
+
+def _maybe_start_tool_origin_servers(threaded: bool = True) -> None:
+    """Start the tool-origin listeners ([manager].tools_port / tools_tls_port)
+    serving the same app; a port that collides with the dashboard ports is refused."""
+    plain, tls = _tools_ports()
+    taken = {int(settings.manager.port or 0), int(getattr(settings.manager, "tls_port", 0) or 0)}
+    taken.discard(0)
+    if plain in taken or tls in taken or (plain and plain == tls):
+        log.error("  Tools:       tools_port/tools_tls_port must differ from port/tls_port — not started")
+        return
+    if plain <= 0 and tls <= 0:
+        log.info("  Tools:       disabled (set [manager].tools_port to serve the tool pages on their own port)")
+        return
+
+    def _serve(port: int, use_tls: bool) -> None:
+        try:
+            srv = _new_cheroot_server(("0.0.0.0", port), numthreads=_tool_listener_threads())
+            if use_tls:
+                _ensure_manager_server_cert()
+                srv.ssl_adapter = _manager_ssl_adapter(_custom_manager_tls_files(quiet=True))
+            _TOOL_LISTENER_PORTS.add(port)
+            log.info("  Tools:       serving %s://0.0.0.0:%d", "https" if use_tls else "http", port)
+            _cheroot_serve_with_keepalive(srv)
+        except Exception as e:
+            _TOOL_LISTENER_PORTS.discard(port)
+            log.exception("tool-origin %s listener on :%d crashed: %s", "https" if use_tls else "http", port, e)
+
+    import threading as _threading
+    for port, use_tls in ((plain, False), (tls, True)):
+        if port <= 0:
+            continue
+        if threaded:
+            _threading.Thread(target=_serve, args=(port, use_tls), name=f"tools-{'tls' if use_tls else 'http'}-server", daemon=True).start()
+        else:
+            _serve(port, use_tls)
 
 
 # ── WS bridge tickets ─────────────────────────────────────────────────
@@ -9899,6 +9987,138 @@ def alarm_ws_ticket():
 @app.route("/api/openclaw-ws-ticket", methods=["GET"])
 def openclaw_ws_ticket():
     return jsonify({"ticket": _issue_ws_ticket(path="/ws/openclaw"), "ttl_s": _ws_ticket_ttl()})
+
+
+# ── Tool origin (#1213): one-shot tickets and the tool cookie ──────────
+_TOOL_NAMES = ("openclaw", "llmchat", "imggen")
+_TOOL_COOKIE = "llmsys_tools"
+_TOOL_TICKET_TTL_S = 60
+_TOOL_COOKIE_TTL_S = 8 * 3600
+
+
+def _tool_key(label: bytes) -> bytes:
+    return hmac.new(_manager_secret(), label, hashlib.sha256).digest()
+
+
+def _sign_tool_claims(claims: dict, label: bytes) -> str:
+    """'<urlsafe-b64 json>.<hmac hex>' over the claims, keyed per label."""
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claims, separators=(",", ":"), sort_keys=True).encode()).decode().rstrip("=")
+    sig = hmac.new(_tool_key(label), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_tool_claims(token, label: bytes) -> "dict | None":
+    """Claims dict for a well-signed, unexpired token; else None."""
+    if not isinstance(token, str) or token.count(".") != 1:
+        return None
+    payload, sig = token.split(".")
+    if not (payload.isascii() and sig.isascii()):
+        return None
+    expected = hmac.new(_tool_key(label), payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return None
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        expiry = int(claims.get("e", 0))
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return None
+    if not isinstance(claims, dict) or expiry < time.time():
+        return None
+    return claims
+
+
+def _issue_tool_ticket(tool: str, user: str, role: str) -> str:
+    claims = {"t": tool, "u": user or "", "r": role or "admin",
+              "e": int(time.time()) + _TOOL_TICKET_TTL_S, "n": secrets.token_hex(8)}
+    return _sign_tool_claims(claims, b"tool-ticket-key")
+
+
+def _consume_tool_ticket(ticket) -> "dict | None":
+    """Verify and spend a tool ticket; a nonce seen before within its TTL is refused."""
+    claims = _verify_tool_claims(ticket, b"tool-ticket-key")
+    if claims is None or claims.get("t") not in _TOOL_NAMES:
+        return None
+    nonce, expiry, now = str(claims.get("n", "")), int(claims["e"]), int(time.time())
+    with _ws_tickets_lock:
+        for n, exp in list(_ws_tickets_spent.items()):
+            if exp < now:
+                _ws_tickets_spent.pop(n, None)
+        if not nonce or nonce in _ws_tickets_spent:
+            return None
+        _ws_tickets_spent[nonce] = expiry
+    return claims
+
+
+def _tool_cookie_name() -> str:
+    """`__Secure-`-prefixed tool cookie name on TLS requests, the plain name otherwise."""
+    return f"__Secure-{_TOOL_COOKIE}" if flask_request.is_secure else _TOOL_COOKIE
+
+
+def _tool_cookie_claims() -> "tuple[str, str] | None":
+    """(user, role) from a valid tool cookie on the request, else None."""
+    claims = _verify_tool_claims(flask_request.cookies.get(_tool_cookie_name(), ""), b"tool-cookie-key")
+    if claims is None:
+        return None
+    return str(claims.get("u", "")), str(claims.get("r") or "admin")
+
+
+def _exchange_tool_ticket(ticket):
+    """302 to the ticket's tool page root, setting the tool cookie; None when the ticket is bad."""
+    claims = _consume_tool_ticket(ticket)
+    if claims is None:
+        return None
+    cookie = _sign_tool_claims({"u": claims["u"], "r": claims["r"],
+                                "e": int(time.time()) + _TOOL_COOKIE_TTL_S}, b"tool-cookie-key")
+    resp = redirect(f"/proxy/{claims['t']}/", code=302)
+    resp.set_cookie(_tool_cookie_name(), cookie, max_age=_TOOL_COOKIE_TTL_S, httponly=True,
+                    samesite="Lax", secure=bool(flask_request.is_secure), path="/")
+    return resp
+
+
+@app.route("/api/tool-ticket", methods=["GET"])
+def tool_ticket():
+    tool = (flask_request.args.get("tool") or "").strip()
+    if tool not in _TOOL_NAMES:
+        return jsonify({"ok": False, "error": "unknown tool"}), 404
+    role = getattr(g, "auth_role", None)
+    if role is None:
+        return jsonify({"ok": False, "error": "authentication required"}), 401
+    plain, tls = _tools_ports()
+    https = _request_is_https() or flask_request.args.get("https") == "1"
+    port = tls if https else plain
+    if port <= 0:
+        return jsonify({"ok": False, "error": "tool origin disabled"}), 409
+    if role != "admin" and auth._operator_denied(f"/proxy/{tool}/"):
+        return jsonify({"ok": False, "error": "operator role: forbidden", "role_denied": True}), 403
+    ticket = _issue_tool_ticket(tool, getattr(g, "auth_user", None) or "", role)
+    url = (f"{'https' if https else 'http'}://{_host_for_url(_request_host_no_port())}:{port}"
+           f"/proxy/{tool}/?tool_ticket={ticket}")
+    return jsonify({"url": url, "ttl_s": _TOOL_TICKET_TTL_S, "port": port})
+
+
+auth.tool_origin.listener_kind = _listener_kind
+auth.tool_origin.enabled = _tools_origin_enabled
+auth.tool_origin.tools_port = lambda: _tools_ports()[0] or _tools_ports()[1]
+auth.tool_origin.exchange_ticket = _exchange_tool_ticket
+auth.tool_origin.cookie_claims = _tool_cookie_claims
+
+
+@app.route("/tools-ping", methods=["GET"])
+def tools_ping():
+    """Reachability probe for the Tools tab; CORS only for origins on this request's host."""
+    from urllib.parse import urlsplit
+    resp = jsonify({"ok": True})
+    resp.headers["Vary"] = "Origin"
+    resp.headers["Cache-Control"] = "no-store"
+    origin = (flask_request.headers.get("Origin") or "").strip()
+    try:
+        origin_host = (urlsplit(origin).hostname or "").lower() if origin else ""
+    except ValueError:
+        origin_host = ""
+    if origin_host and origin_host == _request_host_no_port().lower():
+        resp.headers["Access-Control-Allow-Origin"] = origin
+    return resp
 
 
 # Largest WebSocket message the bridge relays in either direction.
@@ -10433,6 +10653,10 @@ if __name__ == "__main__":
     # off; flip MANAGER_TLS_PORT to enable. Plain HTTP on 5000 stays
     # up either way
     _maybe_start_manager_tls_server()
+    try:
+        _maybe_start_tool_origin_servers()
+    except Exception as _e:
+        log.warning("tool-origin listener startup failed: %s", _e)
     # Standalone WS proxy thread for /ws/alarm — no-op unless ws_proxy_port set.
     try:
         _maybe_start_alarm_ws_proxy()

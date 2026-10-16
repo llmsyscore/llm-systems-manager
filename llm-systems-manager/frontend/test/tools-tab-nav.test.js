@@ -34,6 +34,7 @@ describe('top-level tab bar (#847)', () => {
 describe('Tools sub-tabs (#847)', () => {
   beforeEach(() => {
     document.body.innerHTML = toolsHtml;
+    window._toolsLoadFrame = vi.fn(async () => {});
     loadSwitchSubTab(bootSrc);
   });
 
@@ -45,16 +46,13 @@ describe('Tools sub-tabs (#847)', () => {
   it('ships every proxy iframe unloaded', () => {
     const frames = [...document.querySelectorAll('#toolsTab iframe')];
     expect(frames).toHaveLength(3);
-    expect(frames.every(f => f.hasAttribute('data-src') && !f.getAttribute('src'))).toBe(true);
+    expect(frames.every(f => f.hasAttribute('data-tool') && !f.hasAttribute('src'))).toBe(true);
   });
 
-  it('promotes data-src to src only for the sub-tab being opened', () => {
+  it('loads the frame only for the sub-tab being opened (#1213)', () => {
     window.switchSubTab('tools', 'llmchat');
-    const chat = document.querySelector('#tools-llmchat iframe');
-    expect(chat.getAttribute('src')).toBe('/proxy/llmchat/');
-    expect(chat.hasAttribute('data-src')).toBe(false);
-    expect(document.querySelector('#tools-imggen iframe').getAttribute('src')).toBeNull();
-    expect(document.querySelector('#tools-openclaw iframe').getAttribute('src')).toBeNull();
+    expect(window._toolsLoadFrame).toHaveBeenCalledTimes(1);
+    expect(window._toolsLoadFrame).toHaveBeenCalledWith('llmchat');
   });
 
   it('shows only the opened panel and marks its button active', () => {

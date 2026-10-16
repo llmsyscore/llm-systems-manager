@@ -94,6 +94,8 @@ CATALOG: list[dict] = [
     _e("manager.tls_key_file", "str", "Operator TLS key (PEM)", "Key for the operator cert.", "network", MANAGER),
     _e("manager.ws_proxy_port", "int", "WS proxy port", "Browser /ws/alarm → AE /ws relay; 0 disables (breaks live toasts if the AE enforces a token).", "network", MANAGER, min=0, max=65535),
     _e("manager.ws_proxy_tls_port", "int", "WSS proxy port", "wss twin, active only when the operator cert is set; 0 disables.", "network", MANAGER, min=0, max=65535),
+    _e("manager.tools_port", "int", "Tool pages port", "Serves the Tools tab pages on their own origin; browsers need it open. 0 = serve them on the dashboard port.", "network", MANAGER, min=0, max=65535),
+    _e("manager.tools_tls_port", "int", "Tool pages HTTPS port", "https twin of the tool pages port for https dashboards; 0 disables.", "network", MANAGER, min=0, max=65535),
     _e("manager.stream_proxy_port", "int", "SSE daemon port", "Standalone llama-state SSE daemon; 0 = fall back to the main pool.", "network", MANAGER, min=0, max=65535),
     _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER, common=True),
     _e("manager.hsts_max_age_s", "int", "HSTS max-age (s)", "Strict-Transport-Security on HTTPS responses; 0 = off. Keep off while the plain-HTTP port is used on the same hostname.", "network", MANAGER, min=0, max=63072000),

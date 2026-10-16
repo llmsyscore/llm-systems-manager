@@ -26,13 +26,14 @@ Each agent host needs network access to ports 8081 (alarm engine) and 5000 or 54
 
 ### Required Ports
 
-The following (configurable) ports must be reachable between the components listed.
+The following (configurable) ports must be reachable between the components listed. Browsers that use the Tools tab also need 5447 or 5448.
 
 | Port | What it is | Who needs to reach it |
 |------|------------|----------------------|
 | 5000 | Manager web interface (HTTP) | Browser |
 | 5443 | Manager web interface (HTTPS, optional) | Browser |
 | 5444 | Alarm event WebSocket proxy | Browser |
+| 5447 / 5448 | Tools tab pages (HTTP / HTTPS) | Browser |
 | 8081 | Alarm Engine API — receives metrics from agents | Agents and Manager |
 | 8082 | Agent API — manager contacts the agent here | Manager |
 | 8086 | InfluxDB time-series database | Alarm Engine and Manager |
@@ -313,6 +314,7 @@ Refer to that file when you need to understand what a setting does or when addin
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
 | `[manager].tls_cert_file` / `tls_key_file` | Operator-provided TLS cert + key (PEM) served on the HTTPS port via SNI; blank uses the internal CA | *(not set)* |
 | `[manager].ws_proxy_tls_port` | `wss` twin of the alert WebSocket bridge, active only with an operator cert | `5446` |
+| `[manager].tools_port` / `tools_tls_port` | Ports the Tools tab pages (OpenClaw, LLM Chat, Image Generation) are served on, separate from the dashboard so those pages cannot act on your dashboard session; browsers need them open. `0` serves the pages on the dashboard port instead | `5447` / `5448` |
 | `[manager].hsts_max_age_s` | `Strict-Transport-Security` max-age emitted on HTTPS responses; `0` = off. Leave it off while the plain-HTTP port shares the hostname — HSTS preserves the port | `0` |
 | `[manager.agents].enrollment_mode` | When new machines may register and wait for approval: `auto` opens enrollment for one window after each manager start, `open` keeps it open and `closed` keeps it closed until changed here or on Admin › Agents (in `auto`, a change made on Admin › Agents lasts until the next manager start). Applies without a restart | `auto` |
 | `[manager.agents].enrollment_window_min` | Minutes enrollment stays open after a start in `auto` mode, and per **Open enrollment** click | `15` |
@@ -551,10 +553,10 @@ mirror_dir = "/mnt/backup-share"   # optional second copy of every archive
 
 ### OpenClaw Proxy Origin
 
-If you run the OpenClaw tool through **Tools → OpenClaw**, the OpenClaw host's own gateway checks the browser's `Origin` header and rejects pages it doesn't recognize. Add the manager dashboard's origin to the allowlist on the OpenClaw host:
+If you run the OpenClaw tool through **Tools → OpenClaw**, the OpenClaw host's own gateway checks the browser's `Origin` header and rejects pages it doesn't recognize. The Tools tab pages are served on the tool ports, so add those origins to the allowlist on the OpenClaw host:
 
 ```
-gateway.controlUi.allowedOrigins = ["https://<manager-host>:5443"]
+gateway.controlUi.allowedOrigins = ["https://<manager-host>:5448", "http://<manager-host>:5447"]
 ```
 
 Without this, the embedded page fails with "Browser origin not allowed" even though the proxy itself is reachable.
@@ -666,6 +668,8 @@ server {
     }
 }
 ```
+
+The Tools tab loads the tool pages straight from the tool ports (5447, or 5448 for HTTPS), not through the dashboard address. With a reverse proxy, either open ports 5447 and 5448 on the manager host so browsers can reach them, or give the proxy a second server that forwards `<proxy-host>:5448` to the manager's port 5448 and passes the `Host` header unchanged. When the manager uses its internal certificate, each browser must accept it for that port once: open `https://<host>:5448/tools-ping` in a tab and accept the certificate.
 
 When clients connect to the manager directly, fail2ban can ban an address at the firewall after repeated refusals by watching the manager's own log lines (behind a proxy, use fail2ban's stock `nginx-limit-req` filter on the proxy's error log instead). The manager logs to the journal, so the jail reads it with the `systemd` backend:
 

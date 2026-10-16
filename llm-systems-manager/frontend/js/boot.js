@@ -177,11 +177,55 @@ function switchSubTab(parent, sub) {
   if (parent === 'admin' && sub === 'settings') {
     if (typeof adminSettingsLoad === 'function') adminSettingsLoad();
   }
-  // Tools (#847): promote the proxy iframe's data-src on its first visit.
-  if (parent === 'tools') {
-    const frame = document.querySelector(`#tools-${sub} iframe[data-src]`);
-    if (frame) { frame.src = frame.dataset.src; frame.removeAttribute('data-src'); }
+  // Tools (#1213): load the sub-tab's frame from the tool origin.
+  if (parent === 'tools') _toolsLoadFrame(sub).catch(() => {});
+}
+
+// Mints a tool-origin ticket, probes the tool port, then points the frame at it.
+async function _toolsLoadFrame(sub) {
+  const panel = document.getElementById(`tools-${sub}`);
+  const frame = panel && panel.querySelector('iframe[data-tool]');
+  const note = panel && panel.querySelector('.tools-unreachable');
+  if (!frame) return;
+  if (frame.dataset.loadedAt && Date.now() - Number(frame.dataset.loadedAt) < 8 * 3600 * 1000) return;
+  const https = location.protocol === 'https:' ? '&https=1' : '';
+  const r = await fetch(`/api/tool-ticket?tool=${encodeURIComponent(sub)}${https}`, { credentials: 'same-origin' });
+  if (r.status === 409) {
+    frame.src = `/proxy/${sub}/`;
+    frame.dataset.loadedAt = String(Date.now());
+    return;
   }
+  if (!r.ok) {
+    if (note) {
+      note.textContent = `The tool page could not be opened (HTTP ${r.status}). Sign in again or reload the dashboard.`;
+      note.hidden = false;
+    }
+    return;
+  }
+  const j = await r.json();
+  const origin = new URL(j.url).origin;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 4000);
+  let reachable = false;
+  try {
+    const p = await fetch(`${origin}/tools-ping`, { mode: 'cors', credentials: 'omit', signal: ctl.signal });
+    reachable = p.ok;
+  } catch (e) {
+    reachable = false;
+  }
+  clearTimeout(timer);
+  if (!reachable) {
+    if (note) {
+      note.textContent = origin.startsWith('https:')
+        ? `The tools port ${j.port} is not reachable from your browser. Open it on the firewall, or open ${origin}/tools-ping once and accept the certificate, or set [manager].tools_port to 0 to show the tools on the dashboard port.`
+        : `The tools port ${j.port} is not reachable from your browser. Open it on the firewall, or set [manager].tools_port to 0 to show the tools on the dashboard port.`;
+      note.hidden = false;
+    }
+    return;
+  }
+  if (note) note.hidden = true;
+  frame.src = j.url;
+  frame.dataset.loadedAt = String(Date.now());
 }
 
 // Chart re-backfill for whichever view is on screen — called on tab refocus.
