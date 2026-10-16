@@ -95,7 +95,7 @@ def test_upgrade_keeps_the_config_when_the_backup_cannot_be_written(tmp_path):
     (shim / "cp").write_text("#!/usr/bin/env bash\nexit 1\n")
     (shim / "cp").chmod(0o755)
     cfg, _ = seed(tmp_path)
-    _drop_line(cfg, "ca_file")
+    _drop_line(cfg, "tls_port")
     cfg.write_text(cfg.read_text().replace(NEW_LIST, OLD_LIST))
     old = cfg.read_text()
     _, out = seed(tmp_path, shim_dir=shim)
@@ -119,14 +119,14 @@ def _backups(cfg):
 
 def test_upgrade_adds_a_new_key_and_keeps_a_backup_next_to_the_config(tmp_path):
     cfg, _ = seed(tmp_path)
-    _drop_line(cfg, "ca_file")
+    _drop_line(cfg, "tls_port")
     old = cfg.read_text()
-    assert "ca_file" not in tomllib.loads(old)["notifications"]["smtp"]
+    assert "tls_port" not in tomllib.loads(old)["manager"]
     _, out = seed(tmp_path)
     assert "merged 1 new key" in out
     parsed = tomllib.loads(cfg.read_text())
     example = tomllib.loads(EXAMPLE.read_text())
-    assert parsed["notifications"]["smtp"]["ca_file"] == example["notifications"]["smtp"]["ca_file"]
+    assert parsed["manager"]["tls_port"] == example["manager"]["tls_port"]
     assert parsed["alarm_engine"]["cors_origins"] == NEW_LIST
     assert oct(cfg.stat().st_mode & 0o777) == "0o600"
     baks = _backups(cfg)
@@ -137,14 +137,14 @@ def test_upgrade_adds_a_new_key_and_keeps_a_backup_next_to_the_config(tmp_path):
 
 def test_upgrade_merge_and_origins_fix_share_one_backup(tmp_path):
     cfg, _ = seed(tmp_path)
-    _drop_line(cfg, "enrollment_window_min")
+    _drop_line(cfg, "metrics_bucket ")
     cfg.write_text(cfg.read_text().replace(NEW_LIST, OLD_LIST))
     old = cfg.read_text()
     _, out = seed(tmp_path)
     assert "merged 1 new key" in out and "added https" in out
     parsed = tomllib.loads(cfg.read_text())
     example = tomllib.loads(EXAMPLE.read_text())
-    assert parsed["manager"]["agents"]["enrollment_window_min"] == example["manager"]["agents"]["enrollment_window_min"]
+    assert parsed["influxdb"]["metrics_bucket"] == example["influxdb"]["metrics_bucket"]
     assert parsed["alarm_engine"]["cors_origins"] == NEW_LIST
     baks = _backups(cfg)
     assert len(baks) == 1 and baks[0].read_text() == old
@@ -154,7 +154,7 @@ def test_upgrade_keeps_operator_values_when_merging(tmp_path):
     cfg, _ = seed(tmp_path)
     text = cfg.read_text()
     tokens = tomllib.loads(text)["alarm_engine"]
-    _drop_line(cfg, "ca_file")
+    _drop_line(cfg, "tls_port")
     seed(tmp_path)
     after = tomllib.loads(cfg.read_text())["alarm_engine"]
     assert after["ingest_token"] == tokens["ingest_token"]
@@ -175,6 +175,6 @@ def test_upgrade_adds_the_report_section_and_says_reports_are_on(tmp_path):
 
 def test_upgrade_without_a_new_section_prints_no_report_notice(tmp_path):
     cfg, _ = seed(tmp_path)
-    _drop_line(cfg, "ca_file")
+    _drop_line(cfg, "tls_port")
     _, out = seed(tmp_path)
     assert "merged 1 new key" in out and "Anonymous install" not in out

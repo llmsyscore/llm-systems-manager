@@ -97,7 +97,30 @@ def test_every_key_reachable_by_section_scan():
                 f"[{header.group(1)}].{key} unreachable by section scan"
             )
             checked += 1
-    assert checked > 50
+    assert checked >= 30
+
+
+def test_slim_example_carries_every_substituted_key():
+    boot = BOOTSTRAP.read_text()
+    pairs = set(re.findall(
+        r'sub_(?:numeric_|bool_)?in_section\(\s*text,\s*"([^"]+)",\s*"([^"]+)"', boot))
+    assert len(pairs) > 20
+    assert ("manager.security", "admin_cidrs") not in pairs
+    pairs.add(("manager.security", "admin_cidrs"))
+    parsed = tomllib.loads(TEMPLATE.read_text())
+    for section, key in sorted(pairs):
+        if section == "agent":
+            continue
+        node = parsed
+        for part in section.split("."):
+            assert part in node, f"[{section}] missing from the slim example"
+            node = node[part]
+        assert key in node, f"[{section}].{key} missing from the slim example"
+    raw = TEMPLATE.read_text()
+    for literal in (r'log_dir\s*=\s*"', r'ingest_token\s*=\s*"', r'management_token\s*=\s*"',
+                    r'enrollment_secret\s*=\s*"'):
+        assert len(re.findall("^" + literal, raw, re.MULTILINE)) == 1, literal
+    assert re.search(r"^\[manager\.telemetry\]$", raw, re.MULTILINE)
 
 
 def test_ae_side_still_substitutes(tmp_path):

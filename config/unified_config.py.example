@@ -17,8 +17,8 @@ typed nested fields:
     settings.alarm_engine.history.downsampling.tiers  # list of Tier objects
 
 Missing keys fall back to the model defaults so a fresh checkout boots
-without any TOML file. The example template at
-config/llm-systems.toml.example documents every key.
+without any TOML file. config/llm-systems.toml.reference lists every key;
+llm-systems.toml.example is the install template.
 
 Sections:
     [manager]            — Flask backend bind, polling, endpoints, proxies, security, agents

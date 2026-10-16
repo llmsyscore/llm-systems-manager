@@ -29,9 +29,14 @@ if grep -q '^toml-key|.*|manager\.benchmark\.stream_queue_size$' "$MANIFEST"; th
   echo "planted stale TOML key: manager.benchmark.stream_queue_size"
   planted=$((planted+1))
 fi
-# Depth-3 key inserted into the existing [alarm_engine.timeouts] section.
+# Depth-3 key: into [alarm_engine.timeouts] when present, else in a new section
+# (the slim install template has no such section).
 if grep -q '^toml-key|.*|alarm_engine\.timeouts\.manager_health$' "$MANIFEST"; then
-  sed -i '/^\[alarm_engine\.timeouts\]/a manager_health = 1.5' "$TOML"
+  if grep -q '^\[alarm_engine\.timeouts\]' "$TOML"; then
+    sed -i '/^\[alarm_engine\.timeouts\]/a manager_health = 1.5' "$TOML"
+  else
+    printf '\n[alarm_engine.timeouts]\nmanager_health = 1.5\n' >> "$TOML"
+  fi
   grep -q '^manager_health' "$TOML" || { echo "fixture failed to plant manager_health"; exit 1; }
   echo "planted stale TOML key: alarm_engine.timeouts.manager_health"
   planted=$((planted+1))

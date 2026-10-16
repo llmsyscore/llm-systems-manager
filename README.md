@@ -769,7 +769,7 @@ The frontend polls the manager every few seconds when something is active and sl
 
 ## Configuration
 
-Configuration options are accesible via the settings section of the Admin tab or the runtime config file: `config/llm-systems.toml`. Both the manager and the alarm engine read from the same file. A documented template ships as `config/llm-systems.toml.example` — the installer renders the live file from the template and prompts you for the values that have to be host-specific (IPs, SMTP credentials, InfluxDB tokens). Report settings live under `[manager.telemetry]`.
+Configuration options are accesible via the settings section of the Admin tab or the runtime config file: `config/llm-systems.toml`. Both the manager and the alarm engine read from the same file. Every setting is documented in `config/llm-systems.toml.reference`. The installer writes a short `config/llm-systems.toml` from `config/llm-systems.toml.example` and prompts you for the values that have to be host-specific (IPs, SMTP credentials, InfluxDB tokens). Report settings live under `[manager.telemetry]`.
 
 Edit the config, then restart the affected service:
 

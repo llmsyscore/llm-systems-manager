@@ -251,7 +251,8 @@ jobs:
           ASSET="${RUNNER_TEMP}/serve/${TAG}/llm-systems-manager-${TAG}.tar.gz"
           for f in tools/installer/removed-paths.manifest \
                    tools/installer/toml_reconcile.py \
-                   config/llm-systems.toml.example; do
+                   config/llm-systems.toml.example \
+                   config/llm-systems.toml.reference; do
             tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/$f" \
               || { echo "MISSING from release tarball: $f"; exit 1; }
           done

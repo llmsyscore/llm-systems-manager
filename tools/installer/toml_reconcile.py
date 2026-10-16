@@ -2,12 +2,17 @@
 # Shared TOML span-walk for the installer config reconcile: `merge` appends
 # example keys missing from live; `prune` removes upstream-deleted keys.
 
-# Protocol: stdout = resulting TOML; stderr = ADDED=N / PRUNED=N / CHANGED=N +
+# Protocol: stdout = resulting TOML; stderr = ADDED=N / PRUNED=N / CHANGED=N / REMOVED=N +
 # diagnostic tags (PARSE_FAILED / VALIDATE_FAILED / NOTFOUND); exit 0 / 2 / 3 / 64.
 import copy
+import importlib.util
+import os
 import re
 import sys
+import tempfile
 import tomllib
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 from urllib.parse import urlsplit
 
 # SECTION_RE tolerates a trailing comment after the closing bracket.
@@ -450,6 +455,161 @@ def prune(live_path, prune_keys):
     sys.stdout.write(result)
 
 
+_MISSING = object()
+
+
+def get_path(d, dotted):
+    """Value at a dotted path in a parsed dict, or _MISSING."""
+    for part in dotted.split('.'):
+        if not isinstance(d, dict) or part not in d:
+            return _MISSING
+        d = d[part]
+    return d
+
+
+def strict_equal(a, b):
+    """Parsed-value equality that also requires matching types."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(strict_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(strict_equal(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def find_unified_config():
+    """Path of config/unified_config.py in a parent of this script, or None."""
+    here = Path(__file__).resolve().parent
+    for d in (here, *here.parents):
+        p = d / "config" / "unified_config.py"
+        if p.is_file():
+            return p
+    return None
+
+
+def settings_dump(module_path, cfg_path, tag):
+    """model_dump() of Settings loaded from the TOML at cfg_path via a private module copy."""
+    saved = os.environ.get("LLM_SYSTEMS_CONFIG")
+    os.environ["LLM_SYSTEMS_CONFIG"] = str(Path(cfg_path).resolve())
+    name = f"_toml_reconcile_uc_{tag}"
+    try:
+        loader = SourceFileLoader(name, str(module_path))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+        sys.modules[name] = mod
+        loader.exec_module(mod)
+        return mod.Settings().model_dump()
+    finally:
+        sys.modules.pop(name, None)
+        if saved is None:
+            os.environ.pop("LLM_SYSTEMS_CONFIG", None)
+        else:
+            os.environ["LLM_SYSTEMS_CONFIG"] = saved
+
+
+def dump_diff(a, b, prefix=""):
+    """Yield the dotted paths where two nested dumps differ."""
+    for k in sorted(set(a) | set(b)):
+        path = f"{prefix}.{k}" if prefix else k
+        x, y = a.get(k), b.get(k)
+        if isinstance(x, dict) and isinstance(y, dict):
+            yield from dump_diff(x, y, path)
+        elif x != y:
+            yield path
+
+
+def slim(live_path, reference_path, keep_path):
+    """Remove live keys whose value equals the reference, except example keys."""
+    text, live_dict = load_or_die(live_path, "live")
+    _ref_text, ref_dict = load_or_die(reference_path, "reference")
+    _keep_text, keep_dict = load_or_die(keep_path, "example")
+    keep = set(flatten(keep_dict))
+
+    def removable(dotted):
+        if dotted in keep or any(k.startswith(dotted + '.') for k in keep):
+            return False
+        ref_val = get_path(ref_dict, dotted)
+        live_val = get_path(live_dict, dotted)
+        if ref_val is _MISSING or live_val is _MISSING:
+            return False
+        return strict_equal(live_val, ref_val)
+
+    removed = []
+    slim_secs = []
+    for name, header, body, lead in detach_leads(split_sections(text)):
+        dropidx = set()
+        if not name.startswith('[['):
+            for key, _s, e, cb in keys_with_spans(body):
+                dotted = f"{name}.{key}" if name else key
+                if removable(dotted):
+                    dropidx.update(range(cb, e))
+                    removed.append(dotted)
+        new_body = [ln for j, ln in enumerate(body) if j not in dropidx]
+        if dropidx:
+            # Collapse blank runs and trim edge blanks left by removed blocks.
+            new_body = [ln for j, ln in enumerate(new_body)
+                        if ln.strip() or j == 0 or new_body[j - 1].strip()]
+            while new_body and not new_body[-1].strip():
+                new_body.pop()
+            while new_body and not new_body[0].strip() and body and body[0].strip():
+                new_body.pop(0)
+        slim_secs.append((name, header, new_body, lead, bool(dropidx)))
+
+    # Drop a section header its slim emptied, taking its lead comments with it.
+    out = []
+    for name, header, body, lead, touched in slim_secs:
+        if touched and header is not None and not any(True for _ in keys_with_spans(body)):
+            continue
+        out.extend(lead)
+        if header is not None:
+            out.append(header)
+        out.extend(body)
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    result = '\n'.join(out)
+    if not result.endswith('\n'):
+        result += '\n'
+
+    try:
+        tomllib.loads(result)
+    except Exception as e:
+        sys.stderr.write(f"VALIDATE_FAILED: slimmed TOML doesn't parse: {e}\n")
+        sys.exit(3)
+
+    # Refuse output whose loaded settings differ from the live file's.
+    uc = find_unified_config()
+    before = after = None
+    if uc is not None:
+        try:
+            before = settings_dump(uc, live_path, "live")
+        except Exception as e:
+            sys.stderr.write(f"WARN: model guard skipped ({type(e).__name__}: {e})\n")
+            uc = None
+    else:
+        sys.stderr.write("WARN: model guard skipped\n")
+    if uc is not None:
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                cfg = Path(td) / "llm-systems.toml"
+                cfg.write_text(result)
+                after = settings_dump(uc, cfg, "slim")
+        except Exception as e:
+            sys.stderr.write(f"VALIDATE_FAILED: slimmed TOML doesn't load: {e}\n")
+            sys.exit(3)
+        if before != after:
+            diff = sorted(dump_diff(before, after))
+            sys.stderr.write(
+                f"VALIDATE_FAILED: slimmed TOML would change the config ({', '.join(diff)})\n")
+            sys.exit(3)
+
+    sys.stderr.write(f"REMOVED={len(removed)}\n")
+    for p in removed:
+        sys.stderr.write(f"- {p}\n")
+    sys.stdout.write(result)
+
+
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 ORIGINS_LINE_RE = re.compile(r'^(\s*cors_origins\s*=\s*)"[^"]*"(.*)$')
 
@@ -562,6 +722,10 @@ def main():
         reorder(argv[1], argv[2])
     elif len(argv) >= 3 and argv[0] == "prune":
         prune(argv[1], argv[2:])
+    elif len(argv) in (3, 4) and argv[0] == "slim":
+        example = argv[3] if len(argv) == 4 else \
+            str(Path(argv[2]).parent / "llm-systems.toml.example")
+        slim(argv[1], argv[2], example)
     elif len(argv) == 4 and argv[0] == "origins":
         origins(argv[1], argv[2], argv[3] == "1")
     else:
@@ -570,6 +734,7 @@ def main():
             "       toml_reconcile.py reorder <live.toml> <example.toml>\n"
             "       toml_reconcile.py prune <live.toml> <dotted.key> [...]\n"
             "       toml_reconcile.py origins <live.toml> <local-ip> <ae-only: 0|1>\n"
+            "       toml_reconcile.py slim <live.toml> <reference.toml> [<example.toml>]\n"
         )
         sys.exit(64)
 

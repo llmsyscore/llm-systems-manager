@@ -966,7 +966,7 @@ prune_removed_toml_keys() {
 reorder_live_toml() {
   local live_toml="$1" script="$2" example="$3" _tmp _out _moved _bak _rc
   [[ -f "$live_toml" && -f "$example" ]] || return 0
-  log "checking $(basename "$live_toml") layout against the upstream example"
+  log "checking $(basename "$live_toml") layout against the upstream reference"
   if (( ${DRY_RUN:-0} )); then
     log "[dry-run] would move any misplaced sections/keys into example order"
     return 0
@@ -989,7 +989,7 @@ reorder_live_toml() {
   _moved="$(awk -F= '/^MOVED=/{print $2}' "$_tmp")"
   grep -E '^MISPLACED' "$_tmp" | sed 's/^/    /' || true
   if [[ "${_moved:-0}" == "0" ]] && ! grep -q '^STALE_COMMENT' "$_tmp"; then
-    ok "config layout already matches the upstream example"
+    ok "config layout already matches the upstream reference"
     rm -f "$_tmp"
     return 0
   fi

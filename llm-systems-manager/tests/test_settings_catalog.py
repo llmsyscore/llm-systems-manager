@@ -47,8 +47,8 @@ def test_validate_coerces_types_and_ranges():
 
 
 def test_validate_rejects_unknown_path_and_bad_choice():
-    _, errors = sc.validate_and_coerce({"manager.http_threads": 32})
-    assert "manager.http_threads" in errors  # tuning knob: not in catalog
+    _, errors = sc.validate_and_coerce({"manager.no_such_knob": 32})
+    assert "manager.no_such_knob" in errors  # not in catalog
     _, errors = sc.validate_and_coerce({"manager.branding.palette": "magenta"})
     assert "manager.branding.palette" in errors
 
@@ -244,3 +244,77 @@ def test_describe_entries_carry_labels_and_groups_through_unchanged():
 def test_capabilities_still_validates_the_raw_choice_value():
     clean, errors = sc.validate_and_coerce({"manager.tower.capabilities": "operate"})
     assert errors == {} and clean["manager.tower.capabilities"] == "operate"
+
+
+NEW_1290 = {  # path: (type, group, service, hot)
+    "manager.agents.stale_after_s": ("int", "agents", "manager", True),
+    "manager.agents.down_after_s": ("int", "agents", "manager", True),
+    "manager.agents.liveness_watch_interval_s": ("int", "agents", "manager", True),
+    "manager.public_hosts": ("list", "network", "manager", False),
+    "manager.http_threads": ("int", "network", "manager", False),
+    "manager.listen_backlog": ("int", "network", "manager", False),
+    "manager.stream_keepalive_s": ("float", "network", "manager", False),
+    "manager.stream_max_lifetime_s": ("float", "network", "manager", False),
+    "manager.stream_reserve_threads": ("int", "network", "manager", False),
+    "manager.uploads.max_content_length": ("int", "timeouts", "manager", False),
+    "manager.timeouts.generic_http": ("float", "timeouts", "manager", False),
+    "notifications.timeouts.http": ("float", "notifications", "alarm_engine", False),
+    "notifications.timeouts.smtp": ("float", "notifications", "alarm_engine", False),
+    "alarm_engine.history.downsampling.rollup_enabled": ("bool", "history", "alarm_engine", False),
+    "alarm_engine.history.downsampling.rollup_every": ("choice", "history", "alarm_engine", False),
+    "alarm_engine.api_limits.history_since_minutes_max": ("int", "history", "alarm_engine", False),
+    "alarm_engine.api_limits.history_max_response_points": ("int", "history", "alarm_engine", False),
+    "alarm_engine.api_limits.export_since_minutes_max": ("int", "history", "alarm_engine", False),
+    "alarm_engine.caches.max_hosts_per_metric": ("int", "alarm_engine", "alarm_engine", False),
+    "alarm_engine.caches.metric_catalog_warmup_days": ("int", "alarm_engine", "alarm_engine", False),
+    "openclaw.metrics_push_interval_s": ("float", "openclaw", "manager", False),
+    "paths.log_max_bytes": ("int", "logging", "both", False),
+    "paths.log_backup_count": ("int", "logging", "both", False),
+}
+
+
+def test_1290_entries_present_with_bounds():
+    for p, (typ, group, service, hot) in NEW_1290.items():
+        e = sc.entry_for(p)
+        assert e and e["type"] == typ and e["group"] == group and e["service"] == service, p
+        assert bool(e.get("hot")) == hot, p
+        if typ in ("int", "float"):
+            assert "min" in e and "max" in e and e["min"] <= sc._current(p) <= e["max"], p
+
+
+def test_1290_rollup_every_rejects_unschedulable():
+    _, errors = sc.validate_and_coerce({"alarm_engine.history.downsampling.rollup_every": "soon"})
+    assert errors
+    coerced, errors = sc.validate_and_coerce({"alarm_engine.history.downsampling.rollup_every": "10m"})
+    assert errors == {} and coerced["alarm_engine.history.downsampling.rollup_every"] == "10m"
+
+
+def test_1290_rollup_every_choices_match_the_read_grains():
+    assert sc.entry_for("alarm_engine.history.downsampling.rollup_every")["choices"] == ["1m", "5m", "10m", "30m", "1h"]
+
+
+def test_1290_agents_liveness_save_updates_the_live_settings(monkeypatch):
+    import types
+
+    import manager_mod as M
+    import settings_toml_io
+
+    from config.unified_config import ManagerConfig
+    live = M.settings.manager.agents
+    for k in ("stale_after_s", "down_after_s", "liveness_watch_interval_s"):
+        monkeypatch.setattr(live, k, getattr(live, k))
+    snap = ManagerConfig()
+    snap.agents.stale_after_s = 42
+    snap.agents.down_after_s = 420
+    snap.agents.liveness_watch_interval_s = 7
+    snap.agents.enrollment_mode = live.enrollment_mode
+    snap.agents.enrollment_window_min = live.enrollment_window_min
+    snap.agents.enrollment_secret = live.enrollment_secret
+    monkeypatch.setattr(settings_toml_io, "apply_patches", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "_snapshot", lambda: types.SimpleNamespace(manager=snap))
+    M._tower_write_setting("manager.agents.stale_after_s", 42)
+    assert (live.stale_after_s, live.down_after_s, live.liveness_watch_interval_s) == (42, 420, 7)
+
+
+def test_1290_public_hosts_is_a_list_row():
+    assert sc.entry_for("manager.public_hosts")["type"] == "list"
