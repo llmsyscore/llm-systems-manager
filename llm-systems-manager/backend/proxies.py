@@ -102,8 +102,8 @@ def _configured_proxy_csp() -> str:
 
 
 def _csp_header_pairs(content_type: str) -> list:
-    """Manager-origin CSP header for an HTML response, else []. Replaces the
-    stripped upstream CSP with [manager.security].proxy_html_csp (empty = off)."""
+    """Manager-origin CSP header for an HTML response, else []. Replaces the stripped upstream
+    CSP with [manager.security].proxy_html_csp (empty = off); tool-listener pages frame from the host."""
     csp = _configured_proxy_csp()
     if not csp or "text/html" not in (content_type or "").lower():
         return []
@@ -116,6 +116,14 @@ def _csp_header_pairs(content_type: str) -> list:
             csp = csp.replace("{host}", host)
         else:
             csp = re.sub(r"\s*wss?://\{host\}:\*", "", csp)
+    try:
+        ancestors = _deps.tool_frame_ancestors() if _deps.listener_kind() == "tools" else ""
+    except Exception:
+        ancestors = ""
+    if ancestors and "frame-ancestors 'self'" in csp:
+        csp = csp.replace("frame-ancestors 'self'", f"frame-ancestors {ancestors}", 1)
+    elif ancestors and not re.search(r"(?:^|;)\s*frame-ancestors\b", csp, re.IGNORECASE):
+        csp = f"{csp.rstrip().rstrip(';')}; frame-ancestors {ancestors}"
     return [("Content-Security-Policy", csp)]
 
 
@@ -547,9 +555,9 @@ _FORWARD_SKIP = (_PROXY_HOP_BY_HOP - {"content-encoding", "content-security-poli
 
 
 def _upstream_cookie(value: str) -> str:
-    """Cookie header value with the manager's own session cookies removed."""
+    """Cookie header value with the manager's own session and tool cookies removed."""
     name = current_app.config["SESSION_COOKIE_NAME"]
-    own = {name, f"__Secure-{name}"}
+    own = {name, f"__Secure-{name}", "llmsys_tools", "__Secure-llmsys_tools"}
     return "; ".join(c.strip() for c in value.split(";")
                      if c.strip() and c.partition("=")[0].strip() not in own)
 
@@ -617,7 +625,11 @@ def openclaw_ws_url_for_browser() -> str:
     return _bridge_url_for_browser("/ws/openclaw")
 
 
-def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticket: str = "") -> str:
+# Host values safe to embed in the fetch shim's JS regex literal.
+_SAFE_PAGE_HOST_RE = re.compile(r"^[A-Za-z0-9.\-\[\]:]+$")
+
+
+def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticket: str = "", page_host: str = "") -> str:
     """WebSocket shim for the control UI: gateway dials go through the manager's
     WS bridge with a one-shot ticket (fetching the next one), or straight to
     the gateway host when the bridge is off."""
@@ -638,6 +650,16 @@ def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticke
             f"u=u.replace(/^(wss?:\\/\\/)[^/]+(\\/.*)$/,'$1{netloc}$2');}}"
             "return u;}"
         )
+    fetch_fix = ""
+    if page_host and _SAFE_PAGE_HOST_RE.fullmatch(page_host):
+        host_re = re.escape(page_host)
+        fetch_fix = (
+            f"var F=window.fetch,H=/^https?:\\/\\/{host_re}(?::\\d+)?\\/(?!proxy\\/openclaw\\/)/;"
+            "function fixF(u){u=String(u);var m=H.exec(u);return m?'/proxy/openclaw/'+u.slice(m[0].length):u;}"
+            "window.fetch=function(i,o){if(typeof i==='string')i=fixF(i);"
+            "else if(i&&i.url&&(i.method==='GET'||i.method==='HEAD')){i=new Request(fixF(i.url),i);}"
+            "return F.call(this,i,o);};"
+        )
     return (
         "<script>"
         "(function(){"
@@ -646,6 +668,7 @@ def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticke
         "window.WebSocket=function(url,p){url=fix(url);return p?new _WS(url,p):new _WS(url);};"
         "window.WebSocket.prototype=_WS.prototype;"
         "Object.assign(window.WebSocket,{CONNECTING:0,OPEN:1,CLOSING:2,CLOSED:3});"
+        + fetch_fix +
         "})();"
         "</script>"
     )
@@ -701,7 +724,8 @@ def _proxy_openclaw(path: str, base: str):
         ct = upstream.headers.get("content-type", "")
         if "text/html" in ct:
             bridge = openclaw_ws_url_for_browser()
-            ws_patch = _build_openclaw_ws_patch(netloc, port, bridge, _deps.ws_ticket("/ws/openclaw") if bridge else "")
+            ws_patch = _build_openclaw_ws_patch(netloc, port, bridge, _deps.ws_ticket("/ws/openclaw") if bridge else "",
+                                                page_host=_deps.request_host_no_port())
             body = _rewrite_openclaw_html(upstream.content.decode("utf-8", errors="replace"))
             if "</head>" in body:
                 body = body.replace("</head>", ws_patch + "</head>", 1)
@@ -997,7 +1021,9 @@ def register_routes(app, ctx, *,
                     rewrite_loopback_host: Callable[[str, str], str],
                     request_is_https: "Callable[[], bool] | None" = None,
                     wss_bridge_port: "Callable[[], int] | None" = None,
-                    ws_ticket: "Callable[[str], str] | None" = None) -> None:
+                    ws_ticket: "Callable[[str], str] | None" = None,
+                    listener_kind: "Callable[[], str] | None" = None,
+                    tool_frame_ancestors: "Callable[[], str] | None" = None) -> None:
     """Wire the 7 catch-all proxy routes into `app`. Shared deps come
     from ctx (ae_session, alarm_engine_url, require_admin); the module-
     specific kwargs are repo_root (for the AE SPA dir), install_topology
@@ -1015,6 +1041,8 @@ def register_routes(app, ctx, *,
     _deps.request_is_https = request_is_https or (lambda: False)
     _deps.wss_bridge_port = wss_bridge_port or (lambda: 0)
     _deps.ws_ticket = ws_ticket or (lambda path: "")
+    _deps.listener_kind = listener_kind or (lambda: "dashboard")
+    _deps.tool_frame_ancestors = tool_frame_ancestors or (lambda: "")
 
     _ALARM_FRONTEND_DIR = str(Path(repo_root) / "llm-systems-alarm-engine" / "frontend")
     # Make sure send_from_directory hands modules/CSS back with the right type.

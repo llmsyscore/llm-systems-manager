@@ -32,8 +32,8 @@ RUN cp config/unified_config.py.example config/unified_config.py \
     && chmod +x docker/*.sh
 USER llmsys
 WORKDIR /opt/llm-systems-manager/llm-systems-manager
-# 5000 HTTP, 5443 HTTPS, 5444 WS proxy, 5445 SSE daemon
-EXPOSE 5000 5443 5444 5445
+# 5000 HTTP, 5443 HTTPS, 5444 WS proxy, 5445 SSE daemon, 5447/5448 tool pages
+EXPOSE 5000 5443 5444 5445 5447 5448
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://localhost:5000/health || exit 1
 ENTRYPOINT ["/opt/llm-systems-manager/docker/entrypoint-manager.sh"]

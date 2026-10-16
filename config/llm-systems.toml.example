@@ -74,6 +74,15 @@ ws_proxy_port = 5444
 # set — https dashboards mixed-content-block plain ws. 0 disables.
 ws_proxy_tls_port = 5446
 
+# Tool pages (OpenClaw, llama chat, image generation) are served on their own
+# port so they cannot act on the dashboard session. Browsers need this port
+# open; set 0 to serve them on the dashboard port instead.
+tools_port = 5447
+
+# https twin of tools_port for https dashboards (same certificate as tls_port).
+# 0 disables.
+tools_tls_port = 5448
+
 # Standalone SSE daemon port for /api/llama-state/stream — a held stream
 # costs an asyncio task instead of a pinned worker. Browsers fall back to
 # the main pool when 0, the daemon is down, or the dashboard is HTTPS

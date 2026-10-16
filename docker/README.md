@@ -158,6 +158,8 @@ Works the same as a co-located bare-metal install:
 | 5443 | manager | dashboard + API (HTTPS, internal CA) |
 | 5444 | manager | `/ws/alarm` WebSocket proxy |
 | 5445 | manager | llama-state SSE daemon |
+| 5447 | manager | Tools tab pages (HTTP) |
+| 5448 | manager | Tools tab pages (HTTPS) |
 | 8081 | alarm engine | agent metric ingest + alarms API/UI |
 | 8086 | influxdb | not published by default (compose-internal) |
 

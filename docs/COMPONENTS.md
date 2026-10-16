@@ -244,6 +244,8 @@ The dashboard uses three different mechanisms to keep information current, each 
 
 **WebSocket** is used for alert events. It is served by a standalone `websockets` daemon thread running inside the Manager process (its own asyncio loop, disabled unless `[manager].ws_proxy_port` is set — default `5444`), which relays events between the browser and the Alarm Engine's WebSocket endpoint. When an alert triggers, is acknowledged, or resolves anywhere in the system, that event arrives in the browser within milliseconds — no polling delay.
 
+**Tool pages** (OpenClaw, LLM Chat, Image Generation) are served on `[manager].tools_port` (5447) and `tools_tls_port` (5448) so they run on their own origin inside the dashboard's Tools tab.
+
 ### Multi-Agent Support
 
 When the lab has more than one computer running the same type of AI software (for example, two machines each running llama.cpp), a small switcher chip appears at the top of each relevant panel. The operator can click it to pin that panel to a specific machine's data. Panels without a selection automatically follow a default agent. The selection is remembered across page reloads so the view stays consistent.

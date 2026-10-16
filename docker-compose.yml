@@ -69,6 +69,8 @@ services:
       - "5443:5443"   # dashboard + API (HTTPS, internal CA)
       - "5444:5444"   # /ws/alarm WebSocket proxy
       - "5445:5445"   # llama-state SSE daemon
+      - "5447:5447"   # tool pages (HTTP)
+      - "5448:5448"   # tool pages (HTTPS, internal CA)
     volumes:
       - manager-data:/opt/llm-systems-manager/data
       # Shared with the alarm engine: the manager issues ae-tls.{crt,key}

@@ -334,6 +334,7 @@
     #toolsTab .sub-tab-nav { flex: 0 0 auto; padding: 10px 4px; margin-bottom: 0; }
     #toolsTab .sub-tab-panel.active { flex: 1 1 auto; min-height: 0; }
     #toolsTab iframe { display: block; width: 100%; height: 100%; border: none; }
+    #toolsTab .tools-unreachable { margin: 12px 16px; padding: 10px 12px; border-radius: 6px; background: var(--warn-bg, rgba(255, 180, 0, .12)); color: var(--fg); font-size: 13px; }
     /* Unified status system — one chip primitive + semantic modifiers, all
        token-driven via color-mix so they hold across every theme. Replaces
        .status-pill/.pill-*, .agent-badge/.agent-*, .adm-badge/*, and the

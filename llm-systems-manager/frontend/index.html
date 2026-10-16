@@ -552,8 +552,7 @@ Backend API endpoints consumed:
   <iframe id="alarmEngineIframe" data-src="/alarm/" style="width:100%;height:100%;border:none;" allowfullscreen></iframe>
 </div>
 
-<!-- Tools tab (#847): OpenClaw / LLM Chat / Image Generation sub-tabs; each
-     iframe's data-src is promoted to src by switchSubTab on first visit. -->
+<!-- Tools tab (#847, #1213): each frame loads from the tool origin on its first visit (see _toolsLoadFrame). -->
 <div id="toolsTab" style="display:none;position:fixed;top:88px;left:0;right:0;bottom:0;z-index:10;">
   <div class="sub-tab-nav">
     <button class="sub-tab-btn active" id="subTabBtnToolsOpenclaw" onclick="switchSubTab('tools','openclaw')">OpenClaw</button>
@@ -561,13 +560,16 @@ Backend API endpoints consumed:
     <button class="sub-tab-btn" id="subTabBtnToolsImggen" onclick="switchSubTab('tools','imggen')">Image Generation</button>
   </div>
   <div id="tools-openclaw" class="sub-tab-panel active">
-    <iframe data-src="/proxy/openclaw/" allowfullscreen></iframe>
+    <p class="tools-unreachable" hidden></p>
+    <iframe data-tool="openclaw" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals" allowfullscreen></iframe>
   </div>
   <div id="tools-llmchat" class="sub-tab-panel">
-    <iframe data-src="/proxy/llmchat/" allowfullscreen></iframe>
+    <p class="tools-unreachable" hidden></p>
+    <iframe data-tool="llmchat" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals" allowfullscreen></iframe>
   </div>
   <div id="tools-imggen" class="sub-tab-panel">
-    <iframe data-src="/proxy/imggen/" allowfullscreen></iframe>
+    <p class="tools-unreachable" hidden></p>
+    <iframe data-tool="imggen" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals" allowfullscreen></iframe>
   </div>
 </div>
 

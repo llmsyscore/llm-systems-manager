@@ -32,6 +32,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 from flask import g, jsonify, redirect, request as flask_request, session
@@ -145,6 +146,12 @@ class SchemeAwareSessionInterface(SecureCookieSessionInterface):
 
     def get_cookie_secure(self, app) -> bool:
         return bool(super().get_cookie_secure(app)) or _request_is_secure()
+
+    def should_set_cookie(self, app, session) -> bool:
+        """Never on the tool-origin listener; the parent's answer elsewhere."""
+        if g.get("listener") == "tools":
+            return False
+        return super().should_set_cookie(app, session)
 
 
 # ── Password hashing ──────────────────────────────────────────────────
@@ -545,9 +552,62 @@ def _wants_json(path: str) -> bool:
     return path.startswith(("/api/", "/proxy/", "/sdcpp", "/ws/"))
 
 
+# Tool-origin hooks (#1213); the manager wires the real callables at import.
+tool_origin = SimpleNamespace(
+    listener_kind=lambda: "dashboard",
+    enabled=lambda: False,
+    tools_port=lambda: 0,
+    exchange_ticket=lambda ticket: None,
+    cookie_claims=lambda: None,
+)
+_TOOL_PATHS = frozenset({"/api/openclaw-ws-ticket", "/tools-ping"})
+_TOOL_PREFIXES = ("/proxy/", "/sdcpp")
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _foreign_origin() -> bool:
+    """True for an unsafe request whose Origin names another host:port than the request's own."""
+    if flask_request.method in _SAFE_METHODS:
+        return False
+    origin = (flask_request.headers.get("Origin") or "").strip().lower()
+    if not origin:
+        return False
+    if origin == "null":
+        return True
+    from urllib.parse import urlsplit
+    return (urlsplit(origin).netloc or "") != (flask_request.host or "").lower()
+
+
+def _tool_listener_gate():
+    """Gate for requests on the tool-origin listener: tool routes only, tool cookie only."""
+    path = flask_request.path or "/"
+    if path == "/tools-ping":
+        return None
+    if not (path.startswith(_TOOL_PREFIXES) or path in _TOOL_PATHS):
+        return jsonify({"ok": False, "error": "not found"}), 404
+    ticket = flask_request.args.get("tool_ticket")
+    if ticket is not None:
+        resp = tool_origin.exchange_ticket(ticket)
+        if resp is None:
+            return jsonify({"ok": False, "error": "tool ticket invalid or expired"}), 403
+        return resp
+    claims = tool_origin.cookie_claims()
+    if claims is None:
+        return jsonify({"ok": False, "error": "tool sign-in required", "tool_auth_required": True}), 403
+    g.auth_user, g.auth_role = claims
+    if g.auth_role != "admin" and _operator_denied(path):
+        return jsonify({"ok": False, "error": "operator role: forbidden", "role_denied": True}), 403
+    return None
+
+
 def _auth_gate():
     mode = auth_mode()
     path = flask_request.path or "/"
+    g.listener = tool_origin.listener_kind()
+    if g.listener == "tools":
+        return _tool_listener_gate()
+    if tool_origin.enabled() and path.startswith(_TOOL_PREFIXES):
+        return jsonify({"ok": False, "error": f"tool pages are served on port {tool_origin.tools_port()}"}), 404
     if _anon_budgeted(path) and not _ANON_BUDGET.allow():
         return _anon_budget_refusal(path)
     # Always-open infra paths — never gated, never role-checked. The icon
@@ -609,6 +669,8 @@ def _auth_gate():
                                 "password_change_required": True}), 403
             nxt = safe_next(path)
             return redirect(f"/login?next={nxt}" if nxt else "/login")
+    if via_session and _foreign_origin():
+        return jsonify({"ok": False, "error": "cross-origin request refused"}), 403
     g.auth_role = role
     g.auth_user = session.get("user")
     if role != "admin" and _operator_denied(path):
