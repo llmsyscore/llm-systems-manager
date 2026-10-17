@@ -98,7 +98,7 @@ body:
         - llama.cpp
         - LM Studio
         - vLLM
-        - None
+        - No inference engine
         - Other
     validations:
       required: true
