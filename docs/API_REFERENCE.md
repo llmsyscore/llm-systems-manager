@@ -2,7 +2,7 @@
 
 This reference covers every HTTP endpoint exposed by the LLM Systems Manager and the Alarm Engine. It is written for operators, integration authors, and script writers who need to call endpoints directly — not for contributors reading the source code.
 
-The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS). The Alarm Engine runs on port 8081 but is always accessed through the Manager's `/api/alarm/*` proxy — you should never need to call port 8081 directly. All endpoints in this document use the Manager as the entry point.
+The Manager listens on port 5000 (HTTP) and optionally port 5443 (HTTPS); the Tools tab pages use ports 5447 and 5448 (see [Proxy Routes](#proxy-routes)). The Alarm Engine runs on port 8081 but is always accessed through the Manager's `/api/alarm/*` proxy — you should never need to call port 8081 directly. All endpoints in this document use the Manager as the entry point.
 
 ---
 
@@ -1714,6 +1714,20 @@ Clears the session cookie and redirects to the login page. If authentication is 
 ## Proxy Routes
 
 The Manager transparently proxies several external services, adding authentication and routing without exposing those services directly.
+
+The three tool pages (`/proxy/llmchat/*`, `/proxy/openclaw/*`, `/proxy/imggen/*` and `/sdcpp/*`) are served on their own ports, `[manager].tools_port` (default `5447`, HTTP) and `tools_tls_port` (default `5448`, HTTPS), not on the dashboard port. On the dashboard port these paths answer 404 with the tool port to use. The tool ports do not accept the dashboard session: a browser signs in to them with a ticket from `GET /api/tool-ticket`, which sets an 8-hour `llmsys_tools` cookie (`__Secure-llmsys_tools` on HTTPS). Set both ports to `0` to serve the tool pages on the dashboard port instead.
+
+### `GET /api/tool-ticket`
+Issues a one-shot sign-in link for one tool page on the tool port. **Query:** `tool` (`llmchat`, `openclaw` or `imggen`); `https=1` asks for the HTTPS tool port (the default follows the request's scheme).
+
+**Response:** `{"url": "<scheme>://<host>:<port>/proxy/<tool>/?tool_ticket=<ticket>", "ttl_s": 60, "port": <port>}`. Opening `url` within `ttl_s` seconds sets the tool cookie and redirects to the tool page; a ticket works once, and only on its own tool's page. Returns 401 without a session, 403 when the operator role may not use that tool, 404 for an unknown tool, and 409 when the requested tool port is set to `0`.
+
+---
+
+### `GET /tools-ping`
+Answers `{"ok": true}`. The Tools tab calls it on the tool port to check that the port is reachable and its certificate accepted before loading a tool page. Needs no sign-in on the tool port.
+
+---
 
 ### `/proxy/llmchat/*`
 Proxies requests to the llama.cpp built-in chat UI. Content-Security-Policy headers are stripped so the chat UI loads correctly through the proxy.
