@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/llmsyscore/llm-systems-manager/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: Troubleshooting guide
+    url: https://github.com/llmsyscore/llm-systems-manager#troubleshooting-and-uninstall
+    about: Answers to common problems with the dashboard, install and agents.

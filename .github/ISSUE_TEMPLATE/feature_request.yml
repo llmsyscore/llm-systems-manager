@@ -1,0 +1,102 @@
+name: Feature request
+description: Suggest a new feature or an improvement.
+labels: ["enhancement"]
+type: Feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Tell us what you are trying to do; we work out the details together.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: What you are trying to do and what gets in the way today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: Describe the change as you would see it in the dashboard, the agent or the API.
+    validations:
+      required: true
+
+  - type: textarea
+    id: first-step
+    attributes:
+      label: A smaller first step
+      description: If the full idea is large, which part would help most on its own?
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part does this touch?
+      multiple: true
+      options:
+        - Dashboard / manager
+        - Agent
+        - Alarm engine
+        - Install, update or uninstall
+        - Docker
+        - Homebrew
+        - .deb / .rpm packages
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Inference engine
+      multiple: true
+      options:
+        - llama.cpp
+        - LM Studio
+        - vLLM
+        - Not engine-specific
+        - Other
+
+  - type: dropdown
+    id: gpu
+    attributes:
+      label: GPU
+      multiple: true
+      options:
+        - NVIDIA (CUDA)
+        - AMD (ROCm)
+        - AMD (Vulkan)
+        - Apple Silicon (Metal)
+        - Intel
+        - CPU only
+        - Not hardware-specific
+
+  - type: textarea
+    id: sample-output
+    attributes:
+      label: Sample output
+      description: |
+        If the idea uses data from your system, paste a sample, for example a llama.cpp `/metrics` dump or GPU readings from `/sys/class/drm`.
+        This lets us build and test against what your setup really reports.
+      render: text
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other options you considered
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues or links
+      placeholder: "#123, #456"
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed passwords, tokens and IP addresses from everything above.
+          required: true
