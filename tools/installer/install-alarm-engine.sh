@@ -5,7 +5,7 @@
 # Assumes the repo is deployed at $LLMSYS_INSTALL_DIR and llmsys user exists.
 #
 # Does:
-#   - Installs apt prereqs (python3, venv, pip, build essentials).
+#   - Installs system packages (python3, venv, pip, build essentials).
 #   - Creates llm-systems-alarm-engine/venv as llmsys.
 #   - pip-installs llm-systems-alarm-engine/requirements.txt.
 #   - Drops the systemd unit and enables it. Does NOT start it.
@@ -47,9 +47,9 @@ ensure_runas_user "$LLMSYS_RUN_USER"
 resolve_run_group "$LLMSYS_RUN_USER"
 AE_DIR="$INSTALL_DIR/llm-systems-alarm-engine"
 
-banner "Alarm engine — apt prereqs"
+banner "Alarm engine — system packages"
 ensure_apt_prereqs python3 python3-venv python3-pip python3-dev build-essential ca-certificates sqlite3
-ok "apt prereqs present"
+ok "system packages present"
 
 banner "Alarm engine — venv + pip install"
 if [[ ! -d "$AE_DIR" ]]; then

@@ -8,7 +8,7 @@ This guide walks you through installing, configuring, and maintaining LLM System
 
 ### Manager Server
 
-- **Operating system:** Ubuntu 22.04 or later (other modern Linux distributions should work)
+- **Operating system:** Ubuntu 22.04 or later (other modern Linux distributions should work). The script installer also supports RHEL-family 10 hosts (Rocky Linux, AlmaLinux, RHEL 10) and installs packages with `dnf`; on version 9 of these systems, use the `.rpm` package.
 - **Python:** 3.11 or later (the installer refuses to proceed below this)
 - **RAM:** 2 GB minimum; 4 GB recommended
 - **Disk:** At least 10 GB free for logs, metrics history, and model benchmark data

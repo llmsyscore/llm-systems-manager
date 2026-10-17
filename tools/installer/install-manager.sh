@@ -9,7 +9,7 @@
 #   - lib-common.sh is sourceable from $(dirname "$0")/lib-common.sh.
 #
 # Does:
-#   - Installs apt prereqs (python3, venv, pip, dev, build essentials,
+#   - Installs system packages (python3, venv, pip, dev, build essentials,
 #     openssh-client) when missing.
 #   - Creates /opt/llm-systems-manager/venv as the llmsys user.
 #   - pip-installs llm-systems-manager/backend/requirements.txt.
@@ -56,10 +56,10 @@ INSTALL_DIR="${LLMSYS_INSTALL_DIR}"
 ensure_runas_user "$LLMSYS_RUN_USER"
 resolve_run_group "$LLMSYS_RUN_USER"
 
-banner "Manager — apt prereqs"
+banner "Manager — system packages"
 ensure_apt_prereqs python3 python3-venv python3-pip python3-dev build-essential \
   ca-certificates curl wget jq sqlite3
-ok "apt prereqs present"
+ok "system packages present"
 
 banner "Manager — venv + pip install"
 if [[ ! -d "$INSTALL_DIR" ]]; then

@@ -108,7 +108,7 @@ ensure_apt_prereqs() {
   mapfile -t missing < <(missing_apt_pkgs "$@")
   for p in "${missing[@]}"; do [[ -n "$p" ]] && nonempty+=("$p"); done
   if (( ${#nonempty[@]} > 0 )); then
-    offer_apt_install "${nonempty[@]}" || die "Required apt packages missing"
+    offer_apt_install "${nonempty[@]}" || die "Required system packages missing"
   fi
 }
 
@@ -326,6 +326,31 @@ detect_os() {
     *)      LLMSYS_OS="other"  ;;
   esac
   export LLMSYS_OS
+  detect_pkg_mgr
+}
+
+# Sets LLMSYS_PKG_MGR to apt, dnf, or empty from the available package tool.
+detect_pkg_mgr() {
+  if command -v apt-get >/dev/null 2>&1; then LLMSYS_PKG_MGR="apt"
+  elif command -v dnf >/dev/null 2>&1; then LLMSYS_PKG_MGR="dnf"
+  else LLMSYS_PKG_MGR=""
+  fi
+  export LLMSYS_PKG_MGR
+}
+
+# Prints the dnf package names for the given apt package names, one per line.
+map_pkgs_for_dnf() {
+  local p
+  for p in "$@"; do
+    case "$p" in
+      python3-venv)    ;;
+      python3-dev)     printf '%s\n' python3-devel ;;
+      build-essential) printf '%s\n' gcc gcc-c++ make ;;
+      sqlite3)         printf '%s\n' sqlite ;;
+      gnupg)           printf '%s\n' gnupg2 ;;
+      *)               printf '%s\n' "$p" ;;
+    esac
+  done
 }
 
 require_linux() {
@@ -397,12 +422,17 @@ PYEOF
 
 # Returns list of missing apt packages (Linux-only)
 missing_apt_pkgs() {
-  local pkgs=("$@") missing=()
-  for p in "${pkgs[@]}"; do
-    if ! dpkg -s "$p" >/dev/null 2>&1; then
-      missing+=("$p")
-    fi
-  done
+  local pkgs=("$@") missing=() p
+  if [[ "${LLMSYS_PKG_MGR:-}" == "dnf" ]]; then
+    mapfile -t pkgs < <(map_pkgs_for_dnf "$@")
+    for p in "${pkgs[@]}"; do
+      rpm -q --whatprovides "$p" >/dev/null 2>&1 || missing+=("$p")
+    done
+  else
+    for p in "${pkgs[@]}"; do
+      dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
+    done
+  fi
   printf '%s\n' "${missing[@]}"
 }
 
@@ -410,20 +440,26 @@ missing_apt_pkgs() {
 #   Prompts the user; on yes, runs apt-get install. Returns 0 on install
 #   success or no-op, 1 on refusal/failure.
 offer_apt_install() {
-  local pkgs=("$@")
+  local pkgs=("$@") mapped=("$@") tool="${LLMSYS_PKG_MGR:-apt-get}"
   if (( ${#pkgs[@]} == 0 )); then return 0; fi
-  warn "Missing system packages: ${pkgs[*]}"
+  if [[ "$tool" == "dnf" ]]; then mapfile -t mapped < <(map_pkgs_for_dnf "$@")
+  else tool="apt-get"; fi
+  warn "Missing system packages: ${mapped[*]}"
   if [[ ! -t 0 ]]; then
     err "stdin is not a TTY; cannot prompt. Install manually:"
-    err "  sudo apt-get install -y ${pkgs[*]}"
+    err "  sudo $tool install -y ${mapped[*]}"
     return 1
   fi
-  if ! confirm "  Install with apt-get now?" y; then
+  if ! confirm "  Install with $tool now?" y; then
     err "Refused — install manually and re-run."; return 1
   fi
   detect_sudo
   apt_update_once
-  $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}"
+  if [[ "$tool" == "dnf" ]]; then
+    $SUDO dnf install -y "${mapped[@]}"
+  else
+    $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}"
+  fi
 }
 
 # validate_influx_token <label> <token> [require_eqeq]
@@ -492,6 +528,7 @@ validate_influx_org() {
 # offer a one-time 'sudo date -s' that does NOT enable NTP or modify any
 # system services, just nudges the clock for this run, then retries once.
 apt_update_with_clock_recovery() {
+  [[ "${LLMSYS_PKG_MGR:-apt}" == "dnf" ]] && return 0
   detect_sudo
   local output rc=0
   # Put the failing command in an if-context so 'set -e' in the caller
@@ -556,6 +593,7 @@ apt_update_with_clock_recovery() {
 : "${LLMSYS_APT_STAMP:=}"
 _APT_UPDATED=0
 apt_update_once() {
+  [[ "${LLMSYS_PKG_MGR:-apt}" == "dnf" ]] && return 0
   if [[ -n "$LLMSYS_APT_STAMP" && -s "$LLMSYS_APT_STAMP" ]] \
      || [[ "$_APT_UPDATED" == "1" ]]; then
     return 0

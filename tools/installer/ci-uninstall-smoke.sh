@@ -30,12 +30,12 @@ command -v python3 >/dev/null 2>&1 || fail "python3 (PTY driver) not available"
 # before/after delta, not a vacuous pass against a user that never existed.
 getent passwd "$RUN_USER" >/dev/null 2>&1 \
   || fail "precondition: runtime user '$RUN_USER' not present pre-uninstall (set LLMSYS_RUN_USER for --user hosts)"
-# Robust pre-check: the influxdb2 unit-file listing is flaky (its postrm even
-# logs "Unit file influxdb.service does not exist"), so also key on the package
-# and data dir mode-1 creates — otherwise step 6 silently skips its assertion.
+# Pre-check also keys on the package and the data dir, not just the unit listing.
 INFLUX_WAS_INSTALLED=0
 if [ -e /var/lib/influxdb ] \
-   || dpkg-query -W -f='${db:Status-Status}\n' influxdb2 2>/dev/null | grep -qx installed \
+   || { command -v dpkg-query >/dev/null 2>&1 \
+        && dpkg-query -W -f='${db:Status-Status}\n' influxdb2 2>/dev/null | grep -qx installed; } \
+   || rpm -q influxdb2 >/dev/null 2>&1 \
    || systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -qx influxdb.service; then
   INFLUX_WAS_INSTALLED=1
 fi
@@ -129,21 +129,27 @@ if [ "$INFLUX_WAS_INSTALLED" = 1 ]; then
     fail "influxdb.service still registered after uninstall"
   fi
   [ ! -e /var/lib/influxdb ] || fail "/var/lib/influxdb survived uninstall"
-  # Both packages must end fully purged in dpkg (no 'rc'/'half-installed'
-  # residue), and the purge must not have tripped the uninstaller's warn.
-  for pkg in influxdb2 influxdb2-cli; do
-    st="$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)"
-    if [ -n "$st" ] && [ "$st" != "not-installed" ]; then
-      fail "$pkg left in dpkg state '$st' after uninstall (want fully purged)"
-    fi
-  done
-  ! grep -q "apt purge failed" "$OUT" || fail "uninstall warned 'apt purge failed'"
-  ! grep -q "residual dpkg state" "$OUT" || fail "uninstall warned of residual dpkg state"
+  # Both packages must end fully removed and the uninstaller must not have warned.
+  if command -v dpkg-query >/dev/null 2>&1; then
+    for pkg in influxdb2 influxdb2-cli; do
+      st="$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)"
+      if [ -n "$st" ] && [ "$st" != "not-installed" ]; then
+        fail "$pkg left in dpkg state '$st' after uninstall (want fully purged)"
+      fi
+    done
+    ! grep -q "residual dpkg state" "$OUT" || fail "uninstall warned of residual dpkg state"
+  else
+    for pkg in influxdb2 influxdb2-cli; do
+      rpm -q "$pkg" >/dev/null 2>&1 && fail "$pkg still installed (rpm) after uninstall"
+    done
+    ! grep -q "residual rpm state" "$OUT" || fail "uninstall warned of residual rpm state"
+  fi
+  ! grep -Eq "apt purge failed|dnf remove failed" "$OUT" || fail "uninstall warned of a package removal failure"
   [ ! -e /etc/systemd/system/influxdb.service.d/llm-systems-manager.conf ] \
     || fail "influxdb OOM drop-in survived uninstall"
   ! grep -qs "llm-systems-manager memory" /etc/default/influxdb2 \
     || fail "managed GOMEMLIMIT block survived uninstall"
-  pass "influxdb.service removed, /var/lib/influxdb gone, dpkg state clean"
+  pass "influxdb.service removed, /var/lib/influxdb gone, package state clean"
 else
   pass "InfluxDB was not installed on this host — nothing to purge"
 fi
