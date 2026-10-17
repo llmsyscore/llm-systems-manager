@@ -622,3 +622,60 @@ def test_hand_edit_names_drifted_path(client):
     cfg.write_text("[manager]\nport = 5001\n")
     g = c.get("/api/admin/settings").get_json()
     assert g["restart_pending_paths"] == ["manager.port"]
+
+
+# #1295: live-update threads must stay below the worker threads.
+def _threads_put(c, **changes):
+    return c.put("/api/admin/settings",
+                 json={"changes": {f"manager.{k}": v for k, v in changes.items()}})
+
+
+def test_reserve_below_workers_is_accepted(client):
+    c, cfg = client
+    r = _threads_put(c, http_threads=64, stream_reserve_threads=32)
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert "stream_reserve_threads = 32" in cfg.read_text()
+
+
+@pytest.mark.parametrize("reserve", [64, 96])
+def test_reserve_equal_or_above_workers_is_rejected(client, reserve):
+    c, cfg = client
+    before = cfg.read_text()
+    r = _threads_put(c, http_threads=64, stream_reserve_threads=reserve)
+    d = r.get_json()
+    assert r.status_code == 400 and d["ok"] is False
+    msg = d["errors"]["manager.stream_reserve_threads"]
+    assert "Live-update threads" in msg and "Worker threads" in msg
+    assert str(reserve) in msg and "64" in msg
+    assert cfg.read_text() == before
+
+
+def test_raising_reserve_while_lowering_workers_is_rejected(client):
+    c, cfg = client
+    assert _threads_put(c, http_threads=64, stream_reserve_threads=24).status_code == 200
+    r = _threads_put(c, http_threads=32, stream_reserve_threads=40)
+    assert r.status_code == 400
+    assert "40" in r.get_json()["errors"]["manager.stream_reserve_threads"]
+    assert "http_threads = 64" in cfg.read_text()
+
+
+def test_reserve_alone_is_checked_against_the_saved_workers(client):
+    c, cfg = client
+    assert _threads_put(c, http_threads=32).status_code == 200
+    assert _threads_put(c, stream_reserve_threads=32).status_code == 400
+    assert _threads_put(c, stream_reserve_threads=31).status_code == 200
+
+
+def test_workers_alone_is_checked_against_the_saved_reserve(client):
+    c, cfg = client
+    assert _threads_put(c, stream_reserve_threads=40).status_code == 200
+    r = _threads_put(c, http_threads=40)
+    assert r.status_code == 400
+    assert "manager.http_threads" in r.get_json()["errors"]
+
+
+def test_clearing_workers_falls_back_to_the_default_for_the_check(client):
+    c, cfg = client
+    assert _threads_put(c, http_threads=128, stream_reserve_threads=100).status_code == 200
+    # None removes the key, so the default worker count applies.
+    assert _threads_put(c, http_threads=None).status_code == 400

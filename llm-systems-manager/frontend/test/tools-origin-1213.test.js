@@ -100,6 +100,27 @@ describe('Tools frames (#1213)', () => {
     expect(document.querySelector('#tools-imggen iframe').getAttribute('src')).toBe('/proxy/imggen/');
   });
 
+  it('reloads a frame whose ticket page is older than 8 hours (#1288)', async () => {
+    const url = 'http://mgr.example:5447/proxy/openclaw/?tool_ticket=abc';
+    const calls = mockFetch(u => u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5447 } }
+                                : { status: 200 });
+    const frame = document.querySelector('#tools-openclaw iframe');
+    frame.dataset.loadedAt = String(Date.now() - 8 * 3600 * 1000 - 1);
+    await window._toolsLoadFrame('openclaw');
+    expect(calls.filter(c => c.startsWith('/api/tool-ticket')).length).toBe(1);
+    expect(frame.src).toBe(url);
+    expect(Number(frame.dataset.loadedAt)).toBeGreaterThan(Date.now() - 60 * 1000);
+  });
+
+  it('shows the notice for a 503 ticket failure and keeps the frame empty (#1288)', async () => {
+    mockFetch(() => ({ status: 503, body: {} }));
+    await window._toolsLoadFrame('imggen');
+    const note = document.querySelector('#tools-imggen .tools-unreachable');
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe('The tool page could not be opened (HTTP 503). Sign in again or reload the dashboard.');
+    expect(document.querySelector('#tools-imggen iframe').hasAttribute('src')).toBe(false);
+  });
+
   it('does not reload a frame that is already showing the tool', async () => {
     const url = 'http://mgr.example:5447/proxy/openclaw/?tool_ticket=abc';
     const calls = mockFetch(u => u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5447 } }

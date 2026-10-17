@@ -625,7 +625,7 @@ def openclaw_ws_url_for_browser() -> str:
     return _bridge_url_for_browser("/ws/openclaw")
 
 
-# Host values safe to embed in the fetch shim's JS regex literal.
+# Host values safe to embed in the shim's JS regex and string literals.
 _SAFE_PAGE_HOST_RE = re.compile(r"^[A-Za-z0-9.\-\[\]:]+$")
 
 
@@ -633,16 +633,22 @@ def _build_openclaw_ws_patch(netloc: str, port: str, bridge_url: str = "", ticke
     """WebSocket shim for the control UI: gateway dials go through the manager's
     WS bridge with a one-shot ticket (fetching the next one), or straight to
     the gateway host when the bridge is off."""
+    # Embed the gateway host and port only when they are plain host:port text.
+    host_ok = bool(_SAFE_PAGE_HOST_RE.fullmatch(netloc)) and port.isdigit()
     if bridge_url:
         # A small ticket queue: each dial takes one and fetches a replacement.
+        g_def = f",G=/^wss?:\\/\\/{re.escape(netloc)}(\\/|\\?|$)/" if host_ok else ""
+        g_test = "||G.test(u)" if host_ok else ""
         rewrite = (
             f"var B={safe_js(bridge_url)},Q=[{safe_js(ticket)}];"
-            f"var M=/^wss?:\\/\\/[^/]+\\/proxy\\/openclaw(\\/|\\?|$)/,G=/^wss?:\\/\\/{re.escape(netloc)}(\\/|\\?|$)/;"
+            f"var M=/^wss?:\\/\\/[^/]+\\/proxy\\/openclaw(\\/|\\?|$)/{g_def};"
             "function refresh(){fetch('/api/openclaw-ws-ticket',{credentials:'same-origin'})"
             ".then(function(r){return r.json()}).then(function(j){if(j&&j.ticket)Q.push(j.ticket);}).catch(function(){});}"
             "refresh();"
-            "function fix(u){u=String(u);if(M.test(u)||G.test(u)){var t=Q.shift()||'';refresh();return B+'?ticket='+encodeURIComponent(t);}return u;}"
+            f"function fix(u){{u=String(u);if(M.test(u){g_test}){{var t=Q.shift()||'';refresh();return B+'?ticket='+encodeURIComponent(t);}}return u;}}"
         )
+    elif not host_ok:
+        rewrite = "function fix(u){return String(u);}"
     else:
         rewrite = (
             "function fix(u){u=String(u);"

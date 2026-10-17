@@ -259,7 +259,7 @@ def _pin_tool_hooks(monkeypatch):
     """Points auth.tool_origin at manager_mod; a second manager import rewires it."""
     monkeypatch.setattr(auth.tool_origin, "listener_kind", M._listener_kind)
     monkeypatch.setattr(auth.tool_origin, "enabled", M._tools_origin_enabled)
-    monkeypatch.setattr(auth.tool_origin, "tools_port", lambda: M._tools_ports()[0] or M._tools_ports()[1])
+    monkeypatch.setattr(auth.tool_origin, "tools_port", M._tools_port_for_request)
     monkeypatch.setattr(auth.tool_origin, "exchange_ticket", M._exchange_tool_ticket)
     monkeypatch.setattr(auth.tool_origin, "cookie_claims", M._tool_cookie_claims)
 
@@ -520,3 +520,140 @@ class TestOpenClawFetchShim:
         js = proxies._build_openclaw_ws_patch("10.0.0.7:18789", "18789", "", "", page_host="mgr</script><script>")
         assert "window.fetch=" not in js
         assert "mgr</script>" not in js and js.count("</script>") == 1
+
+
+# ── #1288 follow-ups ───────────────────────────────────────────────────
+class TestTicketToolClaim:
+    def test_ticket_for_another_tool_is_refused(self, tool_ports, proxy_stub):
+        t = M._issue_tool_ticket("openclaw", "alice", "admin")
+        with M.app.test_client() as c:
+            r = c.get(f"/proxy/llmchat/?tool_ticket={t}", base_url=TOOLS_URL)
+        assert r.status_code == 403 and "ticket" in r.get_json()["error"]
+        assert "Set-Cookie" not in r.headers
+
+    def test_ticket_for_a_sub_path_of_its_tool_is_exchanged(self, tool_ports, proxy_stub):
+        t = M._issue_tool_ticket("imggen", "alice", "admin")
+        with M.app.test_client() as c:
+            r = c.get(f"/proxy/imggen/x/y?tool_ticket={t}", base_url=TOOLS_URL)
+        assert r.status_code == 302 and r.headers["Location"] == "/proxy/imggen/"
+
+    def test_exchange_on_the_wrong_path_is_none_and_spends_the_ticket(self):
+        t = M._issue_tool_ticket("openclaw", "alice", "admin")
+        with M.app.test_request_context("/proxy/llmchat/?tool_ticket=" + t):
+            assert M._exchange_tool_ticket(t) is None
+        with M.app.test_request_context("/proxy/openclaw/?tool_ticket=" + t):
+            assert M._exchange_tool_ticket(t) is None
+
+
+class TestDashboardRefusalPortText:
+    def test_https_dashboard_names_the_tls_tool_port(self, tool_ports, proxy_stub):
+        with M.app.test_client() as c:
+            _admin(c, scheme="https")
+            r = c.get("/proxy/openclaw/", base_url="https://localhost:5000")
+        assert r.status_code == 404 and "5448" in r.get_json()["error"]
+
+    def test_https_dashboard_falls_back_to_the_plain_port_when_tls_is_off(self, tool_ports, proxy_stub, monkeypatch):
+        monkeypatch.setattr(settings.manager, "tools_tls_port", 0, raising=False)
+        with M.app.test_client() as c:
+            _admin(c, scheme="https")
+            r = c.get("/proxy/openclaw/", base_url="https://localhost:5000")
+        assert "5447" in r.get_json()["error"]
+
+    def test_plain_dashboard_names_the_tls_port_when_only_tls_is_on(self, tool_ports, proxy_stub, monkeypatch):
+        monkeypatch.setattr(settings.manager, "tools_port", 0, raising=False)
+        with M.app.test_client() as c:
+            _admin(c)
+            r = c.get("/proxy/openclaw/")
+        assert "5448" in r.get_json()["error"]
+
+
+class TestOpenClawShimGatewayHost:
+    BAD = "10.0.0.7:18789</script><script>alert(1)//"
+
+    def test_unsafe_gateway_host_is_not_embedded_without_the_bridge(self):
+        js = proxies._build_openclaw_ws_patch(self.BAD, "18789", "", "", page_host="mgr.example")
+        assert "alert(1)" not in js and js.count("</script>") == 1
+        assert "window.WebSocket=" in js and "window.fetch=" in js
+
+    def test_unsafe_gateway_host_is_not_embedded_with_the_bridge(self):
+        js = proxies._build_openclaw_ws_patch(self.BAD, "18789", "ws://mgr.example:5444/ws/openclaw", "t1")
+        assert "alert(1)" not in js and js.count("</script>") == 1
+        assert "var B=" in js and "M.test(u)" in js and "G.test(u)" not in js
+
+    def test_unsafe_port_is_not_embedded(self):
+        js = proxies._build_openclaw_ws_patch("10.0.0.7:1", "1</script>", "", "")
+        assert js.count("</script>") == 1
+
+    def test_safe_ipv6_gateway_host_still_rewrites(self):
+        js = proxies._build_openclaw_ws_patch("[fd00::7]:18789", "18789", "ws://mgr.example:5444/ws/openclaw", "t1")
+        assert "G.test(u)" in js and "fd00" in js
+
+
+class TestToolPortCollisions(TestToolListenerStartup):
+    def _refused(self, monkeypatch, caplog, plain, tls=0, env_tls=""):
+        started = self._capture(monkeypatch)
+        monkeypatch.setattr(settings.manager, "tools_port", plain, raising=False)
+        monkeypatch.setattr(settings.manager, "tools_tls_port", tls, raising=False)
+        if env_tls:
+            monkeypatch.setenv("MANAGER_TLS_PORT", env_tls)
+        else:
+            monkeypatch.delenv("MANAGER_TLS_PORT", raising=False)
+        with caplog.at_level("ERROR"):
+            M._maybe_start_tool_origin_servers(threaded=False)
+        return started == [] and M._TOOL_LISTENER_PORTS == set() and \
+            any("tools_port" in r.getMessage() for r in caplog.records)
+
+    def test_env_tls_port_override_collides(self, monkeypatch, caplog):
+        monkeypatch.setattr(settings.manager, "tls_port", 0, raising=False)
+        assert self._refused(monkeypatch, caplog, plain=0, tls=5443, env_tls="5443")
+
+    def test_ws_proxy_port_collides(self, monkeypatch, caplog):
+        monkeypatch.setattr(settings.manager, "ws_proxy_port", 5444, raising=False)
+        assert self._refused(monkeypatch, caplog, plain=5444)
+
+    def test_ws_proxy_tls_port_collides(self, monkeypatch, caplog):
+        monkeypatch.setattr(settings.manager, "ws_proxy_tls_port", 5446, raising=False)
+        assert self._refused(monkeypatch, caplog, plain=0, tls=5446)
+
+    def test_stream_proxy_port_collides(self, monkeypatch, caplog):
+        monkeypatch.setattr(settings.manager, "stream_proxy_port", 5445, raising=False)
+        assert self._refused(monkeypatch, caplog, plain=5445)
+
+    def test_defaults_do_not_collide(self, monkeypatch):
+        started = self._capture(monkeypatch)
+        monkeypatch.delenv("MANAGER_TLS_PORT", raising=False)
+        monkeypatch.setattr(settings.manager, "tools_port", 5447, raising=False)
+        monkeypatch.setattr(settings.manager, "tools_tls_port", 0, raising=False)
+        M._maybe_start_tool_origin_servers(threaded=False)
+        assert started == [("srv", ("0.0.0.0", 5447))]
+
+
+class TestToolListenerGateCoverage:
+    def test_operator_role_is_refused_on_a_denied_tool_path(self, tool_ports, proxy_stub, monkeypatch):
+        monkeypatch.setattr(auth, "_operator_denied", lambda path: path.startswith("/proxy/openclaw/"))
+        with M.app.test_client() as c:
+            c.set_cookie(M._TOOL_COOKIE, _tool_cookie_for(role="operator"))
+            r = c.get("/proxy/openclaw/", base_url=TOOLS_URL)
+            assert r.status_code == 403 and r.get_json()["role_denied"] is True
+            assert c.get("/proxy/llmchat/", base_url=TOOLS_URL).status_code == 200
+
+    def test_agent_bearer_is_ignored_on_the_tool_listener(self, tool_ports, proxy_stub, monkeypatch):
+        monkeypatch.setattr(auth, "_agent_by_token", lambda tok: {"id": "a1"} if tok == "tok" else None)
+        with M.app.test_client() as c:
+            hdr = {"Authorization": "Bearer tok"}
+            r = c.get("/proxy/openclaw/", base_url=TOOLS_URL, headers=hdr)
+            assert r.status_code == 403 and r.get_json()["tool_auth_required"] is True
+            assert c.get("/api/metrics", base_url=TOOLS_URL, headers=hdr).status_code == 404
+
+
+class TestOriginCheckIPv6:
+    def _foreign(self, origin):
+        with M.app.test_request_context("/api/tool-ticket", method="POST", base_url="http://[fd00::7]:5000",
+                                        headers={"Origin": origin}):
+            return auth._foreign_origin()
+
+    def test_same_ipv6_origin_passes(self):
+        assert self._foreign("http://[fd00::7]:5000") is False
+
+    def test_ipv6_origin_on_the_tool_port_is_foreign(self):
+        assert self._foreign("http://[fd00::7]:5447") is True
