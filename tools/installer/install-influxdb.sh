@@ -40,7 +40,7 @@ INFLUX_ORG_DEFAULT="llm-systems-manager"
 INFLUX_URL="http://localhost:8086"
 ENV_FILE="$LLMSYS_INFLUXDB_TOKEN_FILE"
 
-banner "InfluxDB — apt repo + install"
+banner "InfluxDB — ${LLMSYS_PKG_MGR:-apt} repo + install"
 
 # Prereqs
 APT_PKGS=(wget gnupg ca-certificates curl jq openssl)
@@ -49,32 +49,48 @@ mapfile -t MISSING < <(missing_apt_pkgs "${APT_PKGS[@]}")
 NONEMPTY=()
 for p in "${MISSING[@]}"; do [[ -n "$p" ]] && NONEMPTY+=("$p"); done
 if (( ${#NONEMPTY[@]} > 0 )); then
-  offer_apt_install "${NONEMPTY[@]}" || die "Required apt packages missing"
+  offer_apt_install "${NONEMPTY[@]}" || die "Required system packages missing"
 fi
 
-KEYRING=/etc/apt/keyrings/influxdata-archive.gpg
-SOURCE=/etc/apt/sources.list.d/influxdata.list
-if [[ ! -f "$KEYRING" ]]; then
-  $SUDO install -d -m 0755 /etc/apt/keyrings
-  wget -qO- https://repos.influxdata.com/influxdata-archive.key \
-    | $SUDO gpg --dearmor -o "$KEYRING"
-  $SUDO chmod 0644 "$KEYRING"
-  ok "added InfluxData GPG key → $KEYRING"
+if [[ "$LLMSYS_PKG_MGR" == "dnf" ]]; then
+  REPO=/etc/yum.repos.d/influxdata.repo
+  [[ -f "$REPO" ]] || {
+    $SUDO tee "$REPO" >/dev/null <<'REPO_EOF'
+[influxdata]
+name = InfluxData Repository - Stable
+baseurl = https://repos.influxdata.com/stable/$basearch/main
+enabled = 1
+gpgcheck = 1
+gpgkey = https://repos.influxdata.com/influxdata-archive.key
+REPO_EOF
+    ok "added InfluxData rpm repo → $REPO"
+  }
+  $SUDO dnf install -y influxdb2 influxdb2-cli
 else
-  log "GPG key already present"
+  KEYRING=/etc/apt/keyrings/influxdata-archive.gpg
+  SOURCE=/etc/apt/sources.list.d/influxdata.list
+  if [[ ! -f "$KEYRING" ]]; then
+    $SUDO install -d -m 0755 /etc/apt/keyrings
+    wget -qO- https://repos.influxdata.com/influxdata-archive.key \
+      | $SUDO gpg --dearmor -o "$KEYRING"
+    $SUDO chmod 0644 "$KEYRING"
+    ok "added InfluxData GPG key → $KEYRING"
+  else
+    log "GPG key already present"
+  fi
+  if [[ ! -f "$SOURCE" ]]; then
+    echo "deb [signed-by=$KEYRING] https://repos.influxdata.com/debian stable main" \
+      | $SUDO tee "$SOURCE" >/dev/null
+    ok "added InfluxData apt source → $SOURCE"
+  else
+    log "apt source already present"
+  fi
+  # Use the clock-recovery wrapper — this apt-get update comes right after
+  # adding the InfluxData repo and is the most likely place to hit a VM
+  # clock skew on a freshly-rolled-back snapshot.
+  apt_update_with_clock_recovery
+  $SUDO apt-get install -y --no-install-recommends influxdb2 influxdb2-cli
 fi
-if [[ ! -f "$SOURCE" ]]; then
-  echo "deb [signed-by=$KEYRING] https://repos.influxdata.com/debian stable main" \
-    | $SUDO tee "$SOURCE" >/dev/null
-  ok "added InfluxData apt source → $SOURCE"
-else
-  log "apt source already present"
-fi
-# Use the clock-recovery wrapper — this apt-get update comes right after
-# adding the InfluxData repo and is the most likely place to hit a VM
-# clock skew on a freshly-rolled-back snapshot.
-apt_update_with_clock_recovery
-$SUDO apt-get install -y --no-install-recommends influxdb2 influxdb2-cli
 ok "influxdb2 + influxdb2-cli installed"
 
 banner "InfluxDB — start service"

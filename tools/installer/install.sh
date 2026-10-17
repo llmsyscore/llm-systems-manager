@@ -467,19 +467,25 @@ if (( ${#NEEDED[@]} > 0 )); then
     else
       _b_die "Run: sudo apt-get install -y ${NEEDED[*]}"
     fi
+  elif [[ "$OS" == "linux" ]] && have dnf; then
+    DNF_NEEDED=()
+    for _p in "${NEEDED[@]}"; do [[ "$_p" == "python3-venv" ]] || DNF_NEEDED+=("$_p"); done
+    [[ -t 0 ]] || _b_die "Run: sudo dnf install -y ${DNF_NEEDED[*]}"
+    read -rp "  Install with dnf now? [Y/n] " ans
+    case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
+      ""|y|yes)
+        SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
+        $SUDO dnf install -y "${DNF_NEEDED[@]}"
+        ;;
+      *) _b_die "Refused — install manually and re-run." ;;
+    esac
   else
-    # Non-apt host. Print a hint with the per-package-manager command we'd
-    # use if we knew this distro. The installer itself stays apt-only for
-    # now (Tiers 1-4 of the install pipeline call apt-get directly), so on
-    # non-apt distros the operator installs prereqs by hand and re-runs.
+    # Unsupported package manager: print the install command for this distro.
     _b_err ""
-    _b_err "  This installer's package step is apt-based (Debian/Ubuntu)."
+    _b_err "  This installer's package step needs an apt- or dnf-based host."
     _b_err "  Install the missing packages manually for your distro, then re-run."
     _b_err ""
-    if have dnf; then
-      _b_err "  Detected dnf — try:"
-      _b_err "    sudo dnf install -y ${NEEDED[*]/python3-venv/python3}"
-    elif have pacman; then
+    if have pacman; then
       _b_err "  Detected pacman — try:"
       _b_err "    sudo pacman -S --needed ${NEEDED[*]/python3-venv/python}"
     elif have zypper; then
@@ -492,9 +498,8 @@ if (( ${#NEEDED[@]} > 0 )); then
       _b_err "  Required: python3 (>= 3.11), python3-venv, git, jq, curl, rsync."
     fi
     _b_err ""
-    _b_err "  Then re-run this installer. Modes 1-4/6 still require an apt-based"
-    _b_err "  host because the per-component installers call apt-get directly for"
-    _b_err "  build/runtime dependencies. Mode 5 (agent) works on any Linux."
+    _b_err "  Then re-run this installer. Modes 1-4/6 need an apt- or dnf-based"
+    _b_err "  host. Mode 5 (agent) works on any Linux."
     _b_die "missing prerequisites — install them and re-run"
   fi
 fi
@@ -506,7 +511,7 @@ import sys
 sys.exit(0 if sys.version_info >= (3, 11) else 1)
 PY
 then
-  _b_die "python3 >= 3.11 is required (have $(python3 --version 2>&1))"
+  _b_die "python3 >= 3.11 is required (have $(python3 --version 2>&1)) — on EL9 (python3 is 3.9) use the .rpm package, which installs python3.11 itself"
 fi
 _b_ok "python3 >= 3.11 ($(python3 --version 2>&1))"
 

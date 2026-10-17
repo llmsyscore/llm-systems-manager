@@ -181,3 +181,21 @@ def test_shim_defines_detect_primary_ip_when_lib_common_lacks_it():
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "10.1.1.1"
+
+
+def test_preflight_dnf_branch_installs_without_apt_stamp():
+    i = TEXT.index('elif [[ "$OS" == "linux" ]] && have dnf; then')
+    j = TEXT.index("else", i)
+    block = TEXT[i:j]
+    assert "$SUDO dnf install -y" in block
+    assert "LLMSYS_APT_STAMP" not in block
+    assert 'read -rp "  Install with dnf now? [Y/n] "' in block
+
+
+def test_preflight_dnf_non_tty_prints_command():
+    block = TEXT[TEXT.index('have dnf; then'):TEXT.index("else", TEXT.index('have dnf; then'))]
+    assert '_b_die "Run: sudo dnf install -y ' in block
+
+
+def test_python_version_message_points_el9_to_rpm():
+    assert "EL9" in TEXT and ".rpm" in TEXT[TEXT.index("python3 >= 3.11 is required"):][:400]

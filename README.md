@@ -802,9 +802,10 @@ On a multi-host install, update the manager host first, then the alarm engine ho
 
 ## Supported platforms
 
-The manager, alarm engine, and InfluxDB are tested on **Debian and Ubuntu derivatives**.
+The manager, alarm engine, and InfluxDB are tested on **Debian and Ubuntu derivatives** and on **Rocky Linux 10**.
 
-- **Other Linux distros** (Fedora, Arch, openSUSE, Alpine): the agent (mode 5) auto-detects `dnf` / `yum` / `brew` and works out of the box. The manager / alarm engine / InfluxDB modes (1–4, 6) will halt at the pre-requisites step with a hint for your package manager — install the listed packages by hand, then re-run.
+- **RHEL-family 10** (Rocky Linux, AlmaLinux, RHEL 10): every mode works, and the installer installs the packages it needs with `dnf`. Hosts running version 9 of these systems use the `.rpm` package instead.
+- **Other Linux distros** (Fedora, Arch, openSUSE, Alpine): the agent (mode 5) auto-detects `dnf` / `yum` / `brew` and works out of the box. The manager / alarm engine / InfluxDB modes (1–4, 6) stop at the prerequisites step with a hint for your package manager — install the listed packages by hand, then re-run.
 - **macOS** (Apple Silicon, tested on M2 Pro): agent only.
 
 The installer checks for: `python3` (≥ 3.11), `python3-venv`, `git`, `jq`, `curl`, and `rsync`.
