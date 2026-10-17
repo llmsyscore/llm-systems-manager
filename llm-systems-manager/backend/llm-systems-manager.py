@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.16-3"
+__version__ = "v2026.10.16-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -682,6 +682,12 @@ def _tools_ports() -> "tuple[int, int]":
 
 def _tools_origin_enabled() -> bool:
     return any(p > 0 for p in _tools_ports())
+
+
+def _tools_port_for_request() -> int:
+    """Tool port matching this request's scheme (tls on https); the other one when only it is set."""
+    plain, tls = _tools_ports()
+    return (tls or plain) if _request_is_https() else (plain or tls)
 
 
 def _listener_kind() -> str:
@@ -5245,6 +5251,31 @@ def _settings_extra_errors(clean: dict) -> dict:
     return errors
 
 
+_THREAD_PAIR = ("manager.http_threads", "manager.stream_reserve_threads")
+
+
+def _settings_thread_pair_errors(clean: dict) -> dict:
+    """{path: message} when the saved live-update threads would not stay below the worker threads."""
+    workers_p, reserve_p = _THREAD_PAIR
+    if workers_p not in clean and reserve_p not in clean:
+        return {}
+    snap = settings_catalog._snapshot().manager
+
+    def _effective(path: str, attr: str) -> int:
+        default = int(type(settings.manager).model_fields[attr].default)
+        if path in clean:
+            return default if clean[path] is None else int(clean[path])
+        return int(getattr(snap, attr, default) or default)
+
+    workers = _effective(workers_p, "http_threads")
+    reserve = _effective(reserve_p, "stream_reserve_threads")
+    if reserve < workers:
+        return {}
+    msg = (f"Live-update threads ({reserve}) must be below Worker threads ({workers}), "
+           "or the live-update pool is left with a single slot")
+    return {p: msg for p in _THREAD_PAIR if p in clean}
+
+
 @app.route("/api/admin/settings", methods=["PUT"])
 def admin_settings_put():
     deny = _require_admin()
@@ -5265,6 +5296,8 @@ def admin_settings_put():
             errors[str(p)] = "not a shared setting"
     if not errors:
         errors = _settings_extra_errors(clean)
+    if not errors:
+        errors = _settings_thread_pair_errors(clean)
     if errors:
         return jsonify({"ok": False, "errors": errors}), 400
     if not clean and not resync:
@@ -9848,6 +9881,14 @@ def _maybe_start_manager_tls_server() -> None:
     t.start()
 
 
+def _manager_tls_port() -> int:
+    """Dashboard TLS port: MANAGER_TLS_PORT when set and numeric, else [manager].tls_port; 0 = off."""
+    env = os.environ.get("MANAGER_TLS_PORT", "").strip()
+    if env:
+        return int(env) if env.isdigit() else 0
+    return int(getattr(settings.manager, "tls_port", 0) or 0)
+
+
 # Worker count for each tool listener: a quarter of http_threads, at least 8.
 def _tool_listener_threads() -> int:
     return max(8, int(getattr(settings.manager, "http_threads", 64) or 64) // 4)
@@ -9857,10 +9898,13 @@ def _maybe_start_tool_origin_servers(threaded: bool = True) -> None:
     """Start the tool-origin listeners ([manager].tools_port / tools_tls_port)
     serving the same app; a port that collides with the dashboard ports is refused."""
     plain, tls = _tools_ports()
-    taken = {int(settings.manager.port or 0), int(getattr(settings.manager, "tls_port", 0) or 0)}
+    taken = {int(settings.manager.port or 0), _manager_tls_port()}
+    taken |= {int(getattr(settings.manager, k, 0) or 0)
+              for k in ("ws_proxy_port", "ws_proxy_tls_port", "stream_proxy_port")}
     taken.discard(0)
     if plain in taken or tls in taken or (plain and plain == tls):
-        log.error("  Tools:       tools_port/tools_tls_port must differ from port/tls_port — not started")
+        log.error("  Tools:       tools_port/tools_tls_port must differ from port/tls_port "
+                  "and the ws/stream proxy ports — not started")
         return
     if plain <= 0 and tls <= 0:
         log.info("  Tools:       disabled (set [manager].tools_port to serve the tool pages on their own port)")
@@ -10067,9 +10111,10 @@ def _tool_cookie_claims() -> "tuple[str, str] | None":
 
 
 def _exchange_tool_ticket(ticket):
-    """302 to the ticket's tool page root, setting the tool cookie; None when the ticket is bad."""
+    """302 to the ticket's tool page root, setting the tool cookie; None when the ticket
+    is bad or was presented on another tool's page."""
     claims = _consume_tool_ticket(ticket)
-    if claims is None:
+    if claims is None or not (flask_request.path or "/").startswith(f"/proxy/{claims['t']}/"):
         return None
     cookie = _sign_tool_claims({"u": claims["u"], "r": claims["r"],
                                 "e": int(time.time()) + _TOOL_COOKIE_TTL_S}, b"tool-cookie-key")
@@ -10102,7 +10147,7 @@ def tool_ticket():
 
 auth.tool_origin.listener_kind = _listener_kind
 auth.tool_origin.enabled = _tools_origin_enabled
-auth.tool_origin.tools_port = lambda: _tools_ports()[0] or _tools_ports()[1]
+auth.tool_origin.tools_port = _tools_port_for_request
 auth.tool_origin.exchange_ticket = _exchange_tool_ticket
 auth.tool_origin.cookie_claims = _tool_cookie_claims
 

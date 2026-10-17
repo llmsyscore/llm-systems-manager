@@ -103,7 +103,7 @@ CATALOG: list[dict] = [
     _e("manager.listen_backlog", "int", "Waiting connections", "How many incoming connections can queue up while all worker threads are busy.", "network", MANAGER, min=16, max=65535),
     _e("manager.stream_keepalive_s", "float", "Live-update ping (s)", "Seconds between pings that keep a live-update connection open.", "network", MANAGER, min=1, max=86400),
     _e("manager.stream_max_lifetime_s", "float", "Live-update max age (s)", "Seconds a live-update connection stays open before the browser reconnects.", "network", MANAGER, min=1, max=86400),
-    _e("manager.stream_reserve_threads", "int", "Live-update threads", "Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once.", "network", MANAGER, min=8, max=1024),
+    _e("manager.stream_reserve_threads", "int", "Live-update threads", "Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once. Must be below Worker threads.", "network", MANAGER, min=8, max=1024),
     _e("manager.alarm_engine_url", "str", "Alarm engine URL", "Where the manager finds the AE. Split install: use the AE host's IP.", "network", MANAGER, common=True),
     _e("manager.hsts_max_age_s", "int", "HSTS max-age (s)", "Strict-Transport-Security on HTTPS responses; 0 = off. Keep off while the plain-HTTP port is used on the same hostname.", "network", MANAGER, min=0, max=63072000),
     # polling

@@ -317,7 +317,7 @@ Refer to the reference when you need to understand what a setting does or when a
 | `[manager].http_threads` | How many requests the dashboard can handle at once | `64` |
 | `[manager].stream_keepalive_s` | Seconds between pings that keep a live-update connection open | `8.0` |
 | `[manager].stream_max_lifetime_s` | Seconds a live-update connection stays open before the browser reconnects | `120.0` |
-| `[manager].stream_reserve_threads` | Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once | `24` |
+| `[manager].stream_reserve_threads` | Worker threads kept back from live-update connections so ordinary page requests keep answering; raising it lowers how many live-update connections can be open at once. Must be below `http_threads` | `24` |
 | `[manager.uploads].max_content_length` | Largest upload the dashboard accepts, in bytes | `104857600` |
 | `[manager.timeouts].generic_http` | Seconds to wait for a proxied tool page to answer | `30.0` |
 | `[manager].tls_port` | Port for HTTPS access (set to `0` to disable) | `5443` |
