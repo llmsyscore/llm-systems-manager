@@ -263,3 +263,71 @@ def test_slow_start_waits_then_provisions(stub_env):
     text = config.read_text()
     assert 'metrics        = "tok-bid_metrics"' in text
     assert 'metrics_rollup = "tok-bid_rollup"' in text
+
+
+# #1309: InfluxDB 2.10 answers /health 200 while the API still returns
+# 503 {"status":"starting"} — the setup check must wait for a real answer.
+STARTING_CURL_STUB = """#!/usr/bin/env bash
+state="$STUB_STATE"
+case "$*" in
+  *"%{http_code}"*) printf '200' ;;
+  *"-X POST"*"/api/v2/setup"*) touch "$state/setup_ran" ;;
+  *"/api/v2/setup"*)
+    n=$(( $(cat "$state/setup_count" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$state/setup_count"
+    if [ "$n" -le "${STARTING_CALLS:-3}" ]; then
+      [ -n "${STARTING_EXIT:-}" ] && exit "$STARTING_EXIT"
+      printf '{"status":"starting"}\\n'; exit 0
+    fi
+    body="${SETUP_BODY:-}"; [ -n "$body" ] || body='{"allowed": true}'
+    printf '%s\\n' "$body" ;;
+  *) exit 22 ;;
+esac
+"""
+
+
+def test_api_still_starting_waits_then_onboards(stub_env):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", STARTING_CURL_STUB)
+    r = _run(config, stub_bin, state)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "finish starting" in r.stdout
+    assert "fresh InfluxDB" in r.stdout
+    assert int((state / "setup_count").read_text()) == 4
+    assert (state / "setup_ran").exists()
+    assert 'metrics        = "tok-bid_metrics"' in config.read_text()
+
+
+def test_api_connection_failure_is_retried_not_fatal(stub_env):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", STARTING_CURL_STUB)
+    r = _run(config, stub_bin, state, extra_env={"STARTING_EXIT": "7"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fresh InfluxDB" in r.stdout
+    assert (state / "setup_ran").exists()
+
+
+def test_api_never_ready_dies_without_cli_fallback(stub_env):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", STARTING_CURL_STUB)
+    _write_stub(stub_bin / "brew", BREW_STUB)
+    (state / "svc_status").write_text("started")
+    (state / "prefix").write_text(str(state))
+    r = _run(config, stub_bin, state,
+             extra_env={"STARTING_CALLS": "999", "LSM_INFLUX_WAIT_S": "2"})
+    assert r.returncode != 0
+    assert "did not finish starting" in r.stderr
+    assert "no working influx CLI config" not in r.stderr
+    assert not (state / "setup_ran").exists()
+    assert not (state / "influx_argv.log").exists()
+
+
+def test_explicit_allowed_false_uses_cli_config(stub_env):
+    config, stub_bin, state = stub_env
+    _write_stub(stub_bin / "curl", STARTING_CURL_STUB)
+    r = _run(config, stub_bin, state,
+             extra_env={"STARTING_CALLS": "0", "SETUP_BODY": '{"allowed": false}'})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "already set up" in r.stdout
+    assert not (state / "setup_ran").exists()
+    assert "bucket list" in (state / "influx_argv.log").read_text()

@@ -125,6 +125,12 @@ else
   FRESH_SETUP=1
   INFLUX_OPERATOR_TOKEN=$(openssl rand -hex 32)
   ADMIN_PASS=$(openssl rand -hex 24)
+  # The API answers 503 {"status":"starting"} after /health is 200 on 2.10+;
+  # wait until GET /api/v2/setup gives a real answer before onboarding.
+  for _ in {1..30}; do
+    curl -4 -sS -m 5 "$INFLUX_URL/api/v2/setup" 2>/dev/null | grep -q '"allowed"' && break
+    sleep 1
+  done
   # Onboards via POST /api/v2/setup with a --data @file body; secrets reach jq via env.
   _setup_json="$(mktemp)"
   ADMIN_PASS="$ADMIN_PASS" INFLUX_OPERATOR_TOKEN="$INFLUX_OPERATOR_TOKEN" \

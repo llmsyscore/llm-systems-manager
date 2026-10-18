@@ -127,7 +127,26 @@ gen_token() {
 # Secrets never touch argv: onboarding goes through POST /api/v2/setup with a
 # 0600 body file, and later CLI calls get the token via the INFLUX_TOKEN env.
 OPERATOR_TOKEN=""; ADMIN_PASS=""; FRESH_SETUP=0
-if curl -fsS "$INFLUX_URL/api/v2/setup" 2>/dev/null | grep -q '"allowed": *true'; then
+# Prints "true" / "false" from GET /api/v2/setup; empty while the API still
+# answers 503 {"status":"starting"} (InfluxDB 2.10+ serves /health first).
+setup_allowed() {
+  { curl -sS -m 5 "$INFLUX_URL/api/v2/setup" 2>/dev/null || true; } \
+    | tr -d ' \t\n' | sed -n -E 's/.*"allowed":(true|false).*/\1/p'
+}
+SETUP_ALLOWED="$(setup_allowed)"
+if [ -z "$SETUP_ALLOWED" ]; then
+  log "waiting for the InfluxDB API to finish starting (up to ${WAIT_S}s)…"
+  i=0
+  while [ -z "$SETUP_ALLOWED" ] && [ "$i" -lt "$WAIT_S" ]; do
+    sleep 1; i=$((i + 1))
+    SETUP_ALLOWED="$(setup_allowed)"
+  done
+fi
+if [ -z "$SETUP_ALLOWED" ]; then
+  dump_influx_diagnostics
+  die "InfluxDB answers $INFLUX_URL/health but its API did not finish starting within ${WAIT_S}s — diagnostics above"
+fi
+if [ "$SETUP_ALLOWED" = "true" ]; then
   FRESH_SETUP=1
   OPERATOR_TOKEN="$(gen_token)"
   ADMIN_PASS="$(gen_token | cut -c1-24)"
