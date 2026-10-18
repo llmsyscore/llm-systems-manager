@@ -402,3 +402,32 @@ def test_derived_max_rejection_retries_the_same_candidate_at_the_cap(vat):
     auto = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "kvdtype" and e["value"] == "auto"]
     assert len(auto) == 1 and auto[0]["ok"] is True
     assert not any(e["type"] == "candidate_rejected" and e["value"] == "auto" for e in events)
+
+
+class SpreadBackend(FakeBackend):
+    def load(self, config, measure):
+        out = super().load(config, measure)
+        if out.get("stick"):
+            d = out["stick"]["decode_tps"]
+            out["stick"].update(passes=[{"decode_tps": d}, {"decode_tps": d}], spread_pct=2.0,
+                                decode_spread={"n": 2, "min": d * 0.99, "p25": d, "p50": d, "p75": d, "max": d * 1.01})
+        return out
+
+
+def test_vllm_events_carry_spread(vat):
+    req, done, events, be = _run(vat, {"model_ids": [MODEL]}, backend=SpreadBackend())
+    ctx = next(e for e in events if e["type"] == "candidate_result" and e["stage"] == "context")
+    assert ctx["spread_pct"] == 2.0 and ctx["decode_spread"]["n"] == 2 and len(ctx["passes"]) == 2
+    assert done["before"]["spread_pct"] == 2.0 and done["after"]["spread_pct"] == 2.0
+    assert done["after"]["decode_spread"]["n"] == 2 and vat.ledger_summary(done)["spread_pct"] == 2.0
+    keys = {c["key"]: c for c in done["changes"]}
+    assert keys["kv_cache_dtype"]["noise_pct"] == 2.0 and "spread ±1 %" in keys["kv_cache_dtype"]["evidence"]
+    assert keys["speculative_config"]["noise_pct"] == 2.0 and keys["speculative_config"]["selected"]
+
+
+def test_vllm_build_changes_selects_above_noise(vat):
+    ev = {"kv_cache_dtype": {"text": "x", "gain_pct": 4.0, "noise_pct": 6.0}}
+    row = vat.build_changes(BASE, {"kv_cache_dtype": "fp8"}, ev)[0]
+    assert row["noise_pct"] == 6.0 and row["selected"] is False
+    ev["kv_cache_dtype"]["noise_pct"] = 2.0
+    assert vat.build_changes(BASE, {"kv_cache_dtype": "fp8"}, ev)[0]["selected"] is True

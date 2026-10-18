@@ -38,6 +38,8 @@ def init_table(conn) -> None:
         conn.execute("ALTER TABLE bench_live_runs ADD COLUMN llama_build TEXT NOT NULL DEFAULT ''")
     if "provider" not in cols:
         conn.execute("ALTER TABLE bench_live_runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'llama'")
+    if "gen_spread_json" not in cols:
+        conn.execute("ALTER TABLE bench_live_runs ADD COLUMN gen_spread_json TEXT")
     conn.commit()
 
 
@@ -49,14 +51,28 @@ def _finite(v: Any) -> Optional[float]:
 
 
 def _row(r) -> dict:
-    return {"id": r[0], "run_id": r[1], "model_id": r[2], "agent_id": r[3], "ts": r[4],
-            "ok": bool(r[5]), "baseline": bool(r[6]), "gen_tps": r[7], "ppt_tps": r[8],
-            "latency_s": r[9], "accept_rate": r[10], "wh_per_ktok": r[11],
-            "config": json.loads(r[12] or "{}"), "llama_build": r[13] or "", "provider": r[14] or "llama"}
+    out = {"id": r[0], "run_id": r[1], "model_id": r[2], "agent_id": r[3], "ts": r[4],
+           "ok": bool(r[5]), "baseline": bool(r[6]), "gen_tps": r[7], "ppt_tps": r[8],
+           "latency_s": r[9], "accept_rate": r[10], "wh_per_ktok": r[11],
+           "config": json.loads(r[12] or "{}"), "llama_build": r[13] or "", "provider": r[14] or "llama"}
+    try:
+        out["gen_spread"] = json.loads(r[15]) if r[15] else None
+    except ValueError:
+        out["gen_spread"] = None
+    return out
+
+
+def gen_spread_of(doc: dict) -> Optional[dict]:
+    """First level's pred_tps spread dict from a live-bench doc, or None."""
+    levels = doc.get("levels") if isinstance(doc, dict) else None
+    first = levels[0] if isinstance(levels, list) and levels and isinstance(levels[0], dict) else {}
+    spread = first["all"].get("spread") if isinstance(first.get("all"), dict) else None
+    sp = spread.get("pred_tps") if isinstance(spread, dict) else None
+    return sp if isinstance(sp, dict) else None
 
 
 _COLS = ("id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, "
-         "config_json, llama_build, provider")
+         "config_json, llama_build, provider, gen_spread_json")
 BENCH_PROVIDERS = ("llama", "lms", "vllm")
 
 
@@ -66,7 +82,7 @@ def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":
     if not r:
         return None
     try:
-        doc = json.loads(r[15])
+        doc = json.loads(r[16])
     except ValueError:
         doc = {}
     return _row(r), doc
@@ -78,8 +94,9 @@ def latest_per_agent(conn, model_id: str) -> list[dict]:
         f"SELECT {_COLS} FROM bench_live_runs WHERE model_id = ? AND ok = 1 ORDER BY id DESC", (model_id,)).fetchall()
     seen: dict = {}
     for r in rows:
-        row = _row(r)
-        seen.setdefault(row["agent_id"], row)
+        if r[3] in seen:
+            continue
+        seen[r[3]] = _row(r)
     out = list(seen.values())
     out.sort(key=lambda r: -(r.get("gen_tps") or 0))
     return out
@@ -308,7 +325,8 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
             {"agent_id": r["agent_id"], "hostname": names.get(r["agent_id"]) or r["agent_id"][:8], "run_id": r["run_id"],
              "ts": r["ts"], "bench": (r.get("config") or {}).get("bench"), "gen_tps": r["gen_tps"], "ppt_tps": r["ppt_tps"],
              "latency_s": r["latency_s"], "accept_rate": r["accept_rate"], "wh_per_ktok": r["wh_per_ktok"],
-             "llama_build": r.get("llama_build") or "", "provider": r.get("provider") or "llama"} for r in rows]})
+             "llama_build": r.get("llama_build") or "", "provider": r.get("provider") or "llama",
+             "gen_spread": r.get("gen_spread")} for r in rows]})
 
     @app.route("/api/benchmark/live/latest")
     def bench_live_latest():
@@ -330,7 +348,8 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
             models.setdefault(row["model_id"], {
                 "run_id": row["run_id"], "ts": row["ts"], "bench": (row.get("config") or {}).get("bench"),
                 "gen_tps": row["gen_tps"], "ppt_tps": row["ppt_tps"], "latency_s": row["latency_s"],
-                "wh_per_ktok": row["wh_per_ktok"], "hostname": names.get(agent_id) or agent_id[:8]})
+                "wh_per_ktok": row["wh_per_ktok"], "hostname": names.get(agent_id) or agent_id[:8],
+                "gen_spread": row.get("gen_spread")})
         return jsonify({"ok": True, "agent_id": agent_id, "models": models})
 
     @app.route("/api/benchmark/live/preflight")
@@ -393,16 +412,18 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                 build = str(llama_build_of(agent_id) or "")[:64]
             except Exception:
                 build = ""
+        spread = gen_spread_of(doc)
         with lock:
             conn = conn_factory()
             cur = conn.execute(
                 "INSERT OR IGNORE INTO bench_live_runs (run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps,"
-                " latency_s, accept_rate, wh_per_ktok, config_json, result_json, llama_build, provider)"
-                " VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?)",
+                " latency_s, accept_rate, wh_per_ktok, config_json, result_json, llama_build, provider,"
+                " gen_spread_json) VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, model_id, agent_id, ts, 1 if doc.get("ok", True) else 0,
                  _finite(first.get("pred_tps")), _finite(first.get("prompt_tps")), _finite(first.get("latency_s")),
                  _finite(first.get("accept_rate")), _finite(doc.get("wh_per_ktok")),
-                 json.dumps(doc.get("config") or {}), json.dumps(doc), build, provider))
+                 json.dumps(doc.get("config") or {}), json.dumps(doc), build, provider,
+                 json.dumps(spread) if spread is not None else None))
             conn.execute(
                 "DELETE FROM bench_live_runs WHERE model_id = ? AND agent_id = ? AND baseline = 0 AND id NOT IN "
                 "(SELECT id FROM bench_live_runs WHERE model_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?)",

@@ -56,7 +56,7 @@ const STUBS = `
 `;
 
 function boot(bootstrap = '') {
-  return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/autotune.js')], bodyHtml: BODY, bootstrap });
+  return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/spread.js'), srcFile('js/autotune.js')], bodyHtml: BODY, bootstrap });
 }
 
 async function opened() {
@@ -184,6 +184,53 @@ describe('AT run + stream', () => {
     ev({ type: 'done', ok: true });
     expect(win.__closed).toBe(true);
     expect(win.AT.running()).toBe(false);
+  });
+
+  it('shows the candidate spread in the bar, the log, the recommendation note and the compare row', async () => {
+    const win = await opened();
+    await win.AT.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'model_start', objective: 'balanced', stages: ['threads', 'verify'] });
+    ev({ type: 'stage_start', stage: 'threads', candidates: [8, 12], est_s: 90 });
+    ev({ type: 'candidate_start', stage: 'threads', value: 12 });
+    ev({ type: 'candidate_result', stage: 'threads', value: 12, ok: true, decode_tps: 41.2,
+         decode_spread: { n: 3, min: 40.1, p25: 40.5, p50: 41.2, p75: 41.6, max: 42.0 }, spread_pct: 4.6, passes: [{}, {}, {}] });
+    expect(win.document.getElementById('atStageBody').textContent).toContain('41.2 (40.1–42.0)');
+    expect(win.document.getElementById('atLog').textContent).toContain('decode 41.2 t/s (40.1–42.0 · 3 passes)');
+    ev({ type: 'candidate_result', stage: 'threads', value: 8, ok: true, decode_tps: 39.5 });
+    expect(win.document.getElementById('atLog').textContent).toContain('decode 39.5 t/s');
+    expect(win.document.getElementById('atLog').textContent).not.toContain('decode 39.5 t/s (');
+    ev({ type: 'model_done', ok: true, objective: 'balanced', verify: { ok: true }, stages: [],
+         before: { decode_tps: 40, decode_spread: { n: 3, min: 39.0, p25: 39.5, p50: 40, p75: 40.5, max: 41.0 } },
+         after: { decode_tps: 41.2, decode_spread: { n: 3, min: 40.1, p25: 40.5, p50: 41.2, p75: 41.6, max: 42.0 } },
+         changes: [{ key: 'threads', current: '8', recommended: '12', source: 'measured', selected: false, gain_pct: 4, noise_pct: 6, evidence: '+4 % over 8 · spread ±3 %' },
+                   { key: 'ctx-size', current: '8192', recommended: '16384', source: 'measured', selected: true, gain_pct: 2, noise_pct: 6, evidence: 'fits' }] });
+    ev({ type: 'done', ok: true }); await flush();
+    const tr = [...win.document.querySelectorAll('#atRecRows tr')];
+    const thr = tr.find(r => r.textContent.includes('threads'));
+    expect(thr.classList.contains('skip')).toBe(true);
+    expect(thr.querySelector('.ev').textContent).toContain('within spread');
+    expect(tr.find(r => r.textContent.includes('ctx-size')).textContent).not.toContain('within spread');
+    const rngs = [...win.document.querySelectorAll('#atCmp .at-cmp-r')[0].querySelectorAll('small.rng')].map(e => e.textContent);
+    expect(rngs).toEqual(['39.0–41.0', '40.1–42.0']);
+  });
+
+  it('renders bars, log and compare unchanged without spread keys', async () => {
+    const win = await opened();
+    await win.AT.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'model_start', objective: 'balanced', stages: ['threads', 'verify'] });
+    ev({ type: 'stage_start', stage: 'threads', candidates: [8], est_s: 90 });
+    ev({ type: 'candidate_result', stage: 'threads', value: 8, ok: true, decode_tps: 41.2 });
+    expect(win.document.querySelector('#atStageBody .at-bar .t').textContent).toBe('41.2');
+    expect(win.document.getElementById('atLog').textContent).toMatch(/decode 41\.2 t\/s$/);
+    ev({ type: 'model_done', ok: true, objective: 'balanced', verify: { ok: true }, stages: [], before: { decode_tps: 40 }, after: { decode_tps: 41.2 },
+         changes: [{ key: 'threads', current: '8', recommended: '12', source: 'measured', selected: false, gain_pct: 4 }] });
+    ev({ type: 'done', ok: true }); await flush();
+    expect(win.document.querySelector('#atRecRows tr').textContent).not.toContain('within spread');
+    expect(win.document.querySelectorAll('#atCmp small.rng').length).toBe(0);
   });
 
   it('shows time left once a stage is live, and re-derives the total from live progress', async () => {

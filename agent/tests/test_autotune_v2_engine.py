@@ -662,3 +662,21 @@ def test_non_quiet_runs_meter_only_the_verify_stage(at):
     assert fake.energy == ["stick"]
     metered = [c for c in fake.calls if c[0] == "load" and (c[3] or {}).get("energy")]
     assert len(metered) == 1 and metered[0][3]["limit"] > 16          # only the verify stick is metered
+
+
+def test_candidate_events_carry_the_pass_spread(at):
+    class SpreadFake(Fake):
+        def load(self, args, ctx, measure):
+            res = super().load(args, ctx, measure)
+            if res.get("stick"):
+                res["stick"].update({"passes": [{"decode_tps": res["stick"]["decode_tps"]}] * 2,
+                                     "decode_spread": {"n": 2, "min": 99.0, "p25": 99.5, "p50": 100.0, "p75": 100.5, "max": 101.0},
+                                     "spread_pct": 2.0})
+            return res
+    done, events = _run(at, SpreadFake(), {"model_ids": ["m"], "objective": "balanced"})
+    cand = [e for e in events if e["type"] == "candidate_result" and e["stage"] == "threads"]
+    assert cand and cand[0]["spread_pct"] == 2.0 and cand[0]["decode_spread"]["n"] == 2 and len(cand[0]["passes"]) == 2
+    assert done["after"]["spread_pct"] == 2.0 and done["before"]["decode_spread"]["n"] == 2
+    assert at.ledger_summary(done)["spread_pct"] == 2.0
+    th = next(c for c in done["changes"] if c["key"] == "threads")
+    assert th["noise_pct"] == 2.0 and "spread" in th["evidence"]

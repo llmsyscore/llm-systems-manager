@@ -10,14 +10,17 @@ import bench_live as bl
 AGENT = {"agent_id": "a" * 32, "token": "tok"}
 
 
-def _doc(run_id, model="org/m:Q4", pred=100.0, levels=1):
-    return {"run_id": run_id, "model_id": model, "ok": True, "bench": "qualitative",
+def _doc(run_id, model="org/m:Q4", pred=100.0, levels=1, spread=None):
+    d = {"run_id": run_id, "model_id": model, "ok": True, "bench": "qualitative",
             "config": {"bench": "qualitative", "concurrency": list(range(1, levels + 1))},
             "levels": [{"level": i + 1, "concurrency": i + 1, "wall_s": 5.0,
                         "rows": [], "all": {"pred_tps": pred, "prompt_tps": 2000.0, "latency_s": 3.0,
                                             "accept_rate": None, "agg_pred_tps": pred * (i + 1), "completion_tokens": 100}}
                        for i in range(levels)],
             "energy_wh": 1.0, "wh_per_ktok": 0.3}
+    if spread is not None:
+        d["levels"][0]["all"]["spread"] = {"pred_tps": spread}
+    return d
 
 
 @pytest.fixture
@@ -100,6 +103,56 @@ def test_read_run_returns_meta_and_doc(app, tmp_path):
     meta, doc = bl.read_run(conn, "rr1")
     assert meta["run_id"] == "rr1" and meta["agent_id"] == AGENT["agent_id"] and doc["levels"]
     assert bl.read_run(conn, "missing") is None
+
+
+SP = {"n": 8, "min": 90.0, "p25": 95.0, "p50": 100.0, "p75": 105.0, "max": 110.0}
+
+
+def test_runs_speed_latest_expose_gen_spread(app):
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json=_doc("r-old"), headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("r-new", spread=SP), headers=h)
+    runs = app.get("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()["runs"]
+    by = {r["run_id"]: r for r in runs}
+    assert by["r-new"]["gen_spread"] == SP and by["r-old"]["gen_spread"] is None
+    speed = app.get("/api/benchmark/live/speed?model_id=org/m:Q4").get_json()["hosts"]
+    assert speed[0]["gen_spread"] == SP
+    latest = app.get("/api/benchmark/live/latest").get_json()["models"]["org/m:Q4"]
+    assert latest["gen_spread"] == SP
+
+
+def test_gen_spread_of_tolerates_old_and_odd_docs():
+    assert bl.gen_spread_of(_doc("x", spread=SP)) == SP
+    assert bl.gen_spread_of(_doc("x")) is None
+    assert bl.gen_spread_of({}) is None and bl.gen_spread_of({"levels": []}) is None
+    assert bl.gen_spread_of({"levels": [{"all": {"spread": None}}]}) is None
+
+
+def test_latest_per_agent_parses_no_result_docs(app, tmp_path, monkeypatch):
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json=_doc("r-old", spread=SP), headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("r-new"), headers=h)
+    calls = []
+    real = bl.gen_spread_of
+    monkeypatch.setattr(bl, "gen_spread_of", lambda doc: calls.append(1) or real(doc))
+    rows = bl.latest_per_agent(sqlite3.connect(tmp_path / "t.db"), "org/m:Q4")
+    assert [r["run_id"] for r in rows] == ["r-new"] and rows[0]["gen_spread"] is None
+    assert len(calls) == 0
+    app.post("/api/benchmark/live/store", json=_doc("r-newest", spread=SP), headers=h)
+    calls.clear()
+    rows = bl.latest_per_agent(sqlite3.connect(tmp_path / "t.db"), "org/m:Q4")
+    assert [r["run_id"] for r in rows] == ["r-newest"] and rows[0]["gen_spread"] == SP
+    assert len(calls) == 0
+
+
+def test_store_fills_gen_spread_column(app, tmp_path):
+    import json
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json=_doc("s-yes", spread=SP), headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("s-no"), headers=h)
+    conn = sqlite3.connect(tmp_path / "t.db")
+    got = dict(conn.execute("SELECT run_id, gen_spread_json FROM bench_live_runs").fetchall())
+    assert json.loads(got["s-yes"]) == SP and got["s-no"] is None
 
 
 def test_store_records_llama_build_from_doc_or_manager_fallback(tmp_path):

@@ -184,6 +184,15 @@ describe('Batch pane', () => {
     expect(w.document.getElementById('atBatchPill').textContent).toBe('complete');
   });
 
+  it('appends the spread to the batch gain cell', async () => {
+    const done = batchDoc('done', { finished: 2 });
+    done.items[0] = { ...done.items[0], status: 'done', gain_pct: 7, spread_pct: 3, ctx: 32768, applied: true };
+    done.items[1] = { ...done.items[1], status: 'done', gain_pct: 5, ctx: 8192, applied: false };
+    const w = await opened('window.sessionStorage.setItem("at.batch", "b1"); window.__batch = ' + JSON.stringify(done) + ';');
+    const gains = [...w.document.querySelectorAll('#atBatchRows tr')].map(r => r.querySelectorAll('td.num')[0].textContent);
+    expect(gains).toEqual(['+7 % ±2 %', '+5 %']);
+  });
+
   it('drops a batch the manager no longer knows', async () => {
     const w = await opened('window.sessionStorage.setItem("at.batch", "gone"); window.__batch = null;');
     expect(w.AT.batchActive()).toBe(false);

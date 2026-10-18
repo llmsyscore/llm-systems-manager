@@ -444,7 +444,7 @@ def test_choose_spec_needs_five_percent(at):
             {"value": "ngram-simple", "ok": True, "decode_tps": 104.0, "accept": 0.2}]
     assert at.choose_spec(rows)[0] == "draft-mtp"
     rows[1]["decode_tps"] = 104.9
-    assert at.choose_spec(rows) == ("none", "no type gained 5 % over none")
+    assert at.choose_spec(rows) == ("none", "no type gained 5 % (or more than its spread) over none")
 
 
 def test_window_plan(at):
@@ -479,8 +479,8 @@ def test_bisect_smallest(at):
 
 def test_budget_and_estimates(at):
     assert at.budget_ok(100, 50, 200) and not at.budget_ok(160, 50, 200)
-    assert at.estimate("kv", 3, 40.0, 20.0) == 3 * (4 * 40 + 20 + 90)
-    assert at.estimate("threads", 3, 40.0, 20.0) == 3 * 60
+    assert at.estimate("kv", 3, 40.0, 20.0) == 3 * (4 * 40 + at.STICK_PASSES * 20 + 90)
+    assert at.estimate("threads", 3, 40.0, 20.0) == 3 * (40 + at.STICK_PASSES * 20)
     assert at.estimate("verify", 1, 40.0, 20.0) == 40 + 60
     assert at.gain_pct(142.6, 101) == pytest.approx(41.2, abs=0.1)
     assert at.gain_pct(1, 0) is None and at.gain_pct(None, 1) is None
@@ -496,7 +496,7 @@ def test_build_changes_selection_rule(at):
     rows = at.build_changes(cur, rec, ev)
     assert [r["key"] for r in rows] == ["ctx-size", "cache-type-k", "threads", "parallel"]
     assert rows[0] == {"key": "ctx-size", "current": "32768", "recommended": "65536", "source": "measured",
-                       "evidence": "free 1012 MB", "selected": True}
+                       "evidence": "free 1012 MB", "selected": True, "noise_pct": 0.0}
     assert rows[2]["selected"] is False and rows[3]["current"] == "" and rows[3]["selected"] is True
 
 
@@ -507,6 +507,7 @@ def test_ledger_summary(at):
     s = at.ledger_summary(done)
     assert s == {"objective": "balanced", "mode": "tune", "llama_build": None, "ctx_size": 65536, "free_mb": 1012,
                  "decode_tps": 142.6, "prefill_tps": 900.0, "agg_tps": 150.0,
+                 "spread_pct": None,
                  "gain_pct": pytest.approx(41.2, abs=0.1), "stages_done": 1, "verify_ok": True,
                  "wh_per_ktok": 0.24, "n_expert": 128, "mtp_layers": 1, "kl": None, "kl_pass": None, "regressed": None,
                  "avg_w": None, "power_cap_w": None, "switches": {}}
@@ -696,3 +697,89 @@ def test_ledger_summary_carries_the_quiet_fields(at):
     s = at.ledger_summary(done)
     assert s["avg_w"] == 212.5 and s["power_cap_w"] == 250.0
     assert at.ledger_summary({"objective": "fit", "stages": []})["avg_w"] is None
+
+
+def test_spread_stats_quartiles_and_rounding(at):
+    sp = at.spread_stats([100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0])
+    assert sp == {"n": 8, "min": 100.0, "p25": 117.5, "p50": 135.0, "p75": 152.5, "max": 170.0}
+    assert at.spread_stats([42.0]) is None and at.spread_stats([]) is None
+    assert at.spread_stats([1.0, None, float("nan"), 3.0]) == {"n": 2, "min": 1.0, "p25": 1.5, "p50": 2.0, "p75": 2.5, "max": 3.0}
+    assert at.spread_pct({"n": 2, "min": 98.0, "p50": 100.0, "max": 102.0}) == pytest.approx(4.0)
+    assert at.spread_pct(None) == 0.0 and at.spread_pct({"n": 2, "min": 0, "p50": 0, "max": 0}) == 0.0
+    assert at.noise_pct({"spread_pct": 1.5}, {"spread_pct": 4.0}) == 4.0
+    assert at.noise_pct(None, {}) == 0.0
+
+
+def test_repeat_stick_two_passes_when_they_agree(at):
+    seq = iter([{"ok": True, "decode_tps": 100.0, "prefill_tps": 2000.0, "agg_tps": 100.0, "latency_s": 1.0,
+                 "accept": 0.7, "seconds": 20.0, "completion_tokens": 1024, "energy_wh": 0.5, "energy_source": "psu", "error": None},
+                {"ok": True, "decode_tps": 102.0, "prefill_tps": 2100.0, "agg_tps": 102.0, "latency_s": 1.1,
+                 "accept": 0.8, "seconds": 21.0, "completion_tokens": 1000, "energy_wh": 0.6, "energy_source": "psu", "error": None}])
+    calls = []
+    out = at.repeat_stick(lambda: (calls.append(1), next(seq))[1])
+    assert len(calls) == 2 and out["ok"] is True
+    assert out["decode_tps"] == 101.0 and out["prefill_tps"] == 2050.0 and out["agg_tps"] == 101.0 and out["latency_s"] == 1.05
+    assert out["accept"] == pytest.approx(0.75)
+    assert out["seconds"] == 41.0 and out["completion_tokens"] == 2024 and out["energy_wh"] == pytest.approx(1.1)
+    assert [p["decode_tps"] for p in out["passes"]] == [100.0, 102.0]
+    assert out["decode_spread"] == {"n": 2, "min": 100.0, "p25": 100.5, "p50": 101.0, "p75": 101.5, "max": 102.0}
+    assert out["spread_pct"] == pytest.approx(2.0 / 101.0 * 100.0)
+
+
+def test_repeat_stick_third_pass_on_disagreement(at):
+    vals = iter([100.0, 110.0, 101.0])
+    out = at.repeat_stick(lambda: {"ok": True, "decode_tps": next(vals), "seconds": 10.0, "error": None})
+    assert len(out["passes"]) == 3 and out["decode_tps"] == 101.0 and out["seconds"] == 30.0
+    assert out["decode_spread"]["min"] == 100.0 and out["decode_spread"]["max"] == 110.0
+    assert out["energy_wh"] is None
+
+
+def test_repeat_stick_failed_or_empty_pass_ends_the_measurement(at):
+    bad = {"ok": False, "decode_tps": None, "error": "cancelled"}
+    calls = []
+    out = at.repeat_stick(lambda: (calls.append(1), bad)[1])
+    assert out is bad and len(calls) == 1
+    seq = iter([{"ok": True, "decode_tps": 100.0, "seconds": 10.0, "error": None},
+                {"ok": True, "decode_tps": None, "seconds": 10.0, "error": None}])
+    out = at.repeat_stick(lambda: next(seq))
+    assert out["ok"] is False and "passes" not in out
+
+
+def test_choose_threads_tie_band_widens_with_noise(at):
+    rows = [{"value": 8, "ok": True, "decode_tps": 100.0, "spread_pct": 6.0},
+            {"value": 12, "ok": True, "decode_tps": 104.0, "spread_pct": 6.0}]
+    assert at.choose_threads(rows)[0] == 8          # 4 % gain inside a 6 % spread → fewer threads
+    rows[1]["spread_pct"] = 1.0; rows[0]["spread_pct"] = 1.0
+    assert at.choose_threads(rows)[0] == 12         # 4 % gain beats the 3 % floor and 1 % noise
+
+
+def test_choose_spec_needs_gain_above_noise(at):
+    rows = [{"value": "none", "ok": True, "decode_tps": 100.0, "spread_pct": 8.0},
+            {"value": "draft-mtp", "ok": True, "decode_tps": 107.0, "spread_pct": 2.0, "accept": 0.7}]
+    choice, reason = at.choose_spec(rows)
+    assert choice == "none" and "spread" in reason
+    rows[0]["spread_pct"] = 2.0
+    assert at.choose_spec(rows)[0] == "draft-mtp"
+
+
+def test_build_changes_unselects_gain_inside_noise(at):
+    ev = {"threads": {"source": "measured", "text": "+4 % over 8 · spread ±3 %", "gain_pct": 4.0, "noise_pct": 6.0}}
+    rows = at.build_changes({"threads": "8"}, {"threads": "12"}, ev)
+    assert rows[0]["selected"] is False and rows[0]["noise_pct"] == 6.0
+    ev["threads"]["noise_pct"] = 1.0
+    assert at.build_changes({"threads": "8"}, {"threads": "12"}, ev)[0]["selected"] is True
+
+
+def test_estimate_counts_every_pass(at):
+    assert at.estimate("threads", 3, 10.0, 30.0) == 3 * (10 + at.STICK_PASSES * 30)
+    assert at.estimate("verify", 1, 10.0, 30.0) == 10 + 60
+
+
+def test_backends_wrap_the_stick_in_repeat_stick():
+    root = Path(__file__).resolve().parents[1] / "providers"
+    llama = (root / "llama.py").read_text()
+    assert "repeat_stick(lambda: self._stick(measure))" in llama
+    lms = (root / "lms_tools.py").read_text()
+    assert "repeat_stick(lambda: self._stick(" in lms
+    vllm = (root / "vllm_tools.py").read_text()
+    assert "repeat_stick(lambda: self._stick_once(measure))" in vllm and "def _stick_once" in vllm

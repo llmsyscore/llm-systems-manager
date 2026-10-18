@@ -91,6 +91,14 @@
   margin-left: auto; font-size: 0.7em; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--fg-dim);
 }
+.rc-hero-range {
+  margin-top: -10px; padding-bottom: 12px;
+  font-family: var(--font-mono); font-size: 0.75em; color: var(--fg-dim);
+}
+.rc-range {
+  display: block; margin-top: 2px;
+  font-family: var(--font-mono); font-size: 0.75em; color: var(--fg-dim);
+}
 
 .rc-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;

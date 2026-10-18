@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import math
 import re
+import statistics
 import sys
 import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 BENCHES = ("qualitative", "throughput_1k", "throughput_2k", "throughput_8k",
            "throughput_16k", "throughput_32k")
@@ -204,6 +206,15 @@ def _int0(v: Any, default: int) -> int:
         return default
 
 
+def spread_stats(xs: Iterable[Any]) -> Optional[dict]:
+    v = [float(x) for x in xs if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)]
+    if len(v) < 2:
+        return None
+    q = statistics.quantiles(v, n=4, method="inclusive")
+    return {"n": len(v), "min": round(min(v), 2), "p25": round(q[0], 2), "p50": round(q[1], 2),
+            "p75": round(q[2], 2), "max": round(max(v), 2)}
+
+
 def level_summary(payload: dict, wall_s: float) -> dict:
     rows = [r for r in (payload.get("summary") or []) if isinstance(r, dict)]
     overall = next((r for r in rows if r.get("category") == "overall"), {})
@@ -212,6 +223,12 @@ def level_summary(payload: dict, wall_s: float) -> dict:
     ok = [r for r in results if r.get("ok")]
     tokens = sum(int(r.get("completion_tokens") or 0) for r in ok)
     agg = (tokens / wall_s) if wall_s > 0 and tokens > 0 else None
+    def vals(key: str, cat: Optional[str] = None, nd: Optional[int] = 1) -> list:
+        xs = [_num(r.get(key)) for r in ok if cat is None or r.get("category") == cat]
+        return [round(x, nd) if nd is not None else x for x in xs if x is not None]
+    for row in rows:
+        row["spread"] = {"pred_tps": spread_stats(vals("predicted_per_second", row.get("category")))}
+    pred, prompt = vals("predicted_per_second"), vals("prompt_per_second")
     first_error = next((str(r.get("error"))[:300] for r in results if not r.get("ok") and r.get("error")), None)
     return {"rows": rows, "all": {
         "requests": _int0(overall.get("requests") or len(ok), len(ok)),
@@ -221,7 +238,10 @@ def level_summary(payload: dict, wall_s: float) -> dict:
         "pred_tps": _num(overall.get("avg_pred_t_s")),
         "latency_s": _num(overall.get("avg_latency")),
         "accept_rate": _num(overall.get("accept_rate")),
-        "agg_pred_tps": agg, "completion_tokens": tokens}}
+        "agg_pred_tps": agg, "completion_tokens": tokens,
+        "samples": {"pred_tps": pred, "prompt_tps": prompt},
+        "spread": {"pred_tps": spread_stats(pred), "prompt_tps": spread_stats(prompt),
+                   "latency_s": spread_stats(vals("latency_s", nd=None))}}}
 
 
 def stick_error(rc: Optional[int], all_: dict) -> Optional[str]:

@@ -65,7 +65,7 @@ const STUBS = `
       : url.indexOf('/api/benchmark/live/runs/') === 0
       ? ((window.__stored || {})[url.split('/').pop()] || { ok: true, run: window.__baseDoc || null })
       : url.indexOf('/api/benchmark/live/runs') === 0
-      ? { ok: true, runs: [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
+      ? { ok: true, runs: window.__runsList || [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
       : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
       : (url.indexOf('/api/benchmark/run?') === 0 && window.__vllmRunReply) ? window.__vllmRunReply
       : { ok: true, run_id: window.__runId || 'r1' };
@@ -77,6 +77,11 @@ const QUEUED = { ok: true, queued: true, job_id: 'j1', position: 1, wait_for: 'A
 
 function boot(bootstrap = '') {
   return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
+}
+
+// Same module with the run-to-run spread formatter loaded (#1301).
+function bootSpread(bootstrap = '') {
+  return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/spread.js'), srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
 }
 
 // Same module, with the shared run gate wired in (#888).
@@ -1467,5 +1472,64 @@ describe('a past run opens from the ledger (#1162)', () => {
     expect($(win, 'blStatus').textContent).toContain('started elsewhere');
     expect($(win, 'blTiles').textContent).toBe('');
     win.BL.cancel();
+  });
+});
+
+describe('BL run-to-run spread (#1301)', () => {
+  const SP = { n: 8, min: 110, p25: 118, p50: 122, p75: 127, max: 131 };
+  const LVL = { concurrency: 1, rows: [{ category: 'coding', requests: 4, avg_prompt_t_s: 500, avg_pred_t_s: 122, avg_latency: 4, accept_rate: null, spread: { pred_tps: SP } }],
+    all: { requests: 8, samples: 8, pred_tps: 122, agg_pred_tps: 122, prompt_tps: 500, latency_s: 4, accept_rate: null,
+      spread: { pred_tps: SP, prompt_tps: { n: 8, min: 480, p25: 490, p50: 500, p75: 510, max: 520 }, latency_s: null } } };
+  const STORED = { p1: { ok: true, meta: { run_id: 'p1', agent_id: 'a1', ts: '2026-09-30T04:43:00Z', ok: true },
+    run: { type: 'model_done', run_id: 'p1', ok: true, bench: 'qualitative', config: {}, levels: [LVL], failed_samples: 0, elapsed_s: 30 } } };
+  const RUNS = [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 122, gen_spread: SP, config: { bench: 'qualitative' } }];
+  const SETUP = 'window.__stored = ' + JSON.stringify(STORED) + '; window.__runsList = ' + JSON.stringify(RUNS) + ';';
+  const $ = (win, id) => win.document.getElementById(id);
+
+  it('deltaText flags a drop inside the baseline spread', async () => {
+    const win = await boot();
+    expect(win.BL.deltaText(90, 100, false, { min: 88, max: 112 })).toEqual({ text: '−10 % · within baseline spread', cls: 'flat' });
+    expect(win.BL.deltaText(80, 100, false, { min: 88, max: 112 })).toEqual({ text: '−20 % vs baseline', cls: 'down' });
+    expect(win.BL.deltaText(90, 100, false, null)).toEqual({ text: '−10 % vs baseline', cls: 'down' });
+  });
+  it('renders range lines on the decode tile, the table and the runs dropdown (spread)', async () => {
+    const win = bootSpread(SETUP + 'BL.onOpen("org/m:Q4", { provider: "llama", agent: null, run: "p1", mode: "live" });');
+    await flush(); await flush();
+    expect($(win, 'blTiles').querySelector('.bl-tile.hi .r').textContent).toBe('118–127 t/s · 8 requests');
+    expect($(win, 'blTiles').querySelectorAll('.bl-tile')[1].querySelector('.r').textContent).toBe('490–510 t/s');
+    expect($(win, 'blTiles').querySelectorAll('.bl-tile')[2].querySelector('.r')).toBeNull();
+    expect($(win, 'blTable').querySelector('tr.tot small.rng').textContent).toBe('118–127');
+    expect($(win, 'blTable').querySelector('tbody tr:not(.tot) small.rng').textContent).toBe('118–127');
+    expect($(win, 'blBaseline').options[1].textContent.endsWith('t/s (118–127) · baseline')).toBe(true);
+  });
+  it('omits every range when the documents carry no spread (spread)', async () => {
+    const old = JSON.parse(JSON.stringify(STORED));
+    delete old.p1.run.levels[0].all.spread; delete old.p1.run.levels[0].rows[0].spread;
+    const win = bootSpread('window.__stored = ' + JSON.stringify(old) + '; BL.onOpen("org/m:Q4", { run: "p1", mode: "live" });');
+    await flush(); await flush();
+    expect($(win, 'blTiles').querySelector('.r')).toBeNull();
+    expect($(win, 'blTable').querySelector('small.rng')).toBeNull();
+    expect($(win, 'blBaseline').options[1].textContent).not.toContain('(');
+  });
+  it('the fleet and baseline tables show the decode range (spread)', () => {
+    const win = bootSpread();
+    win.BL._debugFleet({ job_id: 'j1', model_id: 'org/m:Q4', done: true, config: {}, ranking: ['a'],
+      hosts: [{ agent_id: 'a', hostname: 'alpha', status: 'done', run_id: 'ra', gen_tps: 122, gen_spread: SP }, { agent_id: 'b', hostname: 'bravo', status: 'done', run_id: 'rb', gen_tps: 100 },
+        { agent_id: 'c', hostname: 'charlie', status: 'done', run_id: 'rc', gen_tps: 50, gen_spread: { n: 4, min: 49, p25: 49.5, p50: 50, p75: 50.5, max: 51 } }] });
+    const frows = win.document.querySelectorAll('#blFleetTable tbody tr');
+    expect(frows[0].querySelectorAll('td')[3].querySelector('small.rng').textContent).toBe('118–127');
+    expect(frows[1].querySelector('small.rng')).toBeNull();
+    expect(frows[2].querySelector('small.rng').textContent).toBe('49.0–51.0');
+    win.BL._debugBaselines({ schedule: {}, baselines: [{ run_id: 'p1', model_id: 'org/m:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 122, gen_spread: SP, config: {}, online: true, loaded: true, last_check: null },
+      { run_id: 'p2', model_id: 'org/n:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 50, config: {}, online: true, loaded: true, last_check: null }] });
+    const brows = win.document.querySelectorAll('#blBaseTable tbody tr');
+    expect(brows[0].querySelectorAll('td')[2].querySelector('small.rng').textContent).toBe('118–127');
+    expect(brows[1].querySelector('small.rng')).toBeNull();
+    const lc = (floor) => ({ ts: '2026-09-09T03:00:10+00:00', trigger: 'nightly', status: 'ok', delta_pct: -20, spread_floor: floor });
+    win.BL._debugBaselines({ schedule: {}, baselines: [{ run_id: 'p3', model_id: 'org/m:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 50, config: {}, online: true, loaded: true, last_check: lc(39) },
+      { run_id: 'p4', model_id: 'org/n:Q4', agent_id: 'a', hostname: 'alpha', ts: '2026-09-02T10:00:00+00:00', gen_tps: 50, config: {}, online: true, loaded: true, last_check: lc(null) }] });
+    const drows = win.document.querySelectorAll('#blBaseTable tbody tr');
+    expect(drows[0].querySelector('.dlt').textContent).toBe('−20 % · within baseline range');
+    expect(drows[1].querySelector('.dlt').textContent).toBe('−20 %');
   });
 });

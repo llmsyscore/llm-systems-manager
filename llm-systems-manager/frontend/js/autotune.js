@@ -993,6 +993,7 @@
     return `<div class="at-gauge"><div class="at-gauge-lbls"><span>${lo} MB</span><span>target ${target} ±${tol}</span><span>${hi} MB</span></div><div class="at-gauge-track"><div class="at-gauge-band" style="left:${bandL}%;width:${bandW}%;"></div><div class="at-gauge-mark${hit ? '' : ' miss'}" style="left:calc(${mark}% - 1px);"></div></div></div>`;
   }
   function fmt(n, d = 1) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d }); }
+  function rng(sp, d) { return window.SPREAD ? window.SPREAD.rangeText(sp, d) : ''; }
   function barsHtml(cands, metric) {
     const vals = cands.map(c => c[metric]).filter(v => typeof v === 'number' && v > 0);
     const max = Math.max(1, ...vals);
@@ -1001,7 +1002,7 @@
       const v = c[metric];
       const cls = c.status === 'pending' ? 'pend' : (c.ok === false ? 'fail' : (v === best ? 'best' : ''));
       const h = c.status === 'pending' ? 40 : (typeof v === 'number' && v > 0 ? Math.max(4, Math.round(100 * v / max)) : 6);
-      const top = c.status === 'pending' ? '…' : (c.ok === false ? (c.error && /oom/i.test(c.error) ? 'OOM' : 'failed') : fmt(v, 1));
+      const top = c.status === 'pending' ? '…' : (c.ok === false ? (c.error && /oom/i.test(c.error) ? 'OOM' : 'failed') : fmt(v, 1) + (metric === 'decode_tps' && rng(c.decode_spread, 1) ? ` (${rng(c.decode_spread, 1)})` : ''));
       const w = typeof c.avg_w === 'number' ? ` · ${Math.round(c.avg_w)} W` : '';
       const cap = _run && _run.powerCap != null ? _run.powerCap : null;
       const over = cap != null && typeof c.avg_w === 'number' && c.avg_w > cap;
@@ -1102,7 +1103,7 @@
       _run.loads += 1;
       renderStage();
       const bits = [msg.ok ? 'ok' : (msg.error || 'failed'), msg.ctx != null ? `ctx ${Number(msg.ctx).toLocaleString()}` : '', msg.free_mb != null ? `free ${msg.free_mb} MB` : '',
-                    msg.decode_tps != null ? `decode ${fmt(msg.decode_tps)} t/s` : '', msg.agg_tps != null && msg.agg_tps !== msg.decode_tps ? `agg ${fmt(msg.agg_tps)} t/s` : '',
+                    msg.decode_tps != null ? `decode ${fmt(msg.decode_tps)} t/s${rng(msg.decode_spread, 1) ? ` (${rng(msg.decode_spread, 1)}${Array.isArray(msg.passes) ? ` · ${msg.passes.length} passes` : ''})` : ''}` : '', msg.agg_tps != null && msg.agg_tps !== msg.decode_tps ? `agg ${fmt(msg.agg_tps)} t/s` : '',
                     msg.accept != null ? `accept ${Math.round(msg.accept * 100)} %` : '', msg.kl != null ? `KL ${msg.kl}` : ''].filter(Boolean);
       log(`candidate ${msg.value} · ${bits.join(' · ')}`, msg.ok ? '' : 'warn');
     } else if (t === 'stage_done') {
@@ -1164,7 +1165,8 @@
     return `${meta.base_model || 'base model'} card`;
   }
   function recRows(done, section, meta, overwrite) {
-    const rows = (done.changes || []).map(c => ({ ...c, source: c.source || 'measured', note: '' }));
+    const rows = (done.changes || []).map(c => ({ ...c, source: c.source || 'measured',
+      note: !c.selected && c.noise_pct > 0 && c.gain_pct != null && c.gain_pct < c.noise_pct ? 'within spread' : '' }));
     ((meta && meta.suggestions) || []).forEach(s => {
       const cur = section && section[s.key] != null ? String(section[s.key]) : '';
       const val = String(s.value);
@@ -1205,15 +1207,16 @@
   }
   function renderCmp(done) {
     const a = done.after || {}, b = done.before || {};
-    const row = (k, bv, av, unit, f, neutral) => {
+    const row = (k, bv, av, unit, f, neutral, bs, as) => {
       const max = Math.max(Number(bv) || 0, Number(av) || 0, 1), g = pct(av, bv), good = g != null && g > 0 && !neutral;
       const tail = g == null ? '' : (good ? `<b>${g >= 0 ? '+' : ''}${Math.round(g)} %</b>` : `<span style="color:var(--fg-dim)">${g >= 0 ? '+' : ''}${Math.round(g)} %</span>`);
-      return `<div class="at-cmp-r"><span class="k">${k}</span><div class="bars"><i style="width:${Math.round(100 * (Number(bv) || 0) / max)}%"></i><i class="new" style="width:${Math.round(100 * (Number(av) || 0) / max)}%"></i></div><span class="r">${f(bv)} → ${f(av)}${unit} ${tail}</span></div>`;
+      return `<div class="at-cmp-r"><span class="k">${k}</span><div class="bars"><i style="width:${Math.round(100 * (Number(bv) || 0) / max)}%"></i><i class="new" style="width:${Math.round(100 * (Number(av) || 0) / max)}%"></i></div><span class="r">${f(bv)}${rs(bs)} → ${f(av)}${rs(as)}${unit} ${tail}</span></div>`;
     };
+    const rs = sp => { const t = rng(sp, 1); return t ? `<small class="rng">${esc(t)}</small>` : ''; };
     const host = $('atCmp'); if (!host) return;
     const noBase = done.mode === 'verify' && !Object.keys(b).length
       ? '<div class="at-hint" style="margin-bottom:8px">The last tune recorded no measurements to compare against, so this verify becomes the baseline for the next one.</div>' : '';
-    host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1)) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
+    host.innerHTML = noBase + row('Decode t/s', b.decode_tps, a.decode_tps, '', v => fmt(v, 1), false, b.decode_spread, a.decode_spread) + row('Context', b.ctx, a.ctx, '', v => fmt(v, 0))
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row(pd().free === 'free VRAM' ? 'VRAM free' : 'Memory free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
@@ -1570,7 +1573,7 @@
     if (rows) rows.innerHTML = items.map(i => {
       const cls = i.status === 'done' ? 'ok' : i.status === 'running' ? 'running' : (i.status === 'failed' ? 'err' : '');
       return `<tr><td>${esc(i.hostname)}</td><td>${esc(i.model_id)}</td><td><span class="bench-status-pill ${cls}">${esc(i.status)}</span></td>`
-        + `<td class="num">${esc(batchGain(i.gain_pct))}</td><td class="num">${esc(batchCtx(i.ctx))}</td>`
+        + `<td class="num">${esc(batchGain(i.gain_pct) + (typeof i.spread_pct === 'number' ? ` ±${Math.round(i.spread_pct / 2)} %` : ''))}</td><td class="num">${esc(batchCtx(i.ctx))}</td>`
         + `<td>${i.status === 'done' ? (i.applied ? 'applied' : 'not applied') : '—'}</td><td class="note" title="${esc(i.note || '')}">${esc(i.note || '')}</td></tr>`;
     }).join('');
     const sum = $('atBatchSummary');

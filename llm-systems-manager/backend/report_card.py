@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import queue as _queue
 import statistics
 import threading as _threading
@@ -117,13 +118,24 @@ def rep_metrics(rep: dict) -> dict:
     return out
 
 
+def spread_stats(xs) -> "dict | None":
+    """n/min/quartiles/max of the finite numeric samples; None under 2."""
+    v = [float(x) for x in xs if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)]
+    if len(v) < 2:
+        return None
+    q = statistics.quantiles(v, n=4, method="inclusive")
+    return {"n": len(v), "min": round(min(v), 2), "p25": round(q[0], 2), "p50": round(q[1], 2),
+            "p75": round(q[2], 2), "max": round(max(v), 2)}
+
+
 def run_metrics(reps: "list[dict]") -> dict:
-    """Median TTFT / prefill / generation throughput across repetitions."""
+    """Median TTFT / prefill / generation throughput across repetitions, plus their spread."""
     ms = [rep_metrics(r) for r in reps]
+    keys = ("ttft_s", "prefill_tps", "gen_tps")
+    spread = {k: spread_stats(m[k] for m in ms) for k in ("gen_tps", "prefill_tps", "ttft_s")}
     if not ms:
-        return {"ttft_s": 0.0, "prefill_tps": 0.0, "gen_tps": 0.0}
-    return {k: statistics.median(m[k] for m in ms)
-            for k in ("ttft_s", "prefill_tps", "gen_tps")}
+        return {"ttft_s": 0.0, "prefill_tps": 0.0, "gen_tps": 0.0, "spread": spread}
+    return {**{k: statistics.median(m[k] for m in ms) for k in keys}, "spread": spread}
 
 
 def energy_metrics(avg_watts, gen_tps: float, price_kwh: float) -> dict:
@@ -796,6 +808,7 @@ def live_section(meta: dict, doc: dict) -> dict:
     fa = first.get("all") or {}
     same = [l for l in levels if _cell_key(l) == _cell_key(first)]
     same.sort(key=lambda l: int(l.get("concurrency") or 0))
+    fs = fa.get("spread") if isinstance(fa.get("spread"), dict) else {}
     cfg = doc.get("config") or {}
     matrix = None
     if isinstance(cfg.get("matrix"), dict) and levels:
@@ -816,7 +829,8 @@ def live_section(meta: dict, doc: dict) -> dict:
             "levels": [{"concurrency": int(l.get("concurrency") or 0),
                         "pred_tps": (l.get("all") or {}).get("pred_tps"),
                         "agg_pred_tps": (l.get("all") or {}).get("agg_pred_tps")} for l in same],
-            "matrix": matrix}
+            "matrix": matrix,
+            "spread": {"decode_tps": fs.get("pred_tps"), "prefill_tps": fs.get("prompt_tps")}}
 
 
 def card_from_live(meta: dict, doc: dict, price_kwh: float, snapshot: dict) -> dict:
@@ -833,7 +847,8 @@ def card_from_live(meta: dict, doc: dict, price_kwh: float, snapshot: dict) -> d
               "tokens_per_joule": tpj, "usd_per_mtok": usd, "avg_watts": avg_watts,
               **aggregate_gpus((snapshot or {}).get("gpus") or []),
               "power_source": live.get("energy_source") or (snapshot or {}).get("source"),
-              "live": live}
+              "live": live,
+              "spread": {"gen_tps": live["spread"]["decode_tps"], "prefill_tps": live["spread"]["prefill_tps"]}}
     return {"ts": int(_time.time()), "agent_id": meta.get("agent_id") or "", "provider": "llama",
             "mode": "live", "preset_version": PRESET_VERSION, "eligible": False, "result": result}
 
@@ -1051,7 +1066,7 @@ def _run_job(job_id: str, req: dict) -> None:
         agg = aggregate_gpus(power["gpus"])
         energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
                                 req["price_kwh"])
-        result = {k: v for k, v in bench.items() if k != "reps"}
+        result = dict(bench)
         result.update({"model": model, **energy, **agg,
                        "power_source": power["source"]})
         card = {"ts": int(_time.time()), "agent_id": req["agent"],

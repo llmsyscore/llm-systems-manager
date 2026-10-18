@@ -75,3 +75,17 @@ def test_aggregate_empty_is_all_none():
     g = rc.aggregate_gpus([])
     assert g["gpu_config"] is None and g["power_w"] is None
     assert g["vram_total_mb"] is None and g["vram_used_mb"] is None
+
+
+def test_run_metrics_reports_spread():
+    reps = [{"ttft_s": 0.5, "prompt_tokens": 512, "gen_tokens": 128, "gen_duration_s": d} for d in (4.0, 2.0, 8.0)]
+    out = rc.run_metrics(reps)
+    sp = out["spread"]["gen_tps"]
+    assert sp["n"] == 3 and sp["min"] == pytest.approx(127 / 8.0, abs=0.01) and sp["max"] == pytest.approx(127 / 2.0, abs=0.01)
+    assert out["spread"]["ttft_s"] == {"n": 3, "min": 0.5, "p25": 0.5, "p50": 0.5, "p75": 0.5, "max": 0.5}
+    assert rc.run_metrics([])["spread"] == {"gen_tps": None, "prefill_tps": None, "ttft_s": None}
+
+
+def test_spread_stats_excludes_bools_and_non_finite():
+    assert rc.spread_stats([1.0, True, float("nan"), float("inf")]) is None
+    assert rc.spread_stats([1, 2, 3, 4, 5]) == {"n": 5, "min": 1.0, "p25": 2.0, "p50": 3.0, "p75": 4.0, "max": 5.0}

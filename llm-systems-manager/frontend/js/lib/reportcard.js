@@ -47,13 +47,18 @@ function cell(parent, value, unit, label) {
   return c;
 }
 
+// Spread helper: window global in the browser, sibling in Node.
+const _spread = (typeof window !== 'undefined' && window.SPREAD)
+  || (typeof require === 'function' ? require('./spread.js') : null);
+
 const BENCH_SHORT = { qualitative: 'qual', throughput_1k: '1k', throughput_2k: '2k', throughput_8k: '8k', throughput_16k: '16k', throughput_32k: '32k' };
 
 // Pure summary strings for the Live block's under-load and matrix strips.
 function liveSummary(live) {
   const l = live || {};
   const lv = (l.levels || []).filter(x => x && x.pred_tps != null);
-  const loadText = lv.length ? 'under load · ' + lv.map(x => `${x.concurrency}: ${fmt(x.pred_tps, 1)}`).join(' · ') + ' t/s' : '';
+  const dr = l.spread && l.spread.decode_tps && _spread ? _spread.rangeText(l.spread.decode_tps, 1) : '';
+  const loadText = lv.length ? 'under load · ' + lv.map((x, i) => `${x.concurrency}: ${fmt(x.pred_tps, 1)}` + (i === 0 && dr ? ` (${dr})` : '')).join(' · ') + ' t/s' : '';
   const m = l.matrix;
   let matrixText = '';
   if (m && (m.cells || []).length) {
@@ -80,11 +85,21 @@ function buildCard(res) {
   hero.appendChild(el('span', 'rc-hero-unit', 'tok/s'));
   hero.appendChild(el('span', 'rc-hero-label', 'generation'));
   root.appendChild(hero);
+  const sp = (r.spread && typeof r.spread === 'object' && _spread) ? r.spread : {};
+  const heroRange = sp.gen_tps ? _spread.rangeLabel(sp.gen_tps, 'tok/s', 1, 'reps') : '';
+  if (heroRange) root.appendChild(el('div', 'rc-hero-range', heroRange));
 
   const grid = el('div', 'rc-grid');
-  cell(grid, fmt(r.prefill_tps), 'tok/s', 'prompt proc');
-  cell(grid, r.ttft_s == null ? '—' : fmt(r.ttft_s * 1000, 0), 'ms',
+  const ppCell = cell(grid, fmt(r.prefill_tps), 'tok/s', 'prompt proc');
+  const ppRange = sp.prefill_tps ? _spread.rangeText(sp.prefill_tps, 0) : '';
+  if (ppRange) ppCell.appendChild(el('small', 'rc-range', ppRange));
+  const ftCell = cell(grid, r.ttft_s == null ? '—' : fmt(r.ttft_s * 1000, 0), 'ms',
        'first token');
+  const t = sp.ttft_s;
+  const ms = v => (v == null ? null : v * 1000);
+  const ftRange = t ? _spread.rangeText({ n: t.n, min: ms(t.min), p25: ms(t.p25),
+    p50: ms(t.p50), p75: ms(t.p75), max: ms(t.max) }, 0) : '';
+  if (ftRange) ftCell.appendChild(el('small', 'rc-range', ftRange));
   cell(grid, r.vram_used_mb == null ? '—'
        : fmtMb(r.vram_used_mb).replace(' GB', ''),
        '/ ' + fmtMb(r.vram_total_mb), 'VRAM used');

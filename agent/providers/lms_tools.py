@@ -458,7 +458,7 @@ class _LmsBackend:
                "free_mb": free if free is not None else _free_mb(), "load_s": round(time.monotonic() - t0, 1),
                "instance_id": inst.get("id"), "stick": None}
         if measure:
-            out["stick"] = self._stick(str(inst.get("id") or self.model_id), measure)
+            out["stick"] = _at.repeat_stick(lambda: self._stick(str(inst.get("id") or self.model_id), measure))
             sf = out["stick"].get("free_mb")
             if sf is not None and (out["free_mb"] is None or sf < out["free_mb"]):
                 out["free_mb"] = sf
