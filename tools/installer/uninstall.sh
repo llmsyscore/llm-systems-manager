@@ -317,6 +317,8 @@ fi
 
 # ── InfluxDB (Linux only — manager host) ───────────────────────────────────
 _PKG=apt; command -v apt-get >/dev/null 2>&1 || _PKG=dnf
+# Wait for another apt/dpkg process instead of failing at once.
+_APT_LOCK=(-o "DPkg::Lock::Timeout=${LLMSYS_APT_LOCK_TIMEOUT:-300}")
 if $INFLUX_INSTALLED; then
   banner "InfluxDB"
   warn "Removing InfluxDB deletes the metrics database. Backups happen via 'influx backup'."
@@ -324,9 +326,16 @@ if $INFLUX_INSTALLED; then
     $SUDO systemctl stop influxdb.service    2>/dev/null || true
     $SUDO systemctl disable influxdb.service 2>/dev/null || true
     if [[ "$_PKG" == "dnf" ]]; then
-      $SUDO dnf remove -y influxdb2 influxdb2-cli 2>/dev/null || warn "dnf remove failed"
+      $SUDO dnf remove -y influxdb2 influxdb2-cli \
+        || { warn "dnf remove failed (see dnf's message above)"
+             warn "remove by hand:  sudo dnf remove influxdb2 influxdb2-cli"; }
     else
-      if ! $SUDO apt-get purge -y influxdb2 influxdb2-cli 2>/dev/null; then
+      # apt's own errors stay visible so the operator sees why a purge failed.
+      if command -v fuser >/dev/null 2>&1 \
+          && $SUDO fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        log "waiting for another package manager to finish (up to ${LLMSYS_APT_LOCK_TIMEOUT:-300}s)…"
+      fi
+      if ! _out="$($SUDO apt-get "${_APT_LOCK[@]}" purge -y influxdb2 influxdb2-cli 2>&1)"; then
         _st="$(dpkg-query -W -f='${db:Status-Status}' influxdb2 2>/dev/null || true)"
         # half-*/config-files = influxdb2's own postrm failed (exits 1 once the
         # unit is gone): neutralize it, take over its cleanup, purge again.
@@ -335,8 +344,12 @@ if $INFLUX_INSTALLED; then
           printf '#!/bin/sh\nexit 0\n' | $SUDO tee /var/lib/dpkg/info/influxdb2.postrm >/dev/null
           $SUDO rm -f /etc/default/influxdb
           $SUDO dpkg --purge influxdb2 2>/dev/null || true
+        else
+          printf '%s\n' "$_out" | tail -n 8 >&2
         fi
-        $SUDO apt-get purge -y influxdb2 influxdb2-cli 2>/dev/null || warn "apt purge failed"
+        $SUDO apt-get "${_APT_LOCK[@]}" purge -y influxdb2 influxdb2-cli \
+          || { warn "apt purge failed (see apt's message above)"
+               warn "remove by hand:  sudo apt-get purge influxdb2 influxdb2-cli"; }
       fi
     fi
     _influx_resid=""
@@ -386,7 +399,7 @@ if $INFLUX_INSTALLED; then
       fi
     elif confirm "Remove InfluxData apt source and GPG key?"; then
       $SUDO rm -f /etc/apt/sources.list.d/influxdata.list /etc/apt/keyrings/influxdata-archive.gpg
-      $SUDO apt-get update -qq 2>/dev/null || true
+      $SUDO apt-get "${_APT_LOCK[@]}" update -qq 2>/dev/null || true
       ok "InfluxData apt source removed"
     fi
     if confirm "Remove cached operator/admin tokens in /root?"; then

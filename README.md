@@ -820,6 +820,7 @@ The installer checks for: `python3` (≥ 3.11), `python3-venv`, `git`, `jq`, `cu
 | Host doesn't appear in the dashboard | Agent installed but not approved: **Admin → Agents → Approve**. Approved but no data: check the agent log with `sudo journalctl -u llm-systems-agent -f` on that host. |
 | Agent shows up but metrics are flat | The agent is probably not reaching the alarm engine. On the agent host: `curl -i http://<manager-host>:8081/health` (or `https://...` if AE TLS is on). 401 means the agent doesn't have the ingest token yet — wait one heartbeat (≤60 s) or restart it. |
 | Alarm engine red dot in the Admin tab | Open `http://<manager-host>:5000/api/admin/system-health` to see which component is degraded. Common causes: AE TLS cert missing on a split multi server install (copy `ae-tls.{crt,key}` from manager → AE host ../data directory), ingest token mismatch (both hosts must carry the same value), InfluxDB down. |
+| Install or uninstall pauses with "waiting for another package manager to finish" | Another apt process (usually automatic updates on a fresh machine) holds the package lock. The installer waits up to 5 minutes for it and then carries on. Set `LLMSYS_APT_LOCK_TIMEOUT=<seconds>` to wait longer or shorter. |
 | Need to start over | `bash /opt/llm-systems-manager/tools/installer/install.sh --uninstall` walks through removing services, the install tree, the runtime user, and (with confirmation) InfluxDB itself. |
 
 ---

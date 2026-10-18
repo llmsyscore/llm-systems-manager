@@ -3655,8 +3655,10 @@ _offer_apt_install() {
     ""|y|yes) ;;
     *) echo "      declined — leaving disabled"; return 1 ;;
   esac
+  # Wait for another apt/dpkg process instead of failing at once; show apt's error on failure.
+  local _out
   # shellcheck disable=SC2086
-  if $SUDO apt-get install -y $pkgs >/dev/null 2>&1; then
+  if _out="$($SUDO apt-get -o "DPkg::Lock::Timeout=${LLMSYS_APT_LOCK_TIMEOUT:-300}" install -y $pkgs 2>&1)"; then
     hash -r 2>/dev/null || true
     if command -v "$binary" >/dev/null 2>&1; then
       echo "      ✓ installed"
@@ -3665,7 +3667,8 @@ _offer_apt_install() {
     echo "      ✗ apt reported success but '$binary' still not on PATH"
     return 1
   fi
-  echo "      ✗ apt-get install $pkgs failed — run manually and re-run installer"
+  printf '%s\n' "$_out" | tail -n 5 | sed 's/^/        /'
+  echo "      ✗ apt-get install $pkgs failed — run: sudo apt-get install -y $pkgs, then re-run the installer"
   return 1
 }
 
