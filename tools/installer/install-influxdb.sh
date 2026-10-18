@@ -89,7 +89,7 @@ else
   # adding the InfluxData repo and is the most likely place to hit a VM
   # clock skew on a freshly-rolled-back snapshot.
   apt_update_with_clock_recovery
-  $SUDO apt-get install -y --no-install-recommends influxdb2 influxdb2-cli
+  apt_get install -y --no-install-recommends influxdb2 influxdb2-cli
 fi
 ok "influxdb2 + influxdb2-cli installed"
 

@@ -458,8 +458,23 @@ offer_apt_install() {
   if [[ "$tool" == "dnf" ]]; then
     $SUDO dnf install -y "${mapped[@]}"
   else
-    $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}"
+    apt_get install -y --no-install-recommends "${pkgs[@]}"
   fi
+}
+
+# apt_lock_notice — prints one line when another process holds the apt/dpkg lock.
+: "${LLMSYS_APT_LOCK_TIMEOUT:=300}"
+apt_lock_notice() {
+  command -v fuser >/dev/null 2>&1 || return 0
+  if $SUDO fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+    log "waiting for another package manager to finish (up to ${LLMSYS_APT_LOCK_TIMEOUT}s)…"
+  fi
+}
+
+# apt_get <args...> — apt-get that waits for the apt/dpkg lock instead of failing at once.
+apt_get() {
+  apt_lock_notice
+  $SUDO apt-get -o "DPkg::Lock::Timeout=${LLMSYS_APT_LOCK_TIMEOUT}" "$@"
 }
 
 # validate_influx_token <label> <token> [require_eqeq]
@@ -533,7 +548,7 @@ apt_update_with_clock_recovery() {
   local output rc=0
   # Put the failing command in an if-context so 'set -e' in the caller
   # doesn't bail before we even examine the output.
-  if output="$($SUDO apt-get update 2>&1)"; then
+  if output="$(apt_get update 2>&1)"; then
     printf '%s\n' "$output" | grep -E '^(Get|Hit|Reading)' || true
     return 0
   else
@@ -579,7 +594,7 @@ apt_update_with_clock_recovery() {
     fi
     ok "clock advanced to $new_time (one-time, no persistent change)"
     log "retrying apt-get update"
-    if $SUDO apt-get update; then
+    if apt_get update; then
       return 0
     else
       return $?

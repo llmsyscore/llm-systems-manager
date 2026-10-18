@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20261014002
+_INSTALL_SH_REVISION=20261018001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -454,13 +454,18 @@ if (( ${#NEEDED[@]} > 0 )); then
       case "$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')" in
         ""|y|yes)
           SUDO=""; [[ $EUID -ne 0 ]] && SUDO="sudo"
-          $SUDO apt-get update -qq
+          # Wait for another apt/dpkg process (first-boot updates) instead of failing at once.
+          _B_APT_LOCK=(-o "DPkg::Lock::Timeout=${LLMSYS_APT_LOCK_TIMEOUT:-300}")
+          if have fuser && $SUDO fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+            printf '  waiting for another package manager to finish (up to %ss)…\n' "${LLMSYS_APT_LOCK_TIMEOUT:-300}"
+          fi
+          $SUDO apt-get update -qq "${_B_APT_LOCK[@]}"
           # Record the update in the per-run stamp so sub-installers skip theirs.
           LLMSYS_APT_STAMP="$(mktemp -t llmsys-apt-updated.XXXXXX)"
           trap 'rm -f "${LLMSYS_APT_STAMP:-}"' EXIT
           printf 'updated\n' > "$LLMSYS_APT_STAMP"
           export LLMSYS_APT_STAMP
-          $SUDO apt-get install -y --no-install-recommends "${NEEDED[@]}"
+          $SUDO apt-get install -y --no-install-recommends "${_B_APT_LOCK[@]}" "${NEEDED[@]}"
           ;;
         *) _b_die "Refused — install manually and re-run." ;;
       esac
