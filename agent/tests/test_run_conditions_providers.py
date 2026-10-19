@@ -186,8 +186,7 @@ def test_lms_version_parses_and_caches(lms_tools, monkeypatch, tmp_path):
     def _co(argv, **kw):
         calls.append(argv)
         return "lms - LM Studio CLI - v0.3.20\n"
-    monkeypatch.setattr(lms_tools, "_LMS_VERSION", None, raising=False)
-    monkeypatch.setattr(lms_tools, "_LMS_VERSION_PROBED", False, raising=False)
+    monkeypatch.setattr(lms_tools, "_LMS_VERSION_CACHE", {}, raising=False)
     monkeypatch.setattr(lms_tools.subprocess, "check_output", _co)
     assert lms_tools._lms_version() == "0.3.20" and lms_tools._lms_version() == "0.3.20"
     assert calls == [[str(cmd), "version"]]
@@ -201,8 +200,7 @@ def test_lms_version_caches_a_failure(lms_tools, monkeypatch, tmp_path):
     def _co(argv, **kw):
         calls.append(argv)
         raise lms_tools.subprocess.TimeoutExpired(argv, 3)
-    monkeypatch.setattr(lms_tools, "_LMS_VERSION", None, raising=False)
-    monkeypatch.setattr(lms_tools, "_LMS_VERSION_PROBED", False, raising=False)
+    monkeypatch.setattr(lms_tools, "_LMS_VERSION_CACHE", {}, raising=False)
     monkeypatch.setattr(lms_tools.subprocess, "check_output", _co)
     assert lms_tools._lms_version() is None and lms_tools._lms_version() is None
     assert len(calls) == 1

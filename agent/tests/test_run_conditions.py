@@ -239,3 +239,10 @@ def test_redact_cmd_hides_secret_flag_values_and_kv_tokens(rc):
     assert rc.redact_cmd(None) is None
     c = rc.start({"server_cmd": "llama-server --api-key abc"}, None, None)
     assert c["backend"]["server_cmd"] == "llama-server --api-key ***"
+
+
+def test_redact_cmd_handles_quotes_urls_and_bad_quoting(rc):
+    assert rc.redact_cmd("srv --api-key 'a b c' --alias \"my model\"") == "srv --api-key *** --alias 'my model'"
+    assert rc.redact_cmd("srv '--api-key=x y' --url https://user:pw@host/p") == "srv --api-key=*** --url https://***@host/p"
+    assert rc.redact_cmd("srv --api-key 'unterminated") == "srv --api-key ***"
+    assert rc.redact_cmd("srv  --port   8080") == "srv --port 8080"

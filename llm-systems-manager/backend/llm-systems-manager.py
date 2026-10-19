@@ -158,6 +158,7 @@ except PermissionError:
     pass
 
 import re
+import shlex
 import urllib.parse
 import signal
 
@@ -2468,15 +2469,21 @@ def _cond_size(d) -> int:
 
 _SECRET_FLAGS = ("--api-key", "--api-key-file", "--hf-token", "-hft", "--ssl-key-file", "--admin-key")
 _SECRET_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:token|secret|key|password|passwd)[A-Za-z0-9_]*)=.+$", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+_PLAIN_TOKEN_RE = re.compile(r"[^\s'\"\\]+")
 
 
-def _redact_cmd(cmd) -> "str | None":
-    """Server command line with the value after any secret-bearing flag, or in KEY=VALUE tokens, replaced by ***."""
+def _redact_cmd(cmd: "str | None") -> "str | None":
+    """Server command line with secret flag values, KEY=VALUE secrets and URL user:password parts replaced by ***."""
     if not isinstance(cmd, str):
         return None
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
     out, hide = [], False
-    for tok in cmd.split(" "):
-        if hide and tok:
+    for tok in toks:
+        if hide:
             out.append("***")
             hide = False
             continue
@@ -2487,8 +2494,8 @@ def _redact_cmd(cmd) -> "str | None":
         elif (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
             out.append(f"{flag}=***")
         else:
-            out.append(tok)
-    return " ".join(out)
+            out.append(_URL_USERINFO_RE.sub(r"\1***@", tok))
+    return " ".join(t if _PLAIN_TOKEN_RE.fullmatch(t) else shlex.quote(t) for t in out)
 
 
 def _conditions_clean(raw) -> "dict | None":

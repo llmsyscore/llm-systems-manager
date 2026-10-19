@@ -374,7 +374,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
     llama: dict[str, Any] = {
         "state": "unknown",
         "port": llama_api_port(api_base),
-        "server_args": _llama_server_cmdline(pid),
+        "server_args": run_conditions.redact_cmd(_llama_server_cmdline(pid)),
         "model": None,
         "sleeping": False,
         "tokens_per_second": None,

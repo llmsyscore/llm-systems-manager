@@ -163,8 +163,7 @@ def _model_row(m: dict) -> dict:
             "config": (insts[0].get("config") if insts else None)}
 
 
-_LMS_VERSION: Optional[str] = None
-_LMS_VERSION_PROBED = False
+_LMS_VERSION_CACHE: dict = {}
 _LMS_VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)*")
 
 
@@ -174,10 +173,9 @@ def _lms_models_root():
 
 def _lms_version() -> Optional[str]:
     """Version from `lms version`, probed once per process; None when unavailable."""
-    global _LMS_VERSION, _LMS_VERSION_PROBED
-    if _LMS_VERSION_PROBED:
-        return _LMS_VERSION
-    _LMS_VERSION_PROBED = True
+    if "version" in _LMS_VERSION_CACHE:
+        return _LMS_VERSION_CACHE["version"]
+    _LMS_VERSION_CACHE["version"] = None
     cmd = _ctx().config.LMS_CMD
     if not cmd or not os.path.exists(cmd):
         return None
@@ -186,8 +184,8 @@ def _lms_version() -> Optional[str]:
     except (OSError, subprocess.SubprocessError):
         return None
     m = _LMS_VERSION_RE.search(out or "")
-    _LMS_VERSION = m.group(0) if m else None
-    return _LMS_VERSION
+    _LMS_VERSION_CACHE["version"] = m.group(0) if m else None
+    return _LMS_VERSION_CACHE["version"]
 
 
 def conditions_facts(model_id: str, models: Optional[list] = None) -> dict:
