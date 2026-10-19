@@ -763,13 +763,11 @@ def test_approval_expiry_is_a_failed_result(monkeypatch):
 
 
 def test_stop_while_awaiting_denies_the_action():
-    flag = {"stop": False}
-    def cancel_soon():
-        time.sleep(0.05); flag["stop"] = True
-    threading.Thread(target=cancel_soon, daemon=True).start()
+    ap = tower.Approvals()
+    # the stop fires once the approval card is parked, never before
     out, events, seen, st, tid = _run([
         {"content": '```tool\n{"name":"wake_server","args":{"host":"box"}}\n```'},
-    ], cfg=_cfg(capabilities="operate"), approvals=tower.Approvals(), cancelled=lambda: flag["stop"])
+    ], cfg=_cfg(capabilities="operate"), approvals=ap, cancelled=lambda: bool(ap._pending))
     assert out["ok"] is False and events[-1] == {"event": "error", "message": "Stopped."}
     aid = next(e for e in events if e["event"] == "confirm")["action_id"]
     assert st.get_action(aid)["status"] == "denied" and st.get_action(aid)["actor"] == "stopped"
@@ -826,11 +824,9 @@ def test_question_expiry_is_a_failed_result(monkeypatch):
 
 
 def test_stop_while_a_question_is_parked_cancels_the_turn():
-    flag = {"stop": False}
-    def cancel_soon():
-        time.sleep(0.05); flag["stop"] = True
-    threading.Thread(target=cancel_soon, daemon=True).start()
-    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}], approvals=tower.Approvals(), cancelled=lambda: flag["stop"])
+    ap = tower.Approvals()
+    # the stop fires once the question card is parked, never before
+    out, events, seen, st, tid = _run([{"content": _ASK_BLOCK}], approvals=ap, cancelled=lambda: bool(ap._pending))
     assert out["ok"] is False and events[-1] == {"event": "error", "message": "Stopped."}
     aid = next(e for e in events if e["event"] == "question")["action_id"]
     assert st.get_action(aid)["status"] == "denied" and st.get_action(aid)["actor"] == "stopped"
