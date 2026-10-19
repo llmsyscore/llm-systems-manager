@@ -10,6 +10,15 @@ const B = { tool: 'benchmark', model_id: 'org/m:Q4', agent_id: 'a1', provider: '
   ts: '2026-09-21T10:00:00Z', summary: { gen_tps: 50, ppt_tps: 850, bench_tool: 'llama-bench',
     switches: { '-ngl': '99', '-ub': '512' } } };
 const OTHER = { ...B, model_id: 'org/other', ts: '2026-09-22T10:00:00Z' };
+const COND_A = { schema: 1, captured_start: '2026-10-18T20:00:00Z', captured_end: '2026-10-18T20:03:00Z',
+  hardware: { gpu: '7900 XTX', gpu_count: 1, driver: 'amdgpu 6.12.0', cpu: 'Ryzen 7 9700X', cpu_cores: 8, cpu_threads: 16, ram_bytes: 68719476736 },
+  os: { name: 'Debian GNU/Linux 13 (trixie)', kernel: '6.12.0-amd64' },
+  backend: { name: 'llama.cpp', build: 'b1234-abc', server_cmd: 'llama-server -m x.gguf  -ngl 99' },
+  model: { id: 'org/m', file: 'x.gguf', size_bytes: 4831838208, hash: 'ht-sha256:0123456789ab', quantization: 'Q4_K_M', shards: null },
+  context: 32768, sampling: { temperature: 0.8, top_k: 40 },
+  snapshot: { start: { temp_c: 41, sclk_mhz: 2100, power_w: 48, power_cap_w: 300, performance_level: 'auto', cpu_governor: 'performance', ram_available_bytes: 51539607552 },
+              end: { temp_c: 72, sclk_mhz: 2400, power_w: 290, power_cap_w: 300, performance_level: 'auto', cpu_governor: 'performance', ram_available_bytes: 49392123904 } } };
+const COND_B = { ...COND_A, model: { ...COND_A.model, hash: 'ht-sha256:ffffffffffff' } };
 const TUNE = { ...A, tool: 'autotune', ts: '2026-09-19T10:00:00Z', summary: { decode_tps: 30 } };
 
 describe('TC.diffRuns', () => {
@@ -33,7 +42,7 @@ describe('TC.diffRuns', () => {
   it('notes runs that predate switch recording', () => {
     const old = { ...A, summary: { gen_tps: 40 } };
     const d = TC.diffRuns(old, B);
-    expect(d.recorded).toEqual({ a: false, b: true });
+    expect(d.recorded).toEqual({ a: false, b: true, cond_a: false, cond_b: false });
     expect(TC.diffHtml(d)).toContain('Run A predates switch recording.');
     const none = TC.diffHtml(TC.diffRuns(old, { ...B, summary: { gen_tps: 50 } }));
     expect(none).toContain('Neither run recorded its switches.');
@@ -45,6 +54,25 @@ describe('TC.diffRuns', () => {
     expect(html).toContain('&lt;k&gt;');
     expect(html).toContain('&quot;v&quot;');
     expect(html).not.toContain('<k>');
+  });
+
+  it('adds a conditions section and notes a run that predates recording', () => {
+    const d = TC.diffRuns({ ...A, conditions: COND_A }, { ...B, conditions: COND_B });
+    expect(d.conditions.filter(r => r.changed).map(r => r.label)).toEqual(['File id']);
+    const h = TC.diffHtml(d, Date.now());
+    expect(h).toContain('Conditions · 1 of'); expect(h).toContain('class="chg"');
+    const d2 = TC.diffRuns(A, { ...B, conditions: COND_B });
+    expect(d2.recorded.cond_a).toBe(false);
+    expect(TC.diffHtml(d2, Date.now())).toContain('Run A predates condition recording');
+    expect(TC.diffHtml(TC.diffRuns(A, B), Date.now())).not.toContain('Conditions ·');
+  });
+
+  it('renders report card and live bench pseudo-runs through the same table', () => {
+    const r1 = { tool: 'reportcard', model_id: 'org/m', ts: '2026-09-20T10:00:00Z', ok: true, summary: { gen_tps: 40, ppt_tps: 900, ttft_ms: 420, mode: 'standard' } };
+    const r2 = { ...r1, ts: '2026-09-21T10:00:00Z', summary: { gen_tps: 44, ppt_tps: 900, ttft_ms: 400, mode: 'standard' } };
+    const h = TC.diffHtml(TC.diffRuns(r1, r2), Date.now());
+    expect(h).toContain('Compare · Report Card · org/m'); expect(h).toContain('Gen t/s'); expect(h).toContain('+10 %');
+    expect(TC.diffHtml(TC.diffRuns({ ...r1, tool: 'livebench', summary: { gen_tps: 1, bench: 'throughput_1k' } }, { ...r2, tool: 'livebench', summary: { gen_tps: 2, bench: 'throughput_1k' } }), Date.now())).toContain('Compare · Live bench');
   });
 });
 

@@ -238,7 +238,7 @@ def test_bench_model_done_carries_summary_and_posts_the_ledger_row(mods, ctx, mo
     llama, _vllm, tools = mods
     posts = []
     monkeypatch.setattr(tools._shared, "post_tool_run",
-                        lambda _c, tool, provider, run_id, model, ok, summary:
+                        lambda _c, tool, provider, run_id, model, ok, summary, conditions=None:
                         posts.append({"tool": tool, "provider": provider, "run_id": run_id,
                                       "model_id": model, "ok": ok, **summary}))
     _fake_popen(tools, monkeypatch, {"output_throughput": 1063.9, "total_token_throughput": 9800.2,
@@ -487,7 +487,8 @@ def test_route_table_covers_live_and_serve(mods):
                      ("POST", "/vllm/bench/live/run"), ("POST", "/vllm/bench/run"), ("GET", "/vllm/bench/stream"),
                      ("POST", "/vllm/bench/cancel"), ("GET", "/vllm/tools/state"),
                      ("GET", "/vllm/autotune/preflight"), ("POST", "/vllm/autotune/run"),
-                     ("GET", "/vllm/autotune/stream"), ("POST", "/vllm/autotune/cancel")}
+                     ("GET", "/vllm/autotune/stream"), ("POST", "/vllm/autotune/cancel"),
+                     ("GET", "/vllm/run-conditions")}
     assert not any("/vllm/bench" in p or "/vllm/autotune" in p or p == "/vllm/tools/state" for _m, p, _h in vllm._ROUTES)
 
 

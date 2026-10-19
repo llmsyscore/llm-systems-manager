@@ -10,6 +10,8 @@ monotonic counters into per-second rates.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +102,17 @@ def read_cpu_name() -> "str | None":
     if _cpu_name_probed:
         return _cpu_name_cache
     _cpu_name_probed = True
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
+            ).strip()
+            if out:
+                _cpu_name_cache = out
+                return _cpu_name_cache
+        except Exception as e:
+            log.debug("cpu name sysctl: %s", e)
     try:
         for line in Path("/proc/cpuinfo").read_text().splitlines():
             if line.startswith("model name"):

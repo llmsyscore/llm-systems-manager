@@ -1399,3 +1399,104 @@ describe('AT vLLM target (#894)', () => {
     expect(win.__fetches.filter(([u, o]) => u.startsWith('/api/vllm/server/svcconfig') && o && o.method === 'POST').length).toBe(posts);
   });
 });
+
+describe('AT conditions card + comparison (#1302)', () => {
+  const COND_A = { hardware: { gpu: '7900 XTX', driver: 'amdgpu 6.12.0' }, backend: { name: 'llama.cpp', build: 'b1' } };
+  const COND_B = { ...COND_A, backend: { name: 'llama.cpp', build: 'b2' } };
+  const ROWS = [
+    { tool: 'autotune', model_id: 'org/m:Q4', agent_id: 'a1', run_id: 'cur', ts: '2026-10-18T10:00:00Z', ok: true, summary: { decode_tps: 33 }, conditions: COND_B },
+    { tool: 'autotune', model_id: 'org/m:Q4', agent_id: 'a1', run_id: 'old', ts: '2026-10-17T10:00:00Z', ok: true, summary: { decode_tps: 30 }, conditions: COND_A },
+  ];
+  // Real conditions + toolcards libs over the TC stub; ledger reply per test.
+  function bootCond(rows) {
+    const extra = `
+      window.toolsTarget = () => ({ provider: 'llama', agent: 'a1' });
+      window.__runsReply = ${JSON.stringify(rows)};
+      const _f = window.fetch;
+      window.fetch = function (url, opts) {
+        if (String(url).startsWith('/api/tools/runs?tool=')) {
+          window.__fetches.push([String(url), opts]);
+          if (window.__runsReply === null) return Promise.reject(new Error('down'));
+          const body = { runs: window.__runsReply };
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+        }
+        return _f(url, opts);
+      };`;
+    return runHarness({ sources: [LAYOUT, STUBS, extra, srcFile('js/lib/spread.js'), srcFile('js/lib/modelcards.js'), srcFile('js/lib/conditions.js'),
+      srcFile('js/lib/toolcards.js'), srcFile('js/autotune.js')], bodyHtml: BODY });
+  }
+  const done = (o) => ({ model_id: 'org/m:Q4', run_id: 'cur', ok: true, objective: 'balanced', before: { decode_tps: 30 }, after: { decode_tps: 33, ctx: 32768 }, changes: [], stages: [], conditions: COND_B, ...o });
+
+  it('shows the conditions card with a picker of earlier ledger rows and renders the comparison', async () => {
+    const win = bootCond(ROWS);
+    const d = win.document;
+    win.AT._debugDone(done());
+    for (let i = 0; i < 3; i++) await flush();
+    expect(d.getElementById('atCondCard').style.display).toBe('');
+    expect(d.querySelector('#atCond details.cond-block')).not.toBeNull();
+    const q = win.__fetches.filter(([u]) => u.startsWith('/api/tools/runs?tool='));
+    expect(q.length).toBe(1);
+    const p = new URL(q[0][0], 'http://x').searchParams;
+    expect([p.get('tool'), p.get('model_id'), p.get('agent_id')]).toEqual(['autotune', 'org/m:Q4', 'a1']);
+    const sel = d.getElementById('atCompare');
+    expect(sel.options.length).toBe(2);                 // "none" + the earlier run; the current run_id is left out
+    expect(sel.options[1].value).toBe('old');
+    expect(sel.options[1].textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} · 30\.0 t\/s$/);
+    sel.value = sel.options[1].value; sel.dispatchEvent(new win.Event('change'));
+    await flush();
+    const host = d.getElementById('atCompareHost');
+    expect(host.textContent).toContain('Compare · Autotune · org/m:Q4');
+    expect(host.textContent).toContain('Conditions');
+    win.AT.compareChange('');
+    expect(host.innerHTML).toBe('');
+    win.AT._debugDone(done({ before: {}, after: {}, conditions: undefined, run_id: 'x2' }));
+    expect(d.getElementById('atCondCard').style.display).toBe('none');
+  });
+
+  it('keeps the picker without conditions and disables it when there are no earlier runs', async () => {
+    const win = bootCond([ROWS[0]]);
+    const d = win.document;
+    win.AT._debugDone(done({ conditions: undefined }));
+    for (let i = 0; i < 3; i++) await flush();
+    expect(d.getElementById('atCondCard').style.display).toBe('');
+    expect(d.getElementById('atCond').innerHTML).toBe('');
+    const sel = d.getElementById('atCompare');
+    expect(sel.disabled).toBe(true);
+    expect([...sel.options].map(o => o.textContent)).toEqual(['no earlier runs']);
+  });
+
+  it('a failed ledger read leaves the picker disabled', async () => {
+    const win = bootCond(null);
+    win.AT._debugDone(done());
+    for (let i = 0; i < 3; i++) await flush();
+    const sel = win.document.getElementById('atCompare');
+    expect(sel.disabled).toBe(true);
+  });
+
+  it('records conditions with the ledger run on model_done', async () => {
+    const win = await opened();
+    win.AT.onEvent({ type: 'model_done', model_id: 'org/m:Q4', ok: true, run_id: 'r9', after: { decode_tps: 33 }, conditions: COND_B });
+    await flush();
+    const post = win.__fetches.find(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST');
+    expect(JSON.parse(post[1].body).conditions).toEqual(COND_B);
+  });
+
+  it('clears the conditions card when a new run starts', async () => {
+    const win = bootCond(ROWS);
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    win.AT._debugDone(done());
+    for (let i = 0; i < 3; i++) await flush();
+    await win.AT.run();
+    await flush();
+    const d = win.document;
+    expect(d.getElementById('atCondCard').style.display).toBe('none');
+    expect(d.getElementById('atCond').innerHTML).toBe('');
+    expect(d.getElementById('atCompareHost').innerHTML).toBe('');
+  });
+
+  it('hides the diff Clear button in the comparison host', () => {
+    expect(srcFile('css/autotune.css')).toMatch(/\.at-compare \[data-diff="clear"\]\s*\{\s*display:\s*none/);
+    expect(srcFile('index.html')).toMatch(/id="atCondCard"[\s\S]{0,600}class="[^"]*at-compare[^"]*" id="atCompareHost"/);
+  });
+});

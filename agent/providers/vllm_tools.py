@@ -28,6 +28,7 @@ from . import lms_timings_shim as _shim
 from . import vllm as _v
 from . import lms_tools as _lt
 from . import vllm_autotune as _vat
+from . import run_conditions
 
 log = logging.getLogger("llm-systems-agent.providers.vllm_tools")
 
@@ -98,12 +99,14 @@ def _bench_summary(extra: dict) -> dict:
             "bench_tool": "vllm-bench-serve"}
 
 
-def _bench_model_done(model, ok, rc, cancelled, error, extra, switches=None) -> None:
+def _bench_model_done(model, ok, rc, cancelled, error, extra, switches=None, conditions=None) -> None:
     summary = _bench_summary(extra or {})
     _ll._bench_put({"type": "model_done", "ok": ok, "rc": rc, "cancelled": cancelled, "error": error,
-                    "model_id": model, "run_id": _ll._bench_replay.run_id, **summary})
+                    "model_id": model, "run_id": _ll._bench_replay.run_id, **summary,
+                    "conditions": conditions})
     _shared.post_tool_run(_ctx(), "benchmark", "vllm", _ll._bench_replay.run_id, model, ok,
-                          {**summary, "switches": _shared.switch_map(switches or [])})
+                          {**summary, "switches": _shared.switch_map(switches or [])},
+                          conditions=conditions)
 
 
 def _killpg(proc) -> None:
@@ -120,10 +123,13 @@ def _killpg(proc) -> None:
 def _bench_run_one(binpath: str, model: str, switches: list) -> None:
     """Job thread: run vllm bench serve, stream lines, parse the result JSON."""
     ok, rc, error, extra = False, None, None, {}
+    cond = conditions = None
     tmpdir = tempfile.mkdtemp(prefix="vllm-bench-")
     try:
         cmd = _bench_build_cmd(binpath, _url(), model, switches, tmpdir)
         _ll._bench_put({"type": "model_start", "model": model, "cmd": " ".join(shlex.quote(t) for t in cmd)})
+        with best_effort("vllm bench: conditions start", log=log):
+            cond = run_conditions.start(conditions_facts(model), *run_conditions.samples())
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         try: _ll._bench_pgid = os.getpgid(proc.pid)
         except Exception: _ll._bench_pgid = proc.pid
@@ -146,6 +152,8 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
             proc.kill()
             try: rc = proc.wait(timeout=10)
             except subprocess.TimeoutExpired: error = "benchmark process did not exit after kill"
+        with best_effort("vllm bench: conditions finish", log=log):
+            conditions = run_conditions.finish(cond, *run_conditions.samples()) if cond else None
         cancelled = _ll._bench_cancel_event.is_set()
         if rc == 0 and not cancelled and error is None:
             try:
@@ -157,9 +165,10 @@ def _bench_run_one(binpath: str, model: str, switches: list) -> None:
                 error = f"benchmark finished but result.json unreadable: {e}"
         elif not cancelled and error is None:
             error = f"vllm bench serve exited rc={rc}"
-        _bench_model_done(model, ok, rc, cancelled, error, extra, switches)
+        _bench_model_done(model, ok, rc, cancelled, error, extra, switches, conditions=conditions)
     except Exception as e:
-        _bench_model_done(model, False, rc, _ll._bench_cancel_event.is_set(), str(e), {}, switches)
+        _bench_model_done(model, False, rc, _ll._bench_cancel_event.is_set(), str(e), {}, switches,
+                          conditions=conditions)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
         _ll._bench_put({"type": "done", "ok": ok, "cancelled": _ll._bench_cancel_event.is_set()})
@@ -301,6 +310,73 @@ def _build() -> str:
     return ""
 
 
+def _unit_cmdline() -> Optional[str]:
+    """The unit's ExecStart head and flags re-joined; None when the unit file is absent."""
+    try:
+        head, args = _v._parse_vllm_execstart(Path(_v._vllm_svc_file_path()).read_text())
+    except (OSError, ValueError):
+        return None
+    if head is None:
+        return None
+    tokens = shlex.split(head)
+    for a in args:
+        tokens += [a["flag"]] if a.get("bool") else [a["flag"], str(a.get("value"))]
+    return shlex.join(run_conditions.redact_args(tokens))
+
+
+def _snapshot_dir(model_id: str) -> Optional[Path]:
+    """Local model dir, else the HF cache snapshot (refs/main, else the first) for the repo id."""
+    local = Path(model_id)
+    if local.is_absolute() and local.is_dir():
+        return local
+    repo = _ll._hf_cache_root() / ("models--" + model_id.replace("/", "--"))
+    snaps = repo / "snapshots"
+    try:
+        ref = (repo / "refs" / "main").read_text().strip()
+    except OSError:
+        ref = ""
+    if ref and (snaps / ref).is_dir():
+        return snaps / ref
+    try:
+        found = sorted(d for d in snaps.iterdir() if d.is_dir())
+    except OSError:
+        return None
+    return found[0] if found else None
+
+
+def _max_model_len() -> Optional[int]:
+    v = _first_model_row().get("max_model_len")
+    return int(v) if isinstance(v, (int, float)) else None
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def conditions_facts(model_id: str) -> dict:
+    """Run-conditions facts for the served vLLM model; None for anything unknown."""
+    snap = _ll._guard("vllm snapshot", lambda: _snapshot_dir(model_id))
+    cfg = _read_json(snap / "config.json") if snap else {}
+    qcfg = cfg.get("quantization_config") if isinstance(cfg.get("quantization_config"), dict) else {}
+    gen = _read_json(snap / "generation_config.json") if snap else {}
+    args = _ll._guard("vllm unit args", _unit_args, []) or []
+    build = _ll._guard("vllm build", _build)
+    ctx_len = _ll._guard("vllm max_model_len", _max_model_len) or _arg_value(args, "--max-model-len")
+    label, driver = _ll._guard("gpu", _ll._gpu_label, (None, None))
+    return {"gpu_label": label, "driver": driver, "backend": "vLLM",
+            "backend_build": f"vllm {build}" if build else None,
+            "server_cmd": _ll._guard("vllm cmdline", _unit_cmdline),
+            "model_id": model_id, "model_path": str(snap) if snap else None,
+            "quantization": (_arg_value(args, "--quantization") or qcfg.get("quant_method")
+                             or cfg.get("torch_dtype") or None),
+            "context": int(ctx_len) if str(ctx_len or "").isdigit() else None,
+            "sampling": {k: gen[k] for k in _ll._SAMPLING_KEYS if k in gen} or None}
+
+
 def _bench_server() -> dict:
     """Running-server snapshot in the live bench's shape: served ids, slots from --max-num-seqs, spec, build."""
     out: dict = {"up": False, "url": _url(), "provider": "vllm", "models": [], "loaded_id": None,
@@ -325,6 +401,13 @@ def vllm_bench_live_preflight(authorization: Optional[str] = Header(default=None
     return {"ok": True, "provider": "vllm", "server": _bench_server(), "runtime": _ll._bench_live_runtime(),
             "datasets": _bl.read_marker(cfg.AGENT_INSTALL_DIR), "benches": list(_bl.BENCHES),
             "busy": _busy(), "busy_kind": _busy_kind()}
+
+
+def vllm_run_conditions(model: str = Query(...), authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _ctx().check_bearer(authorization); _v._vllm_check_enabled()
+    if model not in _served_ids():
+        raise HTTPException(404, "unknown model")
+    return run_conditions.start(conditions_facts(model), *run_conditions.samples())
 
 
 def vllm_bench_live_setup(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -672,10 +755,19 @@ def _autotune_run_all(req: dict, head_tokens: list, orig_args: list) -> None:
                     if _ll._autotune_cancel_event.is_set():
                         break
                     backend = _VllmBackend(mid, run_id, unit, head_tokens, orig_args, sh.url, req["load_timeout_s"])
+                    cond = None
+                    with best_effort("vllm autotune: conditions start", log=log):
+                        cond = run_conditions.start(conditions_facts(mid), *run_conditions.samples())
+                    for _k in ("conditions", "finish_conditions"):
+                        env.pop(_k, None)
+                    if isinstance(cond, dict):
+                        env["conditions"] = cond
+                        env["finish_conditions"] = lambda c=cond: run_conditions.finish(c, *run_conditions.samples())
                     done = _vat.run_model(mid, req, backend, _ll._autotune_put, _ll._autotune_cancel_event.is_set, env)
                     applied = applied or bool(done.get("applied"))
                     dirty = dirty or backend.dirty
-                    _shared.post_tool_run(_ctx(), "autotune", "vllm", run_id, mid, done["ok"], _vat.ledger_summary(done))
+                    _shared.post_tool_run(_ctx(), "autotune", "vllm", run_id, mid, done["ok"], _vat.ledger_summary(done),
+                                          conditions=done.get("conditions"))
             finally:
                 # Restore even after a cancel: the cancel flag only stops measuring, not the rollback.
                 was_cancel = _ll._autotune_cancel_event.is_set()
@@ -779,6 +871,7 @@ def vllm_autotune_cancel(authorization: Optional[str] = Header(default=None)) ->
 
 _ROUTES: tuple = (
     ("GET",  "/vllm/bench/live/preflight", vllm_bench_live_preflight),
+    ("GET",  "/vllm/run-conditions",       vllm_run_conditions),
     ("POST", "/vllm/bench/live/setup",     vllm_bench_live_setup),
     ("POST", "/vllm/bench/live/run",       vllm_bench_live_run),
     ("POST", "/vllm/bench/run",    vllm_bench_run),

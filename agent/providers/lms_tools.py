@@ -24,6 +24,7 @@ from . import llama_bench_live as _bl
 from . import lms as _lms
 from . import lms_autotune as _lat
 from . import lms_timings_shim as _shim
+from . import run_conditions
 
 log = logging.getLogger("llm-systems-agent.providers.lms_tools")
 
@@ -162,6 +163,51 @@ def _model_row(m: dict) -> dict:
             "config": (insts[0].get("config") if insts else None)}
 
 
+_LMS_VERSION_CACHE: dict = {}
+_LMS_VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)*")
+
+
+def _lms_models_root():
+    return _lms._lms_models_root()
+
+
+def _lms_version() -> Optional[str]:
+    """Version from `lms version`, probed once per process; None when unavailable."""
+    if "version" in _LMS_VERSION_CACHE:
+        return _LMS_VERSION_CACHE["version"]
+    _LMS_VERSION_CACHE["version"] = None
+    cmd = _ctx().config.LMS_CMD
+    if not cmd or not os.path.exists(cmd):
+        return None
+    try:
+        out = subprocess.check_output([cmd, "version"], text=True, timeout=3, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _LMS_VERSION_RE.search(out or "")
+    _LMS_VERSION_CACHE["version"] = m.group(0) if m else None
+    return _LMS_VERSION_CACHE["version"]
+
+
+def conditions_facts(model_id: str, models: Optional[list] = None) -> dict:
+    """Run-conditions facts for an LM Studio model from the given or fetched model rows."""
+    row = _ll._guard("lms models", lambda: _entry(models if models is not None else _native_models(), model_id)) or {}
+    insts = [i for i in row.get("loaded_instances") or [] if isinstance(i, dict)]
+    inst = next((i for i in insts if i.get("id") == model_id), insts[0] if insts else {})
+    cfg = inst.get("config") if isinstance(inst.get("config"), dict) else {}
+    rel = row.get("path")
+    model_path = _ll._guard("lms path", lambda: str(_lms_models_root() / rel)) if rel else None
+    version = _ll._guard("lms version", _lms_version)
+    label, driver = _ll._guard("gpu", _ll._gpu_label, (None, None))
+    quant = row.get("quantization")
+    return {"gpu_label": label, "driver": driver, "backend": "LM Studio",
+            "backend_build": f"lms {version}" if version else None,
+            "server_cmd": " ".join(f"{k}={cfg[k]}" for k in sorted(cfg)) or None,
+            "model_id": model_id, "model_path": model_path,
+            "quantization": (quant.get("name") if isinstance(quant, dict) else quant) or None,
+            "context": cfg.get("context_length"),
+            "sampling": {k: cfg[k] for k in _ll._SAMPLING_KEYS if k in cfg} or None}
+
+
 def _bench_server() -> dict:
     """Running-server snapshot in the live bench's shape: downloaded models, loaded id, slots, spec window."""
     base = _url()
@@ -215,6 +261,14 @@ def lms_bench_live_preflight(authorization: Optional[str] = Header(default=None)
     return {"ok": True, "provider": "lms", "server": _bench_server(), "runtime": _ll._bench_live_runtime(),
             "datasets": _bl.read_marker(cfg.AGENT_INSTALL_DIR), "benches": list(_bl.BENCHES),
             "busy": bool(_ll._bench_active or _ll._autotune_active)}
+
+
+def lms_run_conditions(model: str = Query(...), authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _ctx().check_bearer(authorization); _lms._lms_check_enabled()
+    models = _native_models()
+    if _entry(models, model) is None:
+        raise HTTPException(404, "unknown model")
+    return run_conditions.start(conditions_facts(model, models), *run_conditions.samples())
 
 
 def lms_bench_live_setup(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -513,8 +567,17 @@ def _autotune_run_all(req: dict) -> None:
                                        "changes": [], "stages": [], "stop_reason": "LM Studio does not list this model",
                                        "elapsed_s": 0, "loads": 0})
                     continue
+                cond = None
+                with best_effort("lms autotune: conditions start", log=log):
+                    cond = run_conditions.start(conditions_facts(mid), *run_conditions.samples())
+                for _k in ("conditions", "finish_conditions"):
+                    env.pop(_k, None)
+                if isinstance(cond, dict):
+                    env["conditions"] = cond
+                    env["finish_conditions"] = lambda c=cond: run_conditions.finish(c, *run_conditions.samples())
                 done = _lat.run_model(mid, req, backend, _ll._autotune_put, _ll._autotune_cancel_event.is_set, env)
-                _shared.post_tool_run(_ctx(), "autotune", "lms", run_id, mid, done["ok"], _lat.ledger_summary(done))
+                _shared.post_tool_run(_ctx(), "autotune", "lms", run_id, mid, done["ok"], _lat.ledger_summary(done),
+                                      conditions=done.get("conditions"))
         finally:
             # Restore even after a cancel: the cancel flag only stops measuring, not the reload.
             was_cancel = _ll._autotune_cancel_event.is_set()
@@ -602,6 +665,7 @@ def lms_tools_state(authorization: Optional[str] = Header(default=None)) -> dict
 
 _ROUTES: tuple = (
     ("GET",  "/lms/bench/live/preflight", lms_bench_live_preflight),
+    ("GET",  "/lms/run-conditions",       lms_run_conditions),
     ("POST", "/lms/bench/live/setup",     lms_bench_live_setup),
     ("POST", "/lms/bench/live/run",       lms_bench_live_run),
     ("GET",  "/lms/bench/stream",         lms_bench_stream),

@@ -309,9 +309,13 @@ def _wire_run_all(mods, monkeypatch, done_doc):
         if done_doc.get("_cancel"):
             llama._autotune_cancel_event.set()
         doc = dict(done_doc, model_id=mid, run_id=env["run_id"]); doc.pop("_cancel", None); doc.pop("_load", None)
+        if callable(env.get("finish_conditions")):
+            doc["conditions"] = env["finish_conditions"]()
         put(doc)
         return doc
     monkeypatch.setattr(tools._vat, "run_model", fake_run_model)
+    monkeypatch.setattr(tools, "conditions_facts", lambda mid: {"model_id": mid, "backend": "vllm"})
+    monkeypatch.setattr(tools.run_conditions, "samples", lambda: ({"temperature_c": 50.0}, None))
     llama._autotune_cancel_event.clear()
     with llama._autotune_lock:
         llama._autotune_active = True
@@ -343,6 +347,7 @@ def test_run_all_keeps_an_applied_set_and_posts_the_ledger_row(mods, ctx, monkey
     assert events[-1] == {"type": "done", "ok": True, "cancelled": False, "count": 1}
     body = ctx.posts[0]["json"]
     assert body["tool"] == "autotune" and body["provider"] == "vllm" and body["run_id"] == "rid1" and body["model_id"] == "org/model-8b"
+    assert body["conditions"]["captured_end"] and body["conditions"]["model"]["id"] == "org/model-8b"
     assert body["applied"] is True and body["kv_tokens"] == 230528 and body["max_model_len"] == 230400 and body["switches"] == {"max_model_len": "230400"}
 
 

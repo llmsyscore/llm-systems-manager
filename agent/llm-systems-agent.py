@@ -57,7 +57,7 @@ from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_sample_block  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
-from providers import residency, power_arbiter, power_readback  # type: ignore
+from providers import residency, power_arbiter, power_readback, run_conditions  # type: ignore
 from agent_context import AgentContext  # type: ignore
 try:
     from _utils import atomic_write_text  # type: ignore
@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.18-2"
+VERSION = "v2026.10.18-3"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -3461,6 +3461,11 @@ def _power_readback_factory(units: dict) -> "power_readback.Readback":
     return power_readback.Readback(units, governor_reader=_read_cpu_governor_safe, logger=logger)
 
 
+def _last_metric_sample() -> Optional[dict[str, Any]]:
+    with _runtime_lock:
+        return _state.get("last_metric_sample")
+
+
 def _read_cpu_governor_safe(fresh: bool = False) -> Optional[str]:
     try:
         from collectors.system import read_cpu_governor  # type: ignore
@@ -4684,6 +4689,7 @@ def main() -> None:
         now_iso=_now_iso,
         probe_http=_probe_http,
     ))
+    run_conditions.set_sample_source(_last_metric_sample)
     providers.register_all_routes(app)
     setup_logging(CONFIG.LOG_FILE, CONFIG.LOG_LEVEL)
     logger.info("=" * 60)

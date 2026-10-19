@@ -731,18 +731,24 @@ def test_run_all_passes_help_valued_into_the_engine_env(llama, tmp_path, monkeyp
     monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
     monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
     monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
-    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    posted = []
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append(k))
     monkeypatch.setattr(llama, "_autotune_put", lambda ev: None)
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid, **kw: {"model_id": mid, "backend": "llama.cpp"})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: ({"temperature_c": 50.0}, None))
     seen = []
 
     def _fake_run_model(mid, section, req, backend, put, cancelled, env, **kw):
         seen.append(env.get("valued"))
-        return {"ok": True, "model_id": mid}
+        return {"ok": True, "model_id": mid, "conditions": env["finish_conditions"]()}
     monkeypatch.setattr(llama._at, "run_model", _fake_run_model)
     llama._autotune_cancel_event.clear()
     llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "budget_min": 45,
                             "dims": dict(llama._at.DEFAULT_DIMS)})
     assert len(seen) == 1 and "flash-attn" in seen[0] and "check-tensors" not in seen[0]
+    cond = posted[0]["conditions"]
+    assert isinstance(cond, dict) and cond["captured_end"] and cond["model"]["id"] == "org/m:Q4"
+    assert cond["snapshot"]["end"]["temp_c"] == 50
 
 
 def test_run_all_warns_when_help_is_unreadable(llama, tmp_path, monkeypatch):
@@ -780,6 +786,8 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
     monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
     monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "org/m:Q4")
     monkeypatch.setattr(llama, "_llama_help_valued", set)
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid, **kw: {"model_id": mid})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: (None, None))
     llama._llama_build_last = "b10850-abc"
     seen = {}
 
@@ -794,7 +802,7 @@ def test_quality_mode_dispatches_run_quality_and_posts_quality_ledger(llama, tmp
     monkeypatch.setattr(llama._at, "run_model", lambda *a, **k: pytest.fail("run_model must not run in quality mode"))
     posted = []
     monkeypatch.setattr(llama._shared, "post_tool_run",
-                        lambda ctx, tool, prov, rid, mid, ok, summary: posted.append((tool, summary)))
+                        lambda ctx, tool, prov, rid, mid, ok, summary, **k: posted.append((tool, summary)))
     llama._autotune_cancel_event.clear()
     llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
                              "overrides": {"cache-type-k": "q4_0"}})

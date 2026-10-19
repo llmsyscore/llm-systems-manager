@@ -328,7 +328,7 @@ Deletes the selected agent's stored runs (baselines kept).
 ---
 
 ### `GET /api/benchmark/live/runs/<run_id>`
-Returns one run: `meta` (row) and `run` (the full document with per-level results).
+Returns one run: `meta` (row) and `run` (the full document with per-level results). `run.conditions` holds the run's recorded conditions (absent for runs stored by older agents).
 
 ---
 
@@ -689,6 +689,8 @@ Returns the most recent saved report card for an agent/provider pair.
 
 **Parameters:** `?agent=<agent_id>&provider=<llama|lms|vllm>` (both required)
 
+`card.result.conditions` holds the conditions the card ran under, read from the agent's `GET /<provider>/run-conditions?model=<id>` route before the first and after the last repetition (absent when the agent is older than the route).
+
 ---
 
 ### `GET /api/reportcard/history`
@@ -719,16 +721,16 @@ Cross-tool run history behind the LLM Control → Tools launcher: every complete
 ### `POST /api/tools/runs`
 Records one completed tool run. Reachable with a normal dashboard session, or with an approved agent's machine bearer token for the agent's own push path (a machine token may only `POST`; `GET` and `DELETE` return 403 for it).
 
-**Body:** `{"tool": "benchmark"|"autotune", "model_id": "<id>", "provider": "<provider>", "ok": <bool>, "run_id": "<id>", ...}` — `provider` is checked against the registered-provider whitelist; any other body fields are kept as a summary, capped at 24 keys, 200 characters per string, and finite numbers only. A machine-token caller may name its own `agent_id`; a browser request is always attributed to whichever agent the call proxies to. `run_id` is used to de-duplicate the agent's own push against a browser's report of the same run.
+**Body:** `{"tool": "benchmark"|"autotune", "model_id": "<id>", "provider": "<provider>", "ok": <bool>, "run_id": "<id>", ...}` — `provider` is checked against the registered-provider whitelist; any other body fields are kept as a summary, capped at 24 keys, 200 characters per string, and finite numbers only. A machine-token caller may name its own `agent_id`; a browser request is always attributed to whichever agent the call proxies to. `run_id` is used to de-duplicate the agent's own push against a browser's report of the same run. An optional `conditions` object (the run's hardware, driver, CPU, RAM, OS, server command line, model file identity, context, sampling and start/end GPU snapshot, as the agent records it) is stored in its own column, trimmed to 6 KiB; a duplicate of the same `run_id` fills it in when the first writer lacked it.
 
 ---
 
 ### `GET /api/tools/runs`
 Returns the newest rows across all tools, plus per-tool totals and the newest row per tool.
 
-**Parameters:** `?limit=<n>` (default 100, max 100)
+**Parameters:** `?limit=<n>` (default 100, max 100); optional exact-match filters `?tool=<benchmark|autotune|quality|tower_eval>`, `?model_id=<id>`, `?agent_id=<id>` apply to `runs` only.
 
-**Response:** `{"runs": [...], "totals": {"<tool>": <count>}, "latest": {"<tool>": {...}}}`
+**Response:** `{"runs": [...], "totals": {"<tool>": <count>}, "latest": {"<tool>": {...}}}` — each row carries `conditions` (the stored object, or null for runs recorded before it existed).
 
 ---
 

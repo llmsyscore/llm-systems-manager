@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.18-1"
+__version__ = "v2026.10.18-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -400,12 +400,15 @@ def init_db():
                 ok       INTEGER NOT NULL DEFAULT 1,
                 summary  TEXT,
                 ts       TEXT NOT NULL,
-                run_id   TEXT
+                run_id   TEXT,
+                conditions TEXT
             )
         """)
-    if "run_id" not in [r[1] for r in
-                        conn.execute("PRAGMA table_info(tool_runs)").fetchall()]:
+    tr_cols = [r[1] for r in conn.execute("PRAGMA table_info(tool_runs)").fetchall()]
+    if "run_id" not in tr_cols:
         conn.execute("ALTER TABLE tool_runs ADD COLUMN run_id TEXT")
+    if "conditions" not in tr_cols:
+        conn.execute("ALTER TABLE tool_runs ADD COLUMN conditions TEXT")
     # Partial index: identified runs collapse across writers and replays,
     # rows with no run id keep appending as before (#772).
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_runs_run "
@@ -2454,8 +2457,67 @@ def _finite_or_none(value) -> "float | None":
     return f if math.isfinite(f) else None
 
 
+_COND_KEYS = ("schema", "captured_start", "captured_end", "hardware", "os", "backend",
+              "model", "context", "sampling", "snapshot")
+_COND_MAX_BYTES = 6144
+
+
+def _cond_size(d) -> int:
+    return len(json.dumps(d, separators=(",", ":")))
+
+
+_SECRET_FLAGS = ("--api-key", "--api-key-file", "--hf-token", "-hft", "--ssl-key-file", "--admin-key")
+_SECRET_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:token|secret|key|password|passwd)[A-Za-z0-9_]*)=.+$", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+
+
+def _redact_cmd(cmd) -> "str | None":
+    """Server command line redacted token by token on whitespace: secret flag values, KEY=VALUE secrets, URL credentials."""
+    if not isinstance(cmd, str):
+        return None
+    out, hide = [], False
+    for tok in cmd.split():
+        if hide:
+            out.append("***")
+            hide = False
+            continue
+        flag, eq, _val = tok.partition("=")
+        if tok in _SECRET_FLAGS:
+            out.append(tok)
+            hide = True
+        elif (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
+            out.append(f"{flag}=***")
+        elif any(f in tok for f in _SECRET_FLAGS):
+            out.append("***")
+            hide = not eq
+        else:
+            out.append(_URL_USERINFO_RE.sub(r"\1***@", tok))
+    return " ".join(out)
+
+
+def _conditions_clean(raw) -> "dict | None":
+    """Keep the known run-conditions keys; trim optional parts to fit _COND_MAX_BYTES."""
+    if not isinstance(raw, dict):
+        return None
+    out = {k: raw[k] for k in _COND_KEYS if k in raw}
+    if not out:
+        return None
+    if isinstance(out.get("backend"), dict) and "server_cmd" in out["backend"]:
+        out["backend"] = {**out["backend"], "server_cmd": _redact_cmd(out["backend"].get("server_cmd"))}
+    try:
+        if _cond_size(out) > _COND_MAX_BYTES:
+            out.pop("sampling", None)
+        if _cond_size(out) > _COND_MAX_BYTES and isinstance(out.get("snapshot"), dict):
+            out["snapshot"] = {k: v for k, v in out["snapshot"].items() if k != "end"}
+        if _cond_size(out) > _COND_MAX_BYTES and isinstance(out.get("backend"), dict):
+            out["backend"] = {k: v for k, v in out["backend"].items() if k != "server_cmd"}
+        return out if _cond_size(out) <= _COND_MAX_BYTES else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _extra_json_whitelist(extra) -> "dict | None":
-    """Keep only the known energy fields from a client-supplied extra_json dict."""
+    """Keep only the known energy and run-conditions fields from a client extra_json dict."""
     if not isinstance(extra, dict):
         return None
     src = extra.get("energy_source")
@@ -2464,6 +2526,9 @@ def _extra_json_whitelist(extra) -> "dict | None":
         "energy_wh": _finite_or_none(extra.get("energy_wh")),
         "energy_source": (str(src)[:32] or None) if src is not None else None,
     }
+    cond = _conditions_clean(extra.get("conditions"))
+    if cond is not None:
+        out["conditions"] = cond
     return out if any(v is not None for v in out.values()) else None
 
 
@@ -2615,7 +2680,7 @@ def tool_runs_record():
         # length; numbers are finite or dropped.
         summary = {}
         for k, v in data.items():
-            if k in ("tool", "model_id", "ok", "provider", "run_id", "agent_id") \
+            if k in ("tool", "model_id", "ok", "provider", "run_id", "agent_id", "conditions") \
                     or len(summary) >= 24:
                 continue
             if isinstance(v, bool):
@@ -2637,22 +2702,29 @@ def tool_runs_record():
         agent = caller or _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         run_id = (data.get("run_id") or "").strip()[:120] or None
+        cond = _conditions_clean(data.get("conditions"))
+        cond_json = json.dumps(cond, separators=(",", ":")) if cond is not None else None
         ts = datetime.now(timezone.utc).isoformat()
         conn = get_db()
         # OR IGNORE + the partial unique index collapses the agent's row and
         # every watching dashboard's row for the same run into one.
         conn.execute(
             "INSERT OR IGNORE INTO tool_runs "
-            "(tool, model_id, agent_id, provider, ok, summary, ts, run_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(tool, model_id, agent_id, provider, ok, summary, ts, run_id, conditions) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tool, model_id, agent_id, provider,
-             1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id))
+             1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id, cond_json))
         if switches and run_id:
             # A collapsed duplicate still backfills switches the first writer lacked.
             conn.execute(
                 "UPDATE tool_runs SET summary = json_set(COALESCE(summary, '{}'), '$.switches', json(?)) "
                 "WHERE tool = ? AND run_id = ? AND model_id = ? AND json_extract(summary, '$.switches') IS NULL",
                 (json.dumps(switches), tool, run_id, model_id))
+        if cond_json and run_id:
+            conn.execute(
+                "UPDATE tool_runs SET conditions = ? "
+                "WHERE tool = ? AND run_id = ? AND model_id = ? AND conditions IS NULL",
+                (cond_json, tool, run_id, model_id))
         conn.execute(
             "DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
             "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)",
@@ -2668,9 +2740,15 @@ def _tool_run_row(r) -> dict:
         summary = json.loads(r[5]) if r[5] else {}
     except Exception:
         summary = {}
+    conditions = None
+    if len(r) > 8 and r[8]:
+        try:
+            conditions = json.loads(r[8])
+        except Exception:
+            conditions = None
     return {"tool": r[0], "model_id": r[1], "agent_id": r[2],
             "provider": r[3], "ok": bool(r[4]), "summary": summary, "ts": r[6],
-            "run_id": r[7] if len(r) > 7 else None}
+            "run_id": r[7] if len(r) > 7 else None, "conditions": conditions}
 
 
 @app.route("/api/tools/runs", methods=["GET"])
@@ -2678,16 +2756,23 @@ def tool_runs_recent():
     try:
         raw = flask_request.args.get("limit", type=int)
         limit = max(1, min(100, 100 if raw is None else raw))
+        where, params = [], []
+        for col in ("tool", "model_id", "agent_id"):
+            val = flask_request.args.get(col)
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
         conn = get_db()
         rows = conn.execute(
-            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id "
-            "FROM tool_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id, conditions "
+            f"FROM tool_runs{clause} ORDER BY id DESC LIMIT ?", (*params, limit)).fetchall()
         out = [_tool_run_row(r) for r in rows]
         totals = {r[0]: r[1] for r in conn.execute(
             "SELECT tool, COUNT(*) FROM tool_runs GROUP BY tool")}
         # Newest row per tool, so tiles survive one tool flooding the page.
         latest = {r[0]: _tool_run_row(r) for r in conn.execute(
-            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id "
+            "SELECT tool, model_id, agent_id, provider, ok, summary, ts, run_id, conditions "
             "FROM tool_runs WHERE id IN (SELECT MAX(id) FROM tool_runs GROUP BY tool)")}
         return jsonify({"runs": out, "totals": totals, "latest": latest})
     except Exception as e:

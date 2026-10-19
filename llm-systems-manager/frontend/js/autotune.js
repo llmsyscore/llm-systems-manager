@@ -111,6 +111,7 @@
   let _slot = null, _busyOn = false, _statusErr = false, _queuedRun = null, _foreign = false;
   let _draft = null, _draftFor = '', _draftGen = 0, _draftBusy = false, _dl = null;
   let _batch = null, _batchPoll = null, _batchHosts = [];   // batch (#891)
+  const _cmpRows = new WeakMap();   // done doc → earlier ledger runs for its compare picker
   const BATCH_POLL_MS = 5000;
   // Newest row per model wins; the route is scoped to the tool's target host.
   async function loadStatus() {
@@ -834,6 +835,7 @@
   function began(body, ids) {
     _attached = false; _foreign = false;
     _done = {}; _doneModel = null; _meta = {}; _section = {};
+    clearCond();
     if (!hosted()) fetchMeta(ids);
     newRun(null);
     _run.powerCap = body.power_cap_w != null ? Number(body.power_cap_w) : null;
@@ -1146,7 +1148,7 @@
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
     } else if (t === 'model_done') {
       _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps }); } catch (_) {} }
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps, conditions: msg.conditions }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
     } else if (t === 'done') {
       finish(msg);
@@ -1220,6 +1222,62 @@
       + row(`Aggregate · ${esc(Number(a.concurrency || 1))} req`, b.agg_tps, a.agg_tps, '', v => fmt(v, 0)) + row('Prefill t/s', b.prefill_tps, a.prefill_tps, '', v => fmt(v, 0))
       + row(pd().free === 'free VRAM' ? 'VRAM free' : 'Memory free', b.free_mb, a.free_mb, ' MB', v => fmt(v, 0), true);
   }
+  // Done doc → ledger-shaped run for TC.diffRuns.
+  function pseudoRun(done) {
+    const a = done.after || {}, b = done.before || {};
+    return { tool: 'autotune', model_id: done.model_id, run_id: done.run_id, ts: new Date().toISOString(), ok: !!done.ok,
+      summary: { decode_tps: a.decode_tps, prefill_tps: a.prefill_tps, agg_tps: a.agg_tps, ctx_size: a.ctx, free_mb: a.free_mb,
+        gain_pct: pct(a.decode_tps, b.decode_tps), objective: done.objective, mode: done.mode || 'tune', llama_build: done.llama_build },
+      conditions: done.conditions };
+  }
+  function stamp(ts) {
+    const d = new Date(ts); if (isNaN(d.getTime())) return String(ts || '');
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function clearCond() {
+    const card = $('atCondCard'), c = $('atCond'), h = $('atCompareHost'), sel = $('atCompare');
+    if (card) card.style.display = 'none';
+    if (c) c.innerHTML = '';
+    if (h) h.innerHTML = '';
+    if (sel) { sel.innerHTML = '<option value="">none</option>'; sel.disabled = false; }
+  }
+  // Picker options from earlier ledger runs, newest first, without the current run.
+  function fillPicker(done, rows) {
+    const sel = $('atCompare'); if (!sel) return;
+    const list = (rows || []).filter(r => r && !(done.run_id && r.run_id === done.run_id))
+      .sort((x, y) => (Date.parse(y.ts || '') || 0) - (Date.parse(x.ts || '') || 0));
+    if (!list.length) { sel.innerHTML = '<option value="">no earlier runs</option>'; sel.disabled = true; return; }
+    const head = v => (v == null || v === '' || !isFinite(v) ? '—' : Number(v).toFixed(1));
+    sel.innerHTML = '<option value="">none</option>' + list.map(r =>
+      `<option value="${esc(r.run_id || r.ts || '')}">${esc(stamp(r.ts))} · ${head((r.summary || {}).decode_tps)} t/s</option>`).join('');
+    sel.disabled = false;
+  }
+  // Conditions card: the run's conditions plus a picker of earlier runs to compare with.
+  function renderCond(done) {
+    const card = $('atCondCard'); if (!card) return;
+    clearCond();
+    const has = o => !!o && typeof o === 'object' && Object.keys(o).length > 0;
+    if (!has(done.before) && !has(done.after)) return;
+    card.style.display = '';
+    const c = $('atCond'); if (c && window.COND) c.innerHTML = COND.html(done.conditions, { open: true });
+    const sel = $('atCompare'); if (sel) sel.disabled = true;
+    if (_cmpRows.has(done)) { fillPicker(done, _cmpRows.get(done)); return; }
+    const ag = tagent();
+    const q = '/api/tools/runs?tool=autotune&model_id=' + encodeURIComponent(done.model_id || '') + (ag ? '&agent_id=' + encodeURIComponent(ag) : '');
+    fetch(q).then(r => r.json()).then(d => {
+      const rows = d && Array.isArray(d.runs) ? d.runs : [];
+      _cmpRows.set(done, rows);
+      if (_done[_doneModel] === done) fillPicker(done, rows);
+    }).catch(() => {});
+  }
+  function compareChange(key) {
+    const host = $('atCompareHost'); if (!host) return;
+    const done = _doneModel ? _done[_doneModel] : null, rows = done ? _cmpRows.get(done) : null;
+    const row = key && rows ? rows.find(r => (r.run_id || r.ts) === key) : null;
+    const T = window.TC;
+    host.innerHTML = row && T && typeof T.diffRuns === 'function' ? T.diffHtml(T.diffRuns(row, pseudoRun(done)), Date.now()) : '';
+  }
   // Verify draw vs the cap: over, at (within the agent's tolerance), or under.
   function capReadout(w, cap, over) {
     const state = over ? 'over' : (w > cap ? 'at' : 'under');
@@ -1282,6 +1340,7 @@
       pill.classList.toggle('ok', good); pill.classList.toggle('warn', !good); pill.classList.toggle('running', false);
     }
     renderCmp(done);
+    renderCond(done);
     const dl = $('atDoneLog'), src = $('atLog'); if (dl && src) dl.innerHTML = src.innerHTML;
     const dm = $('atDoneLogMeta'); if (dm) dm.textContent = `${doneStages} stages · ${Number(done.loads || 0)} loads`;
     const qb = $('atQualityBtn');
@@ -1606,5 +1665,6 @@
   window.AT = { onOpen, run, verify, retune, checkQuality, cancel, detach, again, stopServer, installRuntime, showModel, running, downloadDraft, startBatch, cancelBatch, batchWatch, batchActive, batchStartAt, dimsState, objective, setObjective, applyQuietDefaults, planRows, estimateText, onEvent,
                 state: () => ({ run: _run, done: _done, doneModel: _doneModel, meta: _meta, section: _section, pre: _pre }),
                 renderDone, recRows, rows, toggleRow, apply, saveProfile, copyArgs, exportReport, argsText, vllmArgsWith,
+                compareChange, _debugDone: (done) => { _done[done.model_id] = done; _doneModel = done.model_id; renderDone(done); },
                 _debugSetStart: (ts) => { if (_run) { _run.startTs = ts; tick(); } } };
 })();

@@ -2,6 +2,7 @@
 """#770: cross-tool run ledger — POST/GET/DELETE /api/tools/runs."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import manager_mod
@@ -269,3 +270,55 @@ def test_duplicate_writer_backfills_missing_switches(monkeypatch):
     assert len(runs) == 1
     assert runs[0]["summary"]["decode_tps"] == 40.0
     assert runs[0]["summary"]["switches"] == {"ctx-size": "32768"}
+
+
+def test_record_stores_conditions_column_and_filters(monkeypatch):
+    conn = _setup(monkeypatch); c = _client()
+    cond = {"schema": 1, "hardware": {"gpu": "7900 XTX"}, "bogus": {"x": 1}}
+    assert c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "org/m", "run_id": "r1", "gen_tps": 1.0, "conditions": cond}).get_json()["ok"]
+    assert c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "org/other", "run_id": "r2", "gen_tps": 2.0}).get_json()["ok"]
+    runs = c.get("/api/tools/runs?tool=benchmark&model_id=org/m").get_json()["runs"]
+    assert [r["model_id"] for r in runs] == ["org/m"]
+    assert runs[0]["conditions"] == {"schema": 1, "hardware": {"gpu": "7900 XTX"}}
+    assert c.get("/api/tools/runs?model_id=org/other").get_json()["runs"][0]["conditions"] is None
+    assert "conditions" not in runs[0]["summary"]
+    assert conn.execute("SELECT conditions FROM tool_runs WHERE run_id='r1'").fetchone()[0].startswith("{")
+
+
+def test_collapsed_duplicate_backfills_conditions(monkeypatch):
+    _setup(monkeypatch); c = _client()
+    c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "org/m", "run_id": "r9", "decode_tps": 1.0})
+    c.post("/api/tools/runs", json={"tool": "autotune", "model_id": "org/m", "run_id": "r9", "decode_tps": 1.0, "conditions": {"schema": 1}})
+    runs = c.get("/api/tools/runs").get_json()["runs"]
+    assert len(runs) == 1 and runs[0]["conditions"] == {"schema": 1}
+
+
+def test_oversize_conditions_are_compacted_not_rejected(monkeypatch):
+    _setup(monkeypatch); c = _client()
+    cond = {"schema": 1, "backend": {"server_cmd": "x" * 6200}, "sampling": {"k%d" % i: "v" * 200 for i in range(40)}, "snapshot": {"start": {"temp_c": 1}, "end": {"temp_c": 2}}}
+    assert c.post("/api/tools/runs", json={"tool": "benchmark", "model_id": "org/m", "conditions": cond}).get_json()["ok"]
+    got = c.get("/api/tools/runs").get_json()["runs"][0]["conditions"]
+    assert "sampling" not in got and got["snapshot"] == {"start": {"temp_c": 1}} and len(json.dumps(got)) <= 6144
+
+
+def test_migration_adds_conditions_column_to_old_table(monkeypatch):
+    conn = _mem_db()
+    conn.execute("CREATE TABLE tool_runs (id INTEGER PRIMARY KEY, tool TEXT NOT NULL, model_id TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT 'llama', ok INTEGER NOT NULL DEFAULT 1, summary TEXT, ts TEXT NOT NULL, run_id TEXT)")
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn); manager_mod.init_db()
+    assert "conditions" in [r[1] for r in conn.execute("PRAGMA table_info(tool_runs)")]
+
+
+def test_extra_json_whitelist_keeps_cleaned_conditions():
+    out = manager_mod._extra_json_whitelist({"wh_per_ktok": 1.5, "conditions": {"schema": 1, "junk": 1}})
+    assert out == {"wh_per_ktok": 1.5, "energy_wh": None, "energy_source": None, "conditions": {"schema": 1}}
+    assert manager_mod._extra_json_whitelist({"conditions": {"schema": 1}})["conditions"] == {"schema": 1}
+    assert manager_mod._extra_json_whitelist({"conditions": "no"}) is None
+
+
+def test_conditions_clean_redacts_secret_flags_in_server_cmd():
+    cond = {"schema": 1, "backend": {"name": "llama.cpp", "server_cmd": "llama-server --api-key s3cret --hf-token=tok HF_TOKEN=x --port 8080"}}
+    out = manager_mod._conditions_clean(cond)
+    assert out["backend"]["server_cmd"] == "llama-server --api-key *** --hf-token=*** HF_TOKEN=*** --port 8080"
+    assert cond["backend"]["server_cmd"].count("s3cret") == 1
+    assert manager_mod._redact_cmd("srv --api-key=x '--api-key' y --url https://u:p@h/x") == "srv --api-key=*** *** *** --url https://***@h/x"
+    assert manager_mod._conditions_clean({"schema": 1, "backend": {"name": "x"}})["backend"] == {"name": "x"}

@@ -154,3 +154,16 @@ def test_malformed_rows_skipped_energy_stopped_once(llama, monkeypatch, tmp_path
     # only the second row (samples_ns non-list -> 1 rep) counts; the first (bad n_prompt) is skipped
     assert done["tokens"] == 128
     assert _CountingEnergy.stop_calls == 1
+
+
+def test_model_done_carries_conditions(llama, monkeypatch):
+    mod, events, ledger = llama
+    kw: list = []
+    monkeypatch.setattr(mod._shared, "post_tool_run", lambda *a, **k: kw.append(k))
+    monkeypatch.setattr(mod, "_conditions_facts", lambda mid, bench_cmd=None: {"model_id": mid, "server_cmd": " ".join(map(str, bench_cmd or []))})
+    monkeypatch.setattr(mod.run_conditions, "samples", lambda: (None, None))
+    mod._bench_run_one("m1", "llama-bench", [], dict(os.environ))
+    cond = [e for e in events if e["type"] == "model_done"][-1]["conditions"]
+    assert cond["captured_start"] and cond["captured_end"] and cond["model"]["id"] == "m1"
+    assert kw[-1]["conditions"] is cond
+    assert "llama-bench" in cond["backend"]["server_cmd"] and "-hf" in cond["backend"]["server_cmd"]

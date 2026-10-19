@@ -76,7 +76,7 @@ def switch_map(switches: list) -> dict:
 
 
 def post_tool_run(ctx, tool: str, provider: str, run_id: str, model_id: str,
-                  ok: bool, summary: dict) -> None:
+                  ok: bool, summary: dict, conditions: "dict | None" = None) -> None:
     """Record a finished run in the manager's tool ledger; best effort so a
     closed dashboard no longer loses the row (#772)."""
     base = (getattr(ctx.config, "MANAGER_URL", "") or "").rstrip("/")
@@ -88,6 +88,9 @@ def post_tool_run(ctx, tool: str, provider: str, run_id: str, model_id: str,
             "ok": bool(ok), "run_id": run_id or "",
             "agent_id": state.get("agent_id") or ""}
     body.update({k: v for k, v in (summary or {}).items() if v is not None})
+    if isinstance(conditions, dict):
+        from . import run_conditions
+        body["conditions"] = run_conditions.compact(conditions)
     try:
         ctx.post_session.post(f"{base}/api/tools/runs", json=body, timeout=10,
                               headers={"Authorization": f"Bearer {token}"})

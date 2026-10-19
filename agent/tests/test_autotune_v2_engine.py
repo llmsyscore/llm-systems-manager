@@ -680,3 +680,33 @@ def test_candidate_events_carry_the_pass_spread(at):
     assert at.ledger_summary(done)["spread_pct"] == 2.0
     th = next(c for c in done["changes"] if c["key"] == "threads")
     assert th["noise_pct"] == 2.0 and "spread" in th["evidence"]
+
+
+_COND = {"schema": 1, "snapshot": {"start": {"temp_c": 40}, "end": {"temp_c": 66}}}
+
+
+def _boom():
+    raise RuntimeError("sample failed")
+
+
+def test_model_done_attaches_conditions_from_the_env_hook(at):
+    done, events = _run(at, Fake(), BALANCED, env={"finish_conditions": lambda: dict(_COND)})
+    assert done["conditions"]["snapshot"]["end"]["temp_c"] == 66
+    assert events[-1]["conditions"]["snapshot"]["start"]["temp_c"] == 40
+    done, _ = _run(at, Fake(), BALANCED)
+    assert "conditions" not in done
+    done, _ = _run(at, Fake(), BALANCED, env={"finish_conditions": _boom})
+    assert "conditions" not in done and done["type"] == "model_done"
+
+
+def test_quality_done_attaches_conditions_from_the_env_hook(at):
+    req = at.validate_request({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                               "overrides": {"cache-type-k": "q4_0"}, "kl_max": 0.02})
+    env = {"run_id": "r", "valued": set(), "finish_conditions": lambda: dict(_COND)}
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(), lambda m: None, lambda: False, env)
+    assert doc["conditions"]["snapshot"]["end"]["temp_c"] == 66
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(), lambda m: None, lambda: False, {"run_id": "r"})
+    assert "conditions" not in doc
+    doc = at.run_quality("org/m:Q4", {}, req, KLFake(), lambda m: None, lambda: False,
+                         {"run_id": "r", "finish_conditions": _boom})
+    assert "conditions" not in doc

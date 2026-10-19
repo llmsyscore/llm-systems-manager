@@ -431,3 +431,17 @@ def test_vllm_build_changes_selects_above_noise(vat):
     assert row["noise_pct"] == 6.0 and row["selected"] is False
     ev["kv_cache_dtype"]["noise_pct"] = 2.0
     assert vat.build_changes(BASE, {"kv_cache_dtype": "fp8"}, ev)[0]["selected"] is True
+
+
+def test_model_done_attaches_conditions_from_the_env_hook(vat):
+    cond = {"schema": 1, "snapshot": {"start": {"temp_c": 40}, "end": {"temp_c": 66}}}
+    req = vat.validate_request({"model_ids": [MODEL], "objective": "balanced"})
+
+    def boom():
+        raise RuntimeError("sample failed")
+
+    def run(env):
+        return vat.run_model(MODEL, req, FakeBackend(), lambda e: None, lambda: False, env)
+    assert run({"run_id": "r", "runtime": True, "finish_conditions": lambda: dict(cond)})["conditions"]["snapshot"]["end"]["temp_c"] == 66
+    assert "conditions" not in run({"run_id": "r", "runtime": True})
+    assert "conditions" not in run({"run_id": "r", "runtime": True, "finish_conditions": boom})

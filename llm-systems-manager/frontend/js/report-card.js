@@ -465,6 +465,7 @@ function rcRenderCard(card) {
   if (submitWrap) submitWrap.style.display = url ? '' : 'none';
   const actions = _rcEl('rcActions');
   if (actions) actions.style.display = '';
+  _rcFillCompare(card);
   const model = _rcEl('rcModelChip');
   if (model) {
     model.textContent = 'model: ' + ((card.result || {}).model || 'unknown');
@@ -481,6 +482,47 @@ function rcRenderCard(card) {
   }
 }
 
+// Compare picker: earlier cards of the same model, newest first.
+let _rcHistory = [];
+function _rcSetCompareOptions(sel, cards) {
+  sel.replaceChildren();
+  const opt = (value, label) => { const o = document.createElement('option'); o.value = value; o.textContent = label; sel.appendChild(o); };
+  if (!cards.length) { opt('', 'no earlier runs'); sel.disabled = true; return; }
+  sel.disabled = false;
+  opt('', 'none');
+  cards.forEach(c => opt(String(c.ts), `${RC.fmtDate(c.ts)} \u00b7 ${RC.fmt((c.result || {}).gen_tps, 1)} tok/s`));
+}
+
+function _rcFillCompare(card) {
+  _rcHistory = [];
+  _rcEl('rcCompareHost')?.replaceChildren();
+  const sel = _rcEl('rcCompare');
+  if (!sel) return;
+  _rcSetCompareOptions(sel, []);
+  const agent = _rcEl('rcAgent')?.value || '';
+  const provider = card.provider || _rcEl('rcProvider')?.value || 'llama';
+  const model = (card.result || {}).model || '';
+  if (!agent || !model || typeof fetch !== 'function') return;
+  fetch(`/api/reportcard/history?agent=${encodeURIComponent(agent)}`
+        + `&provider=${encodeURIComponent(provider)}`
+        + `&model=${encodeURIComponent(model)}`)
+    .then(r => r.json()).then(d => {
+      if (_rcLastCard !== card) return;
+      _rcHistory = (d.cards || []).filter(c => c && c.ts !== card.ts).sort((a, b) => b.ts - a.ts);
+      _rcSetCompareOptions(sel, _rcHistory);
+    })
+    .catch(() => {});
+}
+
+function rcCompareChange() {
+  const host = _rcEl('rcCompareHost');
+  if (!host) return;
+  const v = _rcEl('rcCompare')?.value || '';
+  const picked = v ? _rcHistory.find(c => String(c.ts) === v) : null;
+  if (!picked || !_rcLastCard) { host.replaceChildren(); return; }
+  host.innerHTML = TC.diffHtml(TC.diffRuns(RC.cardPseudoRun(picked), RC.cardPseudoRun(_rcLastCard)), Date.now());
+}
+
 function rcLoadLatest() {
   const agent = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
@@ -494,6 +536,7 @@ function rcLoadLatest() {
       // No history for this picker selection — clear any stale card.
       _rcLastCard = null;
       _rcEl('rcCardHost')?.replaceChildren();
+      _rcEl('rcCompareHost')?.replaceChildren();
       const actions = _rcEl('rcActions');
       if (actions) actions.style.display = 'none';
     })

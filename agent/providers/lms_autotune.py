@@ -723,6 +723,7 @@ class _Run:
                "guard": None, "verify": self.verify, "stages": self.stages,
                "power_cap_w": None, "over_cap": None,
                "stop_reason": self.stop_reason, "elapsed_s": int(self.elapsed()), "loads": self.loads}
+        _at.attach_conditions(self.env, doc)
         self.put(doc)
         return doc
 

@@ -668,6 +668,7 @@ class _Run:
                "apply": apply, "applied": apply and bool(ok) and not cancelled and bool((self.verify or {}).get("ok")),
                "power_cap_w": None, "over_cap": None,
                "stop_reason": self.stop_reason, "elapsed_s": int(self.elapsed()), "loads": self.loads}
+        _at.attach_conditions(self.env, doc)
         self.put(doc)
         return doc
 

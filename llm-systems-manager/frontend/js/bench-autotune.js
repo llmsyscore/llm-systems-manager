@@ -9,6 +9,10 @@ let _benchSwitches      = [];   // current editable switch list
 let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
 let _benchRawRows       = [];   // all result rows for axis re-render: {model_id, ts, seq, gen_tps, ppt_tps, n_prompt, n_gen, n_depth, n_batch, n_ubatch, avg_ts}
 let _benchAxisTouched   = false; // true once the user picks an axis; until then dropdowns honor the computed default (n_depth / avg_ts)
+let _benchCond          = {};   // model_id → run conditions from its model_done
+let _benchCur           = {};   // model_id → finished run in ledger shape, for the compare picker
+let _benchCmpRows       = {};   // model_id → {key, rows} earlier ledger runs for the picker
+let _benchCondModel     = null; // model_id shown in #benchCond / #benchCompare
 
 const BENCH_SERIES_COLORS = [
   {gen: '#5a8fc2', ppt: '#c28a3a', pg: '#5ac27a'},   // steel blue / warm amber / mint
@@ -561,6 +565,8 @@ async function openBench(modelId) {
   _updateBenchModelLabel();
 
   _benchQueue();
+  if (modelId && !_benchEventSrc && !Object.keys(_benchCur).length
+      && ((_benchData[modelId] || {}).extra_json || {}).conditions) _benchRenderCond(modelId);
   if (!fresh) { if (_benchSlot) _benchSlot.sync(); return; }
 
   // First open: reset UI state — clear data BEFORE switchBenchTab so its axis
@@ -611,6 +617,82 @@ function _updateBenchSwitchLabel() {
 // Run id from an SSE event's `<run>:<seq>` id, for ledger de-duplication.
 function _runIdOf(ev) {
   return String((ev && ev.lastEventId) || '').split(':')[0] || '';
+}
+
+// Switch list → {flag: value} map, the shape the ledger stores.
+function _benchSwitchMap(list) {
+  const out = {};
+  (list || []).forEach(s => { const f = String((s && s.flag) || '').trim(); if (f) out[f] = String(s.value ?? ''); });
+  return out;
+}
+
+// Ledger-shaped run of a model's finished run, else of its stored result.
+function _benchCurrentRun(modelId) {
+  if (_benchCur[modelId]) return _benchCur[modelId];
+  const s = _benchData[modelId];
+  if (!s) return null;
+  return {tool: 'benchmark', model_id: modelId, ts: s.ts || new Date().toISOString(), ok: true,
+          summary: {gen_tps: s.avg_gen_tps, ppt_tps: s.avg_ppt_tps, pg_tps: s.avg_pg_tps, bench_tool: s.bench_tool,
+                    switches: _benchSwitchMap(s.switches)},
+          conditions: (s.extra_json || {}).conditions};
+}
+
+// Local "YYYY-MM-DD HH:MM" for a picker option.
+function _benchStamp(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts || '');
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Empties the conditions block and the compare picker.
+function _benchClearCond() {
+  ['benchCond', 'benchCompare'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+  _benchCond = {}; _benchCur = {}; _benchCmpRows = {}; _benchCondModel = null;
+}
+
+// Fills the picker from this agent's earlier ledger runs, newest first, leaving out the current run.
+function _benchFillPicker(sel, rows, cur) {
+  const own = cur.run_id ? (rows || []).find(r => r && r.run_id === cur.run_id) : null;
+  const list = (rows || []).filter(r => r && !(cur.run_id && r.run_id === cur.run_id) && (!own || r.agent_id === own.agent_id))
+    .sort((a, b) => (Date.parse(b.ts || '') || 0) - (Date.parse(a.ts || '') || 0));
+  if (!list.length) { sel.innerHTML = '<option value="">no earlier runs</option>'; sel.disabled = true; return; }
+  const head = v => (v == null || v === '' || !isFinite(v) ? '—' : Number(v).toFixed(1));
+  sel.innerHTML = '<option value="">none</option>' + list.map(r =>
+    `<option value="${_hEsc(String(r.run_id || r.ts || ''))}">${_hEsc(_benchStamp(r.ts))} · ${head((r.summary || {}).gen_tps)} t/s</option>`).join('');
+  sel.disabled = false;
+}
+
+// Conditions block into #benchCond and the "Compare with…" picker into #benchCompare.
+function _benchRenderCond(modelId) {
+  const condEl = document.getElementById('benchCond'), cmpEl = document.getElementById('benchCompare');
+  if (!condEl || !cmpEl) return;
+  const cur = _benchCurrentRun(modelId);
+  _benchCondModel = cur ? modelId : null;
+  condEl.innerHTML = cur && window.COND ? COND.html(cur.conditions) : '';
+  if (!cur) { cmpEl.innerHTML = ''; return; }
+  cmpEl.innerHTML = '<div class="bench-cmp-pick"><label for="benchCompareSel">Compare with…</label>'
+    + '<select id="benchCompareSel" class="bl-sel" disabled><option value="">none</option></select></div><div class="bench-cmp-host"></div>';
+  const sel = cmpEl.querySelector('select');
+  sel.addEventListener('change', () => _benchCompareChange(modelId, sel.value));
+  const key = cur.run_id || cur.ts, cached = _benchCmpRows[modelId];
+  if (cached && cached.key === key) { _benchFillPicker(sel, cached.rows, cur); return; }
+  const q = '/api/tools/runs?tool=benchmark&model_id=' + encodeURIComponent(modelId);
+  fetch(q).then(r => r.json()).then(d => {
+    const rows = (d && Array.isArray(d.runs)) ? d.runs : [];
+    _benchCmpRows[modelId] = {key, rows};
+    if (sel.isConnected) _benchFillPicker(sel, rows, cur);
+  }).catch(() => {});
+}
+
+// Renders the picked ledger run against the current one into #benchCompare.
+function _benchCompareChange(modelId, runKey) {
+  const host = document.querySelector('#benchCompare .bench-cmp-host');
+  if (!host) return;
+  const cached = _benchCmpRows[modelId], cur = _benchCurrentRun(modelId);
+  const row = runKey && cached ? cached.rows.find(r => String(r.run_id || r.ts || '') === runKey) : null;
+  host.innerHTML = row && cur && window.TC && typeof TC.diffRuns === 'function'
+    ? TC.diffHtml(TC.diffRuns(row, cur), Date.now()) : '';
 }
 
 // Records a finished run into the cross-tool ledger (#770); fire-and-forget.
@@ -973,6 +1055,7 @@ async function _benchRunNow(sel) {
   _benchSetState('running');
   document.getElementById('benchResults').classList.remove('shown');
   document.getElementById('benchResultRows').innerHTML = '';
+  _benchClearCond();
   document.getElementById('benchCancelBtn').style.display = '';
   _benchLogClear();
   if (_benchChart) {
@@ -1058,13 +1141,21 @@ function _benchOpenStream(tool) {
         : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
       const energy = { wh_per_ktok: msg.wh_per_ktok ?? null, energy_wh: msg.energy_wh ?? null,
                         energy_source: msg.energy_source || null };
+      const runId = msg.run_id || _runIdOf(e);
+      _benchCond[msg.model_id] = msg.conditions;
+      _benchCur[msg.model_id] = {tool: 'benchmark', model_id: msg.model_id, run_id: runId, ts: new Date().toISOString(), ok: true,
+                                 summary: {gen_tps: mx.gen, ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
+                                           switches: _benchSwitchMap(_benchSwitches)},
+                                 conditions: msg.conditions};
       _benchAddModelResultRow(msg.model_id, tool, mx, energy);
       document.getElementById('benchResults').classList.add('shown');
       _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
                                    ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
-                                   run_id: msg.run_id || _runIdOf(e),
+                                   run_id: runId,
                                    wh_per_ktok: energy.wh_per_ktok,
+                                   conditions: msg.conditions,
                                    ok: mx.gen != null || mx.ppt != null || mx.pg != null});
+      _benchRenderCond(msg.model_id);
       if (energy.wh_per_ktok != null) {
         _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
       } else if ('wh_per_ktok' in msg) {
@@ -1093,6 +1184,7 @@ function _benchAttach() {
   document.getElementById('benchCancelBtn').style.display = '';
   document.getElementById('benchResults').classList.remove('shown');
   document.getElementById('benchResultRows').innerHTML = '';
+  _benchClearCond();
   _benchLogClear();
   if (_benchChart) {
     _benchChart.data.datasets = [];
@@ -1294,6 +1386,7 @@ function _benchSetChartIdle(idle) {
 function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra) {
   if (!model_id) return;
   const body = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches};
+  if (_benchCond[model_id]) extra = {...(extra && typeof extra === 'object' ? extra : {}), conditions: _benchCond[model_id]};
   if (extra && typeof extra === 'object') body.extra_json = extra;
   fetch('/api/benchmark/store', {
     method: 'POST',
@@ -1313,6 +1406,11 @@ function clearStoredBenchmark(model_id, rowEl) {
   fetch('/api/benchmark/results/' + encodeURIComponent(model_id), {method:'DELETE'})
     .then(r => r.json()).then(() => {
       delete _benchData[model_id];
+      delete _benchCond[model_id]; delete _benchCur[model_id]; delete _benchCmpRows[model_id];
+      if (_benchCondModel === model_id) {
+        ['benchCond', 'benchCompare'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+        _benchCondModel = null;
+      }
       if (rowEl) rowEl.remove();
       const rowsEl = document.getElementById('benchResultRows');
       // Hide the results panel once the last model card is removed.

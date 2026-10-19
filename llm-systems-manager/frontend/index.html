@@ -2332,7 +2332,9 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 
       <div class="rc-actions" id="rcActions" style="display:none;">
         <span id="rcSubmitWrap" class="rc-soon" style="display:none;" data-tip="Leaderboard submission is coming soon in the next release."><button class="btn btn-gray-muted-gradient" id="rcSubmitBtn" disabled aria-disabled="true" title="Leaderboard submission is coming soon in the next release.">Submit to leaderboard</button></span>
+        <label class="rc-cmp" for="rcCompare">Compare with…</label><select id="rcCompare" class="bl-sel" onchange="rcCompareChange()"><option value="">none</option></select>
       </div>
+      <div id="rcCompareHost" class="rc-compare"></div>
 
       <div class="rc-trends" id="rcTrends" style="display:none;">
         <canvas id="rcTrendChart"></canvas>
@@ -2436,7 +2438,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <span id="benchStatus" class="bench-status-pill">idle</span>
         </div>
         <div id="benchResults">
-          <div id="benchResultRows"></div>
+          <div id="benchResultRows"></div><div id="benchCond"></div><div id="benchCompare" class="bench-compare"></div>
         </div>
         <div class="bench-chart-wrap idle" id="benchChartWrap">
           <div class="bench-chart-empty" id="benchChartEmpty">Run a benchmark to plot throughput across sequence lengths.</div>
@@ -2514,6 +2516,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <span class="bl-acts"><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blAttachBtn" style="display:none;" onclick="BL.addToReportCard()">Add to Report Card</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" id="blPinBtn" onclick="BL.pinBaseline()">Set as baseline</button><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" onclick="BL.exportJson()">Export JSON</button></span></div>
             <div class="bl-prog" id="blProgress" style="display:none;"><i style="width:0%"></i></div>
             <div class="bl-tiles" id="blTiles"></div>
+            <div id="blCond"></div>
+            <div class="bl-card bl-collapsed" id="blCompareCard" style="display:none;"><div class="bl-card-h tog" onclick="this.parentElement.classList.toggle('bl-collapsed')"><h3>Compare with baseline</h3><span class="gap"></span><span class="bl-chev">▾</span></div><div class="bl-card-b flush bl-compare" id="blCompare"></div></div>
             <div class="bl-card" id="blFleetCard" style="display:none;"><div class="bl-card-h"><h3>Autopilot ranking</h3><span class="meta" id="blFleetMeta"></span><span class="gap"></span><span class="bl-hint" id="blFleetProgress"></span></div>
               <div class="bl-card-b flush" style="overflow-x:auto"><div id="blFleetTable"></div></div></div>
             <div class="bl-card"><div class="bl-card-h"><h3 id="blChartTitle">Throughput under load</h3><span class="meta" id="blChartMeta">decode t/s</span><span class="gap"></span>
@@ -2745,6 +2749,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           </div>
           <div class="at-guard" id="atGuard"></div>
           <div class="at-card"><div class="at-card-h"><h3>Before / after</h3><span class="meta">verify stage vs the config that was live</span></div><div class="at-card-b at-cmp" id="atCmp"></div></div>
+          <div class="at-card" id="atCondCard" style="display:none;"><div class="at-card-h"><h3>Run conditions</h3><span class="gap"></span><label class="at-cmp-pick" for="atCompare">Compare with…</label><select id="atCompare" class="bl-sel" onchange="AT.compareChange(this.value)"><option value="">none</option></select></div><div class="at-card-b" id="atCond"></div><div class="at-card-b flush at-compare" id="atCompareHost"></div></div>
           <div class="at-card collapsed"><div class="at-card-h tog" onclick="this.parentElement.classList.toggle('collapsed')"><h3>Run log</h3><span class="meta" id="atDoneLogMeta"></span><span class="gap"></span><span class="chev">▾</span></div><div class="at-card-b"><div class="at-log" id="atDoneLog"></div></div></div>
         </div>
         <div id="atPaneBatch" class="at-pane" style="display:none;">
@@ -2826,6 +2831,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/perfmode.js"></script>
 <script src="/static/js/lib/thresholds.js"></script>
 <script src="/static/js/lib/spread.js"></script>
+<script src="/static/js/lib/conditions.js"></script>
 <script src="/static/js/lib/reportcard.js"></script>
 <script src="/static/js/lib/toolcards.js"></script>
 <script src="/static/js/lib/sseguard.js"></script>

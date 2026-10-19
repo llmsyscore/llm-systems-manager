@@ -341,3 +341,17 @@ def test_lms_build_changes_selects_above_noise(lat):
     assert row["noise_pct"] == 6.0 and row["selected"] is False
     ev["eval_batch_size"]["noise_pct"] = 2.0
     assert lat.build_changes(BASE, {"eval_batch_size": 4096}, ev)[0]["selected"] is True
+
+
+def test_model_done_attaches_conditions_from_the_env_hook(lat):
+    cond = {"schema": 1, "snapshot": {"start": {"temp_c": 40}, "end": {"temp_c": 66}}}
+    req = lat.validate_request({"model_ids": ["qwen3.5-9b@q6_k"], "objective": "balanced"})
+
+    def boom():
+        raise RuntimeError("sample failed")
+
+    def run(env):
+        return lat.run_model("qwen3.5-9b@q6_k", req, FakeBackend(), lambda e: None, lambda: False, env)
+    assert run({"run_id": "r", "runtime": True, "finish_conditions": lambda: dict(cond)})["conditions"]["snapshot"]["end"]["temp_c"] == 66
+    assert "conditions" not in run({"run_id": "r", "runtime": True})
+    assert "conditions" not in run({"run_id": "r", "runtime": True, "finish_conditions": boom})
