@@ -271,9 +271,10 @@ def build_changes(current: dict, rec: dict, evidence: dict) -> list[dict]:
             continue
         ev = (evidence or {}).get(k) or {}
         g = ev.get("gain_pct")
+        noise = float(ev.get("noise_pct") or 0)
         rows.append({"key": k, "flag": FLAGS.get(k, k), "current": cur, "recommended": new, "value": rec[k],
                      "source": ev.get("source", "measured"), "evidence": ev.get("text", ""),
-                     "selected": g is None or g >= GAIN_MIN_PCT})
+                     "selected": g is None or g >= max(GAIN_MIN_PCT, noise), "noise_pct": noise})
     return rows
 
 
@@ -403,10 +404,13 @@ class _Run:
                   ok=bool(res.get("ok")) and (not st or bool(st.get("ok"))),
                   ctx=res.get("ctx"), kv_tokens=res.get("kv_tokens"), decode_tps=st.get("decode_tps"),
                   prefill_tps=st.get("prefill_tps"), agg_tps=st.get("agg_tps"), accept=st.get("accept"),
+                  decode_spread=st.get("decode_spread"), spread_pct=st.get("spread_pct"), passes=st.get("passes"),
                   error=res.get("error") or st.get("error"), **extra)
 
-    def ev(self, key: str, text: str, gain: Optional[float] = None) -> None:
-        self.evidence[key] = {"source": "measured", "text": text, "gain_pct": gain}
+    def ev(self, key: str, text: str, gain: Optional[float] = None, noise: Optional[float] = None) -> None:
+        if noise and "spread ±" not in text:
+            text += f" · spread ±{noise / 2:.0f} %"
+        self.evidence[key] = {"source": "measured", "text": text, "gain_pct": gain, "noise_pct": noise}
 
     def sweep(self, stage: str, key: str, cands: list, metric: str = "decode_tps", default: Any = None) -> None:
         """Measure one value per candidate and keep the fastest when it beats the current value."""
@@ -425,7 +429,8 @@ class _Run:
             res, st = self.measure({key: c})
             results.append({"value": c, "ok": bool(res.get("ok")) and bool(st.get("ok")),
                             "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
-                            "agg_tps": st.get("agg_tps")})
+                            "agg_tps": st.get("agg_tps"),
+                            "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result(stage, c, res)
         choice, reason, gain = _lat.choose_best(results, metric, current)
         if choice is None:
@@ -433,7 +438,9 @@ class _Run:
             return
         if choice != current:
             self.rec[key] = choice
-            self.ev(key, reason, gain)
+            best = next((r for r in results if r["value"] == choice and r["ok"]), None)
+            cur = next((r for r in results if r["value"] == current and r["ok"]), None)
+            self.ev(key, reason, gain, noise=_at.noise_pct(best, cur))
         self.end(stage, mark, choice, reason)
 
     # ── stages ──
@@ -481,7 +488,8 @@ class _Run:
                   concurrency=d["concurrency"], kv_fraction=d["kv_fraction"])
         self.decode_now, self.prefill_now = st.get("decode_tps"), st.get("prefill_tps")
         self.before = {"decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
-                       "agg_tps": st.get("agg_tps"), "ctx": probe, "concurrency": 1}
+                       "agg_tps": st.get("agg_tps"), "ctx": probe, "concurrency": 1,
+                       "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")}
         math_text = f"{self.kv_tokens:,} KV tokens ÷ {float(d['concurrency']):g} × {float(d['kv_fraction']):g} → {want:,}"
         if capped:
             math_text += " (capped at the model's maximum)"
@@ -510,7 +518,8 @@ class _Run:
             self.emit("candidate_start", stage="seqs", value=c)
             res, st = self.measure({"max_num_seqs": c}, concurrency=c, limit=max(STICK_LIMIT, 2 * c))
             results.append({"value": c, "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "agg_tps": st.get("agg_tps")})
+                            "decode_tps": st.get("decode_tps"), "agg_tps": st.get("agg_tps"),
+                            "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("seqs", c, res)
         choice, reason = _at.choose_slots(self.objective, results)
         if choice is None:
@@ -520,7 +529,8 @@ class _Run:
         best = next((r for r in results if int(r["value"]) == int(choice)), None)
         if int(choice) != int(self.cur("max_num_seqs", DEFAULT_MAX_NUM_SEQS)):
             self.rec["max_num_seqs"] = int(choice)
-            self.ev("max_num_seqs", reason, _at.gain_pct((best or {}).get("agg_tps"), (one or {}).get("agg_tps")))
+            self.ev("max_num_seqs", reason, _at.gain_pct((best or {}).get("agg_tps"), (one or {}).get("agg_tps")),
+                    noise=_at.noise_pct(best, one))
         self.concurrency = int(choice)
         self.end("seqs", mark, choice, reason)
 
@@ -556,7 +566,8 @@ class _Run:
             self.emit("candidate_start", stage="spec", value=r["type"])
             res, st = self.measure({"speculative_config": r["cfg"]})
             results.append({"value": r["type"], "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "accept": st.get("accept"), "cfg": r["cfg"]})
+                            "decode_tps": st.get("decode_tps"), "accept": st.get("accept"), "cfg": r["cfg"],
+                            "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("spec", r["type"], res)
         choice, reason, gain = _lat.choose_spec(results)
         best = next((r for r in results if r["value"] == choice), None)
@@ -565,7 +576,8 @@ class _Run:
             return
         if cfg_str(self.base.get("speculative_config")) != cfg_str(best["cfg"]):
             self.rec["speculative_config"] = best["cfg"]
-            self.ev("speculative_config", reason, gain)
+            none_row = next((r for r in results if r["value"] == "none" and r["ok"]), None)
+            self.ev("speculative_config", reason, gain, noise=_at.noise_pct(best, none_row) if choice != "none" else None)
         self.end("spec", mark, choice, reason)
 
     def stage_prefix(self) -> None:
@@ -583,7 +595,8 @@ class _Run:
         if ok:
             self.after = {"decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
                           "ctx": res.get("ctx") or self.ctx_total, "agg_tps": st.get("agg_tps"),
-                          "concurrency": conc, "accept": st.get("accept")}
+                          "concurrency": conc, "accept": st.get("accept"),
+                          "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")}
             self.verify = {"ok": True, "seconds": st.get("seconds") or 0, "dropped": [], "reason": None, "warning": None}
             self.end("verify", mark, "pass", f"concurrency {conc} · {limit} requests" if self.runtime else "restart only")
             return

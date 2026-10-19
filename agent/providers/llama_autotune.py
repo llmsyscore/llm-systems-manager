@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -28,6 +29,8 @@ STAGES = ("context", "kv", "moe", "threads", "spec", "slots", "sampling", "verif
 MEASURED = ("threads", "spec", "slots", "verify")
 FALLBACK_ORDER = ("slots", "spec", "threads")
 GAIN_MIN_PCT = 3.0
+STICK_PASSES = 2
+STICK_DISAGREE_PCT = GAIN_MIN_PCT
 SPEC_MIN_GAIN_PCT = 5.0
 THREADS_TIE_PCT = 3.0
 KV_MIN_CTX_GAIN_PCT = 10.0
@@ -509,10 +512,14 @@ def choose_threads(results: list) -> tuple[Optional[int], str]:
     ok = _ok(results)
     if not ok:
         return None, "no candidate loaded"
-    top = max(r["decode_tps"] or 0 for r in ok)
-    tied = [r for r in ok if (r["decode_tps"] or 0) >= top * (1 - THREADS_TIE_PCT / 100)]
+    top_row = max(ok, key=lambda r: r["decode_tps"] or 0)
+    top = top_row["decode_tps"] or 0
+    spread = float(top_row.get("spread_pct") or 0)
+    band = max(THREADS_TIE_PCT, spread)
+    tied = [r for r in ok if (r["decode_tps"] or 0) >= top * (1 - band / 100)]
     best = min(tied, key=lambda r: int(r["value"]))
-    return int(best["value"]), f"{best['decode_tps']:.1f} t/s" + (" · tie → fewer threads" if len(tied) > 1 else "")
+    return int(best["value"]), (f"{best['decode_tps']:.1f} t/s" + (" · tie → fewer threads" if len(tied) > 1 else "")
+                                + (f" · spread ±{band / 2:.0f} %" if spread > THREADS_TIE_PCT else ""))
 
 
 def choose_spec(results: list) -> tuple[Optional[str], str]:
@@ -523,10 +530,10 @@ def choose_spec(results: list) -> tuple[Optional[str], str]:
         return "none", "no speculative type loaded"
     best = max(ok, key=lambda r: r["decode_tps"] or 0)
     g = gain_pct(best["decode_tps"], base)
-    if g is not None and g >= SPEC_MIN_GAIN_PCT:
+    if g is not None and g >= max(SPEC_MIN_GAIN_PCT, noise_pct(best, none)):
         acc = best.get("accept")
         return best["value"], f"+{g:.0f} % decode" + (f" · accept {acc * 100:.0f} %" if isinstance(acc, (int, float)) else "")
-    return "none", "no type gained 5 % over none"
+    return "none", "no type gained 5 % (or more than its spread) over none"
 
 
 def window_plan(n_min: int, n_max: int) -> list[tuple[int, Optional[int]]]:
@@ -599,9 +606,10 @@ def budget_ok(elapsed_s: float, est_s: float, budget_s: float) -> bool:
 def estimate(stage: str, n_candidates: int, load_s: float, stick_s: float) -> int:
     """Seconds: loads per candidate × load time + stick time (+ KL pass for kv)."""
     n = max(1, int(n_candidates))
-    per = {"context": 5 * load_s + 90, "kv": n * (4 * load_s + stick_s + 90),
-           "moe": 5 * load_s + 2 * stick_s, "threads": n * (load_s + stick_s),
-           "spec": n * (load_s + stick_s), "slots": n * (load_s + stick_s),
+    sk = STICK_PASSES * stick_s
+    per = {"context": 5 * load_s + 90, "kv": n * (4 * load_s + sk + 90),
+           "moe": 5 * load_s + 2 * sk, "threads": n * (load_s + sk),
+           "spec": n * (load_s + sk), "slots": n * (load_s + sk),
            "sampling": 5, "verify": load_s + 60}
     return int(round(per.get(stage, load_s)))
 
@@ -614,6 +622,72 @@ def gain_pct(after: Any, before: Any) -> Optional[float]:
     if not b or not math.isfinite(a) or not math.isfinite(b):
         return None
     return (a - b) / b * 100.0
+
+
+def spread_stats(xs: Iterable[Any]) -> Optional[dict]:
+    v = [float(x) for x in xs if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)]
+    if len(v) < 2:
+        return None
+    q = statistics.quantiles(v, n=4, method="inclusive")
+    return {"n": len(v), "min": round(min(v), 2), "p25": round(q[0], 2), "p50": round(q[1], 2),
+            "p75": round(q[2], 2), "max": round(max(v), 2)}
+
+
+def spread_pct(sp: Optional[dict]) -> float:
+    try:
+        mid = float(sp["p50"])
+        return (float(sp["max"]) - float(sp["min"])) / mid * 100.0 if mid > 0 else 0.0
+    except (TypeError, KeyError, ValueError):
+        return 0.0
+
+
+def noise_pct(a: Optional[dict], b: Optional[dict]) -> float:
+    def one(r: Optional[dict]) -> float:
+        try:
+            return float((r or {}).get("spread_pct") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return max(one(a), one(b))
+
+
+def _pass_ok(r: dict) -> bool:
+    d = r.get("decode_tps")
+    return bool(r.get("ok")) and isinstance(d, (int, float)) and not isinstance(d, bool) and d > 0
+
+
+def repeat_stick(run_one: Callable[[], dict]) -> dict:
+    """Run the speed stick STICK_PASSES times (a third on disagreement) and combine the passes."""
+    passes: list[dict] = []
+    for i in range(STICK_PASSES):
+        r = run_one()
+        if not _pass_ok(r):
+            if i == 0:
+                return r
+            return {**r, "ok": False, "error": r.get("error") or "no decode measurement"}
+        passes.append(r)
+    a, b = passes[0]["decode_tps"], passes[1]["decode_tps"]
+    if abs(a - b) / max(a, b) * 100.0 > STICK_DISAGREE_PCT:
+        r = run_one()
+        if not _pass_ok(r):
+            return {**r, "ok": False, "error": r.get("error") or "no decode measurement"}
+        passes.append(r)
+
+    def med(k: str) -> Any:
+        v = [p[k] for p in passes if isinstance(p.get(k), (int, float))]
+        return statistics.median(v) if v else None
+
+    acc = [p["accept"] for p in passes if isinstance(p.get("accept"), (int, float))]
+    en = [p.get("energy_wh") for p in passes]
+    out = dict(passes[-1])
+    out.update({k: med(k) for k in ("decode_tps", "prefill_tps", "agg_tps", "latency_s")})
+    out["accept"] = statistics.fmean(acc) if acc else None
+    out["seconds"] = sum(p.get("seconds") or 0 for p in passes)
+    out["completion_tokens"] = sum(p.get("completion_tokens") or 0 for p in passes)
+    out["energy_wh"] = sum(en) if all(isinstance(e, (int, float)) for e in en) else None
+    out["passes"] = [{k: p.get(k) for k in ("decode_tps", "prefill_tps", "agg_tps", "seconds")} for p in passes]
+    out["decode_spread"] = spread_stats(p["decode_tps"] for p in passes)
+    out["spread_pct"] = spread_pct(out["decode_spread"])
+    return out
 
 
 _CHANGE_ORDER = ("ctx-size", "cache-type-k", "cache-type-v", "n-cpu-moe", "threads", "threads-batch",
@@ -631,9 +705,10 @@ def build_changes(current: dict, rec: dict, evidence: dict) -> list[dict]:
             continue
         ev = (evidence or {}).get(k) or {}
         g = ev.get("gain_pct")
+        noise = float(ev.get("noise_pct") or 0)
         rows.append({"key": k, "current": cur, "recommended": new,
                      "source": ev.get("source", "measured"), "evidence": ev.get("text", ""),
-                     "selected": g is None or g >= GAIN_MIN_PCT})
+                     "selected": g is None or g >= max(GAIN_MIN_PCT, noise), "noise_pct": noise})
     return rows
 
 
@@ -647,6 +722,7 @@ def ledger_summary(done: dict) -> dict:
             "ctx_size": after.get("ctx"), "free_mb": after.get("free_mb"),
             "decode_tps": after.get("decode_tps"), "prefill_tps": after.get("prefill_tps"),
             "agg_tps": after.get("agg_tps"),
+            "spread_pct": after.get("spread_pct"),
             "gain_pct": gain_pct(after.get("decode_tps"), before.get("decode_tps")),
             "stages_done": sum(1 for s in stages if s.get("status") == "done"),
             "verify_ok": (done.get("verify") or {}).get("ok"), "wh_per_ktok": after.get("wh_per_ktok"),
@@ -865,6 +941,7 @@ class _Run:
                   ctx=res.get("ctx"), free_mb=res.get("free_mb"), decode_tps=st.get("decode_tps"),
                   agg_tps=st.get("agg_tps"), accept=st.get("accept"), kl=extra.get("kl"),
                   avg_w=st.get("avg_w"), w_source=st.get("w_source"),
+                  decode_spread=st.get("decode_spread"), spread_pct=st.get("spread_pct"), passes=st.get("passes"),
                   guard_pass=extra.get("guard_pass"), error=res.get("error") or st.get("error"))
 
     def current_window(self) -> Optional[tuple]:
@@ -884,8 +961,11 @@ class _Run:
             return int(self.ctx_total or 0)
         return int(self.dims["slots"]["min_ctx_per_slot"])
 
-    def ev(self, key: str, text: str, gain: Optional[float] = None, source: str = "measured") -> None:
-        self.evidence[key] = {"source": source, "text": text, "gain_pct": gain}
+    def ev(self, key: str, text: str, gain: Optional[float] = None, source: str = "measured",
+           noise: Optional[float] = None) -> None:
+        if noise and "spread ±" not in text:
+            text += f" · spread ±{noise / 2:.0f} %"
+        self.evidence[key] = {"source": source, "text": text, "gain_pct": gain, "noise_pct": noise}
 
     # ── stages ──
     def stage_context(self) -> bool:
@@ -900,7 +980,8 @@ class _Run:
         self.result("context", "baseline", base)
         if base.get("ok"):
             self.before = {"decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
-                           "ctx": base.get("ctx"), "agg_tps": st.get("agg_tps"), "free_mb": base.get("free_mb")}
+                           "ctx": base.get("ctx"), "agg_tps": st.get("agg_tps"), "free_mb": base.get("free_mb"),
+                           "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")}
             self.decode_now = st.get("decode_tps")
             self.prefill_now = st.get("prefill_tps")
             if st.get("decode_tps"):
@@ -1073,7 +1154,8 @@ class _Run:
             self.emit("candidate_start", stage="moe", value=n)
             res, st = self.measure({"n-cpu-moe": str(n)}, self.ctx_total)
             results.append({"value": n, "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                            "decode_tps": st.get("decode_tps"), "avg_w": st.get("avg_w")})
+                            "decode_tps": st.get("decode_tps"), "avg_w": st.get("avg_w"),
+                            "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("moe", n, res)
         choice, reason, over = choose_quiet(results, float(self.power_cap_w))
         warn = self.flag_over(over)
@@ -1107,7 +1189,7 @@ class _Run:
             res, st = self.measure({"threads": str(t)}, self.ctx_total)
             results.append({"value": t, "ok": bool(res.get("ok")) and bool(st.get("ok")),
                             "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
-                            "avg_w": st.get("avg_w")})
+                            "avg_w": st.get("avg_w"), "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("threads", t, res)
         if self.objective == "quiet":
             choice, reason, over = choose_quiet(results, float(self.power_cap_w))
@@ -1120,11 +1202,15 @@ class _Run:
             return
         best = next(r for r in results if r["value"] == choice)
         cur_t = self.cur("threads")
-        ref = next((r["decode_tps"] for r in results if str(r["value"]) == cur_t and r["ok"]), self.decode_now)
+        ref_row = next((r for r in results if str(r["value"]) == cur_t and r["ok"]), None)
+        ref = ref_row["decode_tps"] if ref_row else self.decode_now
         if str(choice) != cur_t:
             self.rec["threads"] = str(choice)
             # Quiet changes carry no speed gain; the row stays selected.
-            self.ev("threads", reason, None if self.objective == "quiet" else gain_pct(best["decode_tps"], ref))
+            if self.objective == "quiet":
+                self.ev("threads", reason, None)
+            else:
+                self.ev("threads", reason, gain_pct(best["decode_tps"], ref), noise=noise_pct(best, ref_row))
         self.decode_now = best["decode_tps"]
         self.prefill_now = best.get("prefill_tps") or self.prefill_now
         tb = phys if self.rec.get("n-cpu-moe") and phys else choice
@@ -1164,7 +1250,8 @@ class _Run:
         self.emit("candidate_start", stage="spec", value="none")
         res, st = self.measure({"spec-type": "none"}, self.ctx_total)
         results.append({"value": "none", "ok": bool(res.get("ok")) and bool(st.get("ok")),
-                        "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"), "accept": None})
+                        "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"), "accept": None,
+                        "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
         self.result("spec", "none", res)
         n_max0 = min(int(d["n_max"]), 8)
         for row in rows:
@@ -1173,7 +1260,7 @@ class _Run:
             res, st = self.measure(spec_ov(row, int(d["n_min"]), n_max0), self.ctx_total)
             results.append({"value": row["type"], "ok": bool(res.get("ok")) and bool(st.get("ok")),
                             "decode_tps": st.get("decode_tps"), "prefill_tps": st.get("prefill_tps"),
-                            "accept": st.get("accept")})
+                            "accept": st.get("accept"), "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("spec", row["type"], res)
         choice, reason = choose_spec(results)
         none_tps = results[0]["decode_tps"]
@@ -1185,7 +1272,7 @@ class _Run:
             if cur_t not in ("", "none"):
                 self.rec["spec-type"] = "none"
                 self.ev("spec-type", f"{reason} · {others}",
-                        gain_pct(none_tps, (cur_row or {}).get("decode_tps")))
+                        gain_pct(none_tps, (cur_row or {}).get("decode_tps")), noise=noise_pct(results[0], cur_row))
             self.decode_now = none_tps or self.decode_now
             self.prefill_now = results[0].get("prefill_tps") or self.prefill_now
             self.end("spec", mark, "none", reason)
@@ -1193,7 +1280,7 @@ class _Run:
         winrow = next(r for r in rows if r["type"] == choice)
         win = next(r for r in results if r["value"] == choice)
         probe = {"n_min": int(d["n_min"]), "n_max": n_max0, "decode_tps": win["decode_tps"],
-                 "prefill_tps": win.get("prefill_tps"), "accept": win["accept"]}
+                 "prefill_tps": win.get("prefill_tps"), "accept": win["accept"], "spread_pct": win.get("spread_pct")}
         best = probe
         tried = {(probe["n_min"], probe["n_max"])}
         cur_win = self.current_window() if choice == cur_t else None
@@ -1206,7 +1293,8 @@ class _Run:
             tried.add(cur_win)
             if res.get("ok") and st.get("ok"):
                 best = {"n_min": cur_win[0], "n_max": cur_win[1], "decode_tps": st.get("decode_tps"),
-                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept")}
+                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept"),
+                        "spread_pct": st.get("spread_pct")}
                 if (probe["decode_tps"] or 0) > (best["decode_tps"] or 0):
                     best = probe
         for n_min, n_max in window_plan(int(d["n_min"]), int(d["n_max"])):
@@ -1221,7 +1309,8 @@ class _Run:
             tried.add((n_min, n_max))
             if res.get("ok") and st.get("ok") and (st.get("decode_tps") or 0) > (best["decode_tps"] or 0):
                 best = {"n_min": n_min, "n_max": n_max, "decode_tps": st.get("decode_tps"),
-                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept")}
+                        "prefill_tps": st.get("prefill_tps"), "accept": st.get("accept"),
+                        "spread_pct": st.get("spread_pct")}
         window = f"window {best['n_min']}–{best['n_max']}"
         if cur_win and (best["n_min"], best["n_max"]) == cur_win:
             self.decode_now = best["decode_tps"] or self.decode_now
@@ -1235,7 +1324,8 @@ class _Run:
         g = gain_pct(best["decode_tps"], none_tps)
         acc = best.get("accept")
         self.ev("spec-type", " · ".join(x for x in [
-            reason, f"accept {acc * 100:.0f} %" if isinstance(acc, (int, float)) else "", others] if x), g)
+            reason, f"accept {acc * 100:.0f} %" if isinstance(acc, (int, float)) else "", others] if x), g,
+            noise=noise_pct(best, results[0]))
         win_text = f"window {best['n_min']}–{best['n_max']} best of {len(window_plan(int(d['n_min']), int(d['n_max']))) + 1} tried"
         for k in ("spec-draft-n-min", "spec-draft-n-max"):
             self.ev(k, win_text)
@@ -1272,7 +1362,7 @@ class _Run:
             res, st = self.measure({"parallel": str(c)}, self.ctx_total, concurrency=int(c), limit=max(STICK_LIMIT, 2 * int(c)))
             results.append({"value": c, "ok": bool(res.get("ok")) and bool(st.get("ok")),
                             "decode_tps": st.get("decode_tps"), "agg_tps": st.get("agg_tps"),
-                            "avg_w": st.get("avg_w")})
+                            "avg_w": st.get("avg_w"), "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")})
             self.result("slots", c, res)
         if self.objective == "quiet":
             choice, reason, over = choose_quiet(results, float(self.power_cap_w))
@@ -1287,8 +1377,11 @@ class _Run:
         best = next(r for r in results if int(r["value"]) == choice)
         if str(choice) != self.cur("parallel", "1"):
             self.rec["parallel"] = str(choice)
-            self.ev("parallel", reason + f" · {int(self.ctx_total or 0) // choice} ctx per slot",
-                    None if self.objective == "quiet" else gain_pct(best.get("agg_tps"), (one or {}).get("agg_tps")))
+            if self.objective == "quiet":
+                self.ev("parallel", reason + f" · {int(self.ctx_total or 0) // choice} ctx per slot", None)
+            else:
+                self.ev("parallel", reason + f" · {int(self.ctx_total or 0) // choice} ctx per slot",
+                        gain_pct(best.get("agg_tps"), (one or {}).get("agg_tps")), noise=noise_pct(best, one))
         self.concurrency = int(choice)
         self.end("slots", mark, choice, reason, warn)
 
@@ -1337,7 +1430,8 @@ class _Run:
                               "concurrency": conc, "accept": st.get("accept"),
                               "wh_per_ktok": (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None,
                               "energy_wh": wh, "energy_source": src,
-                              "avg_w": st.get("avg_w"), "w_source": st.get("w_source")}
+                              "avg_w": st.get("avg_w"), "w_source": st.get("w_source"),
+                              "decode_spread": st.get("decode_spread"), "spread_pct": st.get("spread_pct")}
                 if self.power_cap_w is not None and st.get("avg_w") is not None:
                     cap = float(self.power_cap_w)
                     self.over_cap = float(st["avg_w"]) > max(cap * (1 + CAP_TOL_PCT / 100), cap + CAP_TOL_W)

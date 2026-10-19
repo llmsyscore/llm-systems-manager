@@ -303,3 +303,41 @@ def test_ledger_summary_marks_provider(lat):
                                                 "spec": {"on": False}, "slots": {"on": False}}})
     s = lat.ledger_summary(done)
     assert s["provider"] == "lms" and s["llama_build"] is None and s["ctx_size"] == 32768 and s["verify_ok"] is True
+
+
+def test_choose_best_requires_gain_above_noise(lat):
+    rows = [{"value": 4096, "ok": True, "decode_tps": 100.0, "spread_pct": 5.0},
+            {"value": 8192, "ok": True, "decode_tps": 104.0, "spread_pct": 1.0}]
+    assert lat.choose_best(rows, "decode_tps", 4096)[0] == 4096
+    assert lat.choose_best(rows, "decode_tps", 4096)[1] == "no candidate gained 3 % (or more than its spread) over 4096"
+    rows[0]["spread_pct"] = 1.0
+    v, reason, g = lat.choose_best(rows, "decode_tps", 4096)
+    assert v == 8192 and g == pytest.approx(4.0) and "spread" in reason
+
+
+class SpreadBackend(FakeBackend):
+    def load(self, config, measure):
+        out = super().load(config, measure)
+        if out.get("stick"):
+            d = out["stick"]["decode_tps"]
+            out["stick"].update(passes=[{"decode_tps": d}, {"decode_tps": d}], spread_pct=2.0,
+                                decode_spread={"n": 2, "min": d * 0.99, "p25": d, "p50": d, "p75": d, "max": d * 1.01})
+        return out
+
+
+def test_lms_events_carry_spread(lat):
+    req, done, events, be = _run(lat, {"model_ids": ["qwen3.5-9b@q6_k"], "objective": "balanced"}, backend=SpreadBackend())
+    ctx = next(e for e in events if e["type"] == "candidate_result" and e["stage"] == "context")
+    assert ctx["spread_pct"] == 2.0 and ctx["decode_spread"]["n"] == 2 and len(ctx["passes"]) == 2
+    assert done["before"]["spread_pct"] == 2.0 and done["after"]["spread_pct"] == 2.0
+    assert done["after"]["decode_spread"]["n"] == 2 and lat.ledger_summary(done)["spread_pct"] == 2.0
+    mtp = next(c for c in done["changes"] if c["key"] == "speculative_draft_mtp")
+    assert mtp["noise_pct"] == 2.0 and "spread ±1 %" in mtp["evidence"] and mtp["selected"]
+
+
+def test_lms_build_changes_selects_above_noise(lat):
+    ev = {"eval_batch_size": {"text": "x", "gain_pct": 4.0, "noise_pct": 6.0}}
+    row = lat.build_changes(BASE, {"eval_batch_size": 4096}, ev)[0]
+    assert row["noise_pct"] == 6.0 and row["selected"] is False
+    ev["eval_batch_size"]["noise_pct"] = 2.0
+    assert lat.build_changes(BASE, {"eval_batch_size": 4096}, ev)[0]["selected"] is True

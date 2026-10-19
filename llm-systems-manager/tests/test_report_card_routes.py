@@ -8,6 +8,8 @@ import pytest
 
 import report_card as rc
 
+_REAL_RUN_BENCH = rc.run_bench
+
 AGENT = {"agent_id": "a" * 32, "registered_from": "203.0.113.7",
          "hostname": "h", "bind_url": "http://h:9899", "token": "tok"}
 
@@ -55,6 +57,17 @@ def _drain(client, job_id):
             if ln.startswith("data: ")]
 
 
+def _streamed_bench(base_url, model, http_post, progress_cb=None, **_):
+    clock = {"t": 0.0}
+
+    def post(url, payload):
+        for delay, tok in ((0.5, "a"), (0.1, "b"), (0.1, "c")):
+            clock["t"] += delay
+            yield "data: " + json.dumps({"choices": [{"delta": {"content": tok}}], "usage": None})
+        yield "data: [DONE]"
+    return _REAL_RUN_BENCH(base_url, model, post, now=lambda: clock["t"], progress_cb=progress_cb)
+
+
 def test_run_returns_job_and_stream_completes(client):
     r = client.post("/api/reportcard/run", json={
         "agent": "a" * 32, "provider": "llama", "mode": "standard",
@@ -67,6 +80,19 @@ def test_run_returns_job_and_stream_completes(client):
     assert card["result"]["gen_tps"] == 40.0
     assert card["eligible"] is True
     assert card["result"]["tokens_per_joule"] == pytest.approx(0.2)
+
+
+def test_stored_card_keeps_raw_reps_and_spread(client, monkeypatch):
+    monkeypatch.setattr(rc, "run_bench", _streamed_bench)
+    r = client.post("/api/reportcard/run", json={
+        "agent": "a" * 32, "provider": "llama", "mode": "standard",
+        "model_key": "small"})
+    _drain(client, r.get_json()["job_id"])
+    card = rc.latest_card_for_model(rc._conn_factory(), "a" * 32, "llama", "m")
+    reps = card["result"]["reps"]
+    assert len(reps) == rc.REPS
+    assert all({"prompt_tokens", "gen_tokens", "ttft_s", "gen_duration_s"} <= set(rep) for rep in reps)
+    assert card["result"]["spread"]["gen_tps"]["n"] == rc.REPS
 
 
 def test_done_event_and_storage_never_leak_identity(client):

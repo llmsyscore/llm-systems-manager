@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from . import _shared
 from . import llama as _ll
+from . import llama_autotune as _at
 from . import llama_bench_live as _bl
 from . import lms_timings_shim as _shim
 from . import vllm as _v
@@ -641,9 +642,12 @@ class _VllmBackend:
                "kv_tokens": watch.get("kv_tokens"), "max_conc": watch.get("max_conc"),
                "load_s": round(time.monotonic() - t0, 1), "stick": None}
         if measure:
-            self._n += 1
-            out["stick"] = _lt.stick_run(self.bench_url, self.model_id, self.run_id, self._n, measure)
+            out["stick"] = _at.repeat_stick(lambda: self._stick_once(measure))
         return out
+
+    def _stick_once(self, measure: dict) -> dict:
+        self._n += 1
+        return _lt.stick_run(self.bench_url, self.model_id, self.run_id, self._n, measure)
 
 
 def _restore(head_tokens: list, orig_args: list) -> None:

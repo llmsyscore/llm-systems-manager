@@ -56,10 +56,11 @@ def test_validate_quiet_carries_the_cap_and_start_at_rounds():
 
 # ── pure helpers ──
 
-def _doc(ok=True, verify_ok=True, gain=12.0, selected=True, ctx=32768):
+def _doc(ok=True, verify_ok=True, gain=12.0, selected=True, ctx=32768, spread_pct=None):
     return {"type": "model_done", "model_id": "org/m:Q4", "run_id": "r1", "ok": ok,
             "verify": {"ok": verify_ok}, "stop_reason": None if ok else "budget",
-            "before": {"decode_tps": 40.0}, "after": {"decode_tps": 40.0 * (1 + gain / 100), "ctx": ctx, "wh_per_ktok": 0.42},
+            "before": {"decode_tps": 40.0, "spread_pct": spread_pct},
+            "after": {"decode_tps": 40.0 * (1 + gain / 100), "ctx": ctx, "wh_per_ktok": 0.42, "spread_pct": spread_pct},
             "changes": [{"key": "threads", "current": "8", "recommended": "12", "selected": selected}]}
 
 
@@ -70,6 +71,22 @@ def test_should_apply_rules():
     assert ab.should_apply(_doc(selected=False))[0] is False and "no change" in ab.should_apply(_doc(selected=False))[1]
     d = _doc(); d["before"] = None
     assert ab.should_apply(d) == (True, "")
+
+
+def test_should_apply_refuses_gain_inside_spread():
+    d = _doc(gain=4); d["after"]["spread_pct"] = 6.0
+    ok, why = ab.should_apply(d)
+    assert ok is False and "spread" in why
+    d["after"]["spread_pct"] = 2.0
+    assert ab.should_apply(d) == (True, "")
+
+
+def test_item_from_done_copies_the_spread():
+    d = _doc(); d["after"]["spread_pct"] = 2.5; d["after"]["decode_spread"] = {"n": 2, "min": 1, "max": 2}
+    item = {}; ab.item_from_done(item, d)
+    assert item["spread_pct"] == 2.5 and item["decode_spread"]["n"] == 2
+    item = {}; ab.item_from_done(item, _doc())
+    assert item["spread_pct"] is None and item["decode_spread"] is None
 
 
 def test_item_from_done_copies_the_headline_fields():

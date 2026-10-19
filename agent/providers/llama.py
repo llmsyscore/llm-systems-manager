@@ -3448,7 +3448,7 @@ class _AutotuneBackend:
                                   start_fitt=start_fitt, max_iters=max_iters)
 
     def load(self, args, ctx, measure):
-        hold = (lambda: self._stick(measure)) if measure else None
+        hold = (lambda: _at.repeat_stick(lambda: self._stick(measure))) if measure else None
         res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold)
         loaded, oom = bool(res.get("model_loaded")), bool(res.get("oom"))
         if res.get("build"):

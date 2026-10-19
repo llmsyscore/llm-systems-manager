@@ -138,6 +138,9 @@ def should_apply(doc: dict) -> tuple[bool, str]:
         return False, "slower than the live config"
     if not any(c.get("selected") for c in (doc.get("changes") or []) if isinstance(c, dict)):
         return False, "no change recommended"
+    spread = max((doc.get("before") or {}).get("spread_pct") or 0, (doc.get("after") or {}).get("spread_pct") or 0)
+    if g is not None and g < spread:
+        return False, "gain is within the run-to-run spread"
     return True, ""
 
 
@@ -148,6 +151,8 @@ def item_from_done(item: dict, doc: dict) -> None:
     item["gain_pct"] = _gain(doc)
     item["ctx"] = after.get("ctx")
     item["wh_per_ktok"] = after.get("wh_per_ktok")
+    item["spread_pct"] = after.get("spread_pct")
+    item["decode_spread"] = after.get("decode_spread")
     item["verify_ok"] = (doc.get("verify") or {}).get("ok")
 
 

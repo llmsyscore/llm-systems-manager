@@ -102,10 +102,14 @@
     if (!lastTps || lastTps <= 0) return null;
     return Math.round(cfg.levels.length * cfg.samples * cfg.categories * cfg.osl / lastTps);
   }
-  function deltaText(cur, base, lowerIsBetter) {
+  function deltaText(cur, base, lowerIsBetter, baseSpread) {
     if (cur == null || base == null || !base) return { text: 'no baseline', cls: 'flat' };
     const pct = Math.round((cur - base) / base * 100);
     const sign = pct > 0 ? '+' : (pct < 0 ? '−' : '');
+    const sp = baseSpread;
+    if (sp && typeof sp.min === 'number' && typeof sp.max === 'number' && cur >= sp.min && cur <= sp.max) {
+      return { text: `${sign}${Math.abs(pct)} % · within baseline spread`, cls: 'flat' };
+    }
     const text = `${sign}${Math.abs(pct)} % vs baseline`;
     if (Math.abs(pct) < 3) return { text, cls: 'flat' };
     const good = lowerIsBetter ? pct < 0 : pct > 0;
@@ -119,6 +123,13 @@
     levels.forEach(l => { if (l.all && l.all.pred_tps >= 0.7 * first) k = Math.max(k, l.concurrency); });
     return k;
   }
+  // Range text for a spread ("" when absent or spread.js is not loaded); 0 decimals at ≥ 100, else 1.
+  function rng(sp) {
+    if (!window.SPREAD || !sp) return '';
+    const hi = (sp.n >= 8 && sp.p75 != null) ? sp.p75 : sp.max;
+    return window.SPREAD.rangeText(sp, hi >= 100 ? 0 : 1);
+  }
+  function rngSmall(sp) { const t = rng(sp); return t ? ` <small class="rng">${esc(t)}</small>` : ''; }
   function fmt(n, d = 1) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d }); }
   function catsSelected() {
     const on = [...document.querySelectorAll('#blCats .bl-chip.on')].map(c => c.dataset.cat);
@@ -244,7 +255,7 @@
     const sel = $('blBaseline');
     const pinned = _runs.find(r => r.baseline);
     sel.innerHTML = `<option value=""${pinned ? '' : ' selected'}>none</option>`
-      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(fmtTs(r.ts))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${r.baseline ? ' · baseline' : ''}</option>`).join('');
+      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(fmtTs(r.ts))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${rng(r.gen_spread) ? ` (${esc(rng(r.gen_spread))})` : ''}${r.baseline ? ' · baseline' : ''}</option>`).join('');
     if (_runs.length && _runs[0].gen_tps) _lastTps = _runs[0].gen_tps;
     updateEstimate();
   }
@@ -420,14 +431,17 @@
     const shape = chartShape(cur);
     drawChart(shape, cur, pend);
     const first = cur[0] && cur[0].all, b0 = baselineAt(1) && baselineAt(1).all;
+    const fsp = (first && first.spread) || {}, bsp = (b0 && b0.spread) || {};
+    const decR = rng(fsp.pred_tps), preR = rng(fsp.prompt_tps);
     const tiles = first ? [
-      ['decode · 1 request', fmt(first.pred_tps), 't/s', deltaText(first.pred_tps, b0 && b0.pred_tps), true],
-      ['prefill', fmt(first.prompt_tps, 0), 't/s', deltaText(first.prompt_tps, b0 && b0.prompt_tps)],
+      ['decode · 1 request', fmt(first.pred_tps), 't/s', deltaText(first.pred_tps, b0 && b0.pred_tps, false, bsp.pred_tps), true,
+        decR ? `${decR} t/s · ${fsp.pred_tps.n} requests` : ''],
+      ['prefill', fmt(first.prompt_tps, 0), 't/s', deltaText(first.prompt_tps, b0 && b0.prompt_tps, false, bsp.prompt_tps), false, preR ? `${preR} t/s` : ''],
       ['latency · mean', fmt(first.latency_s, 1), 's', deltaText(first.latency_s, b0 && b0.latency_s, true)],
       ['draft accept rate', first.accept_rate == null ? '—' : Math.round(first.accept_rate * 100), first.accept_rate == null ? '' : '%',
         first.accept_rate == null ? { text: 'no draft', cls: 'flat' } : (b0 && b0.accept_rate != null ? deltaText(first.accept_rate, b0.accept_rate) : { text: 'baseline had no draft', cls: 'flat' })],
     ] : [];
-    $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div></div>`).join('');
+    $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi, r]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div>${r ? `<div class="r">${esc(r)}</div>` : ''}</div>`).join('');
     const seg = $('blLevelSeg');
     seg.innerHTML = cur.map(l => `<button type="button" data-level="${esc(l.concurrency)}" class="${l.concurrency === (_activeLevel || (cur[0] && cur[0].concurrency)) ? 'on' : ''}">${esc(l.concurrency)}</button>`).join('');
     seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _activeLevel = parseInt(b.dataset.level, 10); redraw(); }));
@@ -509,7 +523,7 @@
     if (!lv) { host.innerHTML = '<div class="bl-hint" style="padding:12px">No results yet.</div>'; return; }
     const bl = baselineAt(conc); const brow = c => ((bl && bl.rows) || []).find(r => r.category === c);
     const row = (r, tot) => { const b = tot ? (bl && bl.all) : brow(r.category); const cur = tot ? r.pred_tps : r.avg_pred_t_s; const base = b && (tot ? b.pred_tps : b.avg_pred_t_s); const d = deltaText(cur, base);
-      return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${esc(tot ? r.requests : r.requests)}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span></td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
+      return `<tr${tot ? ' class="tot"' : ''}><td>${esc(tot ? 'all' : r.category)}</td><td class="num">${esc(tot ? r.requests : r.requests)}</td><td class="num">${fmt(tot ? r.prompt_tps : r.avg_prompt_t_s, 0)}</td><td class="num">${fmt(cur)}<span class="dlt ${d.cls}">${base ? esc(d.text.replace(' vs baseline', '')) : ''}</span>${rngSmall((r.spread || {}).pred_tps)}</td><td class="num">${fmt(tot ? r.latency_s : r.avg_latency, 1)} s</td><td class="num">${(tot ? r.accept_rate : r.accept_rate) == null ? '—' : Math.round((tot ? r.accept_rate : r.accept_rate) * 100) + ' %'}</td></tr>`; };
     host.innerHTML = `<table class="bl-rt"><thead><tr><th>Category</th><th class="num">samples</th><th class="num">prompt t/s</th><th class="num">decode t/s</th><th class="num">latency</th><th class="num">accept</th></tr></thead><tbody>${lv.rows.map(r => row(r, false)).join('')}${row(lv.all, true)}</tbody></table>`;
   }
   // Ranks done hosts by decode t/s desc; the rest keep their original order untagged.
@@ -596,7 +610,7 @@
         `<td>${h.rank != null ? `<span class="bl-rank">${h.rank}</span>` : ''}</td>` +
         `<td>${esc(h.hostname)}</td>` +
         `<td><span${title}>${esc(h.status)}</span>${h.matrix_ignored ? ' ⚠' : ''}</td>` +
-        `<td class="num">${fmt(h.gen_tps)}${bar}</td>` +
+        `<td class="num">${fmt(h.gen_tps)}${rngSmall(h.gen_spread)}${bar}</td>` +
         `<td class="num">${fmt(h.agg_max_tps)}</td>` +
         `<td class="num">${fmt(h.latency_s, 1)}</td>` +
         `<td class="num">${h.accept_rate == null ? '—' : Math.round(h.accept_rate * 100) + ' %'}</td>` +
@@ -1175,6 +1189,7 @@
     const row = b => {
       const st = baseStatus(b), lc = b.last_check;
       const delta = lc && lc.delta_pct != null ? `${lc.delta_pct < 0 ? '−' : '+'}${Math.abs(Math.round(lc.delta_pct))} %` : '—';
+      const inRange = lc && lc.spread_floor != null && lc.status === 'ok' && lc.delta_pct < 0 ? esc(' · within baseline range') : '';
       const dcls = lc && lc.status === 'regressed' ? 'down' : (lc && lc.delta_pct >= 3 ? 'up' : (lc && lc.delta_pct != null ? 'flat' : ''));
       const pf = b.promoted_from;
       const build = b.llama_build ? esc(b.llama_build) + (b.build_changed ? ' <span class="bl-bnote">changed</span>' : '') : '—';
@@ -1183,8 +1198,8 @@
       const title = b.loaded ? '' : (b.online ? ' title="model not loaded on the host"' : ' title="host offline"');
       const summary = baseConfigSummary(b.config);
       return `<tr data-run="${esc(b.run_id)}"><td>${esc(String(b.model_id || '').split('/').pop())}${summary ? ` <small>${esc(summary)}</small>` : ''}</td><td${title}>${esc(b.hostname)}${b.loaded ? '' : ' ○'}</td>` +
-        `<td class="num">${fmt(b.gen_tps)} t/s <small>${esc(fmtTs(b.ts))}</small></td><td>${build}${was}</td><td>${last}</td>` +
-        `<td class="num"><span class="dlt ${dcls}">${delta}</span></td><td><span class="bl-bstat ${esc(st)}">${esc(st)}</span></td>` +
+        `<td class="num">${fmt(b.gen_tps)} t/s${rngSmall(b.gen_spread)} <small>${esc(fmtTs(b.ts))}</small></td><td>${build}${was}</td><td>${last}</td>` +
+        `<td class="num"><span class="dlt ${dcls}">${delta}${inRange}</span></td><td><span class="bl-bstat ${esc(st)}">${esc(st)}</span></td>` +
         `<td><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button"${b.running || b.pending ? ' disabled' : ''}>Re-check</button></td></tr>`;
     };
     table.innerHTML = `<table class="bl-rt"><thead><tr><th>Model</th><th>Host</th><th class="num">Baseline</th><th>llama.cpp</th><th>Last check</th><th class="num">Δ decode</th><th>Status</th><th></th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table>`;

@@ -235,3 +235,26 @@ def test_level_summary_reports_first_error(bl):
     a = bl.level_summary(payload, 2.0)["all"]
     assert a["failed"] == 2 and a["first_error"] == "Read timed out. (read timeout=60.0)"
     assert bl.level_summary({"summary": [], "results": [{"ok": True}]}, 1.0)["all"]["first_error"] is None
+
+
+def test_level_summary_keeps_samples_and_spread(bl):
+    results = [{"ok": True, "category": "coding", "completion_tokens": 10, "latency_s": 1.0, "predicted_per_second": 100.04, "prompt_per_second": 2000.0},
+               {"ok": True, "category": "coding", "completion_tokens": 10, "latency_s": 2.0, "predicted_per_second": 110.0, "prompt_per_second": 2200.0},
+               {"ok": True, "category": "math", "completion_tokens": 10, "latency_s": 3.0, "predicted_per_second": 90.0, "prompt_per_second": None},
+               {"ok": False, "category": "math", "completion_tokens": 0, "latency_s": 0.0, "predicted_per_second": 500.0, "error": "boom"}]
+    summary = [{"category": "coding", "requests": 2, "avg_pred_t_s": 105.0}, {"category": "math", "requests": 1, "avg_pred_t_s": 90.0},
+               {"category": "overall", "requests": 3, "failed": 1, "avg_pred_t_s": 100.0, "avg_prompt_t_s": 2100.0, "avg_latency": 2.0}]
+    out = bl.level_summary({"summary": summary, "results": results}, wall_s=6.0)
+    a = out["all"]
+    assert a["samples"] == {"pred_tps": [100.0, 110.0, 90.0], "prompt_tps": [2000.0, 2200.0]}
+    assert a["spread"]["pred_tps"] == {"n": 3, "min": 90.0, "p25": 95.0, "p50": 100.0, "p75": 105.0, "max": 110.0}
+    assert a["spread"]["prompt_tps"]["n"] == 2 and a["spread"]["latency_s"]["max"] == 3.0
+    rows = {r["category"]: r for r in out["rows"]}
+    assert rows["coding"]["spread"]["pred_tps"]["min"] == 100.0 and rows["coding"]["spread"]["pred_tps"]["max"] == 110.0
+    assert rows["math"]["spread"]["pred_tps"] is None
+
+
+def test_level_summary_spread_absent_without_results(bl):
+    out = bl.level_summary({"summary": [{"category": "overall", "requests": 0}], "results": []}, wall_s=0.0)
+    assert out["all"]["samples"] == {"pred_tps": [], "prompt_tps": []}
+    assert out["all"]["spread"] == {"pred_tps": None, "prompt_tps": None, "latency_s": None}

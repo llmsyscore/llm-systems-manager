@@ -318,6 +318,8 @@ Lists stored runs for the selected agent (newest first, baselines always include
 
 **Query:** `model_id` (optional filter), `agent_id` (optional; defaults to the selected llama agent)
 
+`gen_spread` — the run's decode-speed spread `{n, min, p25, p50, p75, max}`, or null for runs stored before it was recorded.
+
 ---
 
 ### `DELETE /api/benchmark/live/runs`
@@ -347,6 +349,8 @@ Newest successful live run per model for one agent — the source of the **Live 
 
 **Returns:** `{"ok": true, "agent_id": "...", "models": {"<model_id>": {"run_id", "ts", "bench", "gen_tps", "ppt_tps", "latency_s", "wh_per_ktok", "hostname"}}}`
 
+`gen_spread` — the run's decode-speed spread `{n, min, p25, p50, p75, max}`, or null for runs stored before it was recorded.
+
 ---
 
 ### `GET /api/benchmark/live/speed`
@@ -355,6 +359,8 @@ Newest successful live run per **agent** for one model, sorted by decode speed �
 **Query:** `model_id` (required)
 
 **Returns:** `{"ok": true, "model_id": "...", "hosts": [{"agent_id", "hostname", "run_id", "ts", "bench", "gen_tps", "ppt_tps", "latency_s", "accept_rate", "wh_per_ktok", "llama_build"}]}`
+
+`gen_spread` — the run's decode-speed spread `{n, min, p25, p50, p75, max}`, or null for runs stored before it was recorded.
 
 ---
 

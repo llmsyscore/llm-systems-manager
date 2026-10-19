@@ -122,3 +122,14 @@ def test_live_section_matrix_uses_each_cells_own_lowest_concurrency():
     cells = rc.live_section(meta, doc)["matrix"]["cells"]
     assert cells == [{"bench": "throughput_1k", "osl": 256, "pred_tps": 64.0},
                      {"bench": "throughput_32k", "osl": 256, "pred_tps": 50.0}]
+
+
+def test_live_section_and_card_carry_spread():
+    doc = {"levels": [{"concurrency": 1, "all": {"pred_tps": 50.0, "prompt_tps": 400.0,
+                      "spread": {"pred_tps": {"n": 8, "min": 48.0, "p25": 49.0, "p50": 50.0, "p75": 51.0, "max": 52.0},
+                                 "prompt_tps": None, "latency_s": None}}}], "config": {}}
+    live = rc.live_section({"run_id": "r", "ts": "t"}, doc)
+    assert live["spread"]["decode_tps"]["max"] == 52.0 and live["spread"]["prefill_tps"] is None
+    card = rc.card_from_live({"run_id": "r", "ts": "t", "agent_id": "a", "provider": "llama", "model_id": "m"}, doc, 0.2, {"gpus": [], "avg_watts": None, "source": None})
+    assert card["result"]["spread"] == {"gen_tps": live["spread"]["decode_tps"], "prefill_tps": None}
+    assert rc.live_section({"run_id": "r", "ts": "t"}, {"levels": [{"concurrency": 1, "all": {"pred_tps": 50.0}}]})["spread"] == {"decode_tps": None, "prefill_tps": None}

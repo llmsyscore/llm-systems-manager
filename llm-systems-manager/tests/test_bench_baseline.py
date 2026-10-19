@@ -14,27 +14,32 @@ MODEL = "org/m:Q4"
 PIN = "run-pin"
 
 
-def _doc(run_id, pred, ok=True):
-    return {"run_id": run_id, "model_id": MODEL, "ok": ok,
-            "config": {"bench": "throughput_1k", "osl": 1024, "concurrency": [1, 2]},
-            "levels": [{"level": 1, "concurrency": 1, "wall_s": 5.0, "rows": [],
-                        "all": {"pred_tps": pred, "prompt_tps": 400.0, "latency_s": 10.0, "accept_rate": None,
-                                "agg_pred_tps": pred, "completion_tokens": 100}}]}
+def _doc(run_id, pred, ok=True, spread=None):
+    doc = {"run_id": run_id, "model_id": MODEL, "ok": ok,
+           "config": {"bench": "throughput_1k", "osl": 1024, "concurrency": [1, 2]},
+           "levels": [{"level": 1, "concurrency": 1, "wall_s": 5.0, "rows": [],
+                       "all": {"pred_tps": pred, "prompt_tps": 400.0, "latency_s": 10.0, "accept_rate": None,
+                               "agg_pred_tps": pred, "completion_tokens": 100}}]}
+    if spread is not None:
+        doc["levels"][0]["all"]["spread"] = {"pred_tps": spread}
+    return doc
 
 
-def _seed(db_path, run_id=PIN, pred=50.0, baseline=1, ts="2026-09-01T00:00:00+00:00"):
+def _seed(db_path, run_id=PIN, pred=50.0, baseline=1, ts="2026-09-01T00:00:00+00:00", spread=None):
     conn = sqlite3.connect(db_path)
     bl.init_table(conn)
-    doc = _doc(run_id, pred)
-    conn.execute("INSERT OR IGNORE INTO bench_live_runs (run_id, model_id, agent_id, ts, ok, baseline, gen_tps, config_json, result_json)"
-                 " VALUES (?,?,?,?,1,?,?,?,?)", (run_id, MODEL, AID, ts, baseline, pred, json.dumps(doc["config"]), json.dumps(doc)))
+    doc = _doc(run_id, pred, spread=spread)
+    conn.execute("INSERT OR IGNORE INTO bench_live_runs (run_id, model_id, agent_id, ts, ok, baseline, gen_tps, config_json, result_json,"
+                 " gen_spread_json) VALUES (?,?,?,?,1,?,?,?,?,?)",
+                 (run_id, MODEL, AID, ts, baseline, pred, json.dumps(doc["config"]), json.dumps(doc),
+                  json.dumps(spread) if spread is not None else None))
     conn.commit(); conn.close()
 
 
 class Env:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, spread=None):
         self.db = str(tmp_path / "t.db")
-        _seed(self.db)
+        _seed(self.db, spread=spread)
         self.cfg = {"enabled": True, "nightly_at": "03:00", "on_build_change": True, "regression_pct": 15.0}
         self.hosts = [{"agent_id": AID, "hostname": "alpha", "online": True, "model": MODEL, "state": "awake"}]
         self.build = "b100-aaa"
@@ -562,3 +567,32 @@ def test_promoted_pin_counts_the_build_check_as_its_last_auto_check(tmp_path):
     e.w.tick()
     assert len(e.started) == 2
     assert e.w.snapshot()["baselines"][0]["pending"] is None
+
+
+def test_severity_floor_suppresses_drops_inside_the_range():
+    assert bb.severity(-20.0, 15.0, floor=38.0, cur=40.0) is None
+    assert bb.severity(-20.0, 15.0, floor=41.0, cur=40.0) == "warning"
+    assert bb.severity(-20.0, 15.0, floor=None, cur=40.0) == "warning"
+    assert bb.severity(None, 15.0, floor=38.0, cur=None) is None
+
+
+def test_drop_inside_baseline_spread_is_ok(tmp_path):
+    e = Env(tmp_path, spread={"n": 8, "min": 39.0, "p25": 45.0, "p50": 50.0, "p75": 55.0, "max": 60.0})
+    e.w.tick(); e.store("run-1", 40.0); e.w.tick()
+    row = e.w.snapshot()["baselines"][0]
+    assert row["gen_spread"]["min"] == 39.0
+    assert row["last_check"]["status"] == "ok" and row["last_check"]["delta_pct"] == -20.0 and row["last_check"]["spread_floor"] == 39.0
+    assert e.alerts == [] and sorted(p["metric_name"] for p in e.points) == ["baseline_delta_pct:m:Q4", "decode_tps:m:Q4"]
+
+
+def test_drop_below_baseline_spread_alerts_with_the_range(tmp_path):
+    e = Env(tmp_path, spread={"n": 8, "min": 45.0, "p25": 47.0, "p50": 50.0, "p75": 53.0, "max": 55.0})
+    e.w.tick(); e.store("run-1", 40.0); e.w.tick()
+    assert e.w.snapshot()["baselines"][0]["last_check"]["status"] == "regressed"
+    assert len(e.alerts) == 1 and "baseline range 45–55 t/s" in e.alerts[0]["message"]
+
+
+def test_failed_run_with_floor_records_failed(tmp_path):
+    e = Env(tmp_path, spread={"n": 2, "min": 45.0, "p25": 47.0, "p50": 50.0, "p75": 53.0, "max": 55.0})
+    e.w.tick(); e.store("run-1", None, ok=False); e.w.tick()
+    assert e.w.snapshot()["baselines"][0]["last_check"]["status"] == "failed" and e.alerts == []

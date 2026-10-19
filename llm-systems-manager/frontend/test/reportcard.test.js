@@ -132,6 +132,24 @@ describe('live block (#885)', () => {
   });
 });
 
+describe('spread ranges (#1301)', () => {
+  it('shows the range under the hero and in the cells when spread is present', () => {
+    const sp = { gen_tps: { n: 10, min: 40, p25: 42, p50: 43.7, p75: 45, max: 48 },
+                 prefill_tps: { n: 10, min: 1100, p25: 1180, p50: 1219, p75: 1250, max: 1300 },
+                 ttft_s: { n: 10, min: 0.40, p25: 0.41, p50: 0.42, p75: 0.44, max: 0.5 } };
+    const card = RC.buildCard({ ...RESULT, spread: sp });
+    expect(card.querySelector('.rc-hero-range').textContent).toBe('42.0–45.0 tok/s · 10 reps');
+    const ranges = [...card.querySelectorAll('.rc-range')].map(e => e.textContent);
+    expect(ranges).toEqual(['1180–1250', '410–440']);
+    expect(RC.buildCard(RESULT).querySelector('.rc-hero-range')).toBeNull();
+    expect(RC.buildCard(RESULT).querySelectorAll('.rc-range').length).toBe(0);
+  });
+  it('liveSummary appends the decode range', () => {
+    const live = { levels: [{ concurrency: 1, pred_tps: 50 }], spread: { decode_tps: { n: 8, min: 48, p25: 49, p50: 50, p75: 51, max: 52 } } };
+    expect(RC.liveSummary(live).loadText).toBe('under load · 1: 50.0 (49.0–51.0) t/s');
+  });
+});
+
 describe('trendSeries', () => {
   it('maps cards to chart arrays in time order', () => {
     const s = RC.trendSeries([

@@ -249,7 +249,8 @@ def test_backend_load_writes_args_restarts_and_sticks(mods, ctx, monkeypatch):
     assert {"flag": "--max-model-len", "value": "4096", "bool": False} in args
     assert {"flag": "--kv-cache-dtype", "value": "fp8", "bool": False} in args
     assert {"flag": "--no-enable-prefix-caching", "value": None, "bool": True} in args
-    assert sticks == [("http://127.0.0.1:1", "org/model-8b", "run1", 1, {"concurrency": 2, "limit": 4})]
+    assert sticks == [("http://127.0.0.1:1", "org/model-8b", "run1", n, {"concurrency": 2, "limit": 4}) for n in (1, 2)]
+    assert len(res["stick"]["passes"]) == 2
     lines = [r["event"]["text"] for r in llama._autotune_replay.records_after_seq(0) if r["event"].get("type") == "line"]
     assert any("[autotune] restart with" in t and "--kv-cache-dtype fp8" in t for t in lines)
 
