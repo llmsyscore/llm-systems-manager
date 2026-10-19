@@ -64,8 +64,7 @@ jobs:
       # up front (the rest of the runner image already has git/curl/python3).
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -147,8 +146,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash head/tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -228,8 +226,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -295,8 +292,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -364,8 +360,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -464,8 +459,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash head/tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -583,9 +577,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install prerequisites
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends jq rsync wget gnupg ca-certificates openssl
+        run: sudo bash tools/installer/ci-prereqs.sh jq rsync wget gnupg ca-certificates openssl
 
       - name: Install InfluxDB only (mode 6)
         run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
@@ -644,8 +636,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
@@ -701,8 +692,7 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          sudo bash tools/installer/ci-prereqs.sh \
             jq rsync wget gnupg ca-certificates openssl sqlite3 \
             python3-venv python3-pip python3-dev build-essential
 
