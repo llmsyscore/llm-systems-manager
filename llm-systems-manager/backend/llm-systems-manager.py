@@ -2466,6 +2466,31 @@ def _cond_size(d) -> int:
     return len(json.dumps(d, separators=(",", ":")))
 
 
+_SECRET_FLAGS = ("--api-key", "--api-key-file", "--hf-token", "-hft", "--ssl-key-file", "--admin-key")
+_SECRET_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:token|secret|key|password|passwd)[A-Za-z0-9_]*)=.+$", re.IGNORECASE)
+
+
+def _redact_cmd(cmd) -> "str | None":
+    """Server command line with the value after any secret-bearing flag, or in KEY=VALUE tokens, replaced by ***."""
+    if not isinstance(cmd, str):
+        return None
+    out, hide = [], False
+    for tok in cmd.split(" "):
+        if hide and tok:
+            out.append("***")
+            hide = False
+            continue
+        flag, eq, _val = tok.partition("=")
+        if tok in _SECRET_FLAGS:
+            out.append(tok)
+            hide = True
+        elif (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
+            out.append(f"{flag}=***")
+        else:
+            out.append(tok)
+    return " ".join(out)
+
+
 def _conditions_clean(raw) -> "dict | None":
     """Keep the known run-conditions keys; trim optional parts to fit _COND_MAX_BYTES."""
     if not isinstance(raw, dict):
@@ -2473,6 +2498,8 @@ def _conditions_clean(raw) -> "dict | None":
     out = {k: raw[k] for k in _COND_KEYS if k in raw}
     if not out:
         return None
+    if isinstance(out.get("backend"), dict) and "server_cmd" in out["backend"]:
+        out["backend"] = {**out["backend"], "server_cmd": _redact_cmd(out["backend"].get("server_cmd"))}
     try:
         if _cond_size(out) > _COND_MAX_BYTES:
             out.pop("sampling", None)

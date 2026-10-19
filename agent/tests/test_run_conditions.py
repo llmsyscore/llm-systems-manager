@@ -229,3 +229,13 @@ def test_samples_without_source_use_a_cheap_system_sample(rc, monkeypatch):
     assert rc.samples() == (None, {"cpu_governor": "performance", "ram": {"available_bytes": 456}})
     rc.set_sample_source(lambda: None)
     assert rc.samples() == (None, {"cpu_governor": "performance", "ram": {"available_bytes": 456}})
+
+
+def test_redact_cmd_hides_secret_flag_values_and_kv_tokens(rc):
+    cmd = "llama-server -m x.gguf --api-key s3cret --hf-token=tok -hft t2 --ssl-key-file /k.pem --port 8080 HF_TOKEN=abc MY_PASSWORD=p"
+    assert rc.redact_cmd(cmd) == ("llama-server -m x.gguf --api-key *** --hf-token=*** -hft *** --ssl-key-file *** "
+                                  "--port 8080 HF_TOKEN=*** MY_PASSWORD=***")
+    assert rc.redact_cmd("vllm serve org/m --max-model-len 4096") == "vllm serve org/m --max-model-len 4096"
+    assert rc.redact_cmd(None) is None
+    c = rc.start({"server_cmd": "llama-server --api-key abc"}, None, None)
+    assert c["backend"]["server_cmd"] == "llama-server --api-key ***"

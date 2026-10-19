@@ -313,3 +313,11 @@ def test_extra_json_whitelist_keeps_cleaned_conditions():
     assert out == {"wh_per_ktok": 1.5, "energy_wh": None, "energy_source": None, "conditions": {"schema": 1}}
     assert manager_mod._extra_json_whitelist({"conditions": {"schema": 1}})["conditions"] == {"schema": 1}
     assert manager_mod._extra_json_whitelist({"conditions": "no"}) is None
+
+
+def test_conditions_clean_redacts_secret_flags_in_server_cmd():
+    cond = {"schema": 1, "backend": {"name": "llama.cpp", "server_cmd": "llama-server --api-key s3cret --hf-token=tok HF_TOKEN=x --port 8080"}}
+    out = manager_mod._conditions_clean(cond)
+    assert out["backend"]["server_cmd"] == "llama-server --api-key *** --hf-token=*** HF_TOKEN=*** --port 8080"
+    assert cond["backend"]["server_cmd"].count("s3cret") == 1
+    assert manager_mod._conditions_clean({"schema": 1, "backend": {"name": "x"}})["backend"] == {"name": "x"}

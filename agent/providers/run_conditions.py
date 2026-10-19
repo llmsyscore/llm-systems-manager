@@ -20,6 +20,29 @@ log = logging.getLogger("llm-systems-agent.providers.run_conditions")
 
 SCHEMA = 1
 SERVER_CMD_MAX = 2000
+_SECRET_FLAGS = ("--api-key", "--api-key-file", "--hf-token", "-hft", "--ssl-key-file", "--admin-key")
+_SECRET_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:token|secret|key|password|passwd)[A-Za-z0-9_]*)=.+$", re.IGNORECASE)
+
+
+def redact_cmd(cmd: "str | None") -> "str | None":
+    """Server command line with the value after any secret-bearing flag, or in KEY=VALUE tokens, replaced by ***."""
+    if not isinstance(cmd, str):
+        return cmd
+    out, hide = [], False
+    for tok in cmd.split(" "):
+        if hide and tok:
+            out.append("***")
+            hide = False
+            continue
+        flag, eq, _val = tok.partition("=")
+        if tok in _SECRET_FLAGS:
+            out.append(tok)
+            hide = True
+        elif (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
+            out.append(f"{flag}=***")
+        else:
+            out.append(tok)
+    return " ".join(out)
 COND_MAX_BYTES = 6144
 
 _OS_RELEASE = Path("/etc/os-release")
@@ -262,7 +285,7 @@ def start(facts: dict, gpu_sample: "dict | None" = None, sys_sample: "dict | Non
                      "driver": facts.get("driver") or _driver_of(gpu_sample), **host},
         "os": os_info,
         "backend": {"name": facts.get("backend"), "build": facts.get("backend_build"),
-                    "server_cmd": facts.get("server_cmd")},
+                    "server_cmd": redact_cmd(facts.get("server_cmd"))},
         "model": {"id": facts.get("model_id"), **ident, "quantization": facts.get("quantization")},
         "context": facts.get("context"),
         "sampling": facts.get("sampling"),
