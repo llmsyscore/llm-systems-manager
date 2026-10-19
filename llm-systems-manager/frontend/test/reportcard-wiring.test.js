@@ -2,7 +2,7 @@
 // Markup/CSS are driven through real jsdom DOM + CSSOM APIs, not regexed text.
 import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { srcFile, runHarness } from './helpers/harness.js';
+import { srcFile, runHarness, flush } from './helpers/harness.js';
 
 const html = srcFile('index.html');
 const css = srcFile('css/base.css');
@@ -25,6 +25,12 @@ function mountPanel() {
 // Same, plus the real report-card.js executed so its functions are callable.
 function mountPanelWithReportCard() {
   return runHarness({ sources: [rcJs], bodyHtml: panelHtml });
+}
+
+// Real panel + report-card.js with the libs the compare picker renders through (#1302).
+const LIBS = ['js/lib/modelcards.js', 'js/lib/conditions.js', 'js/lib/spread.js', 'js/lib/reportcard.js', 'js/lib/toolcards.js'].map(srcFile);
+function mountPanelWithCompare(bootstrap) {
+  return runHarness({ sources: [...LIBS, rcJs], bodyHtml: panelHtml, bootstrap });
 }
 
 const baseRules = [...new JSDOM(`<!doctype html><head><style>${css}</style></head><body></body></html>`)
@@ -256,5 +262,68 @@ describe('report card panel', () => {
     expect(hasScript('js/lib/reportcard.js')).toBe(true);
     expect(hasScript('js/report-card.js')).toBe(true);
     expect(fullDoc.querySelector('link[rel="stylesheet"][href*="css/reportcard.css"]')).toBeTruthy();
+  });
+
+  describe('compare picker (#1302)', () => {
+    const COND = { hardware: { gpu: '7900 XTX' }, backend: { name: 'llama.cpp', build: 'b1' } };
+    const older = { ts: 1760000000, provider: 'llama', mode: 'standard', preset_version: 'preset_v1',
+      result: { model: 'org/m', gen_tps: 41.25, prefill_tps: 1100, ttft_s: 0.5, conditions: COND } };
+    const current = { ts: 1760800000, provider: 'llama', mode: 'standard', preset_version: 'preset_v1',
+      result: { model: 'org/m', gen_tps: 43.7, prefill_tps: 1219, ttft_s: 0.42,
+                conditions: { ...COND, backend: { name: 'llama.cpp', build: 'b2' } } } };
+    const boot = (cards) => `
+      window.__fetches = [];
+      window.fetch = (url) => { window.__fetches.push(url);
+        const body = url.indexOf('/api/reportcard/history') === 0 ? { cards: ${JSON.stringify(cards)} } : {};
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(body) }); };
+      const a = document.getElementById('rcAgent'); a.innerHTML = '<option value="A1">A1</option>'; a.value = 'A1';`;
+
+    it('fills the compare picker from history and renders the table on change', async () => {
+      const win = mountPanelWithCompare(boot([older, current]));
+      win.rcRenderCard(current);
+      await flush(); await flush();
+      const sel = win.document.getElementById('rcCompare');
+      expect(win.__fetches.some(u => u.startsWith('/api/reportcard/history?agent=A1&provider=llama&model=org%2Fm'))).toBe(true);
+      expect([...sel.options].map(o => o.value)).toEqual(['', String(older.ts)]);
+      expect(sel.options[1].textContent).toBe('2025-10-09 · 41.3 tok/s');
+      expect(sel.disabled).toBe(false);
+      sel.value = String(older.ts); sel.dispatchEvent(new win.Event('change'));
+      const host = win.document.getElementById('rcCompareHost');
+      expect(host.textContent).toContain('Compare · Report Card');
+      expect(host.textContent).toContain('Conditions');
+      sel.value = ''; sel.dispatchEvent(new win.Event('change'));
+      expect(host.innerHTML).toBe('');
+    });
+
+    it('disables the picker with "no earlier runs" when history holds only this card', async () => {
+      const win = mountPanelWithCompare(boot([current]));
+      win.rcRenderCard(current);
+      await flush(); await flush();
+      const sel = win.document.getElementById('rcCompare');
+      expect(sel.disabled).toBe(true);
+      expect([...sel.options].map(o => o.textContent)).toEqual(['no earlier runs']);
+    });
+
+    it('clears the comparison when a new card renders', async () => {
+      const win = mountPanelWithCompare(boot([older, current]));
+      win.rcRenderCard(current);
+      await flush(); await flush();
+      const sel = win.document.getElementById('rcCompare');
+      sel.value = String(older.ts); sel.dispatchEvent(new win.Event('change'));
+      expect(win.document.getElementById('rcCompareHost').innerHTML).not.toBe('');
+      win.rcRenderCard(older);
+      expect(win.document.getElementById('rcCompareHost').innerHTML).toBe('');
+    });
+
+    it('sits inside the actions row and hides the diff Clear button', () => {
+      const win = mountPanel(); const doc = win.document;
+      expect(doc.getElementById('rcActions').contains(doc.getElementById('rcCompare'))).toBe(true);
+      expect(doc.getElementById('rcCompare').classList.contains('bl-sel')).toBe(true);
+      expect(doc.getElementById('rcCompareHost').classList.contains('rc-compare')).toBe(true);
+      const host = doc.getElementById('rcCompareHost');
+      expect(doc.getElementById('rcActions').compareDocumentPosition(host) & win.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(host.compareDocumentPosition(doc.getElementById('rcTrends')) & win.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(rcCss).toMatch(/\.rc-compare \[data-diff="clear"\]\s*\{\s*display:\s*none/);
+    });
   });
 });

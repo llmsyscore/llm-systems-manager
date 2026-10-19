@@ -11,6 +11,8 @@ import time as _time
 import uuid as _uuid
 from pathlib import Path
 
+from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
+
 log = logging.getLogger("llm-systems-manager.report_card")
 
 # ── Reference preset ─────────────────────────────────────────────────
@@ -165,6 +167,18 @@ def aggregate_gpus(gpus: "list[dict]") -> dict:
             "vram_total_mb": sum(g.get("vram_total_mb") or 0 for g in gpus),
             "vram_used_mb": sum(g.get("vram_used_mb") or 0 for g in gpus),
             "power_w": sum(powers) if powers else None}
+
+
+def merge_conditions(start: "dict | None", end: "dict | None") -> "dict | None":
+    """Start-of-run conditions plus the end call's timestamp and snapshot."""
+    if start is None or end is None:
+        only = start if start is not None else end
+        return dict(only) if only is not None else None
+    merged = dict(start)
+    merged["captured_end"] = end.get("captured_start")
+    merged["snapshot"] = {**(start.get("snapshot") or {}),
+                          "end": (end.get("snapshot") or {}).get("start")}
+    return merged
 
 
 # ── Bench driver ─────────────────────────────────────────────────────
@@ -518,22 +532,32 @@ def ensure_ready(provider: str, agent_id: str, model_key: str,
     return {"status": "needs_download", "model": target, **base}
 
 
-def _agent_json(agent: dict, method: str, path: str, timeout=15, **kw):
-    """Call an agent endpoint with its machine token; None on any failure."""
+def _agent_json(agent: dict, method: str, path: str, timeout=15, quiet=False, **kw):
+    """Call an agent endpoint with its machine token; None on any failure (logged at debug when quiet)."""
     import agent_registry
     r, _tried, err = agent_registry.agent_request(
         method, agent, path,
         headers={"Authorization": f"Bearer {agent.get('token') or ''}"},
         timeout=timeout, **kw)
     if r is None or not r.ok:
-        log.warning("report card: %s %s failed on agent %s (%s)", method, path,
-                    (agent.get("agent_id") or "?")[:8],
-                    err or getattr(r, "status_code", "?"))
+        (log.debug if quiet else log.warning)(
+            "report card: %s %s failed on agent %s (%s)", method, path,
+            (agent.get("agent_id") or "?")[:8], err or getattr(r, "status_code", "?"))
         return None
     try:
         return r.json()
     except ValueError:
         return None
+
+
+def _agent_conditions(agent: dict, provider: str, model: str) -> "dict | None":
+    """Run-conditions block from the agent; None on any failure or old agent."""
+    with best_effort("report card: run conditions", log=log):
+        res = _agent_json(agent, "GET", f"/{provider}/run-conditions",
+                          timeout=5, quiet=True, params={"model": model})
+        if isinstance(res, dict) and "schema" in res:
+            return res
+    return None
 
 
 def _agent_call(agent: dict, method: str, path: str, timeout=15,
@@ -1033,6 +1057,7 @@ def _run_job(job_id: str, req: dict) -> None:
         check()
         base, headers = bench_base_url(provider, agent)
         sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
+        cond_start = _agent_conditions(agent, provider, model)
         sampler.start()
 
         def _progress(ev):
@@ -1055,6 +1080,7 @@ def _run_job(job_id: str, req: dict) -> None:
         finally:
             sess.close()
             power = sampler.stop()
+            cond_end = None if cancel.is_set() else _agent_conditions(agent, provider, model)
             # The bench loaded the model; free the host's RAM/VRAM again.
             if mode == "standard" and provider in ("llama", "lms"):
                 emit({"phase": "unload", "model": model})
@@ -1069,6 +1095,9 @@ def _run_job(job_id: str, req: dict) -> None:
         result = dict(bench)
         result.update({"model": model, **energy, **agg,
                        "power_source": power["source"]})
+        conditions = merge_conditions(cond_start, cond_end)
+        if conditions is not None:
+            result["conditions"] = conditions
         card = {"ts": int(_time.time()), "agent_id": req["agent"],
                 "provider": provider, "mode": mode,
                 "preset_version": PRESET_VERSION,

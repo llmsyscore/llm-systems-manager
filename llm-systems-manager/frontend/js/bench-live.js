@@ -424,6 +424,25 @@
     }
     cap.textContent = caption;
   }
+  // Stored run doc → ledger-shaped run for TC.diffRuns.
+  function pseudoRun(doc) {
+    const all = ((doc.levels || [])[0] || {}).all || {};
+    return { tool: 'livebench', model_id: doc.model_id, ts: doc.ts, ok: doc.ok !== false,
+      summary: { gen_tps: all.pred_tps, ppt_tps: all.prompt_tps, latency_s: all.latency_s, accept_rate: all.accept_rate,
+        wh_per_ktok: doc.wh_per_ktok, bench: doc.bench, llama_build: doc.llama_build },
+      conditions: doc.conditions };
+  }
+  const isDoc = d => !!d && typeof d === 'object' && Array.isArray(d.levels);
+  // Conditions block of the shown run, plus the baseline comparison card.
+  function renderCond() {
+    const host = $('blCond'), card = $('blCompareCard'), cmp = $('blCompare');
+    const C = window.COND, T = window.TC;
+    const html = isDoc(_lastDoc) && C ? C.html(_lastDoc.conditions) : '';
+    if (host) host.innerHTML = html;
+    const both = isDoc(_lastDoc) && isDoc(_baseline) && !!T && typeof T.diffRuns === 'function';
+    if (cmp) cmp.innerHTML = both ? T.diffHtml(T.diffRuns(pseudoRun(_baseline), pseudoRun(_lastDoc)), Date.now()) : '';
+    if (card) card.style.display = both ? '' : 'none';
+  }
   function redraw() {
     const active = activeCellKey();
     const cur = _levels.filter(l => cellKey(l) === active);
@@ -442,6 +461,7 @@
         first.accept_rate == null ? { text: 'no draft', cls: 'flat' } : (b0 && b0.accept_rate != null ? deltaText(first.accept_rate, b0.accept_rate) : { text: 'baseline had no draft', cls: 'flat' })],
     ] : [];
     $('blTiles').innerHTML = tiles.map(([l, v, u, d, hi, r]) => `<div class="bl-tile${hi ? ' hi' : ''}"><div class="v">${v}<em>${u}</em></div><div class="l">${esc(l)}</div><div class="d ${d.cls}">${esc(d.text)}</div>${r ? `<div class="r">${esc(r)}</div>` : ''}</div>`).join('');
+    renderCond();
     const seg = $('blLevelSeg');
     seg.innerHTML = cur.map(l => `<button type="button" data-level="${esc(l.concurrency)}" class="${l.concurrency === (_activeLevel || (cur[0] && cur[0].concurrency)) ? 'on' : ''}">${esc(l.concurrency)}</button>`).join('');
     seg.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { _activeLevel = parseInt(b.dataset.level, 10); redraw(); }));
@@ -660,7 +680,7 @@
     if (!d.ok || !d.run) { setStatus("this run's results are no longer stored", 'warn'); return; }
     const meta = d.meta || {}, when = fmtTs(meta.ts);
     const host = typeof toolsHostName === 'function' ? toolsHostName(meta.agent_id) : (meta.agent_id || '');
-    _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: runId };
+    _levels = d.run.levels || []; _lastDoc = { ...d.run, run_id: runId, ts: d.run.ts || meta.ts };
     _matrixRun = !!(d.run.config && d.run.config.matrix);
     redraw();
     setStatus('past run');
@@ -847,7 +867,7 @@
     if (!runId || _baselineFor === runId) return;
     _baselineFor = runId;
     let doc = null;
-    try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(r => r.json()); doc = (r && r.run) || null; } catch (_) {}
+    try { const r = await fetch('/api/benchmark/live/runs/' + encodeURIComponent(runId)).then(r => r.json()); doc = r && r.run ? { ...r.run, ts: r.run.ts || (r.meta || {}).ts } : null; } catch (_) {}
     if (_baselineFor !== runId) return;
     _baseline = doc; redraw();
   }
@@ -940,7 +960,7 @@
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
           leaveAttached(); stopElapsed();
           setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
-        else if (msg.type === 'model_done') { _lastDoc = msg;
+        else if (msg.type === 'model_done') { _lastDoc = msg.ts ? msg : { ...msg, ts: new Date().toISOString() };
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
           $('blStrip').textContent = doneStrip(msg);
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
@@ -1276,6 +1296,7 @@
     toggleMatrix, heatCells, cellKey, addToReportCard, toggleFleet, rankHosts, selectFleetHost, recheckBaseline, baselineMeta, loadBaselines,
     toggleBaseSchedule, toggleBasePromote, openBaseSettings, fmtTs,
     runVllm, cancelVllm, addVllmSwitch, saveVllm, clearVllm, renderVllmSwitches, _vllmSwitches: () => vllmSwitches(),
+    pseudoRun, _debugDoc: (doc, base) => { _lastDoc = doc || null; _baseline = base || null; redraw(); },
     _config: config, _debugLevels: (rows, opts) => { _levels = rows; _cell = null; _baseline = (opts && opts.baseline) || null; if (opts && opts.metric) _metric = opts.metric; renderMetricSeg(); redraw(); },
     _debugFleet: (job) => { _fleetJob = job; renderFleet(); }, _debugPollOnce: fleetTick,
     _debugBaselines: (d) => { _base = d; renderBaselines(); },

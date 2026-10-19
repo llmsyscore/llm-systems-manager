@@ -89,3 +89,11 @@ def test_run_metrics_reports_spread():
 def test_spread_stats_excludes_bools_and_non_finite():
     assert rc.spread_stats([1.0, True, float("nan"), float("inf")]) is None
     assert rc.spread_stats([1, 2, 3, 4, 5]) == {"n": 5, "min": 1.0, "p25": 2.0, "p50": 3.0, "p75": 4.0, "max": 5.0}
+
+
+def test_merge_conditions_takes_end_snapshot_from_second_call():
+    a = {"schema": 1, "captured_start": "t0", "snapshot": {"start": {"temp_c": 40}}}
+    b = {"schema": 1, "captured_start": "t1", "snapshot": {"start": {"temp_c": 70}}}
+    assert rc.merge_conditions(a, b) == {"schema": 1, "captured_start": "t0", "captured_end": "t1", "snapshot": {"start": {"temp_c": 40}, "end": {"temp_c": 70}}}
+    assert rc.merge_conditions(a, None) == a and rc.merge_conditions(None, b) == b and rc.merge_conditions(None, None) is None
+    assert "captured_end" not in a and "end" not in a["snapshot"]

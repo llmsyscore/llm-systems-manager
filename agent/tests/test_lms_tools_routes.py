@@ -452,7 +452,9 @@ def test_run_all_restores_and_posts_ledger(env, monkeypatch):
     t = env.tools
     monkeypatch.setattr(env.llama, "_bench_live_runtime", lambda: {"python": None, "script": None})
     posted = []
-    monkeypatch.setattr(t._shared, "post_tool_run", lambda *a, **k: posted.append(a))
+    monkeypatch.setattr(t._shared, "post_tool_run", lambda *a, **k: posted.append(a + (k,)))
+    monkeypatch.setattr(t, "conditions_facts", lambda mid, models=None: {"model_id": mid, "backend": "lmstudio"})
+    monkeypatch.setattr(t.run_conditions, "samples", lambda: ({"temperature_c": 50.0}, None))
     monkeypatch.setattr(env.llama, "_autotune_run_id", "rid1")
     monkeypatch.setattr(env.llama, "_autotune_active", True)
     req = t._lat.validate_request({"model_ids": ["qwen3.5-9b@q6_k", "ghost"], "objective": "fit",
@@ -466,6 +468,9 @@ def test_run_all_restores_and_posts_ledger(env, monkeypatch):
     assert dones[0]["ok"] and dones[0]["provider"] == "lms" and dones[1]["stop_reason"].startswith("LM Studio does not list")
     assert events[-1]["type"] == "done" and events[-1]["ok"]
     assert posted and posted[0][1:3] == ("autotune", "lms")
+    cond = posted[0][-1]["conditions"]
+    assert isinstance(cond, dict) and cond["captured_end"] and cond["model"]["id"] == "qwen3.5-9b@q6_k"
+    assert dones[0]["conditions"]["snapshot"]["end"]["temp_c"] == 50
     # the last load put the original instance config back
     last_load = [c for c in env.sess.calls if c[0] == "POST" and c[1].endswith("/load")][-1]
     assert last_load[2]["parallel"] == 2 and last_load[2]["context_length"] == 32768

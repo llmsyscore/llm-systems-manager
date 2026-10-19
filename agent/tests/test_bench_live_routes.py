@@ -132,6 +132,8 @@ def test_run_levels_emits_level_results_and_done(llama, tmp_path, monkeypatch):
     monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append((a, k)))
     stored = []
     monkeypatch.setattr(llama, "_bench_live_store", lambda doc: stored.append(doc))
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid: {"model_id": mid})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: (None, None))
     done = threading.Event()
     orig = llama._bench_live_run_all
 
@@ -154,9 +156,47 @@ def test_run_levels_emits_level_results_and_done(llama, tmp_path, monkeypatch):
     assert md["run_id"] == out["run_id"] and md["bench"] == "qualitative"
     assert stored and stored[0]["run_id"] == out["run_id"] and stored[0]["model_id"] == "org/m:Q4"
     assert posted and posted[0][0][1] == "benchmark" and posted[0][0][6]["bench_tool"] == "speed-bench"
+    cond = md["conditions"]
+    assert cond["captured_start"] and cond["captured_end"] and cond["model"]["id"] == "org/m:Q4"
+    assert posted[0][1]["conditions"] is cond
     assert llama._bench_active is False
     marker = llama._bl.read_marker(str(tmp_path))
     assert marker["qualitative"]["categories"] == ["coding"]
+
+
+def test_failed_level_still_records_conditions_end(llama, tmp_path, monkeypatch):
+    ctx = _Ctx(tmp_path)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_bench_live_server",
+                        lambda: {"up": True, "url": "http://127.0.0.1:9931", "models": [{"id": "org/m:Q4", "status": "loaded"}],
+                                 "loaded_id": "org/m:Q4", "slots_idle": 2, "slots_total": 2, "spec": None})
+    monkeypatch.setattr(llama._bl, "runtime_python", lambda inst, ov: ("/fake/python", "venv"))
+    monkeypatch.setattr(llama._bl, "script_path", lambda inst, root: (Path("/fake/speed_bench.py"), "ok"))
+
+    def boom(*a, **k):
+        raise RuntimeError("level blew up")
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", boom)
+    monkeypatch.setattr(llama, "_live_power_w", lambda: (None, None))
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    monkeypatch.setattr(llama, "_bench_live_store", lambda doc: None)
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid: {"model_id": mid})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: (None, None))
+    done = threading.Event()
+    orig = llama._bench_live_run_all
+
+    def wrapped(*a, **k):
+        try:
+            orig(*a, **k)
+        finally:
+            done.set()
+    monkeypatch.setattr(llama, "_bench_live_run_all", wrapped)
+    out = llama.llama_bench_live_run({"model_id": "org/m:Q4", "bench": "qualitative", "concurrency": [1], "limit": 2})
+    assert out["ok"] is True and done.wait(10)
+    md = next(e for e in _events(llama) if e["type"] == "model_done")
+    assert md["ok"] is False and md["levels"] == []
+    assert md["conditions"]["captured_start"] and md["conditions"]["captured_end"]
 
 
 def test_run_matrix_expands_cells_and_tags_events(llama, tmp_path, monkeypatch):

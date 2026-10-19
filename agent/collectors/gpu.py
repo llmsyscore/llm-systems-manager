@@ -169,6 +169,7 @@ def _find_nvidia_gpu() -> bool:
 _NVIDIA_PRESENT: Any = _UNPROBED
 _AMD_NAME: Any = _UNPROBED
 _NV_NAME: Any = _UNPROBED
+_DRIVER: "str | None" = None
 
 
 def _lspci_amd_name() -> "str | None":
@@ -207,6 +208,24 @@ def _nvidia_smi_name() -> "str | None":
     return out[0].strip() if out else None
 
 
+def _probe_driver() -> "str | None":
+    """Kernel/driver version string for the detected GPU vendor, or None."""
+    if _GPU_PATH not in (None, _UNPROBED):
+        ver = _read_str_file("/sys/module/amdgpu/version")
+        return "amdgpu " + ver if ver else None
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
+        ).strip().splitlines()
+    except Exception as e:
+        log.debug("nvidia-smi driver: %s", e)
+        return None
+    return "nvidia " + out[0].strip() if out and out[0].strip() else None
+
+
 _probe_latch = AbsenceLatch("GPU (COLLECT_GPU_ENABLED is on)", logger=log)
 
 
@@ -220,7 +239,7 @@ def _probe_complete() -> bool:
 def _ensure_probed() -> None:
     # Probe sysfs/nvidia-smi on first call, then only on the latch interval
     # while nothing is found, so a late driver is picked up without a restart.
-    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME
+    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME, _DRIVER
     if _probe_complete() or not _probe_latch.should_probe():
         return
     _GPU_PATH = _find_amd_gpu_path()
@@ -228,6 +247,7 @@ def _ensure_probed() -> None:
     _NVIDIA_PRESENT = _find_nvidia_gpu()
     _AMD_NAME = _lspci_amd_name() if _GPU_PATH is not None else None
     _NV_NAME = _nvidia_smi_name() if _NVIDIA_PRESENT else None
+    _DRIVER = _probe_driver() if _GPU_PATH is not None or _NVIDIA_PRESENT else None
     _probe_latch.record(
         _probe_complete(),
         " (AMD card found, hwmon sensors missing)" if _GPU_PATH is not None else "",
@@ -300,6 +320,7 @@ def _collect_nvidia_gpu() -> dict:
         "performance_level":      None,
         "power_profile":          None,
         "vendor":                 "nvidia",
+        "driver":                 _DRIVER,
     }
 
 
@@ -337,6 +358,7 @@ def collect_gpu() -> dict:
             "performance_level":      perf,
             "power_profile":          _gpu_power_profile(),
             "vendor":                 "amd",
+            "driver":                 _DRIVER,
         }
     if _NVIDIA_PRESENT:
         return _collect_nvidia_gpu()

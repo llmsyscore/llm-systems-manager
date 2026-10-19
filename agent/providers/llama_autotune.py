@@ -1518,8 +1518,20 @@ class _Run:
                "guard": self.guard, "verify": self.verify, "stages": self.stages,
                "power_cap_w": self.power_cap_w, "over_cap": self.over_cap,
                "stop_reason": self.stop_reason, "elapsed_s": int(self.elapsed()), "loads": self.loads}
+        attach_conditions(self.env, doc)
         self.put(doc)
         return doc
+
+
+def attach_conditions(env: dict, doc: dict) -> dict:
+    """Sets doc["conditions"] from env["finish_conditions"]() when that hook is callable."""
+    fin = env.get("finish_conditions") if isinstance(env, dict) else None
+    if callable(fin):
+        try:
+            doc["conditions"] = fin()
+        except Exception:
+            pass  # end sample failed: key left out
+    return doc
 
 
 def run_model(model_id: str, section: dict, req: dict, backend, put, cancelled, env: dict,
@@ -1591,5 +1603,6 @@ def run_quality(model_id: str, section: dict, req: dict, backend, put, cancelled
                        "seconds": secs, "loads": 0, "choice": choice}],
            "base_args": base_args, "cand_args": cand_args,
            "stop_reason": stop, "elapsed_s": secs, "loads": 0}
+    attach_conditions(env, doc)
     put(doc)
     return doc

@@ -47,6 +47,7 @@ def client(monkeypatch, tmp_path):
                         lambda p, a, probe=None: ("http://x/llama/openai", {}))
     monkeypatch.setattr(rc, "_agent_call",
                         lambda *a, **k: (True, None), raising=False)
+    monkeypatch.setattr(rc, "_agent_json", lambda *a, **k: None)
     rc.register_routes(app, db_path=str(tmp_path / "t.db"))
     return app.test_client()
 
@@ -795,3 +796,53 @@ def test_runner_helpers_start_report_and_cancel(client, stalled):
     assert rc.card_status(job_id) == {"event": "error", "error": "run ended without a result"}
     rc._JOBS[job_id]["terminal"] = {"event": "cancelled"}
     assert rc.card_status(job_id) == {"event": "cancelled"}
+
+
+_RUN_BODY = {"agent": "a" * 32, "provider": "llama", "mode": "standard",
+             "model_key": "small"}
+
+
+def test_job_stores_conditions_from_two_agent_calls(client, monkeypatch):
+    calls = []
+
+    def fake(agent, method, path, timeout=15, **kw):
+        calls.append((path, kw.get("params")))
+        return {"schema": 1, "captured_start": f"t{len(calls)}",
+                "snapshot": {"start": {"temp_c": 40 + 10 * len(calls)}}}
+    monkeypatch.setattr(rc, "_agent_json", fake)
+    job = client.post("/api/reportcard/run", json=_RUN_BODY).get_json()["job_id"]
+    done = [e for e in _drain(client, job) if e["event"] == "done"][0]
+    cond = done["card"]["result"]["conditions"]
+    assert calls == [("/llama/run-conditions", {"model": "m"})] * 2
+    assert cond["captured_start"] == "t1" and cond["captured_end"] == "t2"
+    assert cond["snapshot"]["end"]["temp_c"] == 60
+
+
+def test_job_finishes_without_conditions_on_old_agent(client, monkeypatch):
+    monkeypatch.setattr(rc, "_agent_json", lambda *a, **k: None)
+    job = client.post("/api/reportcard/run", json=_RUN_BODY).get_json()["job_id"]
+    done = [e for e in _drain(client, job) if e["event"] == "done"][0]
+    assert "conditions" not in done["card"]["result"]
+
+
+def test_job_survives_a_raising_conditions_call(client, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("agent gone")
+    monkeypatch.setattr(rc, "_agent_json", boom)
+    job = client.post("/api/reportcard/run", json=_RUN_BODY).get_json()["job_id"]
+    done = [e for e in _drain(client, job) if e["event"] == "done"][0]
+    assert "conditions" not in done["card"]["result"]
+
+
+def test_cancelled_job_skips_the_end_conditions_call(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(rc, "_agent_json", lambda agent, method, path, timeout=15, **kw: calls.append(path) or None)
+
+    def cancelling_bench(*a, **k):
+        for job in rc._JOBS.values():
+            job["cancel"].set()
+        return {"ttft_s": 0.5, "prefill_tps": 1000.0, "gen_tps": 40.0, "reps": []}
+    monkeypatch.setattr(rc, "run_bench", cancelling_bench)
+    job = client.post("/api/reportcard/run", json=_RUN_BODY).get_json()["job_id"]
+    _drain(client, job)
+    assert calls.count("/llama/run-conditions") == 1

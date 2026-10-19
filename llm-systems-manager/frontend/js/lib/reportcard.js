@@ -51,6 +51,10 @@ function cell(parent, value, unit, label) {
 const _spread = (typeof window !== 'undefined' && window.SPREAD)
   || (typeof require === 'function' ? require('./spread.js') : null);
 
+// Conditions block helper: window global in the browser, sibling in Node.
+const _cond = (typeof window !== 'undefined' && window.COND)
+  || (typeof require === 'function' ? require('./conditions.js') : null);
+
 const BENCH_SHORT = { qualitative: 'qual', throughput_1k: '1k', throughput_2k: '2k', throughput_8k: '8k', throughput_16k: '16k', throughput_32k: '32k' };
 
 // Pure summary strings for the Live block's under-load and matrix strips.
@@ -137,6 +141,13 @@ function buildCard(res) {
     root.appendChild(blk);
   }
 
+  const condHtml = _cond ? _cond.html(r.conditions) : '';
+  if (condHtml) {
+    const t = document.createElement('template');
+    t.innerHTML = condHtml;
+    root.appendChild(t.content);
+  }
+
   const save = el('button', 'rc-savebtn rc-nox', '⤓ Save');
   save.type = 'button';
   save.title = 'Save this card as a PNG';
@@ -169,6 +180,7 @@ function submitUrl(card) {
   delete pub.agent_id;
   const res = { ...(pub.result || {}) };
   delete res.live;
+  delete res.conditions;
   pub.result = res;
   const p = new URLSearchParams({
     template: 'submit.yml',
@@ -176,6 +188,16 @@ function submitUrl(card) {
     'card-json': JSON.stringify(pub),
   });
   return `${LEADERBOARD_REPO}/issues/new?${p}`;
+}
+
+// Saved card → ledger-shaped run for TC.diffRuns.
+function cardPseudoRun(card) {
+  const c = card || {}, r = c.result || {};
+  return { tool: 'reportcard', model_id: r.model, ts: new Date(c.ts * 1000).toISOString(), ok: true,
+    summary: { gen_tps: r.gen_tps, ppt_tps: r.prefill_tps, ttft_ms: r.ttft_s == null ? null : r.ttft_s * 1000,
+      wh_per_ktok: r.tokens_per_joule ? (1000 / r.tokens_per_joule) / 3600 : null, avg_watts: r.avg_watts,
+      mode: c.mode, preset_version: c.preset_version },
+    conditions: r.conditions };
 }
 
 function trendSeries(cards) {
@@ -230,6 +252,6 @@ async function exportPng(cardEl, scale) {
   return new Promise(res => canvas.toBlob(res, 'image/png'));
 }
 
-return { buildCard, submitUrl, trendSeries, exportPng, fmt, fmtMb,
+return { buildCard, submitUrl, cardPseudoRun, trendSeries, exportPng, fmt, fmtMb,
          fmtDate, liveSummary, LEADERBOARD_REPO, PROVIDER_LABEL, SOURCE_LABEL };
 });

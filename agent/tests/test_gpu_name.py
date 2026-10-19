@@ -42,3 +42,18 @@ def test_lspci_invoked_with_keyed_vmm_format(monkeypatch):
     calls: list = []
     _run_lspci_name(monkeypatch, _LSPCI_VMM, calls)
     assert "-vmm" in calls[0] and "-nn" not in calls[0]
+
+
+def test_driver_probe_reads_amdgpu_module_version(monkeypatch):
+    monkeypatch.setattr(gpu, "_GPU_PATH", Path("/sys/class/drm/card0/device"))
+    monkeypatch.setattr(gpu, "_read_str_file", lambda path, default=None: "6.12.0" if "amdgpu" in str(path) else default)
+    assert gpu._probe_driver() == "amdgpu 6.12.0"
+
+
+def test_driver_probe_reads_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(gpu, "_GPU_PATH", None)
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(gpu.subprocess, "check_output", lambda cmd, **k: "580.65.06\n")
+    assert gpu._probe_driver() == "nvidia 580.65.06"
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: None)
+    assert gpu._probe_driver() is None

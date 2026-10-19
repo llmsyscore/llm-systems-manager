@@ -25,7 +25,7 @@ const BODY = `
     <button id="blAttachBtn" style="display:none" onclick="BL.addToReportCard()">Add to Report Card</button>
     <button id="blPinBtn" onclick="BL.pinBaseline()">Set as baseline</button>
     <div class="bl-notice" id="blNotice" style="display:none"></div>
-    <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div>
+    <span id="blStatus"></span><div id="blStrip"></div><span id="blElapsed"></span><div id="blProgress"><i></i></div><div id="blTiles"></div><div id="blCond"></div><div class="bl-card" id="blCompareCard" style="display:none"><div class="bl-compare" id="blCompare"></div></div>
     <h3 id="blChartTitle"></h3><span id="blChartMeta"></span><div class="mc-seg" id="blMetricSeg"></div><div class="bl-legend" id="blLegend"></div>
     <canvas id="blChart"></canvas><div class="bl-chart-empty" id="blChartEmpty"></div><div id="blChartCaption"></div>
     <div class="mc-seg" id="blCellSeg" style="display:none"></div><div id="blLevelSeg"></div><div id="blTable"></div><div id="blLog"></div>
@@ -82,6 +82,12 @@ function boot(bootstrap = '') {
 // Same module with the run-to-run spread formatter loaded (#1301).
 function bootSpread(bootstrap = '') {
   return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/spread.js'), srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
+}
+
+// Same module with the real conditions + compare libs over the TC stub (#1302).
+function bootCompare(bootstrap = '') {
+  return runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/modelcards.js'), srcFile('js/lib/conditions.js'),
+    srcFile('js/lib/toolcards.js'), srcFile('js/bench-live.js')], bodyHtml: BODY, bootstrap });
 }
 
 // Same module, with the shared run gate wired in (#888).
@@ -1531,5 +1537,66 @@ describe('BL run-to-run spread (#1301)', () => {
     const drows = win.document.querySelectorAll('#blBaseTable tbody tr');
     expect(drows[0].querySelector('.dlt').textContent).toBe('−20 % · within baseline range');
     expect(drows[1].querySelector('.dlt').textContent).toBe('−20 %');
+  });
+});
+
+describe('BL conditions + baseline comparison (#1302)', () => {
+  const COND_A = { hardware: { gpu: '7900 XTX', driver: 'amdgpu 6.12.0' }, backend: { name: 'llama.cpp', build: 'b1' } };
+  const COND_B = { ...COND_A, backend: { name: 'llama.cpp', build: 'b2' } };
+  const doc = { run_id: 'r2', model_id: 'org/m', ts: '2026-10-18T20:00:00Z', bench: 'qualitative', llama_build: 'b2', wh_per_ktok: 1.5,
+    levels: [{ concurrency: 1, rows: [], all: { pred_tps: 50, prompt_tps: 900, latency_s: 2, accept_rate: 0.7 } }], conditions: COND_B };
+  const base = { ...doc, run_id: 'r1', ts: '2026-10-17T20:00:00Z', levels: [{ concurrency: 1, rows: [], all: { pred_tps: 48, prompt_tps: 900 } }], conditions: COND_A };
+
+  it('shows the conditions block and the baseline comparison card', async () => {
+    const win = bootCompare();
+    win.BL._debugLevels(doc.levels, { baseline: base });
+    win.BL._debugDoc(doc, base);
+    const d = win.document;
+    expect(d.querySelector('#blCond details.cond-block')).not.toBeNull();
+    expect(d.getElementById('blCompareCard').style.display).toBe('');
+    expect(d.getElementById('blCompare').textContent).toContain('Compare · Live bench · org/m');
+    expect(d.getElementById('blCompare').textContent).toContain('Conditions');
+    win.BL._debugDoc({ ...doc, conditions: undefined }, base);
+    expect(d.getElementById('blCond').innerHTML).toBe('');
+    expect(d.getElementById('blCompareCard').style.display).toBe('');
+    expect(d.getElementById('blCompare').textContent).toContain('Compare · Live bench · org/m');
+    win.BL._debugDoc({ ...doc, conditions: undefined }, null);
+    expect(d.getElementById('blCond').innerHTML).toBe('');
+    expect(d.getElementById('blCompareCard').style.display).toBe('none');
+    expect(d.getElementById('blCompare').innerHTML).toBe('');
+    win.BL._debugDoc(null, base);
+    expect(d.getElementById('blCond').innerHTML).toBe('');
+    expect(d.getElementById('blCompareCard').style.display).toBe('none');
+  });
+
+  it('pseudoRun maps a Live bench doc into the comparison shape', () => {
+    const p = bootCompare().BL.pseudoRun(doc);
+    expect(p).toMatchObject({ tool: 'livebench', model_id: 'org/m', ts: doc.ts, ok: true,
+      summary: { gen_tps: 50, ppt_tps: 900, latency_s: 2, accept_rate: 0.7, wh_per_ktok: 1.5, bench: 'qualitative', llama_build: 'b2' } });
+    expect(p.conditions).toEqual(COND_B);
+    expect(bootCompare().BL.pseudoRun({ model_id: 'x', ok: false, levels: [] })).toMatchObject({ ok: false, summary: { gen_tps: undefined } });
+  });
+
+  it('a stored run and its baseline take their dates from the run meta in the compare header', async () => {
+    const strip = d => { const { ts, ...rest } = d; return rest; };
+    const stored = {
+      r2: { ok: true, meta: { run_id: 'r2', agent_id: 'a1', ts: doc.ts }, run: { ...strip(doc), type: 'model_done', config: {}, baseline_run_id: 'r1' } },
+      r1: { ok: true, meta: { run_id: 'r1', agent_id: 'a1', ts: base.ts }, run: strip(base) } };
+    const win = bootCompare('window.__stored = ' + JSON.stringify(stored) + '; BL.onOpen("org/m", { provider: "llama", agent: null, run: "r2", mode: "live" });');
+    await flush(); await flush(); await flush();
+    const head = win.document.querySelector('#blCompare thead').textContent;
+    expect(head).toMatch(/Run A · [^—]+Run B · [^—]+$/);
+    expect(head).not.toContain('—');
+  });
+
+  it('hides the diff Clear button inside the compare card', () => {
+    expect(srcFile('css/base.css')).toMatch(/\.bl-compare \[data-diff="clear"\]\s*\{\s*display:\s*none/);
+    expect(srcFile('index.html')).toMatch(/id="blCond"[\s\S]{0,200}id="blCompareCard"[\s\S]{0,300}class="[^"]*bl-compare[^"]*" id="blCompare"/);
+  });
+
+  it('collapses the compare card by default with a toggle header', () => {
+    const html = srcFile('index.html');
+    expect(html).toMatch(/class="bl-card bl-collapsed" id="blCompareCard"/);
+    expect(html).toMatch(/id="blCompareCard"[^>]*>\s*<div class="bl-card-h tog" onclick="this\.parentElement\.classList\.toggle\('bl-collapsed'\)"><h3>Compare with baseline<\/h3>/);
   });
 });

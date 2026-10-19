@@ -3,6 +3,8 @@
 (function () {
   const MC = (typeof window !== 'undefined' && window.MC)
     || (typeof require === 'function' ? require('./modelcards.js') : null);
+  const COND = (typeof window !== 'undefined' && window.COND)
+    || (typeof require === 'function' ? require('./conditions.js') : null);
 
   const VIEWS = ['card', 'list', 'compact'];
   const esc = MC.esc;
@@ -191,11 +193,19 @@
     autotune: [['decode_tps', 'Decode t/s', 1, 1], ['prefill_tps', 'Prefill t/s', 0, 1], ['agg_tps', 'Aggregate t/s', 0, 1],
       ['ctx_size', 'Context', 0, 1], ['free_mb', 'Memory free MB', 0, 1], ['gain_pct', 'Gain vs before %', 0, 1],
       ['avg_w', 'Average W', 0, -1], ['wh_per_ktok', 'Wh / 1k tok', 2, -1], ['kl', 'KL', 4, -1]],
+    reportcard: [['gen_tps', 'Gen t/s', 1, 1], ['ppt_tps', 'Prompt t/s', 0, 1], ['ttft_ms', 'First token ms', 0, -1],
+      ['wh_per_ktok', 'Wh / 1k tok', 2, -1], ['avg_watts', 'Average W', 0, -1]],
+    livebench: [['gen_tps', 'Decode t/s', 1, 1], ['ppt_tps', 'Prefill t/s', 0, 1], ['latency_s', 'Latency s', 2, -1],
+      ['accept_rate', 'Draft accept', 2, 1], ['wh_per_ktok', 'Wh / 1k tok', 2, -1]],
   };
   const DIFF_SETUP = {
     benchmark: [['bench_tool', 'Bench tool']],
     autotune: [['objective', 'Objective'], ['mode', 'Mode'], ['llama_build', 'Build']],
+    reportcard: [['mode', 'Mode'], ['preset_version', 'Preset']],
+    livebench: [['bench', 'Workload'], ['llama_build', 'Build']],
   };
+  const TOOL_NAMES = { autotune: 'Autotune', reportcard: 'Report Card', livebench: 'Live bench' };
+  const toolName = t => TOOL_NAMES[t] || 'Benchmark';
 
   function _num(v) { return v == null || v === '' || !isFinite(v) ? null : Number(v); }
 
@@ -220,37 +230,51 @@
       return { label, a: va == null ? null : va.toFixed(dp), b: vb == null ? null : vb.toFixed(dp), pct, tone };
     }).filter(Boolean);
     [...setup, ...switches].forEach(r => { r.changed = r.a !== r.b; });
-    return { tool: a.tool, model: a.model_id || '', a, b, setup, switches, results,
-             recorded: { a: !!swa, b: !!swb } };
+    const isCond = c => !!c && typeof c === 'object' && !!COND && COND.rows(c).length > 0;
+    const ca = isCond(a.conditions), cb = isCond(b.conditions);
+    const conditions = (ca || cb) && COND ? COND.diff(a.conditions, b.conditions) : [];
+    return { tool: a.tool, model: a.model_id || '', a, b, setup, switches, results, conditions,
+             recorded: { a: !!swa, b: !!swb, cond_a: ca, cond_b: cb } };
   }
 
   function diffHtml(d, nowMs) {
     const cell = (v, cls) => `<td class="${cls}">${v == null ? '—' : esc(v)}</td>`;
-    const tr = (r, mono) => `<tr class="${r.changed ? 'chg' : 'same'}"><td${mono ? ' class="mono"' : ''}>${esc(r.label)}</td>` +
-      cell(r.a, r.changed ? 'old' : 'mono') + cell(r.b, r.changed ? 'new' : 'mono') + '</tr>';
+    const tr = (r, mono) => {
+      const w = r.key === 'server_cmd' ? ' wrap' : '';
+      return `<tr class="${r.changed ? 'chg' : 'same'}"><td${mono ? ' class="mono"' : ''}>${esc(r.label)}</td>` +
+        cell(r.a, (r.changed ? 'old' : 'mono') + w) + cell(r.b, (r.changed ? 'new' : 'mono') + w) + '</tr>';
+    };
     const sec = t => `<tr class="sec"><td colspan="3">${esc(t)}</td></tr>`;
-    const toolName = d.tool === 'autotune' ? 'Autotune' : 'Benchmark';
     const miss = !d.recorded.a && !d.recorded.b ? 'Neither run recorded its switches.'
       : !d.recorded.a ? 'Run A predates switch recording.' : !d.recorded.b ? 'Run B recorded no switches.' : '';
+    const conds = d.conditions || [];
+    const condMiss = d.recorded.cond_a && !d.recorded.cond_b ? 'Run B predates condition recording.'
+      : !d.recorded.cond_a && d.recorded.cond_b ? 'Run A predates condition recording.' : '';
+    const notes = [miss && d.switches.length ? miss : '', condMiss].filter(Boolean).join(' ');
     const changed = d.switches.filter(r => r.changed).length;
     let body = sec('Setup') + d.setup.map(r => tr(r, false)).join('');
     body += sec(d.switches.length ? `Switches · ${changed} of ${d.switches.length} differ` : 'Switches');
     body += d.switches.length ? d.switches.map(r => tr(r, true)).join('')
       : `<tr class="same"><td colspan="3" class="ev">${esc(miss || 'No switches set on either run.')}</td></tr>`;
+    if (conds.length) {
+      body += sec(`Conditions · ${conds.filter(r => r.changed).length} of ${conds.length} differ`) +
+        conds.map(r => tr(r, false)).join('');
+    }
     body += sec('Results') + (d.results.length ? d.results.map(r => {
       const dl = r.pct == null ? '' : ` <span class="tl-dl ${r.tone}">${r.pct >= 0 ? '+' : ''}${Math.round(r.pct)} %</span>`;
       return `<tr class="same"><td>${esc(r.label)}</td>${cell(r.a, 'mono')}<td class="mono">${r.b == null ? '—' : esc(r.b)}${dl}</td></tr>`;
     }).join('') : '<tr class="same"><td colspan="3" class="ev">No comparable results.</td></tr>');
-    return `<div class="tl-diff"><div class="tl-diff-h"><span class="t">Compare · ${esc(toolName)} · ${esc(d.model)}</span>` +
+    return `<div class="tl-diff"><div class="tl-diff-h"><span class="t">Compare · ${esc(toolName(d.tool))} · ${esc(d.model)}</span>` +
       '<span class="lgap"></span><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" data-diff="clear">Clear</button></div>' +
-      (miss && d.switches.length ? `<div class="tl-diff-note">${esc(miss)}</div>` : '') +
+      (notes ? `<div class="tl-diff-note">${esc(notes)}</div>` : '') +
       '<div class="tl-diff-b"><table class="at-rt tl-diff-t"><thead><tr><th style="width:30%">Setting</th>' +
       `<th>Run A · ${esc(stamp(d.a.ts, nowMs) || '—')}</th><th>Run B · ${esc(stamp(d.b.ts, nowMs) || '—')}</th></tr></thead>` +
       `<tbody>${body}</tbody></table></div></div>`;
   }
 
-  function diffHint(toolName, model) {
-    return `<div class="tl-diff tl-diff-hint"><span>Pick one more ${esc(toolName)} run of <b>${esc(model)}</b> to compare.</span>` +
+  function diffHint(tool, model) {
+    const name = TOOL_NAMES[tool] || tool;
+    return `<div class="tl-diff tl-diff-hint"><span>Pick one more ${esc(name)} run of <b>${esc(model)}</b> to compare.</span>` +
       '<span class="lgap"></span><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" data-diff="clear">Clear</button></div>';
   }
 

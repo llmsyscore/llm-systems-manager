@@ -38,6 +38,7 @@ from . import llama_sse
 from . import llama_upgrade
 from . import power_arbiter
 from . import residency
+from . import run_conditions
 from . import llama_bench_live as _bl
 from . import llama_autotune as _at
 
@@ -2136,6 +2137,9 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     cmd += jsonl_flags
     _bench_put({"type": "model_start", "model_id": model_id,
                 "cmd": " ".join(str(c) for c in cmd)})
+    cond = None
+    with best_effort("bench: conditions start", log=log):
+        cond = run_conditions.start(_conditions_facts(model_id, bench_cmd=cmd), *run_conditions.samples())
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL, text=True, bufsize=1,
@@ -2206,6 +2210,9 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
         _bench_proc = None
         wh, src = energy.stop()
         stopped = True
+        conditions = None
+        with best_effort("bench: conditions finish", log=log):
+            conditions = run_conditions.finish(cond, *run_conditions.samples()) if cond else None
         wh_per_ktok = (wh / (tokens_total / 1000.0)) if wh is not None and tokens_total > 0 else None
         cancelled = _bench_cancel_event.is_set()
         mx = _shared.bench_maxes(result_rows)
@@ -2218,13 +2225,15 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                     "max_gen_tps": mx["gen"], "max_ppt_tps": mx["ppt"],
                     "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
                     "energy_wh": wh, "energy_source": src,
-                    "wh_per_ktok": wh_per_ktok, "tokens": tokens_total})
+                    "wh_per_ktok": wh_per_ktok, "tokens": tokens_total,
+                    "conditions": conditions})
         _shared.post_tool_run(
             _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
             measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
                        "pg_tps": mx["pg"], "bench_tool": tool,
                        "wh_per_ktok": wh_per_ktok,
-                       "switches": _shared.switch_map(switches)})
+                       "switches": _shared.switch_map(switches)},
+            conditions=conditions)
     finally:
         if not stopped:
             energy.stop()
@@ -2447,6 +2456,97 @@ def _bench_live_server() -> dict:
     return out
 
 
+_SAMPLING_KEYS = ("temperature", "top_k", "top_p", "min_p", "repeat_penalty", "seed")
+_QUANT_RE = re.compile(r"[-_.](I?Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32)$", re.IGNORECASE)
+
+
+def _props_for(model_id: str) -> dict:
+    """GET /props of the llama server for one model; {} when unreachable."""
+    base = (_require_ctx().config.LLAMA_API_URL or "").rstrip("/")
+    with best_effort("run conditions: /props probe", log=log):
+        props = requests.get(f"{base}/props", params={"model": model_id, "autoload": "0"}, timeout=2).json()
+        if isinstance(props, dict):
+            return props
+    return {}
+
+
+def _gpu_label() -> "tuple[Optional[str], Optional[str]]":
+    """(label, driver) of this host's GPUs from the collector."""
+    return run_conditions.gpu_label_from(collect_gpu())
+
+
+def _quant_from_path(path: "Optional[str]") -> "Optional[str]":
+    """Quantization suffix of a GGUF file stem, upper-cased; None when absent."""
+    if not path:
+        return None
+    stem = re.sub(r"-\d{5}-of-\d{5}$", "", Path(str(path)).stem)
+    m = _QUANT_RE.search(stem)
+    return m.group(1).upper() if m else None
+
+
+def _guard(what: str, fn: Callable, default: Any = None) -> Any:
+    try:
+        return fn()
+    except Exception as e:
+        log.debug("run conditions %s: %s", what, e)
+        return default
+
+
+def _bench_model_path(hf_arg: "Optional[str]") -> "Optional[str]":
+    """Cached GGUF path (shard 1) for a llama-bench `repo[:quant]` argument; None when not cached."""
+    if not hf_arg:
+        return None
+    repo, _, quant = str(hf_arg).partition(":")
+    token = re.compile(r"(?<![A-Za-z0-9])" + re.escape(quant) + r"(?![A-Za-z0-9])", re.IGNORECASE) if quant else None
+    for row in _list_cache_ggufs(_hf_cache_root()):
+        if row["repo"] == repo and (token is None or token.search(row["file"])):
+            return row["path"]
+    return None
+
+
+def _conditions_facts(model_id: str, bench_cmd: "Optional[list]" = None) -> dict:
+    """Run-conditions facts for a llama.cpp model; None for anything unknown.
+    With `bench_cmd` (an offline llama-bench run) the model file and command come from that run, not the server."""
+    if bench_cmd:
+        label, driver = _guard("gpu", _gpu_label, (None, None))
+        cmd = [str(c) for c in bench_cmd]
+        hf_arg = cmd[cmd.index("-hf") + 1] if "-hf" in cmd and cmd.index("-hf") + 1 < len(cmd) else None
+        model_path = _guard("bench model path", lambda: _bench_model_path(hf_arg))
+        return {"gpu_label": label, "driver": driver, "backend": "llama.cpp",
+                "backend_build": _llama_build_last or None, "server_cmd": " ".join(cmd),
+                "model_id": model_id, "model_path": model_path,
+                "quantization": _quant_from_path(model_path), "context": None, "sampling": None}
+    props = _guard("props", lambda: _props_for(model_id), {})
+    props = props if isinstance(props, dict) else {}
+    loaded = (_llama_loaded["last"] == model_id or props.get("model_alias") == model_id
+              or (_guard("server", _bench_live_server, {}) or {}).get("loaded_id") == model_id)
+    gs = props.get("default_generation_settings") if isinstance(props.get("default_generation_settings"), dict) else {}
+    gs = gs if loaded else {}
+    params = gs.get("params") if isinstance(gs.get("params"), dict) else {}
+    sampling = {k: params[k] for k in _SAMPLING_KEYS if k in params} or None
+    label, driver = _guard("gpu", _gpu_label, (None, None))
+    if loaded:
+        model_path = props.get("model_path") or None
+    else:
+        model_path = _guard("model path", lambda: _bench_model_path(_bench_get_hf_arg(model_id)))
+    return {"gpu_label": label, "driver": driver, "backend": "llama.cpp",
+            "backend_build": props.get("build_info") or _llama_build_last or None,
+            "server_cmd": _guard("cmdline", lambda: _llama_server_cmdline(_llama_unit_main_pid())),
+            "model_id": model_id, "model_path": model_path,
+            "quantization": _quant_from_path(model_path),
+            "context": gs.get("n_ctx"), "sampling": sampling}
+
+
+def _llama_model_known(model_id: str) -> bool:
+    """True when the model is a config.ini section or the loaded model; one server probe only on a miss."""
+    sections = _guard("ini", lambda: _llama_read_ini().sections(), []) or []
+    if model_id in sections and model_id not in ("*", "__DEFAULTS__"):
+        return True
+    if model_id == _llama_loaded["last"]:
+        return True
+    return model_id == (_guard("server", _bench_live_server, {}) or {}).get("loaded_id")
+
+
 def _bench_live_runtime() -> dict:
     cfg = _require_ctx().config
     py, src = _bl.runtime_python(cfg.AGENT_INSTALL_DIR, getattr(cfg, "SPEED_BENCH_PYTHON", "") or "")
@@ -2461,6 +2561,13 @@ def llama_bench_live_preflight(authorization: Optional[str] = Header(default=Non
     return {"ok": True, "server": _bench_live_server(), "runtime": _bench_live_runtime(),
             "datasets": _bl.read_marker(cfg.AGENT_INSTALL_DIR), "benches": list(_bl.BENCHES),
             "busy": bool(_bench_active or _autotune_active)}
+
+
+def llama_run_conditions(model: str = Query(...), authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    if not _llama_model_known(model):
+        raise HTTPException(404, "unknown model")
+    return run_conditions.start(_conditions_facts(model), *run_conditions.samples())
 
 
 def _bench_live_setup_job(benches: list) -> None:
@@ -2562,6 +2669,17 @@ def _bench_live_store(doc: dict) -> None:
         log.debug("live bench store failed: %s", e)
 
 
+def _bench_live_conditions_facts(provider: str, model_id: str) -> dict:
+    """Run-conditions facts from the gatherer of the given provider."""
+    if provider == "lms":
+        from . import lms_tools
+        return lms_tools.conditions_facts(model_id)
+    if provider == "vllm":
+        from . import vllm_tools
+        return vllm_tools.conditions_facts(model_id)
+    return _conditions_facts(model_id)
+
+
 def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provider: str = "llama") -> None:
     global _bench_active, _bench_proc, _bench_pgid
     cfg = _require_ctx().config
@@ -2572,6 +2690,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
     energy = _bl.PowerIntegrator(_live_power_w)
     ok = True
     started = time.time()
+    cond = conditions = None
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
@@ -2580,6 +2699,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                     "baseline_run_id": req.get("baseline_run_id"),
                     "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
         energy.start()
+        with best_effort("live bench: conditions start", log=log):
+            cond = run_conditions.start(_bench_live_conditions_facts(provider, model_id), *run_conditions.samples())
 
         def _track(p):
             global _bench_proc, _bench_pgid
@@ -2636,6 +2757,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
         ok = False
         _bench_put({"type": "line", "model_id": model_id, "text": f"error: {e}"})
     finally:
+        with best_effort("live bench: conditions finish", log=log):
+            conditions = run_conditions.finish(cond, *run_conditions.samples()) if cond else None
         wh, src = energy.stop()
         tokens = sum(int((lv.get("all") or {}).get("completion_tokens") or 0) for lv in levels)
         wh_per_ktok = (wh / (tokens / 1000.0)) if wh is not None and tokens > 0 else None
@@ -2650,7 +2773,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                "energy_wh": wh, "energy_source": src, "wh_per_ktok": wh_per_ktok,
                "spec": server.get("spec"), "server_url": server.get("url"), "provider": provider,
                "llama_build": (_llama_build_last or "") if provider == "llama" else str(server.get("build") or ""),
-               "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id")}
+               "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id"),
+               "conditions": conditions}
         _bench_put(doc)
         if levels:
             _bench_live_store(doc)
@@ -2662,7 +2786,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                                    "limit": req.get("limit"),
                                    "concurrency": ",".join(str(r.get("concurrency")) for r in levels),
                                    "failed_samples": failed_samples, "first_error": first_error,
-                                   "switches": _bl.ledger_switches(req, server)})
+                                   "switches": _bl.ledger_switches(req, server)},
+                                  conditions=doc.get("conditions"))
         _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1,
                     "failed_samples": failed_samples, "first_error": first_error})
         _bench_proc = None
@@ -3638,16 +3763,22 @@ def _autotune_run_all(req: dict) -> None:
             hf_arg = _bench_get_hf_arg(mid) or ""
             menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
             menv["valued"] = valued
+            cond = None
+            with best_effort("autotune: conditions start", log=log):
+                cond = run_conditions.start(_conditions_facts(mid), *run_conditions.samples())
+            if isinstance(cond, dict):
+                menv["conditions"] = cond
+                menv["finish_conditions"] = lambda c=cond: run_conditions.finish(c, *run_conditions.samples())
             if req.get("mode") == "quality":
                 done = _at.run_quality(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
                                        _autotune_cancel_event.is_set, menv)
                 _shared.post_tool_run(_require_ctx(), "quality", "llama", run_id, mid, done["ok"],
-                                      _at.ledger_summary(done))
+                                      _at.ledger_summary(done), conditions=done.get("conditions"))
                 continue
             done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
                                  _autotune_cancel_event.is_set, menv)
             _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
-                                  _at.ledger_summary(done))
+                                  _at.ledger_summary(done), conditions=done.get("conditions"))
         cancelled = _autotune_cancel_event.is_set()
         _autotune_put({"type": "done", "ok": not cancelled, "cancelled": cancelled,
                        "count": len(req["model_ids"])})
@@ -3842,6 +3973,7 @@ _ROUTES: tuple = (
     ("POST",   "/llama/bench/cancel",             llama_bench_cancel),
     ("POST",   "/llama/bench/perf-mode",          llama_bench_perf_mode),
     ("GET",    "/llama/bench/live/preflight",     llama_bench_live_preflight),
+    ("GET",    "/llama/run-conditions",           llama_run_conditions),
     ("POST",   "/llama/bench/live/setup",         llama_bench_live_setup),
     ("POST",   "/llama/bench/live/run",           llama_bench_live_run),
     ("GET",    "/llama/autotune/preflight",       llama_autotune_preflight),

@@ -14,6 +14,9 @@ const CARD = {
   preset_version: 'preset_v1', eligible: true, result: RESULT,
 };
 
+const COND_A = { hardware: { gpu: '7900 XTX', driver: 'amdgpu 6.12.0' },
+  backend: { name: 'llama.cpp', build: 'b1234', server_cmd: '/opt/models/llama-server -m /opt/models/x.gguf' } };
+
 describe('submitUrl', () => {
   it('targets the leaderboard issue form with the JSON prefilled', () => {
     const u = new URL(RC.submitUrl(CARD));
@@ -42,6 +45,12 @@ describe('submitUrl', () => {
     const json = JSON.parse(new URL(url).searchParams.get('card-json'));
     expect(json.result.live).toBeUndefined();
     expect(json.result.gen_tps).toBe(43.7);
+  });
+
+  it('never includes the run conditions', () => {
+    const url = RC.submitUrl({ ...CARD, result: { ...RESULT, conditions: COND_A } });
+    expect(url).not.toContain('llama-server');
+    expect(JSON.parse(new URL(url).searchParams.get('card-json')).result.conditions).toBeUndefined();
   });
 });
 
@@ -147,6 +156,32 @@ describe('spread ranges (#1301)', () => {
   it('liveSummary appends the decode range', () => {
     const live = { levels: [{ concurrency: 1, pred_tps: 50 }], spread: { decode_tps: { n: 8, min: 48, p25: 49, p50: 50, p75: 51, max: 52 } } };
     expect(RC.liveSummary(live).loadText).toBe('under load · 1: 50.0 (49.0–51.0) t/s');
+  });
+});
+
+describe('conditions (#1302)', () => {
+  it('buildCard appends the conditions block only when present', () => {
+    const frag = RC.buildCard({ ...RESULT, conditions: COND_A });
+    expect(frag.querySelector('details.cond-block')).not.toBeNull();
+    expect(RC.buildCard(RESULT).querySelector('details.cond-block')).toBeNull();
+  });
+  it('places the conditions block before the Save button', () => {
+    const root = RC.buildCard({ ...RESULT, conditions: COND_A }).querySelector('.rc-card');
+    const kids = [...root.children];
+    expect(kids.indexOf(root.querySelector('details.cond-block'))).toBe(kids.indexOf(root.querySelector('.rc-savebtn')) - 1);
+  });
+  it('cardPseudoRun maps a card into the comparison shape', () => {
+    const p = RC.cardPseudoRun({ ...CARD, result: { ...RESULT, conditions: COND_A } });
+    expect(p).toMatchObject({ tool: 'reportcard', model_id: RESULT.model, ok: true,
+      summary: { gen_tps: 43.7, ppt_tps: 1219.0, ttft_ms: 420, mode: 'standard', preset_version: 'preset_v1', avg_watts: 208.0 } });
+    expect(p.ts).toBe(new Date(CARD.ts * 1000).toISOString());
+    expect(p.summary.wh_per_ktok).toBeCloseTo(1000 / 0.21 / 3600, 6);
+    expect(p.conditions).toBe(COND_A);
+  });
+  it('cardPseudoRun is null-safe on missing figures', () => {
+    const p = RC.cardPseudoRun({ ts: 1, result: {} });
+    expect(p.summary.ttft_ms).toBeNull();
+    expect(p.summary.wh_per_ktok).toBeNull();
   });
 });
 
