@@ -10,7 +10,6 @@ import logging
 import os
 import platform
 import re
-import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -24,32 +23,38 @@ SERVER_CMD_MAX = 2000
 _SECRET_FLAGS = ("--api-key", "--api-key-file", "--hf-token", "-hft", "--ssl-key-file", "--admin-key")
 _SECRET_KV_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*(?:token|secret|key|password|passwd)[A-Za-z0-9_]*)=.+$", re.IGNORECASE)
 _URL_USERINFO_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
-_PLAIN_TOKEN_RE = re.compile(r"[^\s'\"\\]+")
 
 
-def redact_cmd(cmd: "str | None") -> "str | None":
-    """Server command line with secret flag values, KEY=VALUE secrets and URL user:password parts replaced by ***."""
-    if not isinstance(cmd, str):
-        return cmd
-    try:
-        toks = shlex.split(cmd)
-    except ValueError:
-        toks = cmd.split()
+def _redact_token(tok: str) -> "tuple[str, bool]":
+    """(redacted token, hide-next) for one argv element."""
+    flag, eq, _val = tok.partition("=")
+    if tok in _SECRET_FLAGS:
+        return tok, True
+    if (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
+        return f"{flag}=***", False
+    if any(f in tok for f in _SECRET_FLAGS):
+        return "***", not eq
+    return _URL_USERINFO_RE.sub(r"\1***@", tok), False
+
+
+def redact_args(args) -> list:
+    """argv list with secret flag values, KEY=VALUE secrets and URL user:password parts replaced by ***."""
     out, hide = [], False
-    for tok in toks:
+    for tok in [str(a) for a in (args or [])]:
         if hide:
             out.append("***")
             hide = False
             continue
-        flag, eq, _val = tok.partition("=")
-        if tok in _SECRET_FLAGS:
-            out.append(tok)
-            hide = True
-        elif (eq and flag in _SECRET_FLAGS) or _SECRET_KV_RE.match(tok):
-            out.append(f"{flag}=***")
-        else:
-            out.append(_URL_USERINFO_RE.sub(r"\1***@", tok))
-    return " ".join(t if _PLAIN_TOKEN_RE.fullmatch(t) else shlex.quote(t) for t in out)
+        red, hide = _redact_token(tok)
+        out.append(red)
+    return out
+
+
+def redact_cmd(cmd: "str | None") -> "str | None":
+    """Server command line redacted token by token on whitespace (the form the agent records)."""
+    if not isinstance(cmd, str):
+        return cmd
+    return " ".join(redact_args(cmd.split()))
 COND_MAX_BYTES = 6144
 
 _OS_RELEASE = Path("/etc/os-release")

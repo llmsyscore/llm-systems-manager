@@ -320,5 +320,5 @@ def test_conditions_clean_redacts_secret_flags_in_server_cmd():
     out = manager_mod._conditions_clean(cond)
     assert out["backend"]["server_cmd"] == "llama-server --api-key *** --hf-token=*** HF_TOKEN=*** --port 8080"
     assert cond["backend"]["server_cmd"].count("s3cret") == 1
-    assert manager_mod._redact_cmd("srv --api-key 'a b' --url https://u:p@h/x") == "srv --api-key *** --url https://***@h/x"
+    assert manager_mod._redact_cmd("srv --api-key=x '--api-key' y --url https://u:p@h/x") == "srv --api-key=*** *** *** --url https://***@h/x"
     assert manager_mod._conditions_clean({"schema": 1, "backend": {"name": "x"}})["backend"] == {"name": "x"}

@@ -321,7 +321,7 @@ def _unit_cmdline() -> Optional[str]:
     tokens = shlex.split(head)
     for a in args:
         tokens += [a["flag"]] if a.get("bool") else [a["flag"], str(a.get("value"))]
-    return shlex.join(tokens)
+    return shlex.join(run_conditions.redact_args(tokens))
 
 
 def _snapshot_dir(model_id: str) -> Optional[Path]:

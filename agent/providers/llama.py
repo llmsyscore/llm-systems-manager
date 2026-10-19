@@ -287,7 +287,7 @@ def _llama_server_cmdline(pid: "Optional[int]") -> "Optional[str]":
         for p in procs:
             cmd = p.cmdline() if pid else list((p.info or {}).get("cmdline") or [])
             if pid or any("llama-server" in str(c) for c in cmd[:1]):
-                args = " ".join(str(c) for c in cmd) or None
+                args = " ".join(run_conditions.redact_args(cmd)) or None
                 break
     except Exception:
         args = None

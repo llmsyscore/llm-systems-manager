@@ -241,8 +241,12 @@ def test_redact_cmd_hides_secret_flag_values_and_kv_tokens(rc):
     assert c["backend"]["server_cmd"] == "llama-server --api-key ***"
 
 
-def test_redact_cmd_handles_quotes_urls_and_bad_quoting(rc):
-    assert rc.redact_cmd("srv --api-key 'a b c' --alias \"my model\"") == "srv --api-key *** --alias 'my model'"
-    assert rc.redact_cmd("srv '--api-key=x y' --url https://user:pw@host/p") == "srv --api-key=*** --url https://***@host/p"
-    assert rc.redact_cmd("srv --api-key 'unterminated") == "srv --api-key ***"
-    assert rc.redact_cmd("srv  --port   8080") == "srv --port 8080"
+def test_redact_args_redacts_argv_elements_with_spaces_and_quoted_flags(rc):
+    argv = ["srv", "--api-key", "a b c", "--alias", "my model", "'--api-key=x'", "--url", "https://user:pw@host/p", "--ssl-key-file=/k.pem"]
+    assert rc.redact_args(argv) == ["srv", "--api-key", "***", "--alias", "my model", "***", "--url", "https://***@host/p", "--ssl-key-file=***"]
+    assert rc.redact_args(None) == [] and rc.redact_args([1, "x"]) == ["1", "x"]
+
+
+def test_redact_cmd_splits_on_whitespace_only(rc):
+    assert rc.redact_cmd("srv  --port   8080 --api-key=x --url https://u:p@h/x") == "srv --port 8080 --api-key=*** --url https://***@h/x"
+    assert rc.redact_cmd("srv '--api-key' tok") == "srv *** ***"
