@@ -9,7 +9,7 @@ It currently integrates [llama.cpp](https://github.com/ggerganov/llama.cpp), [vL
 The **script installer** is the preferred path — one interactive command handles prerequisites, InfluxDB, config, TLS, and agents. It enables the systemd units and asks before it starts a service:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
 ```
 
 <details>
@@ -400,7 +400,7 @@ The **fully automated script installer** (Quickstart below) is the preferred pat
 For a quick installation on one host, choose the full install option:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
 ```
 
 The installer is interactive: it prompts for SMTP credentials (if you want email alerts), the manager admin login, and confirms before installing system packages. It then enables the systemd units but **does not start anything automatically** — it prints the exact `systemctl start` commands so you stay in control of timing.
@@ -409,13 +409,15 @@ The installer deploys the **latest [GitHub Release](https://github.com/llmsyscor
 
 ```bash
 # pin a specific release
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh) --ref v1.0.0
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --ref v1.0.0
 
 # track unreleased main (advanced)
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh) --source git
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --source git
 ```
 
 The same `--ref` / `--source` flags apply to every install mode and to `--update`.
+
+The short address serves the same script as the full one, `https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh`, which still works.
 
 ### Offline / air-gapped install
 
@@ -484,7 +486,7 @@ llm-systems-admin-password reset   # temporary admin password for the first sign
 The agent is what pushes all data into the dashboard. Run the installer and use the mode 5 (agent installation) option on every machine you want to monitor and control (Linux or macOS):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
 ```
 
 To skip the prompts, pass the manager's address, its CA fingerprint and the enrollment secret:

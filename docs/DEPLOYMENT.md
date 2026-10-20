@@ -47,7 +47,7 @@ For a quick installation install on one host, choose the full install option:
 ### Step 1:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
 ```
 
 ### Step 2: Choose an Installation Mode
@@ -245,7 +245,7 @@ With the fingerprint the agent checks the manager's certificate before it sends 
 Or you can optionally download and run the installer from github
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh)
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
 ```
 
 **If an agent is waiting for a secure connection.** The agent log shows a line that starts with `control channel:` and mentions `holding the token`, and the agent does not register or report. This happens when the agent already has the manager's certificate but its settings still point at the manager's plain HTTP address, and the manager's secure address does not answer or its certificate has changed. To fix it, either make sure the manager's https port (5443 by default) can be reached from the agent, or run the installer again with the fingerprint shown in Admin › Agents (Manage ▾ → Enrollment):
