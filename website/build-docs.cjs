@@ -134,6 +134,7 @@ ${body}
   </div>
 </footer>
 
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "c0978b0688704f8ba6e4198de48d62dd"}'></script>
 </body>
 </html>
 `;
