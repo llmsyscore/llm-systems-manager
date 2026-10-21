@@ -1227,8 +1227,8 @@ def build_registry(deps: dict) -> "dict[str, Tool]":
              _obj({"path": {"type": "string"}, "host": {"type": "string", "description": "An agent hostname: returns that agent's configuration (secrets masked); path then narrows to one dotted key"}}),
              "read", "read", config_get, role="admin"),
         Tool("help", "Explains a dashboard concept or feature: a short note when one exists, plus the best-matching "
-             "sections of the product docs (README, API reference, architecture, components, deployment). doc narrows "
-             "the search to one document.",
+             "sections of the product docs (README, features, API reference, architecture, components, deployment, "
+             "install script). doc narrows the search to one document.",
              _obj({"topic": {"type": "string"}, "doc": {"type": "string", "enum": list(DOCS)}}, ["topic"]), "read", "read",
              lambda a: help_answer(a["topic"], deps, a.get("doc"))),
         Tool("support", "Where to get help with LLM Systems Manager: the developer (llmsyscore), website, repository, "
@@ -1436,8 +1436,9 @@ def default_help(topic: str) -> str:
     return "No note for that topic; the docs at /docs cover the dashboard tabs."
 
 
-DOCS = {"readme": "README.md", "api": "docs/API_REFERENCE.md", "architecture": "docs/ARCHITECTURE.md",
-        "components": "docs/COMPONENTS.md", "deployment": "docs/DEPLOYMENT.md"}
+DOCS = {"readme": "README.md", "features": "docs/FEATURES.md", "api": "docs/API_REFERENCE.md",
+        "architecture": "docs/ARCHITECTURE.md", "components": "docs/COMPONENTS.md", "deployment": "docs/DEPLOYMENT.md",
+        "install": "docs/INSTALL_SCRIPT.md"}
 DOCS_ROOT = Path(__file__).resolve().parents[2]
 DOC_HITS = 3
 DOC_SNIPPET = 700

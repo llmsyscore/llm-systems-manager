@@ -19,16 +19,22 @@ const DOCS = [
     desc: "Every HTTP endpoint exposed by LLM Systems Manager and the Alarm Engine, for operators and integration authors." },
   { key: "deployment",   md: path.join(REPO, "docs", "DEPLOYMENT.md"),    title: "Deployment",
     desc: "Deployment guide for LLM Systems Manager: prerequisites, installation, TLS, and multi-host setups." },
+  { key: "features",     md: path.join(REPO, "docs", "FEATURES.md"),      title: "Features",
+    desc: "Everything LLM Systems Manager does: Tower, Forecast, benchmarking, autotuning, energy and cost, the gateway, and more." },
+  { key: "install-script", md: path.join(REPO, "docs", "INSTALL_SCRIPT.md"), title: "What the install script does",
+    desc: "What the LLM Systems Manager install script does on your machine, step by step, and the other ways to install." },
 ];
 
-/* The site has its own gallery and tour video, so the README's screenshots
-   section and its inline references are dropped from the docs page. */
+/* The site has its own gallery and tour video, so the screenshots and video
+   sections, the tour GIF and their inline references are dropped from the docs pages. */
 function stripScreenshots(md) {
-  const start = md.indexOf("## Screenshots");
-  if (start !== -1) {
+  for (const head of ["## Screenshots", "## Video tour"]) {
+    const start = md.indexOf(head);
+    if (start === -1) continue;
     const end = md.indexOf("\n## ", start + 1);
     md = md.slice(0, start) + (end !== -1 ? md.slice(end + 1) : "");
   }
+  md = md.replace(/^<img [^>]*tour\.gif[^>]*>\n/gm, "");
   md = md.replace(/ — \[screenshot below\]\(#screenshots\)/gi, "");
   md = md.replace(/ ?\[screenshot below\]\(#screenshots\)\.?/gi, "");
   return md;
@@ -36,7 +42,8 @@ function stripScreenshots(md) {
 
 const LINKMAP = {
   "readme": "index.html", "architecture": "architecture.html", "components": "components.html",
-  "api_reference": "api.html", "deployment": "deployment.html",
+  "api_reference": "api.html", "deployment": "deployment.html", "features": "features.html",
+  "install_script": "install-script.html",
 };
 
 // Strips tags by repeating until stable, then allowlists the surviving
@@ -51,7 +58,7 @@ function slug(text) {
 
 function fixup(html) {
   html = html.replace(/src="(?:\.\.\/)?docs\/screenshots\/([^"]+)"/g, 'src="../assets/screenshots/$1"');
-  html = html.replace(/href="([^"]*?)(README|ARCHITECTURE|COMPONENTS|API_REFERENCE|DEPLOYMENT)\.md(#[^"]*)?"/gi,
+  html = html.replace(/href="([^"]*?)(README|ARCHITECTURE|COMPONENTS|API_REFERENCE|DEPLOYMENT|FEATURES|INSTALL_SCRIPT)\.md(#[^"]*)?"/gi,
     (m, pre, name, hash) => `href="${LINKMAP[name.toLowerCase()]}${hash || ""}"`);
   html = html.replace(/<h([1-4])>([\s\S]*?)<\/h\1>/g,
     (m, lvl, inner) => `<h${lvl} id="${slug(inner)}">${inner}</h${lvl}>`);
@@ -143,7 +150,7 @@ ${body}
 fs.mkdirSync(path.join(__dirname, "docs"), { recursive: true });
 for (const doc of DOCS) {
   let md = fs.readFileSync(doc.md, "utf8");
-  if (doc.key === "index") md = stripScreenshots(md);
+  if (doc.key === "index" || doc.key === "features") md = stripScreenshots(md);
   const body = fixup(parse(md));
   fs.writeFileSync(path.join(__dirname, "docs", doc.key + ".html"), page(doc, body));
   console.log("built docs/" + doc.key + ".html");
