@@ -291,3 +291,16 @@ request — until it sets a new one; every other API returns 403 in the meantime
 | **Tool run ledger** | SQLite — `tool_runs` table in `data/manager.db` (owned by Manager) | One row per completed Report Card, Benchmark, or Autotune run, deduped on run id; pruned per tool at 200 rows |
 | **Admin action audit log** | SQLite — `audit_log` table in its own `data/audit.db` (owned by Manager; moved out of the main file on first boot) | Append-only record of admin actions (actor, role, path, outcome, an `auth` kind, a catalog `event` key, and a secrets-masked `detail` blob) for the Admin tab's audit sub-tab; purged every 24 h at `retention_days` (60 default) with a 100,000-row backstop |
 | **Hourly energy + token accounting** | SQLite — `energy_hourly` table in its own `data/energy.db` (owned by Manager; moved out of the main file on first boot) | One row per agent per hour (observed/active seconds, Wh, tokens); backs the Energy tab and the companion tiles; pruned at `[manager.energy].retention_days` |
+
+---
+
+## Project Layout
+
+```
+llm-systems-manager/        Flask manager — backend/ (auth, multi-user management, agent registry, terminal, reverse proxies, OpenClaw analytics, tool run tracking, shared app context, internal CA, archive) and frontend/ (single-page UI)
+agent/                      Cross-platform telemetry + control agent (+ install/)
+llm-systems-alarm-engine/   Standalone alarm engine (FastAPI)
+config/                     Unified TOML config + typed loader
+tools/                      Universal installer (tools/installer/), smoke tests, benchmark harness
+docs/                       Deployment, architecture, components, API reference, features, screenshots
+```

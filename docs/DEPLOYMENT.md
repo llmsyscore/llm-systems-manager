@@ -24,6 +24,17 @@ The script installer needs Python 3.10+ on the agent host. The native packages a
 
 Each agent host needs network access to ports 8081 (alarm engine) and 5000 or 5443 (manager).
 
+### Supported Platforms
+
+The manager, alarm engine, and InfluxDB are tested on **Debian and Ubuntu derivatives** and on **Rocky Linux 10**.
+
+- **RHEL-family 10** (Rocky Linux, AlmaLinux, RHEL 10): every mode works, and the installer installs the packages it needs with `dnf`. Hosts running version 9 of these systems use the `.rpm` package instead.
+- **Other Linux distros** (Fedora, Arch, openSUSE, Alpine): the agent (mode 5) auto-detects `dnf` / `yum` / `brew` and works out of the box. The manager / alarm engine / InfluxDB modes (1–4, 6) stop at the prerequisites step with a hint for your package manager; install the listed packages by hand, then re-run.
+- **macOS** (Apple Silicon, tested on M2 Pro): agent with the script installer; the dashboard through [Homebrew](#installing-with-homebrew-control-plane).
+- **Windows** is not supported.
+
+The installer checks for: `python3` (≥ 3.11), `python3-venv`, `git`, `jq`, `curl`, and `rsync`.
+
 ### Required Ports
 
 The following (configurable) ports must be reachable between the components listed. Browsers that use the Tools tab also need 5447 or 5448.
@@ -131,6 +142,30 @@ sudo /opt/llm-systems-manager/llm-systems-manager/venv/bin/python \
 
 It asks before changing anything, then prints a new temporary password. Add `--user <name>` to reset a different account. After several failed sign-in attempts the account is locked for a while; wait for the lockout to pass or restart the manager before using the new password.
 
+What the script does on your machine, step by step: [What the install script does](INSTALL_SCRIPT.md).
+
+### Choosing the release
+
+The installer deploys the **latest [GitHub Release](https://github.com/llmsyscore/llm-systems-manager/releases)**, a source tarball whose SHA-256 checksum is verified before anything is installed; a mismatch aborts. To pin a specific version, or to track the development tip from a git clone of `main` instead (code that hasn't been cut into a release yet):
+
+```bash
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --ref v1.0.0     # pin a specific release
+bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --source git     # track unreleased main (advanced)
+```
+
+The same `--ref` / `--source` flags apply to every install mode and to `--update`. The short address serves the same script as `https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh`, which still works.
+
+### Offline / air-gapped install
+
+Hosts with no access to GitHub can install from a release tarball staged out-of-band. On a connected machine, download `llm-systems-manager-<tag>.tar.gz` from the [Releases page](https://github.com/llmsyscore/llm-systems-manager/releases) (verify it against the published `.sha256` yourself — the offline path trusts the tree you hand it). Copy it to the target host, then:
+
+```bash
+tar -xzf llm-systems-manager-v1.0.0.tar.gz
+sudo bash llm-systems-manager-v1.0.0/tools/installer/install.sh --source local
+```
+
+`--source local` installs the extracted tree the script lives in: no release download, no git clone, no installer self-update (`git` itself is not required on the target host). It works with every install mode and with `--update` (offline update of an existing install). Only GitHub access is eliminated: installing system packages and the Python virtualenvs still uses `apt` and `pip`, so a fully air-gapped host needs local mirrors for those (or pre-provisioned dependencies).
+
 ---
 
 ## Installing from Native Packages (.deb / .rpm)
@@ -170,7 +205,17 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 ### Anonymous reports
 
-The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Install and crash reports default to yes, the daily diagnostic report to no. The README section "What the install, crash and diagnostic reports contain" lists every field, including the product release and the manager, alarm engine and agent versions.
+The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Saying yes also allows crash reports. Install and crash reports default to yes, the daily diagnostic report to no. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
+
+| Report | When | Fields |
+|---|---|---|
+| Install | once per install or update | product release and version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
+| Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
+| Daily diagnostic | once a day when turned on | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime |
+
+Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The receiving service keeps ordinary request logs, including the sending address, for a short time; the stored reports do not contain it. The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
+
+Turning reports off or on:
 
 - Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
 - Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
@@ -225,8 +270,8 @@ brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cl
 If you already have a manager running and want to start monitoring an additional server, install only the agent on that remote machine. The script installer below is the preferred path; two alternatives exist for hosts where it doesn't fit:
 
 - **Native package** (Linux, no Python needed): `apt`/`dnf` install of the per-arch `llm-systems-agent` package — see [Installing from Native Packages](#installing-from-native-packages-deb--rpm).
-- **Binary tarball** (Linux or macOS, no Python needed): each release ships `llm-systems-agent-<platform>.tar.gz` bundling the self-contained binary, `agent_config.yaml.example`, and the service unit template — extract to `/opt/llm-systems-agent`, set `MANAGER_URL` in a copied `agent_config.yaml`, install the unit, and `systemctl enable --now llm-systems-agent`. Full steps in the [README's Agent binary section](../README.md#agent-binary-no-python-required).
-- **Homebrew** (macOS/Apple Silicon, or Linux x86_64/arm64 with Homebrew): `brew tap llmsyscore/tap && brew trust llmsyscore/tap && brew install llm-systems-agent`, then set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` and `brew services start llm-systems-agent` (launchd on macOS, systemd user unit on Linux). `brew upgrade` tracks new releases automatically. Full steps in the [README's Homebrew section](../README.md#homebrew-macos--linux).
+- **Binary tarball** (Linux or macOS, no Python needed): each release ships `llm-systems-agent-<platform>.tar.gz` bundling the self-contained binary, `agent_config.yaml.example`, and the service unit template — extract to `/opt/llm-systems-agent`, set `MANAGER_URL` in a copied `agent_config.yaml`, install the unit, and `systemctl enable --now llm-systems-agent`. Full steps in [Agent binary](#agent-binary-no-python-required) below.
+- **Homebrew** (macOS/Apple Silicon, or Linux x86_64/arm64 with Homebrew): `brew tap llmsyscore/tap && brew trust llmsyscore/tap && brew install llm-systems-agent`, then set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` and `brew services start llm-systems-agent` (launchd on macOS, systemd user unit on Linux). `brew upgrade` tracks new releases automatically. Full steps in [Agent with Homebrew](#agent-with-homebrew-macos--linux) below.
 
 ### Step 1: Get the Installer on the Remote Host
 
@@ -280,6 +325,84 @@ New agents must then be approved before the manager will accept their data. The 
 4. Find the new agent in the list and click **Approve**
 
 Once approved, the agent begins sending metrics and the manager can communicate with it. Fleet-wide actions — **Approve all pending**, **Update all**, **Push CA**, and the **Agent security** switch — live under the **Manage ▾** menu on the same tab. Turning Agent security off is for troubleshooting from a browser or script on your network: agents then answer their read-only calls (status, metrics, config and log reads) without a token, while everything else — restart, update, config changes, pausing collection, terminals and server control — always needs the agent's token. The manager's own checks never change.
+
+Approve a second agent that runs the same provider (e.g. a second `llama.cpp` box) and a host picker appears on the matching dashboard sub-tabs; every approved agent is independently viewable and controllable. One agent is the *default* (what the dashboard shows when you haven't picked); set it from **Admin**.
+
+### Agent with Homebrew (macOS / Linux)
+
+On macOS (Apple Silicon) or a Linux host with [Homebrew](https://docs.brew.sh/Homebrew-on-Linux) (x86_64 or arm64), install the agent from the project's Homebrew tap:
+
+```bash
+brew tap llmsyscore/tap
+brew trust llmsyscore/tap        # newer Homebrew requires trusting third-party taps
+brew install llm-systems-agent
+```
+
+The formula picks the right prebuilt binary for the platform. Set `MANAGER_URL` in `$(brew --prefix)/etc/llm-systems-agent/agent_config.yaml` (the fully documented `agent_config.yaml.example` is installed alongside it for reference), then run the agent as a service (launchd on macOS, a systemd user unit on Linux):
+
+```bash
+brew services start llm-systems-agent
+```
+
+`brew upgrade llm-systems-agent` picks up new releases automatically: a scheduled job in the tap tracks each GitHub Release and bumps the formula. The dashboard's **Admin → Agents → Update** self-update also works, but a later `brew upgrade` replaces the binary again, so prefer `brew` on Homebrew-managed hosts. Uninstall with `brew services stop llm-systems-agent && brew uninstall llm-systems-agent`.
+
+### Agent binary (no Python required)
+
+Every [release](https://github.com/llmsyscore/llm-systems-manager/releases) also ships the agent as a per-platform tarball (`llm-systems-agent-linux-x86_64.tar.gz`, `-linux-arm64.tar.gz`, `-macos-arm64.tar.gz`) with a `.sha256` checksum; no Python or venv is needed on the host. Each tarball bundles the self-contained binary, a fully documented `agent_config.yaml.example`, and the platform's service-manager unit (`llm-systems-agent-binary.service.tmpl` on Linux, `com.llm-systems-agent-binary.plist.tmpl` on macOS). On Linux:
+
+```bash
+sudo mkdir -p /opt/llm-systems-agent && cd /opt/llm-systems-agent
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.tar.gz
+sudo curl -fsSLO https://github.com/llmsyscore/llm-systems-manager/releases/latest/download/llm-systems-agent-linux-x86_64.tar.gz.sha256
+sha256sum -c llm-systems-agent-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c <file>.sha256
+sudo tar -xzf llm-systems-agent-linux-x86_64.tar.gz         # -> binary + agent_config.yaml.example + .service.tmpl
+sudo chmod +x llm-systems-agent
+sudo cp agent_config.yaml.example agent_config.yaml         # then edit: at minimum set MANAGER_URL
+sudo chown -R <run-as-user>: /opt/llm-systems-agent
+```
+
+Then install the systemd unit from the extracted `llm-systems-agent-binary.service.tmpl` (substitute `${AGENT_USER}`, `${AGENT_GROUP}`, `${AGENT_INSTALL_DIR}`) into `/etc/systemd/system/llm-systems-agent.service` and `systemctl enable --now llm-systems-agent`.
+
+Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates; every option is documented inline in `agent_config.yaml.example`, so set them in your copied `agent_config.yaml` as needed.
+
+On macOS, download the `-macos-arm64.tar.gz` tarball instead; it bundles the same binary + `agent_config.yaml.example` plus the `com.llm-systems-agent-binary.plist.tmpl` launchd unit. Clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`), then use the extracted plist template (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
+
+### Updating agents from the dashboard
+
+Per-agent **Update** on **Admin → Agents**: the agent downloads the latest release tarball for its platform, verifies the `.sha256`, extracts and smoke-tests the staged binary, swaps it atomically (previous binary kept beside it as `.self-update.bak.<ts>`), and restarts. **Update all** in the **Manage ▾** menu upgrades every agent, one at a time: each has to report the new version before the next starts, and the sequence stops at the first failure with the remainder left untouched.
+
+---
+
+## Multiple Hosts
+
+Typical lab topology:
+
+```
+                ┌─────────────────────┐
+                │  Manager + Alarm    │
+                │  Engine + InfluxDB  │
+                │  + local agent      │
+                └──────────┬──────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+   ┌────▼─────┐      ┌─────▼────┐       ┌─────▼────┐
+   │  GPU     │      │  Mac     │       │  Other   │
+   │  host    │      │  Studio  │       │  hosts…  │
+   │  agent   │      │  agent   │       │  agent   │
+   │  +llama  │      │  + LMS   │       │          │
+   └──────────┘      └──────────┘       └──────────┘
+```
+
+When you want **InfluxDB on its own host**, run mode 6 (InfluxDB only) there first, then mode 2 (Manager + alarm) on the manager/alarm-engine host. The installer prompts for the InfluxDB URL and the InfluxDB tokens that were printed during the InfluxDB installation.
+
+When you want **the manager and alarm engine on separate hosts**, run mode 3 (manager only) on the manager host and mode 4 (alarm engine) on the alarm engine host. The installer prompts for the cross-host URLs and then prints the exact commands to copy the alarm engine's TLS certs from the manager host to the alarm engine host.
+
+The alarm engine's `management_token` is **required** on a split install. It locks the engine's rules/alerts/notifications API and lets Admin → Settings edit alarm-engine settings. Mode 4 prints a generated value; the mode 3 prompt accepts that paste or `new` to generate one on the manager host, and cannot be skipped. Non-interactive mode 3 installs can pass it as `LLMSYS_CFG_AE_MGMT_TOKEN`; otherwise one is generated and printed at the end. The same value must then be live on **both** hosts. Until it is, the engine logs `ALARM ENGINE AUTH` at startup and Admin → System Health shows an `auth open` chip on the alarm-engine row.
+
+### Choosing the run-as user
+
+By default the manager and alarm engine run as a dedicated `llmsys` system account (auto-created, password-locked). Pass `--user <name>` to the installer to use a different account, or enter the account name when the installer asks. If the account exists, its real primary group is preserved; if it doesn't, the installer creates it as a system user. The agent installer accepts the same `--user` flag.
 
 ---
 
@@ -390,6 +513,25 @@ sudo systemctl restart llm-systems-alarm-engine
 
 If you changed a setting used by both (such as InfluxDB credentials), restart both.
 
+### Pointing the agent at your own services
+
+The agent attempts to configure itself. If your inference servers run on different ports, hosts, or paths, override them in `agent/agent_config.yaml` on each agent host (the installer drops a template alongside the agent). Common keys:
+
+| Key | What it points at | Default |
+|---|---|---|
+| `LLAMA_API_URL` | Your `llama-server` HTTP endpoint (llama.cpp has announced the default port moves to `:9931`) | `http://localhost:8080` |
+| `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1235` |
+| `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | auto-detected |
+| `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | auto-detected |
+| `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | auto-detected |
+| `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
+| `LMS_CMD` | Path to the `lms` CLI | auto-detected (`which lms`) |
+| `LMS_LOAD_TIMEOUT_S` | How long to wait for an LM Studio model load before reporting failure (keep under 200) | `180` |
+| `LMS_UNLOAD_TIMEOUT_S` | How long to wait for an LM Studio model unload before reporting failure (keep under 90) | `60` |
+| `PROCESS_WATCHLIST` | Process names the agent should report on (psutil-style) | see the example file |
+
+The installer fills most of these in at deploy time via auto-detect and prompts. Any field can also be set via environment variable `LSA_<NAME>` (e.g. `LSA_LLAMA_API_URL=http://...`). The agent installer offers `--enable-llama`, `--enable-lms`, `--enable-vllm`, and `--enable-perf` flags, and auto-detects most of these from what's installed on the host. A host with neither `llama-server` nor LM Studio just reports system metrics. Per-agent settings can also be edited from the Agents tab.
+
 ### Trim your config file
 
 An older install may have a config file that lists every setting, most of them at their default values. The `slim` command prints a shorter copy that keeps only the settings you changed. Secrets and the settings the installer wrote are kept.
@@ -451,7 +593,38 @@ api_keys = ["sk-your-secret-key"]
 read_timeout_s = 600.0
 ```
 
-Restart the manager afterwards. These keys are accepted only on `/api/gateway/*`.
+Restart the manager afterwards. These keys are accepted only on `/api/gateway/*`. A key can optionally be labelled (`name=secret`); a labelled key names the client in the Gateway card's flow diagram, and an unlabelled one shows there as `key-1`, `key-2`, … by position:
+
+```toml
+api_keys = ["laptop=sk-abc123", "sk-plainkey"]   # empty = dashboard-session access only
+```
+
+Call it like any OpenAI endpoint:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://<manager-host>:5000/api/gateway/v1",
+    api_key="sk-your-secret-key",       # any configured key
+)
+resp = client.chat.completions.create(
+    model="<model-id>",                 # from GET /v1/models; drives pin routing
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(resp.choices[0].message.content)
+```
+
+or with curl:
+
+```bash
+curl http://<manager-host>:5000/api/gateway/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello!"}]}'
+```
+
+The gateway forwards over the existing agent TLS channel; admin and control endpoints are not part of it.
 
 ### Model Autopilot
 
@@ -858,6 +1031,19 @@ The **Admin** tab in the dashboard includes a **System Health** card. It shows:
 - A restart control that always offers the alarm engine alongside the manager
 
 The Admin tab button in the navigation bar turns red when any component reports a problem — you do not need to check manually.
+
+---
+
+## Troubleshooting
+
+| Symptom | Where to look |
+|---|---|
+| Dashboard won't load / 502 in the browser | `sudo systemctl status llm-systems-manager` then `sudo journalctl -u llm-systems-manager -n 100 --no-pager`. |
+| Host doesn't appear in the dashboard | Agent installed but not approved: **Admin → Agents → Approve**. Approved but no data: check the agent log with `sudo journalctl -u llm-systems-agent -f` on that host. |
+| Agent shows up but metrics are flat | The agent is probably not reaching the alarm engine. On the agent host: `curl -i http://<manager-host>:8081/health` (or `https://...` if alarm engine TLS is on). 401 means the agent doesn't have the ingest token yet: wait one heartbeat (≤60 s) or restart it. |
+| Alarm engine red dot in the Admin tab | Open `http://<manager-host>:5000/api/admin/system-health` to see which component is degraded. Common causes: alarm engine TLS cert missing on a split install (copy `ae-tls.{crt,key}` from the manager host to the alarm engine host's data directory), ingest token mismatch (both hosts must carry the same value), InfluxDB down. |
+| `llm-systems-influx-setup` says "waiting for the InfluxDB API to finish starting" | InfluxDB answers its health check a moment before its API is ready. The command waits up to 2 minutes (`LSM_INFLUX_WAIT_S=<seconds>` changes that), then onboards as usual. If it gives up, check `brew services info influxdb@2` and the InfluxDB log it prints. |
+| Install or uninstall pauses with "waiting for another package manager to finish" | Another apt process (usually automatic updates on a fresh machine) holds the package lock. The installer waits up to 5 minutes for it and then carries on. Set `LLMSYS_APT_LOCK_TIMEOUT=<seconds>` to wait longer or shorter. |
 
 ---
 
