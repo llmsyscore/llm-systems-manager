@@ -1461,8 +1461,18 @@ def support_info() -> dict:
 def doc_sections(text: str) -> list:
     """[(heading path, body)] from Markdown: every heading opens a section; the path keeps the parent headings."""
     out, stack, body = [], [], []
-    head = ""
+    head, fence = "", None
     for line in text.splitlines():
+        f = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if f and f.group(1)[0] == fence[0] and len(f.group(1)) >= len(fence) and not line[f.end():].strip():
+                fence = None
+            body.append(line)
+            continue
+        if f and not (f.group(1)[0] == "`" and "`" in line[f.end():]):
+            fence = f.group(1)
+            body.append(line)
+            continue
         m = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", line)
         if m:
             if head or body:

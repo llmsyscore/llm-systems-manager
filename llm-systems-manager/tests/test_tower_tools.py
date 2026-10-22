@@ -1482,6 +1482,18 @@ def test_doc_sections_and_docs_search_rank_heading_and_body_hits(tmp_path):
     assert hit["text"].endswith("…") and len(hit["text"]) == tt.DOC_SNIPPET + 1
 
 
+def test_doc_sections_skip_heading_like_lines_inside_code_fences():
+    text = ("# Deployment\n\n## Config\n\n```toml\n# price_kwh = 0.15   # comment, not a heading\nkey = 1\n```\n\n"
+            "## Fail2ban\n\n~~~\n# /etc/fail2ban/jail.d/llm-systems-manager.conf\n[jail]\n~~~\n\n"
+            "   ````sh\n```\n# still inside the four-tick fence\n````\n\n### Next Steps\n\nDone.\n")
+    secs = tt.doc_sections(text)
+    assert [h for h, _b in secs] == ["Deployment › Config", "Deployment › Fail2ban", "Deployment › Fail2ban › Next Steps"]
+    assert "# price_kwh = 0.15" in secs[0][1] and "```toml" in secs[0][1]
+    assert "# /etc/fail2ban/jail.d/llm-systems-manager.conf" in secs[1][1] and "still inside" in secs[1][1]
+    inline = "# Top\n\n```foo``` starts this line but is inline code\n\n## Real\n\nbody\n\n```\n# unterminated fence\n## not a heading\n"
+    assert [h for h, _b in tt.doc_sections(inline)] == ["Top", "Top › Real"]
+
+
 def test_help_tool_returns_the_note_and_doc_hits(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text("# M\n\n## Slot pressure\n\nSlots queue requests.\n", encoding="utf-8")
