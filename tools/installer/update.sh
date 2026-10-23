@@ -620,6 +620,7 @@ if [[ -z "$REPO_SRC" ]]; then
   acquire_source_tree "$REPO_SRC"
 fi
 ok "source tree at $REPO_SRC"
+declare -F telemetry_export_source >/dev/null && telemetry_export_source "$REPO_SRC"
 
 # ── Per-component plan ─────────────────────────────────────────────────────
 RESTART_UNITS=()

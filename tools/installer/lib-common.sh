@@ -1358,17 +1358,47 @@ telemetry_endpoint() {
   esac
 }
 
+# telemetry_source_of TREE — "SOURCE TAG" for a staged tree: .git = git, .llmsys-release = release, else local.
+telemetry_source_of() {
+  local tag=""
+  if [[ -e "$1/.git" ]]; then
+    printf 'git \n'; return 0
+  fi
+  if [[ -f "$1/.llmsys-release" ]]; then
+    tag="$(head -n1 "$1/.llmsys-release" 2>/dev/null | awk '{print $1}')"
+    [[ "$tag" == \$Format* ]] && tag=""
+    printf 'release %s\n' "$tag"; return 0
+  fi
+  if [[ -f "$1/RELEASE" ]]; then
+    tag="$(head -n1 "$1/RELEASE" 2>/dev/null | awk '{print $1}')"
+    [[ "$tag" == \$Format* ]] && tag=""
+  fi
+  printf 'local %s\n' "$tag"
+}
+
+# telemetry_export_source TREE — exports LLMSYS_TELEMETRY_SOURCE / LLMSYS_TELEMETRY_RELEASE unless already set.
+telemetry_export_source() {
+  [[ -n "${LLMSYS_TELEMETRY_SOURCE:-}" ]] && return 0
+  local s t
+  read -r s t < <(telemetry_source_of "$1")
+  export LLMSYS_TELEMETRY_SOURCE="$s" LLMSYS_TELEMETRY_RELEASE="${LLMSYS_TELEMETRY_RELEASE:-$t}"
+}
+
 # telemetry_payload EVENT CHANNEL MODE OUTCOME DATA_DIR VERSION ROOT — JSON on stdout; release from RELEASE.
 telemetry_payload() {
   local py rel="" f; py="$(telemetry_python)" || return 1
-  for f in "$7/RELEASE" "${LLMSYS_INSTALL_DIR:-/nonexistent}/RELEASE"; do
+  for f in "$7/RELEASE" "$7/.llmsys-release" "${LLMSYS_INSTALL_DIR:-/nonexistent}/RELEASE"; do
     [[ -f "$f" ]] || continue
     rel="$(head -n1 "$f" 2>/dev/null | awk '{print $1}')"
     [[ -n "$rel" && "$rel" != \$Format* ]] && break
     rel=""
   done
-  "$py" -I "$7/llm-systems-manager/backend/telemetry.py" payload --event "$1" --channel "$2" \
-    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7" --release "$rel"
+  [[ -n "$rel" ]] || rel="${LLMSYS_TELEMETRY_RELEASE:-}"
+  local b="$7/llm-systems-manager/backend/telemetry.py" src=()
+  grep -q -- '"--source"' "$b" 2>/dev/null && src=(--source "${LLMSYS_TELEMETRY_SOURCE:-}")
+  "$py" -I "$b" payload --event "$1" --channel "$2" \
+    --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7" --release "$rel" \
+    ${src[@]+"${src[@]}"}
 }
 
 # telemetry_consent — exports LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT (0|1) and LLMSYS_TELEMETRY_REASON.
@@ -1393,7 +1423,7 @@ telemetry_consent() {
     local a
     read -rp "  Send anonymous install and crash reports? [Y/n] " a
     case "$(printf '%s' "${a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) t=0 ;; *) t=1 ;; esac
-    read -rp "  Also send a daily diagnostic report (version, OS, hardware, agent count, uptime)? [y/N] " a
+    read -rp "  Also send a daily diagnostic report (version, OS, hardware, agent count, uptime, feature use counts)? [y/N] " a
     case "$(printf '%s' "${a:-n}" | tr '[:upper:]' '[:lower:]')" in y|yes) h=1 ;; *) h=0 ;; esac
   else
     t=1; h=0
@@ -1503,6 +1533,7 @@ telemetry_report_as_user() {
     LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" CI="${CI:-}" \
     LLMSYS_INSTALL_DIR="${LLMSYS_INSTALL_DIR:-}" \
+    LLMSYS_TELEMETRY_SOURCE="${LLMSYS_TELEMETRY_SOURCE:-}" LLMSYS_TELEMETRY_RELEASE="${LLMSYS_TELEMETRY_RELEASE:-}" \
     bash "$root/tools/installer/telemetry-report.sh" --event "$2" --channel "$3" --mode "$4" \
     --outcome "$5" --data-dir "$6" --version "$7" --root "$root" </dev/null || true
   return 0

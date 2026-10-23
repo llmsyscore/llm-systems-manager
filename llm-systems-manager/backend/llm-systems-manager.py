@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.22-3"
+__version__ = "v2026.10.23-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6920,12 +6920,61 @@ def _telemetry_ae_version():
     return _infra_version_cache.get("ae")
 
 
+def _telemetry_ae_count(path: str, since: "datetime | None" = None) -> "int | None":
+    if not _alarm_engine_url:
+        return None
+    r = _ae_session.get(f"{_alarm_engine_url.rstrip('/')}{path}", timeout=(2, 5))
+    rows = r.json() if r.ok else None
+    if not isinstance(rows, list):
+        return None
+    if since is None:
+        return len(rows)
+    n = 0
+    for a in rows:
+        try:
+            t = datetime.fromisoformat(str(a.get("created_at")).replace("Z", "+00:00"))
+            n += (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) >= since
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return n
+
+
+def _telemetry_features() -> dict:
+    """Feature-use counts for the daily report: integers only, keys fixed here."""
+    out: dict = {}
+    since = datetime.now(timezone.utc) - timedelta(days=1)
+    with best_effort("telemetry features: tool runs"):
+        conn = get_db()
+        rows = conn.execute("SELECT tool, COUNT(*) FROM tool_runs WHERE ts >= ? GROUP BY tool",
+                            (since.isoformat(),)).fetchall()
+        got = {str(t): int(n) for t, n in rows}
+        for t in _TOOL_RUN_TOOLS:
+            out[t] = got.get(t, 0)
+    with best_effort("telemetry features: tower"):
+        out["tower"] = int(get_db().execute(
+            "SELECT COUNT(*) FROM tower_messages WHERE role = 'user' AND ts >= ?",
+            (since.timestamp(),)).fetchone()[0])
+    with best_effort("telemetry features: models"):
+        sample_of = lambda prov, aid: (provider_state.STORE.get(prov, aid) or {}).get("sample") or {}  # noqa: E731
+        out["models"] = len(tower_tools.loaded_models(agent_registry.load_agents()["agents"],
+                                                      sample_of, autopilot._LOADED_BY_PROVIDER))
+    with best_effort("telemetry features: alarm rules"):
+        n = _telemetry_ae_count("/api/alarm/rules?limit=1000")
+        if n is not None:
+            out["rules"] = n
+    with best_effort("telemetry features: alerts"):
+        n = _telemetry_ae_count("/api/alarm/alerts/?include_closed=true&limit=1000", since)
+        if n is not None:
+            out["alerts"] = n
+    return out
+
+
 telemetry.configure(settings=settings, data_dir=DATA_DIR, version=__version__, root=_REPO_ROOT_PATH,
                     agent_count_fn=_telemetry_agent_count, provider_mix_fn=_telemetry_provider_mix,
                     release_fn=lambda: companion._installed_release()["tag"],
                     manager_version_fn=lambda: __version__,
                     alarm_engine_version_fn=_telemetry_ae_version,
-                    agent_versions_fn=_telemetry_agent_versions, log=log)
+                    agent_versions_fn=_telemetry_agent_versions, features_fn=_telemetry_features, log=log)
 telemetry.install_excepthooks("manager")
 
 _TELEMETRY_TOGGLES = ("install_report", "crash_reports", "heartbeat")

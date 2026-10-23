@@ -28,6 +28,7 @@ def cfg(tmp_path, monkeypatch):
     telemetry._provider_mix_fn = None
     telemetry._release_fn = telemetry._manager_version_fn = None
     telemetry._ae_version_fn = telemetry._agent_versions_fn = None
+    telemetry._features_fn = None
 
 
 def test_install_identity_is_stable_and_timestamped(tmp_path):
@@ -439,3 +440,50 @@ def test_append_log_creates_a_private_file(tmp_path):
     f = tmp_path / telemetry.LOG
     assert f.read_text().endswith(" x\n")
     assert (f.stat().st_mode & 0o777) == 0o600
+
+
+def test_install_payload_carries_a_known_source_only(cfg):
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script", source="git")
+    assert p["source"] == "git"
+    assert "source" not in telemetry.build_payload("update", data_dir=cfg, version="v1", channel="script", source="weird")
+    assert "source" not in telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="script", source="git")
+
+
+def test_source_of_install_maps_the_probe():
+    assert [telemetry.source_of_install(s) for s in ("release-file", "dpkg", "rpm", "git", None)] == \
+        ["release", "release", "release", "git", None]
+
+
+def test_heartbeat_features_are_counts_and_failures_drop_the_field(cfg):
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1", root=BACKEND.parent.parent,
+                        features_fn=lambda: {"benchmark": 2, "rules": 12, "tower": 0})
+    hb = telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
+    assert hb["features"] == "benchmark=2,rules=12,tower=0"
+    assert "features" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
+
+    def boom():
+        raise RuntimeError("x")
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1", root=BACKEND.parent.parent,
+                        features_fn=boom)
+    assert "features" not in telemetry.build_payload("heartbeat", data_dir=cfg, version="v1", channel="deb")
+
+
+def test_cli_payload_source(tmp_path):
+    out = subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "payload",
+                          "--event", "update", "--channel", "script", "--data-dir", str(tmp_path),
+                          "--version", "v9", "--root", str(BACKEND.parent.parent), "--source", "local"],
+                         capture_output=True, text=True, check=True).stdout
+    assert json.loads(out)["source"] == "local"
+
+
+def test_install_source_falls_back_to_the_tree(cfg, tmp_path, monkeypatch):
+    import companion
+    monkeypatch.setattr(companion, "_installed_release", lambda: {"source": "dpkg"})
+    assert telemetry._install_source() == "release"
+    monkeypatch.setattr(companion, "_installed_release", lambda: {"source": None})
+    root = tmp_path / "tree"
+    root.mkdir()
+    monkeypatch.setattr(telemetry, "_root", root)
+    assert telemetry._install_source() == "local"
+    (root / ".git").mkdir()
+    assert telemetry._install_source() == "git"

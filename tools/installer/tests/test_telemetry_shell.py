@@ -397,3 +397,69 @@ def test_retry_removes_a_staged_root_when_done(tmp_path):
         assert not staged.exists()
     finally:
         shutil.rmtree(staged, ignore_errors=True)
+
+
+def _tree(tmp_path, name, marker=None, release=None):
+    root = tmp_path / name
+    shutil.copytree(REPO / "llm-systems-manager" / "backend", root / "llm-systems-manager" / "backend",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    if marker == "git":
+        (root / ".git").mkdir()
+    elif marker == "release":
+        (root / ".llmsys-release").write_text("v2026.10.9\n")
+    if release:
+        (root / "RELEASE").write_text(release + "\n")
+    return root
+
+
+def test_source_of_each_tree_kind(tmp_path):
+    for marker, release, want in (("git", None, "git "), ("release", None, "release v2026.10.9"),
+                                  (None, "v2026.10.8", "local v2026.10.8"), (None, "$Format:%(describe:tags)$", "local ")):
+        root = _tree(tmp_path, f"t-{marker}-{bool(release)}-{len(want)}", marker, release)
+        r = run(tmp_path, f'telemetry_source_of "{root}"')
+        assert r.returncode == 0, r.stderr
+        assert r.stdout == want + "\n", (marker, release, r.stdout)
+
+
+def test_payload_carries_exported_source_and_release(tmp_path):
+    root = _tree(tmp_path, "rel", "release")
+    data = tmp_path / "data"
+    data.mkdir()
+    deployed = _tree(tmp_path, "deployed")
+    r = run(tmp_path, f'telemetry_export_source "{root}"; telemetry_payload install script 1 ok "{data}" v1 "{deployed}"')
+    assert r.returncode == 0, r.stderr
+    p = json.loads(r.stdout)
+    assert (p["source"], p["release"]) == ("release", "v2026.10.9")
+
+
+def test_exported_source_wins_over_detection(tmp_path):
+    root = _tree(tmp_path, "g", "git")
+    r = run(tmp_path, f'telemetry_export_source "{root}"; echo "$LLMSYS_TELEMETRY_SOURCE"',
+            {"LLMSYS_TELEMETRY_SOURCE": "release"})
+    assert r.stdout.strip() == "release"
+
+
+def test_payload_skips_source_for_an_older_builder(tmp_path):
+    root = _tree(tmp_path, "old")
+    b = root / "llm-systems-manager" / "backend" / "telemetry.py"
+    b.write_text(b.read_text().replace('    p.add_argument("--source", default="")\n', "")
+                 .replace("source=a.source,", ""))
+    data = tmp_path / "data"
+    data.mkdir()
+    r = run(tmp_path, f'telemetry_payload install script 1 ok "{data}" v1 "{root}"', {"LLMSYS_TELEMETRY_SOURCE": "git"})
+    assert r.returncode == 0, r.stderr
+    assert "source" not in json.loads(r.stdout)
+
+
+def test_report_as_user_passes_the_source_env():
+    text = LIB.read_text()
+    body = text[text.index("telemetry_report_as_user() {"):]
+    body = body[:body.index("\n}\n")]
+    assert 'LLMSYS_TELEMETRY_SOURCE="${LLMSYS_TELEMETRY_SOURCE:-}"' in body
+    assert 'LLMSYS_TELEMETRY_RELEASE="${LLMSYS_TELEMETRY_RELEASE:-}"' in body
+
+
+def test_update_exports_the_source_from_its_staged_tree():
+    text = (INSTALLER / "update.sh").read_text()
+    assert 'declare -F telemetry_export_source >/dev/null && telemetry_export_source "$REPO_SRC"' in text
+    assert text.index('ok "source tree at $REPO_SRC"') < text.index("telemetry_export_source \"$REPO_SRC\"")

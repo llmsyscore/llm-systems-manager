@@ -47,6 +47,7 @@ _release_fn: Optional[Callable[[], Optional[str]]] = None
 _manager_version_fn: Optional[Callable[[], Optional[str]]] = None
 _ae_version_fn: Optional[Callable[[], Optional[str]]] = None
 _agent_versions_fn: Optional[Callable[[], Optional[dict]]] = None
+_features_fn: Optional[Callable[[], Optional[dict]]] = None
 _lock = threading.RLock()
 _started_at = time.time()
 _log = None
@@ -59,13 +60,15 @@ def _iso(ts: Optional[float] = None) -> str:
 
 def configure(*, settings, data_dir: Path, version: str, root: Path,
               agent_count_fn=None, provider_mix_fn=None, log=None, release_fn=None,
-              manager_version_fn=None, alarm_engine_version_fn=None, agent_versions_fn=None) -> None:
+              manager_version_fn=None, alarm_engine_version_fn=None, agent_versions_fn=None,
+              features_fn=None) -> None:
     global _settings, _data_dir, _version, _root, _agent_count_fn, _provider_mix_fn, _log
-    global _release_fn, _manager_version_fn, _ae_version_fn, _agent_versions_fn
+    global _release_fn, _manager_version_fn, _ae_version_fn, _agent_versions_fn, _features_fn
     _settings, _data_dir, _version, _root = settings, Path(data_dir), version, Path(root)
     _agent_count_fn, _provider_mix_fn, _log = agent_count_fn, provider_mix_fn, log
     _release_fn, _manager_version_fn = release_fn, manager_version_fn
     _ae_version_fn, _agent_versions_fn = alarm_engine_version_fn, agent_versions_fn
+    _features_fn = features_fn
 
 
 def _snapshot_settings():
@@ -237,7 +240,7 @@ def _detect_channel(root: Path) -> str:
 # ── payloads ─────────────────────────────────────────────────────────────────
 
 _KEYS = ("schema", "event", "install_id", "installed_at", "sent_at", "version", "release", "manager_version",
-         "alarm_engine_version", "agent_versions", "channel", "mode",
+         "alarm_engine_version", "agent_versions", "channel", "mode", "source", "features",
          "os", "os_version", "arch", "cpu_model", "ram_gb", "gpu_vendor", "gpu_count", "provider",
          "outcome", "agent_count", "provider_mix", "uptime_days", "component", "exc_type", "frames",
          "crash_hash", "uptime_s")
@@ -269,8 +272,18 @@ def _call_str(fn) -> Optional[str]:
     return str(v)[:128] if v else None
 
 
+SOURCES = ("release", "git", "local")
+
+
+def source_of_install(source: Optional[str]) -> Optional[str]:
+    """Maps companion._installed_release()["source"] to release | git, else None."""
+    if source in ("release-file", "dpkg", "rpm"):
+        return "release"
+    return "git" if source == "git" else None
+
+
 def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mode: str = "",
-                  outcome: str = "", extra: Optional[dict] = None) -> dict:
+                  outcome: str = "", source: str = "", extra: Optional[dict] = None) -> dict:
     if event not in EVENTS:
         raise ValueError(event)
     p = _blank(event, data_dir, version, channel)
@@ -279,6 +292,7 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
         p.update(host_facts())
         p["outcome"] = (outcome or "ok")[:128]
         p["release"] = _call_str(_release_fn)
+        p["source"] = source if source in SOURCES else None
     elif event == "heartbeat":
         p.update(host_facts())
         p["agent_count"] = int(_agent_count_fn()) if _agent_count_fn else None
@@ -291,6 +305,10 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
             p["agent_versions"] = _mix_text(_agent_versions_fn()) if _agent_versions_fn else None
         except Exception:
             p["agent_versions"] = None
+        try:
+            p["features"] = _mix_text(_features_fn()) if _features_fn else None
+        except Exception:
+            p["features"] = None
     if extra:
         p.update({k: v for k, v in extra.items() if k in _KEYS})
     return _present(p)
@@ -526,6 +544,17 @@ def install_excepthooks(component: str) -> None:
     threading.excepthook = _thr_hook
 
 
+def _install_source() -> Optional[str]:
+    try:
+        import companion
+        found = source_of_install(companion._installed_release()["source"])
+    except Exception:
+        found = None
+    if found:
+        return found
+    return "git" if _root is not None and (Path(_root) / ".git").exists() else "local"
+
+
 # ── scheduler ────────────────────────────────────────────────────────────────
 
 def _heartbeat_age(now: Optional[float] = None) -> float:
@@ -582,7 +611,8 @@ def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Th
                 flush_pending(_data_dir, endpoint())
             elif not (_data_dir / LAST).is_file() and enabled("install_report"):
                 _deliver(build_payload("install", data_dir=_data_dir, version=_version,
-                                       channel=detect_channel(_root), mode=""))
+                                       channel=detect_channel(_root), mode="",
+                                       source=_install_source() or ""))
         except Exception as e:
             if _log:
                 _log.debug("telemetry first-start: %s", type(e).__name__)
@@ -628,6 +658,7 @@ def _main(argv) -> int:
     p.add_argument("--mode", default="")
     p.add_argument("--outcome", default="")
     p.add_argument("--release", default="")
+    p.add_argument("--source", default="")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--root", required=True)
@@ -641,7 +672,8 @@ def _main(argv) -> int:
         return 0
     if a.cmd == "payload":
         out = build_payload(a.event, data_dir=Path(a.data_dir), version=a.version, channel=a.channel,
-                            mode=a.mode, outcome=a.outcome, extra={"release": a.release[:128] or None})
+                            mode=a.mode, outcome=a.outcome, source=a.source,
+                            extra={"release": a.release[:128] or None})
         print(json.dumps(out))
         return 0
     payload = json.loads(Path(a.file).read_text())

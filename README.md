@@ -95,7 +95,7 @@ Full list: [Features](docs/FEATURES.md).
 
 **Updating.** `sudo bash /opt/llm-systems-manager/tools/installer/install.sh --update`, or `brew upgrade` / your package manager. See [Updating](docs/DEPLOYMENT.md#updating).
 
-**Anonymous reports.** The installer asks once whether to send an anonymous install report (version, operating system, hardware). Turn it off any time in **Settings › Telemetry & analytics**. What each report contains: [Anonymous reports](docs/DEPLOYMENT.md#anonymous-reports).
+**Anonymous reports.** The installer asks once whether to send an anonymous install report (version, where the code came from, operating system, hardware). Turn it off any time in **Settings › Telemetry & analytics**. What each report contains: [Anonymous reports](docs/DEPLOYMENT.md#anonymous-reports).
 
 ## Contributing and donations
 
