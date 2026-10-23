@@ -109,28 +109,40 @@ banner "InfluxDB — first-boot setup"
 INFLUX_OPERATOR_TOKEN=""
 INFLUX_ORG="$INFLUX_ORG_DEFAULT"
 FRESH_SETUP=0
+# Active CLI config entry, else the first one (the CLI prints an object keyed by name).
+CLI_ENTRY='[.[]] | (map(select(.active == true)) + .)[0]'
+
+# The API answers 503 {"status":"starting"} after /health is 200 on 2.10+;
+# wait until GET /api/v2/setup gives a real answer ("allowed": true = not set up yet).
+SETUP_ALLOWED=""
+for _ in {1..30}; do
+  _setup_state="$(curl -4 -sS -m 5 "$INFLUX_URL/api/v2/setup" 2>/dev/null || true)"
+  if grep -q '"allowed"' <<<"$_setup_state"; then
+    SETUP_ALLOWED="$(jq -r '.allowed' <<<"$_setup_state" 2>/dev/null || true)"
+    break
+  fi
+  sleep 1
+done
 
 # Reuse stashed token if present
-if $SUDO test -s /root/.influxdb-operator-token; then
+if [[ "$SETUP_ALLOWED" != "true" ]] && $SUDO test -s /root/.influxdb-operator-token; then
   log "operator token already on disk — reusing"
   INFLUX_OPERATOR_TOKEN=$($SUDO tr -d '[:space:]' < /root/.influxdb-operator-token)
-  EXISTING_ORG=$($SUDO influx config list --json 2>/dev/null | jq -r '.[0].org // empty' || true)
+  EXISTING_ORG=$($SUDO influx config list --json 2>/dev/null | jq -r "$CLI_ENTRY | .org // empty" || true)
   [[ -n "$EXISTING_ORG" ]] && INFLUX_ORG="$EXISTING_ORG"
-elif $SUDO influx config list --json 2>/dev/null | jq -e 'length > 0' >/dev/null 2>&1; then
+elif [[ "$SETUP_ALLOWED" != "true" ]] \
+     && $SUDO influx config list --json 2>/dev/null | jq -e 'length > 0' >/dev/null 2>&1; then
   log "CLI config has an entry — reading operator token from it"
-  INFLUX_OPERATOR_TOKEN=$($SUDO influx config list --json | jq -r '.[0].token' | tr -d '[:space:]')
-  INFLUX_ORG=$($SUDO influx config list --json | jq -r '.[0].org')
+  INFLUX_OPERATOR_TOKEN=$($SUDO influx config list --json | jq -r "$CLI_ENTRY | .token" | tr -d '[:space:]')
+  INFLUX_ORG=$($SUDO influx config list --json | jq -r "$CLI_ENTRY | .org")
 else
+  [[ "$SETUP_ALLOWED" == "true" ]] \
+    && { $SUDO test -s /root/.influxdb-operator-token || $SUDO test -e /root/.influxdbv2/configs; } \
+    && log "InfluxDB is not set up yet — ignoring tokens left by an earlier install"
   log "fresh InfluxDB — running 'influx setup'"
   FRESH_SETUP=1
   INFLUX_OPERATOR_TOKEN=$(openssl rand -hex 32)
   ADMIN_PASS=$(openssl rand -hex 24)
-  # The API answers 503 {"status":"starting"} after /health is 200 on 2.10+;
-  # wait until GET /api/v2/setup gives a real answer before onboarding.
-  for _ in {1..30}; do
-    curl -4 -sS -m 5 "$INFLUX_URL/api/v2/setup" 2>/dev/null | grep -q '"allowed"' && break
-    sleep 1
-  done
   # Onboards via POST /api/v2/setup with a --data @file body; secrets reach jq via env.
   _setup_json="$(mktemp)"
   ADMIN_PASS="$ADMIN_PASS" INFLUX_OPERATOR_TOKEN="$INFLUX_OPERATOR_TOKEN" \
@@ -155,7 +167,12 @@ else
     printf 'admin\n%s\n' "$ADMIN_PASS" \
       | $SUDO bash -c 'umask 077; cat > /root/.influxdb-admin-pass'
   fi
-  # Writes the CLI config file directly via stdin; never clobbers an existing one.
+  # Writes the CLI config file directly via stdin; a leftover one is kept as configs.bak.<stamp>.
+  if $SUDO test -e /root/.influxdbv2/configs; then
+    _cfg_bak="/root/.influxdbv2/configs.bak.$(date +%Y%m%d-%H%M%S)"
+    $SUDO mv /root/.influxdbv2/configs "$_cfg_bak" || die "could not move the old InfluxDB CLI config aside"
+    log "previous InfluxDB CLI config kept at $_cfg_bak"
+  fi
   if ! $SUDO test -e /root/.influxdbv2/configs; then
     $SUDO bash -c 'umask 077; mkdir -p /root/.influxdbv2; cat > /root/.influxdbv2/configs' <<CFGEOF || true
 [default]
