@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load } from './load.mjs';
@@ -124,7 +125,7 @@ test('who makes it and how to get help have their own answers, with no tool call
     assert.equal(K(q), 'help', q);
   }
   assert.equal(K('Which machine is slow?'), 'slow');
-  assert.equal(K('Is the alarm engine healthy?'), 'alarm');
+  assert.equal(K('Is the alarm engine healthy?'), 'engine');
   assert.equal(K('What models are loaded everywhere?'), 'model');
   const about = await answerFor('Who develops LLM Systems Manager?');
   assert.match(about, /LLM SysCore/);
@@ -147,4 +148,29 @@ test('the dashboard\'s own help suggestions get the new answers', async () => {
   const src = readFileSync(join(ROOT, '..', 'llm-systems-manager', 'frontend', 'js', 'lib', 'tower-view.js'), 'utf8');
   const list = JSON.parse(/const HELP_SUGS = (\[[^\]]*\]);/.exec(src)[1].replace(/'/g, '"'));
   assert.deepEqual(list.map((q) => self.DemoTower.keyFor(q)), ['about', 'help']);
+});
+
+test('every suggestion and Ask Tower prompt the demo can show has its own scripted answer', async () => {
+  const require = createRequire(import.meta.url);
+  const lib = join(ROOT, '..', 'llm-systems-manager', 'frontend', 'js', 'lib');
+  const TW = require(join(lib, 'tower-view.js'));
+  const FC = require(join(lib, 'forecast.js'));
+  const caps = (await call('/api/tower/state')).capabilities;
+  const pages = [{}, { tab: 'events' }, { tab: 'dashboard', sub: 'energy' }, { tab: 'llm' }, { tab: 'admin' }, { tab: 'tools' }]
+    .concat(self.DemoFleet.machines.map((m) => ({ tab: 'dashboard', host: m.hostname })));
+  const asks = new Set(pages.flatMap((p) => TW.suggestions(p, caps)));
+  const ov = load(['demo-fleet.js', 'demo-series.js', 'demo-router.js', 'demo-state.js', 'handlers/overall.js']);
+  const url = new URL('http://demo.example/api/forecast');
+  const fc = ov.DemoRouter.find('GET', url);
+  const view = JSON.parse(JSON.stringify(await fc.route.handler({ now: NOW, params: fc.params, query: url.searchParams, body: null, fleet: ov.DemoFleet })));
+  assert.equal(view.findings.length, 2);
+  asks.add(FC.askRunText(view));
+  view.findings.forEach((f) => asks.add(FC.askText(f)));
+  for (const a of self.DemoAlarms.alerts(NOW).filter((x) => x.status !== 'closed')) {
+    asks.add(TW.troubleshootPrompt({ rule: a.rule_name, host: a.source_host, alert_id: a.alert_id }));
+  }
+  const missing = [...asks].filter((q) => !self.DemoTower.keyFor(q));
+  assert.deepEqual(missing, [], 'add a scripted answer in demo/runtime/handlers/tower.js');
+  assert.match(await answerFor('Explain slot pressure'), /4 slots/);
+  assert.match(await answerFor(FC.askRunText(view)), /forge\.example first/);
 });

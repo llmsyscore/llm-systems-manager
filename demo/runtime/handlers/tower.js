@@ -35,6 +35,77 @@
       + 'Report bugs and ask for new features as GitHub issues at github.com/llmsyscore/llm-systems-manager/issues. '
       + 'Please send security problems privately by email instead of opening a public issue.' }
   };
+  var MORE = {
+    forecast: { tool: 'get_forecast', args: {}, ms: 102,
+      text: 'The latest Forecast run found two things. Deal with forge.example first: its graphics card has been running '
+        + 'about 1.5 °C hotter each week under the same load, and at that pace it reaches its limit in about six days. '
+        + 'Clean the intake filters and check the fan curve. The second is a heads-up: the model disk on atlas.example '
+        + 'is filling by about 18 GB a day and will be full in roughly two months. Removing models you no longer use fixes it.' },
+    activity: { tool: 'get_activity', args: { window: '24h' }, ms: 141,
+      text: 'In the last day the four machines were busy answering requests a little under 40% of the time. Six alarms '
+        + 'went off: four cleared, and two are still open (a warm graphics card on forge.example and a swap note on '
+        + 'quill.example). A report card ran on forge.example about 5 hours ago for Qwen2.5-14B, and a benchmark ran on '
+        + 'atlas.example about 9 hours ago for Llama-3.1-8B. Nothing failed.' },
+    recent: { tool: 'get_alerts', args: { since_minutes: 60 }, ms: 77,
+      text: 'In the last hour: about 25 minutes ago the graphics card on forge.example went over 80 °C '
+        + 'and raised a warning, and alex acknowledged it a few minutes later. Earlier in the hour a model was loaded on '
+        + 'forge.example. All four machines stayed online.' },
+    engine: { tool: 'get_system_health', args: {}, ms: 69,
+      text: 'Yes, the alarm engine is running and healthy. It is checking every machine on schedule, and it raised the '
+        + 'forge.example temperature warning about 25 minutes ago, which shows alerts are getting through.' },
+    offenders: { tool: 'get_alerts', args: { window: '30d' }, ms: 126,
+      text: 'forge.example and atlas.example raise the most alarms, two each in the last day. Heat is the most common '
+        + 'cause: three of the last six alarms were about temperature, two on forge.example and one on atlas.example. '
+        + 'The others were a graphics memory warning on atlas.example, a memory warning on studio.example and a swap '
+        + 'note on quill.example.' },
+    red: { tool: 'get_alerts', args: {}, ms: 81,
+      text: 'Only forge.example has a warning right now. Its graphics card is just over the 80 °C limit and has been for '
+        + 'about 25 minutes, so it slows itself down to cool off. The other three machines are fine; quill.example only '
+        + 'has a low-priority note about a little swap use. Cleaning the fans on forge.example should clear it.' },
+    hardware: { tool: 'get_hosts', args: {}, ms: 93,
+      text: 'atlas.example has an AMD Ryzen 9 7950X, two NVIDIA RTX 4090 cards with 24 GB each and 128 GB of memory. '
+        + 'forge.example has an AMD Ryzen 7 5800X3D, one RTX 3090 with 24 GB and 64 GB of memory. studio.example is a Mac '
+        + 'with an Apple M2 Ultra and 192 GB of shared memory. quill.example has an Intel Core i5-12400 and 32 GB of '
+        + 'memory but no graphics card, so it runs its small model on the processor.' },
+    idle: { tool: 'get_energy', args: { window: '24h' }, ms: 112,
+      text: 'All four machines spend about 60% of their time idle, waiting for requests. Idle time still uses power: '
+        + 'it is a little under a third of the energy bill. atlas.example wastes the most while idle, about 150 W, '
+        + 'because of its two graphics cards. studio.example wastes the least, about 20 W.' },
+    mtok: { tool: 'get_energy', args: { window: 'today' }, ms: 108,
+      text: 'Across the fleet, a million words cost about $0.77 in electricity, or about $0.56 if you count only the time '
+        + 'the machines were busy. studio.example is the cheapest at about $0.39 and quill.example the most expensive at about '
+        + '$1.11, because it is slow. That is roughly half of what a budget cloud service would charge for the same work.' },
+    power: { tool: 'get_energy', args: { window: 'today' }, ms: 119,
+      text: 'atlas.example uses the most power, about half of the total: around 340 W on average, or 8 kWh a day. '
+        + 'forge.example comes next at about 190 W, then studio.example at about 65 W and quill.example at about 50 W. '
+        + 'Together they use about 15 kWh a day, roughly $2.30 at $0.15 per kWh.' },
+    unused: { tool: 'get_models', args: {}, ms: 95,
+      text: 'No. Every loaded model has answered requests in the last hour. atlas.example also keeps Qwen2.5-32B '
+        + 'downloaded but not loaded, so it uses disk space and no memory.' },
+    big: { tool: 'get_benchmarks', args: {}, ms: 137,
+      text: 'atlas.example is the best place for a 27B model. Its two RTX 4090 cards have 48 GB together, and in '
+        + 'benchmarks the 32B Qwen model ran there at about 36 words per second. studio.example has the memory for it too, '
+        + 'but its Apple chip answers more slowly. forge.example has only one 24 GB card, so a 27B model would barely fit, '
+        + 'and quill.example has no graphics card.' },
+    fastest: { tool: 'get_benchmarks', args: {}, ms: 124,
+      text: 'Llama-3.1-8B on atlas.example is the fastest: in benchmarks it writes about three times as fast as the '
+        + 'bigger Qwen2.5-32B on the same machine, and it reads prompts quickest too.' },
+    slots: { tool: 'get_llama_state', args: { host: 'atlas.example' }, ms: 88,
+      text: 'A slot is one request a model server can work on at the same time. atlas.example has 4 slots and usually only '
+        + 'one is busy, with nothing waiting, so there is no slot pressure. Pressure means all slots are busy and new '
+        + 'requests have to wait in line; if that happens often, add slots or spread the work to another machine.' },
+    versions: { tool: 'get_hosts', args: {}, ms: 74,
+      text: 'All four agents are on ' + (self.DEMO_RELEASE || 'the latest release') + ', the same version as the '
+        + 'manager. No updates are waiting.' },
+    offline: { tool: 'get_hosts', args: {}, ms: 71,
+      text: 'No. All four machines (atlas.example, forge.example, studio.example and quill.example) are online and '
+        + 'reporting every few seconds.' },
+    bench: { tool: 'get_tool_runs', args: {}, ms: 103,
+      text: 'The last benchmark ran on atlas.example about 9 hours ago with Llama-3.1-8B: about 68 words per second, '
+        + 'reading prompts at about 1,540 words per second. Autotune finished a run two days ago on atlas.example '
+        + 'for the same model and found settings about 12% faster, and another autotune run is going on atlas.example now.' }
+  };
+  Object.keys(MORE).forEach(function (k) { ANSWERS[k] = MORE[k]; });
   ANSWERS.model.text = 'atlas.example is running ' + F.byId('atlas').models[0] + ' and also has '
     + F.byId('atlas').models[1] + ' and ' + F.byId('atlas').models[2] + ' available. forge.example has '
     + names('forge') + '. studio.example has ' + names('studio') + ', and quill.example runs the small '
@@ -43,11 +114,28 @@
   // Picks the canned answer key for a question; null means the fallback.
   function keyFor(text) {
     var t = String(text || '').toLowerCase();
+    if (/forecast/.test(t)) return 'forecast';
     if (/\bwho\b/.test(t) && /develop|make|made|build|built|maintain|behind|creat/.test(t)) return 'about';
     if (/\b(help|support|contact)\b|\bbugs?\b/.test(t)) return 'help';
+    if (/activity summary/.test(t)) return 'activity';
+    if (/what changed|last hour/.test(t)) return 'recent';
+    if (/alarm engine/.test(t)) return 'engine';
+    if (/alarms the most|offender|alarm rules|per day/.test(t)) return 'offenders';
     if (/slow/.test(t)) return 'slow';
+    if (/\bred\b/.test(t)) return 'red';
     if (/alarm|alert/.test(t)) return 'alarm';
+    if (/hardware|\bcpu\b|\bgpu\b/.test(t)) return 'hardware';
+    if (/\bidle\b/.test(t)) return 'idle';
+    if (/mtok/.test(t)) return 'mtok';
     if (/cost/.test(t)) return 'cost';
+    if (/power|energy/.test(t)) return 'power';
+    if (/nobody|unused/.test(t)) return 'unused';
+    if (/\b\d+b\b/.test(t)) return 'big';
+    if (/fastest/.test(t)) return 'fastest';
+    if (/slot/.test(t)) return 'slots';
+    if (/version/.test(t)) return 'versions';
+    if (/offline/.test(t)) return 'offline';
+    if (/benchmark|autotune/.test(t)) return 'bench';
     if (/model/.test(t)) return 'model';
     return null;
   }
