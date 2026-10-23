@@ -4814,6 +4814,17 @@ if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
   _tele_root="$(cd "$SRC_DIR/.." && pwd)"
   _tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)"
   _tele_ver="${_tele_ver:-$VERSION}"
+  # Code source: the parent installer's answer, else .git = git, .llmsys-release = release, else local.
+  _tele_src="${LLMSYS_TELEMETRY_SOURCE:-}" _tele_rel="${LLMSYS_TELEMETRY_RELEASE:-}"
+  if [[ -z "$_tele_src" ]]; then
+    if [[ -e "$_tele_root/.git" ]]; then _tele_src=git
+    elif [[ -f "$_tele_root/.llmsys-release" ]]; then
+      _tele_src=release; _tele_rel="$(head -n1 "$_tele_root/.llmsys-release" 2>/dev/null)"
+    else _tele_src=local
+    fi
+  fi
+  if [[ -z "$_tele_rel" && -f "$_tele_root/RELEASE" ]]; then _tele_rel="$(head -n1 "$_tele_root/RELEASE" 2>/dev/null)"; fi
+  [[ "$_tele_rel" == \$Format* ]] && _tele_rel=""
   # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
   if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
     _tele_tmp=""
@@ -4833,6 +4844,7 @@ if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
   fi
   if [[ -n "$_tele_root" ]]; then
     _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
+      LLMSYS_TELEMETRY_SOURCE="$_tele_src" LLMSYS_TELEMETRY_RELEASE="$_tele_rel" \
       LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
       LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
       bash "$_tele_root/tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \

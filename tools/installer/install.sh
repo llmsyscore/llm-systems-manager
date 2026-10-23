@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20261018001
+_INSTALL_SH_REVISION=20261023001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -784,6 +784,10 @@ if ! declare -F telemetry_report_as_user >/dev/null; then
   telemetry_pick_root() { return 1; }
   telemetry_report_as_user() { return 0; }
 fi
+if ! declare -F telemetry_export_source >/dev/null; then
+  telemetry_export_source() { return 0; }
+fi
+telemetry_export_source "$REPO_SRC"
 _TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
 if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
   _tele_preview_dir="$(mktemp -d)"

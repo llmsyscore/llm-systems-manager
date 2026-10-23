@@ -209,9 +209,9 @@ The installer asks once, after the mode picker, whether to send an anonymous ins
 
 | Report | When | Fields |
 |---|---|---|
-| Install | once per install or update | product release and version, install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
+| Install | once per install or update | product release and version, where the code came from (a published release, a git copy of `main`, or a local copy), install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
 | Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
-| Daily diagnostic | once a day when turned on | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime |
+| Daily diagnostic | once a day when turned on | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime, and how many times some features were used: benchmark, autotune, quality and Tower test runs and Tower questions in the last day, alarm rules set up, alarms raised in the last day, and models loaded |
 
 Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The receiving service keeps ordinary request logs, including the sending address, for a short time; the stored reports do not contain it. The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
 

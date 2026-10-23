@@ -309,7 +309,7 @@ llmsys_telemetry_report() {
   [ -n "$upgrade" ] && event=update
   runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" LLMSYS_INSTALL_DIR="$LLMSYS_INSTALL_DIR" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
-    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+    LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" LLMSYS_TELEMETRY_SOURCE=release \
     bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \
     --channel "$LLMSYS_PKG_FORMAT" --mode 2 --data-dir "$LLMSYS_INSTALL_DIR/data" \
     --root "$LLMSYS_INSTALL_DIR" --toml "$LLMSYS_CFG" </dev/null || true
