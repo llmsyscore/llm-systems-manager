@@ -74,6 +74,10 @@ jobs:
           ASSET="llm-systems-manager-${TAG}.tar.gz"
           tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/tools/installer/install.sh"
           tar -tzf "$ASSET" | grep -qx "llm-systems-manager-${TAG}/tools/installer/lib-common.sh"
+          for d in demo website docs/screenshots; do
+            n=$(tar -tzf "$ASSET" | grep -c "^llm-systems-manager-${TAG}/$d/" || true)
+            [ "$n" -eq 0 ] || { echo "::error::release tarball must not contain $d/"; exit 1; }
+          done
           sha256sum -c "$ASSET.sha256"
 
       - name: Upload tarball artifact
