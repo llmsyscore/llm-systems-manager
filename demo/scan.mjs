@@ -109,7 +109,7 @@ function toPatterns(expr, ctx) {
   const w = /^(\w+)\s*\(/.exec(e);
   if (w && UNWRAP.has(w[1])) e = splitArgs(e, w[0].length - 1).args[0] || '';
   if (/^[A-Za-z_$][\w$]*$/.test(e) && !ctx.consts[e]) {
-    const re = new RegExp('(?:const|let|var)\\s+' + e.replace(/\$/g, '\\$') + '\\s*=\\s*', 'g');
+    const re = new RegExp('(?:const|let|var)\\s+' + e.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*=\\s*', 'g');
     let m, last = null;
     while ((m = re.exec(ctx.before))) last = m;
     if (last) {

@@ -13,7 +13,8 @@
   function machine(id) { return self.DemoFleet && self.DemoFleet.byId(id); }
   function vramTotal(m) {
     var s = 0;
-    for (var i = 0; m && i < m.gpus.length; i++) s += m.gpus[i].vramGb;
+    if (!m) return s;
+    for (var i = 0; i < m.gpus.length; i++) s += m.gpus[i].vramGb;
     return s;
   }
 

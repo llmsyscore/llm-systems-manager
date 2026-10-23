@@ -218,8 +218,8 @@ test('fetch answers tool frames under /proxy/ with the placeholder and routes /t
 test('fetch never answers a navigation with a redirected response', async () => {
   const { self, fetched } = swEnv([], { redirected: true });
   await fire(self, 'install');
-  assert.ok(fetched.includes('http://demo.example/dashboard'));
-  assert.ok(!fetched.some((u) => u.endsWith('.html')));
+  assert.ok(new Set(fetched).has('http://demo.example/dashboard'));
+  assert.ok(!fetched.some((u) => new URL(u).pathname.endsWith('.html')));
   const nav = await fire(self, 'fetch', {
     request: { url: 'http://demo.example/dashboard', method: 'GET', mode: 'navigate' } });
   assert.equal(nav.redirected, false);

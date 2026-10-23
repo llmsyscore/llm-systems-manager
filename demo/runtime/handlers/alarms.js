@@ -237,10 +237,6 @@
   var BOOT = Date.UTC(2026, 0, 1) / 1000;
 
   function gpuHost(m) { return m.gpus.length > 0 && m.os !== 'macos'; }
-  function hostId(host) {
-    for (var i = 0; i < F.machines.length; i++) if (F.machines[i].hostname === host) return F.machines[i];
-    return null;
-  }
 
   function systemValues(m, t) {
     var cpu = S.value(m.id, 'cpu_pct', t);
