@@ -1,0 +1,181 @@
+{
+  "key": "GET /api/admin/system-health",
+  "status": 200,
+  "body": {
+    "advisories": [],
+    "ae_local": true,
+    "ae_restart": {
+      "available": true,
+      "via": "systemctl"
+    },
+    "agent_update": {
+      "hostnames": [],
+      "latest": "v2026.10.23-1",
+      "outdated": 0
+    },
+    "agents": [
+      {
+        "bind_url": "https://192.0.2.2:8082",
+        "cert_issued_at": "2026-10-23T05:41:12.361103+00:00",
+        "control_channel_tls": true,
+        "hostname": "atlas.example",
+        "id": "b6234456",
+        "is_primary_llama": false,
+        "is_primary_lms": false,
+        "last_heartbeat_age_s": 33.6,
+        "liveness": "live",
+        "role": "system_only",
+        "status": "approved",
+        "tls": "tls",
+        "tls_direction": "both",
+        "tls_role_checked": true,
+        "version": "v2026.10.23-1"
+      }
+    ],
+    "containerized": false,
+    "data_flow": {
+      "manager_to_alarm_forwarding": {
+        "active": false,
+        "reason": "agent forwards directly to alarm engine"
+      },
+      "primary_llama_push": {
+        "age_s": null,
+        "agent_id": null,
+        "has_agent": false,
+        "ok": false
+      },
+      "primary_lms_push": {
+        "age_s": null,
+        "has_agent": false,
+        "ok": false
+      },
+      "primary_vllm_push": {
+        "age_s": null,
+        "has_agent": false,
+        "ok": false
+      }
+    },
+    "flow": {
+      "ae_ingest_points_per_s": 11.95,
+      "agent_pushes_per_s": 0.2,
+      "anon_budget_per_min": 600,
+      "anon_refused_per_min": 0,
+      "anon_req_per_min": 0,
+      "history_req_per_s": 1.4,
+      "influx_writes_per_s": 12.283
+    },
+    "jobs": {
+      "failed": [],
+      "failed_24h": 0,
+      "more": 0,
+      "next_due": null,
+      "queued": 0,
+      "rows": [],
+      "running": 0
+    },
+    "manager": {
+      "connections": {
+        "agents": 0,
+        "browsers": 1,
+        "worker_threads": 160,
+        "worker_threads_busy": 0
+      },
+      "hostname": "atlas.example",
+      "ok": true,
+      "process": {
+        "cpu_pct": 0.1,
+        "ram_pct": 19.5,
+        "rss_mb": 268
+      },
+      "push_subscriptions": 0,
+      "ram_total_mb": 1377.8,
+      "streams": {
+        "active": 0,
+        "limit": 40,
+        "peak": 0,
+        "refusals": 0,
+        "refusals_recent": 0
+      },
+      "uptime_s": 619.6,
+      "version": "v2026.10.23-1",
+      "ws_relay": "connected"
+    },
+    "overall": "ok",
+    "recent": [
+      {
+        "actor": "alex",
+        "detail": "d9f59a4d",
+        "k": "ok",
+        "title": "Agent removed",
+        "ts": "2026-10-23T05:41:22+00:00"
+      },
+      {
+        "actor": "alex",
+        "detail": "atlas.example",
+        "k": "ok",
+        "title": "Agent approved",
+        "ts": "2026-10-23T05:40:42+00:00"
+      }
+    ],
+    "restart_pending": [],
+    "services": [
+      {
+        "active_alerts": 0,
+        "auth": "enforced",
+        "auth_detail": {
+          "bearer_ok": true,
+          "ingest": "enforced",
+          "loopback_only": false,
+          "management": "management_token",
+          "open_on_network": false
+        },
+        "bearer_configured": true,
+        "consecutive_failures": 0,
+        "ingest_points_per_s": 11.95,
+        "last_ok_at": "2026-10-23T05:50:52.918122+00:00",
+        "latency_ms": 9.2,
+        "name": "alarm_engine",
+        "ok": true,
+        "otlp": {
+          "last_batch_age_s": null,
+          "last_batch_at": null,
+          "last_error_age_s": null,
+          "last_error_at": null,
+          "log_batches": 0,
+          "metric_batches": 0,
+          "parse_errors": 0,
+          "trace_batches": 0,
+          "write_errors": 0
+        },
+        "process": {
+          "cpu_pct": 34.6,
+          "ram_pct": 8.8,
+          "rss_mb": 121.8
+        },
+        "rule_eval_ms": 0.8831909999571508,
+        "state": "ok",
+        "status_code": 200,
+        "tls": {
+          "active": true,
+          "enabled": true,
+          "error": null
+        },
+        "tls_role_checked": true,
+        "uptime_s": 621.9,
+        "url": "https://localhost:8081",
+        "version": "v2026.10.22-1"
+      },
+      {
+        "name": "influxdb",
+        "ok": true,
+        "ping_ms": 0.9,
+        "state": "connected",
+        "version": "v2.9.1",
+        "via": "alarm_engine",
+        "writes_per_s": 12.283
+      }
+    ],
+    "ts": "2026-10-23T05:50:52.904626+00:00",
+    "warnings": []
+  }
+}

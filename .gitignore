@@ -78,3 +78,6 @@ design/
 
 # Generated site docs (built from README + docs/ by website/build-docs.cjs)
 website/docs/
+
+# wrangler local cache (account id) from demo deploys
+.wrangler/

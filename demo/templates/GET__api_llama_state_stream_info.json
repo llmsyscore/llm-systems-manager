@@ -1,0 +1,7 @@
+{
+  "key": "GET /api/llama-state/stream-info",
+  "status": 200,
+  "body": {
+    "enabled": false
+  }
+}

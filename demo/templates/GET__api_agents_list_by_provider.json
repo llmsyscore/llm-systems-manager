@@ -1,0 +1,9 @@
+{
+  "key": "GET /api/agents/list-by-provider",
+  "status": 200,
+  "body": {
+    "llama": [],
+    "lms": [],
+    "vllm": []
+  }
+}

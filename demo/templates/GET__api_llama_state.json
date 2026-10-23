@@ -1,0 +1,26 @@
+{
+  "key": "GET /api/llama-state",
+  "status": 200,
+  "body": {
+    "age_s": null,
+    "agent_age_s": null,
+    "agent_online": false,
+    "aggregate": "off",
+    "build_method": null,
+    "model": null,
+    "port": 8080,
+    "power": null,
+    "pulled": false,
+    "residency": {
+      "aggregate": "off",
+      "models": [],
+      "servers": {
+        "llama": "down"
+      },
+      "source": "legacy",
+      "ts": null
+    },
+    "stale": true,
+    "state": "unknown"
+  }
+}

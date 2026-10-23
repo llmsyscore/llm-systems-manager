@@ -1,0 +1,44 @@
+{
+  "key": "GET /api/admin/dbstats/sqlite",
+  "status": 200,
+  "body": {
+    "audit_db": {
+      "audit_rows": 10,
+      "file": "audit.db",
+      "journal_mode": "wal",
+      "page_count": 5,
+      "page_size": 4096,
+      "query_ms": 0.004,
+      "shm_size_bytes": 32768,
+      "size_bytes": 4096,
+      "wal_size_bytes": 210152
+    },
+    "energy_db": {
+      "energy_rows": 0,
+      "file": "energy.db",
+      "journal_mode": "wal",
+      "page_count": 7,
+      "page_size": 4096,
+      "query_ms": 0.012,
+      "shm_size_bytes": 32768,
+      "size_bytes": 4096,
+      "wal_size_bytes": 41232
+    },
+    "manager_db": {
+      "benchmarks": 0,
+      "file": "manager.db",
+      "jobs": 0,
+      "journal_mode": "wal",
+      "page_count": 50,
+      "page_size": 4096,
+      "query_ms": 0.007,
+      "report_cards": 0,
+      "shm_size_bytes": 32768,
+      "size_bytes": 4096,
+      "tool_runs": 0,
+      "tower_messages": 0,
+      "wal_size_bytes": 440872
+    },
+    "ok": true
+  }
+}

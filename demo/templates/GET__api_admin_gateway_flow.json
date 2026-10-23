@@ -1,0 +1,28 @@
+{
+  "key": "GET /api/admin/gateway/flow",
+  "status": 200,
+  "body": {
+    "clients": [],
+    "enabled": true,
+    "endpoint": "/api/gateway/v1",
+    "energy": {
+      "cloud_usd_per_mtok": 0.6,
+      "cost_today": null,
+      "kwh_today": null,
+      "serving_w": 0,
+      "usd_per_mtok": null
+    },
+    "hosts": [],
+    "keys": 0,
+    "ok": true,
+    "totals": {
+      "errors_15m": 0,
+      "gen_tps": 0,
+      "inflight": 0,
+      "p50_ms": null,
+      "prompt_tps": 0,
+      "req_per_min": 0
+    },
+    "usage_probe": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "key": "GET /api/benchmark/results",
+  "status": 200,
+  "body": {
+    "results": []
+  }
+}

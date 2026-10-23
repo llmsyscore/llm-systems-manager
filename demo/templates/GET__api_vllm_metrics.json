@@ -1,0 +1,9 @@
+{
+  "key": "GET /api/vllm/metrics",
+  "status": 200,
+  "body": {
+    "agent_age_s": null,
+    "agent_id": null,
+    "agent_online": false
+  }
+}

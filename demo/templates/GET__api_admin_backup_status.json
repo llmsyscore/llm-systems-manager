@@ -1,0 +1,67 @@
+{
+  "key": "GET /api/admin/backup-status",
+  "status": 200,
+  "body": {
+    "backups": [
+      {
+        "bytes": 10682,
+        "component": "manager",
+        "file": "lsm-auto-manager-atlas.example-20261023-054233.lsmenc",
+        "mirrored": null,
+        "mtime": 1792734153.8655016,
+        "run": "20261023-054233"
+      },
+      {
+        "bytes": 5266,
+        "component": "alarm_engine",
+        "file": "lsm-auto-ae-atlas.example-20261023-054233.lsmenc",
+        "mirrored": null,
+        "mtime": 1792734153.869501,
+        "run": "20261023-054233"
+      }
+    ],
+    "disabled_reason": null,
+    "enabled": true,
+    "encrypted": false,
+    "folder_bytes": 15948,
+    "interval_hours": 24,
+    "keep_last": 7,
+    "last": {
+      "bytes": 10682,
+      "components": {
+        "alarm_engine": {
+          "bytes": 5266,
+          "error": null,
+          "file": "lsm-auto-ae-atlas.example-20261023-054233.lsmenc",
+          "ok": true,
+          "remedy": null,
+          "skipped": null
+        },
+        "manager": {
+          "bytes": 10682,
+          "error": null,
+          "file": "lsm-auto-manager-atlas.example-20261023-054233.lsmenc",
+          "files": 10,
+          "ok": true
+        }
+      },
+      "duration_s": 0.02,
+      "encrypted": false,
+      "error": null,
+      "file": "lsm-auto-manager-atlas.example-20261023-054233.lsmenc",
+      "files": 10,
+      "ok": true,
+      "partial": false,
+      "ts": 1792734153.8601956
+    },
+    "last_export": {
+      "alarm_engine": null,
+      "manager": null
+    },
+    "mirror_dir": "",
+    "next_due_ts": 1792820553.8766243,
+    "not_covered": {},
+    "ok": true,
+    "scheduler_running": true
+  }
+}

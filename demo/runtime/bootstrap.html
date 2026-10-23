@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Systems Manager demo</title>
+<script src="/demo/demo-analytics.js"></script>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0a0e1f;color:#dfe6ff;font-family:system-ui,sans-serif}
+#demoNotice,#demoSlow{display:none;max-width:30rem;padding:1.5rem;text-align:center;line-height:1.5}
+#demoNotice a,#demoSlow a{color:#5b7cfa}
+#demoLoading{opacity:.7}
+</style>
+</head>
+<body>
+<div id="demoLoading">Loading the demo...</div>
+<div id="demoSlow">
+  <p>Still loading the demo... If it does not open, see the <a href="https://www.llmsyscore.com/#screenshots">screenshots</a> or <a href="https://get.llmsyscore.com/?ref=demo">install it on your own machine</a>.</p>
+</div>
+<div id="demoNotice">
+  <p>This demo needs a browser that supports service workers. See the <a href="https://www.llmsyscore.com/#screenshots">screenshots</a> or <a href="https://get.llmsyscore.com/?ref=demo">install it on your own machine</a>.</p>
+</div>
+<script>
+(function () {
+  var done = false;
+  var failed = false;
+  function go() {
+    if (done) return;
+    done = true;
+    location.replace('/dashboard');
+  }
+  function show(id) {
+    if (done) return;
+    ['demoLoading', 'demoSlow', 'demoNotice'].forEach(function (n) {
+      document.getElementById(n).style.display = n === id ? 'block' : 'none';
+    });
+  }
+  function fail() { failed = true; show('demoNotice'); }
+  if (!('serviceWorker' in navigator)) { fail(); return; }
+  if (navigator.serviceWorker.controller) { go(); return; }
+  navigator.serviceWorker.addEventListener('controllerchange', go);
+  setTimeout(function () { if (!failed && !navigator.serviceWorker.controller) show('demoSlow'); }, 10000);
+  navigator.serviceWorker.register('/demo-sw.js', { scope: '/' }).then(function () {
+    if (navigator.serviceWorker.controller) go();
+  }, fail);
+})();
+</script>
+</body>
+</html>

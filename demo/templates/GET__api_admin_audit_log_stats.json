@@ -1,0 +1,18 @@
+{
+  "key": "GET /api/admin/audit-log/stats",
+  "status": 200,
+  "body": {
+    "actors": [
+      "llmadmin"
+    ],
+    "ok": true,
+    "oldest": "2026-10-23T05:40:41+00:00",
+    "page_size": 25,
+    "purge": {
+      "removed": 0,
+      "ts": "2026-10-23T05:40:33+00:00"
+    },
+    "retention_days": 60,
+    "total": 10
+  }
+}

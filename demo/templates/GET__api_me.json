@@ -1,0 +1,14 @@
+{
+  "key": "GET /api/me",
+  "status": 200,
+  "body": {
+    "admin_access": true,
+    "admin_ip": true,
+    "authenticated": true,
+    "bypass": false,
+    "is_admin": true,
+    "ok": true,
+    "role": "admin",
+    "username": "alex"
+  }
+}

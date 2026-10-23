@@ -207,6 +207,28 @@ jobs:
         working-directory: llm-systems-manager/frontend
         run: npm test
 
+  demo:
+    name: demo unit tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Recorded demo site unit tests (no browser run on PRs).
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+
+      - name: Install demo dev dependencies
+        run: npm ci --prefix demo
+
+      - name: Run demo unit tests
+        run: node --test "demo/test/*.test.mjs"
+
   docs-build:
     name: website docs build
     runs-on: ubuntu-latest

@@ -1,0 +1,924 @@
+{
+  "key": "GET /api/alarm/metrics/manager_self_monitor/manager_history_latency_ms",
+  "status": 200,
+  "body": [
+    {
+      "metric_id": "e1a39c0e-22ef-409f-a8e4-77dc2254b41c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:18.329891+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "6de27166-790d-4405-a3d9-d31df0b7783f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:23.346577+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "07eea333-3e70-4e56-ab07-c2d531b2cc97",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:28.362407+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "25cd5b71-b9ef-41f2-9ea0-1fb7e96c2274",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:33.380242+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "8526e86b-48e9-4523-a3a4-70f509964e5f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:38.397826+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "fd460da5-e31e-48be-8751-0aaf4169886a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:43.411216+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "2bf00ab8-c072-41ff-b4ab-cd7e700111eb",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:48.427119+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "32ab1a7f-12ba-4e84-872c-bef459e21929",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:53.447781+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "ebb4ab5b-f621-482b-be66-9e4a134f0c8c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:42:58.464529+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "b940c6ec-c45c-4ba3-9da7-8577bedfcd1a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:03.482961+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "da949396-afd7-4ade-974c-4e6ad2b54095",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:08.497579+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "14f222fc-8e07-498d-9017-6da16560c006",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3027420000071288,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:13.519519+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "bd9451cd-2a23-4349-a2fe-1fb7f57e4731",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:18.537442+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "c30ab17b-0f84-4a5c-a69b-6e504d26511b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:23.552140+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "2dbcd177-e4b9-4352-ad89-a19ff80d5c5b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:28.566199+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3a2d0bc3-5cdb-4e00-b39c-ae6e12484810",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:33.579040+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "2590dc5a-e146-4fdc-9d31-3e8f496e8e2d",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:38.591365+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "c37f6b9f-5bc1-4f46-b455-c6bbfbfcb656",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:43.605776+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "92d506cb-da17-4848-baab-6f34d6312d83",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:48.619728+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "2c788538-bcb0-482d-b842-a22d1f4e47cf",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:53.632354+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3e54f057-aacf-4ec3-866a-24a6e941a4dc",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:43:58.644696+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "db7db5b6-1475-457c-a68b-0cabb36a8f1c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:03.657365+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "57519ea7-df85-43f6-bb6d-965eb36cd052",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:08.670303+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a4a79188-898e-4d56-acce-82c58c23ad4e",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1216360000219083,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:13.683119+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "ed76b75c-fe6e-471c-8770-82394b0ae477",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:18.695732+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "9ba69c15-2845-40a2-84ee-8e742bf1cd7f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:23.709319+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "e2646ddf-0e10-4e9b-b8fa-8ad2a6ccca0a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:28.722353+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a0132747-433c-4840-96b4-1b4c83df7029",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:33.734991+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "78af1e48-561a-4b74-bcde-213ed55f86e2",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:38.748068+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "26dc3367-e19a-4842-bf68-f1921d1429f0",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:43.760877+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "46fc8eb1-426c-4a8d-bafa-217242c8ca62",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:48.773184+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a7bf0278-2e10-48a4-8905-1c5ffe9ac76c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:53.785858+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "9d6ac7c9-6f21-45a6-8d97-9768e5a20123",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:44:58.798797+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "4e525975-70f5-4198-8614-0b535880143f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:03.811316+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "045fe04e-b6c4-440d-8d96-328807a0db1e",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:08.824884+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "51a8d8bc-e1a7-4865-9382-3e5951775734",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.004593000004661,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:13.839195+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3304e131-8034-4b4a-8e61-023c74ad6bc1",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:18.852111+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "b931fcdc-57c4-40f4-9daa-0b815376aa05",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:23.865794+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "6918e51d-9dea-4c7e-a2d8-0767fa3538a3",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:28.879725+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "325eb888-e3bc-4112-9e59-b36c02a49ff3",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:33.897847+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "33a894e3-7214-4663-8b7c-92e6bcd98c90",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:38.913246+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "175746ed-72a3-4907-a5dd-f8098d0d7b38",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:43.927509+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "907c60ea-54be-489b-aee6-487844b5fc6a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:48.939615+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "07941e6a-d90e-4d0f-8f7c-54b27de7a3a7",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:53.952463+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "d4552d21-bddc-4c39-9be6-4ce6bfa1dd72",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:45:58.965478+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "0378ad09-6a53-43c3-9362-0df9f9cb4db8",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:03.980323+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "994f7572-d319-4895-b449-7c580c7a75f4",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:08.993572+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "c504e2d1-f1cb-4b6d-9d8a-77a5e41d6ea1",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 0.9743959999468643,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:14.006026+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "41983534-183d-40b3-bd67-95f6ede1830b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:19.018481+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "606c1f43-1558-4871-a0e7-857626d65dcf",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:24.030769+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "cc1b58f2-3ebc-40be-adec-0aebf0316dfd",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:29.044393+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "adfb716c-a502-4c5f-8ce3-a915f15ef071",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:34.058740+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "0d27db4d-51e8-4ed4-b9db-fc7e760cbf9e",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:39.072062+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "996ee027-c9ac-45db-943f-1d8918710525",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:44.087111+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "50f8ea61-e452-49ab-ac0d-34d774d741e7",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:49.099824+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "77fc72af-5663-4ec9-bb95-37edd52579cf",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:54.111818+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "d1934f3b-ca43-4b29-8072-7b6ab74023b4",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:46:59.124823+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3a7de07e-c61f-490c-8a15-81c74171a063",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:04.137240+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "7d9b4fc3-1ad5-41f2-a0b4-30dcc17f4473",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:09.149687+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "4bd12230-35d6-4467-847a-202088e50d7c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.1645040000303197,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:14.163209+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "27a478d5-14a0-41c4-8b95-f1176fb8abef",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:19.180391+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a64a0482-5aca-4348-8edf-434635fbc0a6",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:24.194964+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "6ea98667-c145-48d7-9bea-086dea96ee70",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:29.207644+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "20b80083-851c-437a-adeb-991f1c9ceddb",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:34.220442+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "36ffeada-ce20-41d2-9225-6a61d49d61a1",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:39.233219+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "1ed1a7fb-a738-4508-a563-cbf9f46c8daf",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:44.247766+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a26eb63c-390f-4d91-b9ab-6ace451f8a59",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:49.261339+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "4d0975c1-a3c4-47b0-9960-2526bf396440",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:54.274466+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "9ad09350-37d5-4dbd-b5f8-6e1d9cbc2b43",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:47:59.287291+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "23cbb680-5091-47d9-8826-be3606f51cf8",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:04.300919+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "8d8722c6-1bae-4a22-b27e-56a033cf81b8",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:09.313737+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "e9e41ca9-1c4f-48bc-96dc-5b9862ac8c83",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2028860000441455,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:14.326579+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "1a75a2e1-3c52-4c70-b0df-012d353d94c3",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:19.343058+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "2779565d-7ebf-4fb2-9269-bba0ed7831e3",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:24.357963+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "45ce34ce-de9e-4155-b4d4-d243621d787c",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:29.370459+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "ebb7fc83-25f2-4f01-9c6c-cea9fccd6eaf",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:34.384813+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "55e84573-7ae4-47f0-a1b7-6e93ecbfd053",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:39.397180+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "1090bcac-e3f8-48fd-9380-c4befb2cc48b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:44.408852+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "b4a473b0-e623-4684-9d77-a8a05a769765",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:49.421337+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "7952f498-3be3-4de0-ae8f-83c9c5fd2d80",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:54.434935+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "766618dc-e03a-492b-bfd2-5b66f2a9ab96",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:48:59.446717+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "cb25c6fb-8dfa-4e94-b4b6-4a404c6765c7",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:04.464547+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "95375992-3df7-4943-a765-3807f1f9d2bc",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:09.476938+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "491eb3e9-4940-40af-aedc-9331f7f2d08a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.176074999989396,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:14.489069+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "86e072fd-b94c-48da-b01b-240cefed749f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:19.501686+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "84ca62c7-7e49-463e-89ae-bdda0b0dde91",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:24.514662+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "71d7584b-b6e2-48f9-a885-385c6ab46180",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:29.528305+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3e3caf75-5617-430e-98bb-644e0d2cf39a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:34.543723+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "134e0e32-c246-4aa9-8761-98188ae0602f",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:39.555751+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "81d5bbfd-0878-49bd-b71a-7f9a6f8b2f90",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:44.567848+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "d7a6c1ea-b69a-4a69-b9d5-8b463c4e4d5d",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:49.583031+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "bf553883-6a54-4493-b87d-ed74d914b9e2",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:54.598558+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "b5aca3c0-2d91-4a2e-be7e-b18b5dd94a8b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:49:59.611139+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "88fb9cda-5521-4429-8363-7531a85360a7",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:04.624021+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "dffa5b25-2177-416a-887c-279c830346f3",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:09.637055+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "76c94e8e-15a1-4722-939e-28db1b3767fe",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.2424750000263884,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:14.649614+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "8c9c664c-6524-42f8-ba59-0cb589a42f26",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:19.661993+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3afa0d87-83eb-4b80-9744-84b60da77b7a",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:24.674277+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "cf533d40-017b-4a32-bc3b-b5d64acabe3b",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:29.694130+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "19fb2163-e597-43df-880d-33af1ae71bf2",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:34.709089+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "3c101ca6-3eef-4511-b41c-6c68d302d7b2",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:39.721746+00:00",
+      "hostname": "atlas.example"
+    },
+    {
+      "metric_id": "a00381d1-61be-416d-8396-a62d66928afe",
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "value": 1.3297630000579375,
+      "unit": "ms",
+      "timestamp": "2026-10-23T05:50:44.734332+00:00",
+      "hostname": "atlas.example"
+    }
+  ]
+}
