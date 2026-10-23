@@ -662,7 +662,25 @@
     };
   });
 
-  R.route('GET /api/layout', function () { return {}; });
+  // The visitor's card layout, kept in this browser's Cache Storage so it survives reloads.
+  var LAYOUT_CACHE = 'lsmdemo-layout', LAYOUT_KEY = '/demo-state/layout';
+  var layoutMem = null;
+  function layoutStore() {
+    return self.caches && self.caches.open ? self.caches.open(LAYOUT_CACHE) : Promise.reject(new Error('no caches'));
+  }
+  R.route('GET /api/layout', function () {
+    if (layoutMem) return layoutMem;
+    return layoutStore().then(function (c) { return c.match(LAYOUT_KEY); })
+      .then(function (r) { return r ? r.json() : {}; })
+      .then(function (l) { layoutMem = l; return l; }, function () { return layoutMem || {}; });
+  });
+  R.route('POST /api/layout', function (ctx) {
+    var body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    layoutMem = body;
+    return layoutStore().then(function (c) {
+      return c.put(LAYOUT_KEY, new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
+    }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
+  }, { read: true });
 
   R.route('GET /api/agents/list-by-provider', listByProvider);
   R.route('GET /api/agents/enrollment-secret', function () {

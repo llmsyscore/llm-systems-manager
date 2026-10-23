@@ -241,3 +241,13 @@ test('each provider pool lists the machines that run it, default first, matching
   assert.ok(self.DemoFleet.byId('forge').models.includes('Qwen2.5-14B-Instruct-Q5_K_M'));
   assert.equal(g.autopilot.entries.length, 3);
 });
+
+test('card layout changes are accepted quietly and read back', async () => {
+  const url = new URL('http://demo.example/api/layout');
+  const post = self.DemoRouter.find('POST', url);
+  assert.ok(post && post.route.read, 'POST /api/layout is a silent read');
+  const saved = { overall: { order: ['hero', 'agents'], hidden: ['forecast'] } };
+  const res = await post.route.handler({ now: NOW, params: {}, query: url.searchParams, body: saved, fleet: self.DemoFleet });
+  assert.equal(JSON.stringify(res), '{"ok":true}');
+  assert.equal(JSON.stringify(await call('/api/layout')), JSON.stringify(saved));
+});
