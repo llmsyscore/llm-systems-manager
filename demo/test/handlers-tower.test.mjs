@@ -7,7 +7,7 @@ import { load } from './load.mjs';
 import { assertCompatible } from './shape.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'handlers/alarms.js', 'handlers/tower.js']);
+const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', 'handlers/alarms.js', 'handlers/tower.js']);
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 
 async function raw(method, path, body = null, now = NOW) {
@@ -104,7 +104,7 @@ test('thread and message POSTs are answered as reads; other Tower writes are ref
   const park = await post('/api/tower/runs/demo-run-slow-1/park', {});
   assert.equal(park.status, 200);
   assert.deepEqual(await park.json(), { ok: true });
-  assert.equal((await post('/api/tower/insights/demo-ins-1/dismiss', {})).status, 403);
+  assert.equal((await post('/api/tower/timers/x/cancel', {})).status, 403);
 });
 
 test('eval and models pages are populated', async () => {
@@ -113,4 +113,38 @@ test('eval and models pages are populated', async () => {
   const m = await call('/api/tower/models');
   assert.ok(m.models.length >= 3 && m.hosts.length === 1);
   assert.deepEqual((await call('/api/tower/timers')).timers, []);
+});
+
+test('who makes it and how to get help have their own answers, with no tool call', async () => {
+  const K = self.DemoTower.keyFor;
+  for (const q of ['Who develops LLM Systems Manager?', 'Who makes this?', 'who builds it', 'Who maintains the project?', 'Who is behind LLM Systems Manager?']) {
+    assert.equal(K(q), 'about', q);
+  }
+  for (const q of ['How do I get help?', 'Where is support?', 'How can I contact you?', 'How do I report a bug?']) {
+    assert.equal(K(q), 'help', q);
+  }
+  assert.equal(K('Which machine is slow?'), 'slow');
+  assert.equal(K('Is the alarm engine healthy?'), 'alarm');
+  assert.equal(K('What models are loaded everywhere?'), 'model');
+  const about = await answerFor('Who develops LLM Systems Manager?');
+  assert.match(about, /LLM SysCore/);
+  assert.match(about, /AGPL-3\.0/);
+  assert.match(about, /github\.com\/llmsyscore\/llm-systems-manager/);
+  assert.match(about, /own hardware/);
+  const help = await answerFor('How do I get help?');
+  for (const re of [/https:\/\/www\.llmsyscore\.com\/docs\.html/, /support@llmsyscore\.com/,
+    /github\.com\/llmsyscore\/llm-systems-manager\/issues/, /security/i]) assert.match(help, re);
+  for (const key of ['about', 'help']) {
+    const out = await raw('POST', '/api/tower/threads/demo-t1/messages', { text: key === 'about' ? 'Who makes it?' : 'help' });
+    assert.match(out.run_id, /^demo-run-([a-z]+)-/);
+    assert.equal(/^demo-run-([a-z]+)-/.exec(out.run_id)[1], key, 'the analytics read the answer key from the run id');
+    const ev = await streamEvents(out.run_id);
+    assert.ok(!ev.some((e) => e.event === 'tool'), `${key} has no tool tick`);
+  }
+});
+
+test('the dashboard\'s own help suggestions get the new answers', async () => {
+  const src = readFileSync(join(ROOT, '..', 'llm-systems-manager', 'frontend', 'js', 'lib', 'tower-view.js'), 'utf8');
+  const list = JSON.parse(/const HELP_SUGS = (\[[^\]]*\]);/.exec(src)[1].replace(/'/g, '"'));
+  assert.deepEqual(list.map((q) => self.DemoTower.keyFor(q)), ['about', 'help']);
 });

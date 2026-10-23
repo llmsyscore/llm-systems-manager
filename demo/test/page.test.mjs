@@ -110,16 +110,25 @@ test('alarm frame posts refusals to the dashboard, which toasts them', () => {
 const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
 <h1><a href="/">Home</a><div class="header-right"><button id="towerBtn">Tower</button></div></h1>
 <div class="tab-nav">
-  <button class="tab-btn" id="tabBtnOverall">Overall</button><button class="tab-btn" id="tabBtnLlmControl">LLM Control</button>
+  <button class="tab-btn" id="tabBtnOverall">Overall</button><button class="tab-btn" id="tabBtnDashboard">Dashboards</button>
+  <button class="tab-btn" id="tabBtnLlmControl">LLM Control</button>
   <button class="tab-btn" id="tabBtnEvents">Events</button><button class="tab-btn" id="tabBtnAdmin">Admin</button>
 </div>
 <div id="overallTab"><section class="ov-hero"></section><div id="ovAgentsStrip"></div></div>
-<div id="llmTab"><div id="llm-llamacpp"></div>
+<div id="dashboardTab"><button class="sub-tab-btn" id="subTabBtnDashEnergy">Energy</button>
+  <button class="sub-tab-btn" id="subTabBtnDashForecast">Forecast</button>
+  <div id="dash-energy"></div><div id="dash-forecast"></div></div>
+<div id="llmTab"><button class="sub-tab-btn" id="subTabBtnLlmLlamacpp">llama.cpp</button>
+  <button class="sub-tab-btn" id="subTabBtnLlmTools">Tools</button>
+  <div id="llm-ctrl-wrap"><div class="llm-section" id="secModels"></div></div><div id="llm-llamacpp"></div><div id="llm-tools"></div>
   <div id="terminalPanel" style="display:none;"><div id="terminalMount"></div></div>
   <div id="serverLogPanel" style="display:none;"><div id="serverLogBox"></div></div>
 </div>
 <div id="eventsTab"><iframe id="alarmEngineIframe"></iframe></div>
-<div id="adminTab"><div id="adminHealthCard"></div></div>
+<div id="adminTab"><div id="adminHealthCard"></div>
+  <button class="sub-tab-btn" id="subTabBtnAdminAgents">Agents</button><button class="sub-tab-btn" id="subTabBtnAdminRouting">Gateway</button>
+  <button class="sub-tab-btn" id="subTabBtnAdminJobs">Jobs</button>
+  <div id="admin-agents"></div><div id="admin-routing"></div><div id="admin-jobs"></div></div>
 </body></html>`;
 
 // Builds a jsdom dashboard, runs the given runtime scripts in it and waits for the tour's start delay.
@@ -143,7 +152,13 @@ test('tour starts on a first visit, walks the steps with switchTab and Close set
   const tabs = [];
   const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); } });
   const steps = w.DemoTour.steps;
-  assert.ok(steps.length >= 5 && steps.length <= 7);
+  assert.equal(steps.length, 12);
+  assert.ok(steps.every((s) => s.text.split(/(?<=\.|\?"?)\s+(?=[A-Z])/).length <= 2), 'one or two sentences per step');
+  for (const t of ['Energy', 'Forecast', 'Benchmarks', 'System health', 'Where requests go', 'Jobs', 'Add machines']) {
+    assert.ok(steps.some((s) => s.title.includes(t)), t);
+  }
+  assert.ok(steps.every((s) => !/\bagents?\b|turned off/i.test(s.text)), 'plain words: no "agent", no reassurance');
+  assert.match(steps.find((s) => s.sub === 'subTabBtnLlmTools').text, /Autotune tries .* keeps the fastest/);
   for (const s of steps) {
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(s.title && s.text, s.selector);
@@ -180,6 +195,34 @@ test('finishing the tour sets the flag; the banner Tour button restarts it; tab 
   assert.equal(w.document.querySelector('.demo-tour'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
   assert.ok(clicked.includes('tabBtnAdmin') && clicked.includes('tabBtnEvents'));
+});
+
+test('steps with a sub-tab click its button; each step stays closable', async () => {
+  const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  const subs = [];
+  w.document.querySelectorAll('.sub-tab-btn').forEach((b) => b.addEventListener('click', () => subs.push(b.id)));
+  const steps = w.DemoTour.steps;
+  for (let i = 0; i < steps.length; i++) {
+    w.DemoTour.start(i);
+    assert.equal(w.DemoTour.index, i);
+    assert.ok(w.document.querySelector('.demo-tour-close'), `close on step ${i + 1}`);
+    if (steps[i].sub) assert.equal(subs[subs.length - 1], steps[i].sub);
+    w.document.querySelector('.demo-tour-close').click();
+    assert.equal(w.document.querySelector('.demo-tour'), null);
+  }
+  assert.equal(JSON.stringify(subs), JSON.stringify(steps.filter((s) => s.sub).map((s) => s.sub)));
+});
+
+test('a thin target rings its nearest ancestor that is at least 40 px tall', async () => {
+  const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  const box = (top, h) => () => ({ top, bottom: top + h, left: 10, right: 410, width: 400, height: h, x: 10, y: top });
+  w.document.getElementById('secModels').getBoundingClientRect = box(100, 2);
+  w.document.getElementById('llm-ctrl-wrap').getBoundingClientRect = box(90, 300);
+  w.DemoTour.start(w.DemoTour.steps.findIndex((s) => s.selector === '#secModels'));
+  const ring = w.document.querySelector('.demo-tour-ring');
+  assert.equal(ring.style.height, '308px');
+  assert.equal(ring.style.top, '86px');
+  w.DemoTour.close();
 });
 
 test('tour still starts and closes when storage throws', async () => {

@@ -4,7 +4,7 @@
   var CACHE = 'lsm-demo-' + RELEASE;
   var stamp = function (p) { return p + '?v=' + encodeURIComponent(RELEASE); };
   self.importScripts.apply(self, ['/demo/demo-router.js', '/demo/demo-sse.js',
-    '/demo/demo-fleet.js', '/demo/demo-series.js'].concat(self.DEMO_HANDLERS || []).map(stamp));
+    '/demo/demo-fleet.js', '/demo/demo-series.js', '/demo/demo-state.js'].concat(self.DEMO_HANDLERS || []).map(stamp));
 
   var ASSET_RE = /(?<![\w-])(?:src|href)=(["'])([^"'#]+)\1/g;
 

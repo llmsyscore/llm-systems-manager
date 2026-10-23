@@ -7,7 +7,7 @@ import { load } from './load.mjs';
 import { assertCompatible } from './shape.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'handlers/alarms.js']);
+const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', 'handlers/alarms.js']);
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 
 async function raw(path, now = NOW) {
@@ -156,7 +156,7 @@ test('notifications: channels, policies and delivery history', async () => {
 test('alarm writes, metrics batch included, are refused', async () => {
   const post = (path, body) => self.DemoRouter.respond(new self.Request('http://demo.example' + path,
     { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }), NOW, null);
-  for (const path of ['/api/alarm/metrics/batch', '/api/alarm/alerts/x/acknowledge']) {
+  for (const path of ['/api/alarm/metrics/batch', '/api/alarm/alerts/x/ignore', '/api/alarm/rules']) {
     assert.equal((await post(path, {})).status, 403, path);
   }
 });

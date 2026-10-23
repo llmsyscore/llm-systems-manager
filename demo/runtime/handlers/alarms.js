@@ -74,13 +74,19 @@
     return r.name + ' on ' + host + ': ' + r.metric + ' = ' + v + ' (threshold ' + r.t.value + ')';
   }
 
-  function alertAt(a, nowMs) {
+  // The visitor's saved alarm changes (worker only): acknowledged or closed alerts, rules and channels on or off.
+  function mine() { return self.DemoState ? self.DemoState.get('alarms', {}) : {}; }
+
+  function alertAt(a, nowMs, my) {
     var t = Math.floor(nowMs / 1000);
     var r = ruleById(a.rule);
     var created = nowMs - a.age * 1000;
     var value = a.open ? a.value(t) : a.peak;
     var closed = a.open ? null : created + a.dur * 1000;
-    return {
+    var o = ((my || {}).alerts || {})[a.id] || {};
+    var off = ((my || {}).rules || {})[a.rule];
+    var shut = a.open ? (o.closed || (off && !off.enabled ? off.at : null)) : null;
+    var out = {
       alert_id: a.id, rule_id: r.id, rule_name: r.name, metric_source: 'system', metric_name: r.metric,
       current_value: value, threshold_value: r.t.value, severity: r.sev,
       status: a.open ? 'active' : 'closed', message: message(r, a.host, value),
@@ -96,9 +102,19 @@
       resolved_value: a.open ? null : a.cleared,
       ignored_until: null
     };
+    if (a.open && o.ack) { out.acknowledged_at = naive(Math.max(o.ack, created)); out.acknowledged_by = 'alex'; }
+    if (shut) {
+      shut = Math.max(shut, created);
+      out.status = 'closed'; out.closed_at = naive(shut); out.last_evaluated_at = naive(shut);
+      out.resolution_reason = o.closed ? 'manual' : 'rule disabled'; out.resolved_value = value;
+    }
+    return out;
   }
 
-  function alerts(nowMs) { return ALERTS.map(function (a) { return alertAt(a, nowMs); }); }
+  function alerts(nowMs) {
+    var my = mine();
+    return ALERTS.map(function (a) { return alertAt(a, nowMs, my); });
+  }
   function openAlerts(nowMs) { return alerts(nowMs).filter(function (a) { return a.status === 'active'; }); }
 
   // Toast title, body and severity as the engine's _alert_headline builds them.
@@ -133,6 +149,7 @@
   function rules(nowMs) {
     var t = Math.floor(nowMs / 1000);
     var open = openAlerts(nowMs);
+    var my = mine().rules || {};
     return RULES.map(function (r) {
       var last = null;
       ALERTS.forEach(function (a) {
@@ -143,7 +160,7 @@
         rule_id: r.id, name: r.name, description: r.desc, source_host: null,
         metric_source: 'system', metric_name: r.metric, rule_type: 'threshold_above',
         config: { threshold: r.t, moving_average: null, percentile: null, rate_of_change: null, z_score: null },
-        severity: r.sev, enabled: true, notification_channel_ids: [],
+        severity: r.sev, enabled: my[r.id] ? my[r.id].enabled : true, notification_channel_ids: [],
         quiet_hours_start: null, quiet_hours_end: null, auto_resolve_cycles: 2, min_trigger_cycles: 1,
         correlation_group: null,
         created_at: naive(nowMs - r.age * 1000), updated_at: naive(nowMs - r.age * 1000 + 4000),
@@ -173,19 +190,21 @@
     return c;
   }
   function channels(nowMs) {
+    var my = mine().channels || {};
     return [
       [CH_TOAST, 'Browser toasts', 'Pop-ups on every open dashboard', 'toast', 41, 0],
       [CH_EMAIL, 'On-call email', 'Mail to the on-call inbox', 'email', 12, 1],
       [CH_PUSH, 'Phone', 'Push to the companion app', 'webpush', 7, 0]
     ].map(function (c, i) {
       return { channel_id: c[0], name: c[1], description: c[2], channel_type: c[3], config: chConfig(c[3]),
-        enabled: true, rule_ids: [], created_at: naive(nowMs - (86400 * (20 - i * 3)) * 1000),
+        enabled: c[0] in my ? my[c[0]] : true, rule_ids: [], created_at: naive(nowMs - (86400 * (20 - i * 3)) * 1000),
         last_sent_at: naive(nowMs - (c[3] === 'toast' ? 1380 : 4920) * 1000), send_count: c[4], fail_count: c[5] };
     });
   }
   function configs(nowMs) {
+    var my = mine().configs || {};
     function cfg(id, name, desc, chs, minSev, count, repeat) {
-      return { config_id: id, name: name, description: desc, channels: chs, enabled: true, auto_dismiss: true,
+      return { config_id: id, name: name, description: desc, channels: chs, enabled: id in my ? my[id] : true, auto_dismiss: true,
         toast_dismiss_seconds: 10, created_at: naive(nowMs - 86400 * 19 * 1000), last_triggered_at: naive(nowMs - 1380 * 1000),
         trigger_count: count, min_severity: minSev, metric_sources: [], metric_names: [], source_hosts: [], rule_ids: [],
         repeat_interval_minutes: repeat, notify_on_clear: true, min_alarm_count: 1 };
@@ -497,6 +516,78 @@
         rules: RULES.length, channels: 3, configs: 2, deliveries: allDeliveries(ctx.now).length, db: 'ae_notif_rules.db' }
     };
   });
+
+  // Acknowledge, close and on/off switches are kept in this browser; other alarm changes stay refused.
+  function saveMine(fn, out) {
+    var my = mine();
+    fn(my);
+    return R.state().set('alarms', my).then(function () { return out; });
+  }
+  function detail(status, msg) {
+    return new Response(JSON.stringify({ detail: msg }), { status: status, headers: JSON_HEADERS });
+  }
+  // Marks the listed alerts acknowledged or closed in `my`; returns the ids it changed.
+  function markAlerts(my, ids, action, nowMs) {
+    var list = alerts(nowMs);
+    var done = [];
+    my.alerts = my.alerts || {};
+    ids.forEach(function (id) {
+      var a = list.filter(function (x) { return x.alert_id === String(id); })[0];
+      if (!a || (action === 'acknowledge' && a.status === 'closed')) return;
+      var o = my.alerts[a.alert_id] || {};
+      if (action === 'acknowledge') o.ack = o.ack || nowMs;
+      else if (a.status !== 'closed') o.closed = nowMs;
+      my.alerts[a.alert_id] = o;
+      done.push(a.alert_id);
+    });
+    return done;
+  }
+  R.route('POST /api/alarm/alerts/bulk', function (ctx) {
+    var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    var action = String(b.action || '').toLowerCase();
+    if (action === 'ignore') return R.REFUSE;
+    if (action !== 'acknowledge' && action !== 'close') return detail(400, 'Unknown action: ' + action);
+    var ids = (Array.isArray(b.alert_ids) ? b.alert_ids : []).map(String);
+    var done = [];
+    return saveMine(function (my) { done = markAlerts(my, ids, action, ctx.now); }, null).then(function () {
+      return { status: 'ok', action: action, updated: done.length,
+        failed: ids.filter(function (id) { return done.indexOf(id) < 0; }) };
+    });
+  }, { read: true });
+  ['acknowledge', 'close'].forEach(function (action) {
+    R.route('POST /api/alarm/alerts/:id/' + action, function (ctx) {
+      var a = findAlert(ctx);
+      if (!a) return detail(404, 'Alert ' + ctx.params.id + ' not found');
+      if (action === 'acknowledge' && a.status === 'closed') return detail(409, 'Alert ' + ctx.params.id + ' is closed');
+      return saveMine(function (my) { markAlerts(my, [a.alert_id], action, ctx.now); },
+        { status: 'ok', message: 'Alert ' + a.alert_id + (action === 'close' ? ' closed' : ' acknowledged') });
+    }, { read: true });
+  });
+  R.route('PATCH /api/alarm/rules/:id/toggle', function (ctx) {
+    var r = ruleById(ctx.params.id);
+    if (!r) return detail(404, 'Rule not found: ' + ctx.params.id);
+    var on = !rules(ctx.now).filter(function (x) { return x.rule_id === r.id; })[0].enabled;
+    return saveMine(function (my) { my.rules = my.rules || {}; my.rules[r.id] = { enabled: on, at: ctx.now }; },
+      { rule_id: r.id, enabled: on, message: 'Rule ' + (on ? 'enabled' : 'disabled') });
+  }, { read: true });
+  // Only the on/off switch is saved; a full edit is refused like any other change.
+  function onlyEnabled(b) {
+    return b && typeof b === 'object' && Object.keys(b).length === 1 && typeof b.enabled === 'boolean';
+  }
+  R.route('PUT /api/alarm/notifications/channels/:id', function (ctx) {
+    if (!onlyEnabled(ctx.body)) return R.REFUSE;
+    var id = ctx.params.id;
+    if (!channels(ctx.now).some(function (c) { return c.channel_id === id; })) return detail(404, 'Channel not found');
+    return saveMine(function (my) { my.channels = my.channels || {}; my.channels[id] = ctx.body.enabled; }, null)
+      .then(function () { return channels(ctx.now).filter(function (c) { return c.channel_id === id; })[0]; });
+  }, { read: true });
+  R.route('PUT /api/alarm/notifications/configs/:id', function (ctx) {
+    if (!onlyEnabled(ctx.body)) return R.REFUSE;
+    var id = ctx.params.id;
+    if (!configs(ctx.now).some(function (c) { return c.config_id === id; })) return detail(404, 'Config not found');
+    return saveMine(function (my) { my.configs = my.configs || {}; my.configs[id] = ctx.body.enabled; }, null)
+      .then(function () { return configs(ctx.now).filter(function (c) { return c.config_id === id; })[0]; });
+  }, { read: true });
 
   R.route('GET /api/alarm/notifications/channels', function (ctx) { return channels(ctx.now); });
   R.route('GET /api/alarm/notifications/channels/:id', function (ctx) {

@@ -84,9 +84,18 @@
     Object.keys(cfg).forEach(function (k) { args.push('--' + k, cfg[k]); });
     return args;
   }
+  // Settings and profiles the visitor saved are kept per machine in this browser (DemoState).
+  function saved(key, m) { return R.state().get(key, {})[m.id] || {}; }
+  function save(key, m, val) {
+    var all = R.state().get(key, {});
+    all[m.id] = val;
+    return R.state().set(key, all);
+  }
   function configAll(m) {
     var out = {};
     llamaModels(m).forEach(function (id) { out[id] = configOf(m, id); });
+    var mine = saved('llmConfig', m);
+    Object.keys(mine).forEach(function (id) { out[id] = mine[id]; });
     return out;
   }
   // Every configured model gets a profile so the page never tries to save one.
@@ -104,6 +113,8 @@
       }
       out[id] = { active: 'default', profiles: profiles };
     });
+    var mine = saved('profiles', m);
+    Object.keys(mine).forEach(function (id) { out[id] = mine[id]; });
     return out;
   }
 
@@ -119,8 +130,79 @@
     };
   });
   R.route('GET /api/llm/config', function (ctx) { return configAll(machineFor(ctx.query, 'llama')); });
-  R.route('GET /api/llm/aliases', function () { return ALIASES; });
+  function aliasesAll() {
+    var out = {};
+    var mine = R.state().get('aliases', {});
+    Object.keys(ALIASES).forEach(function (k) { out[k] = ALIASES[k]; });
+    Object.keys(mine).forEach(function (k) { if (mine[k]) out[k] = mine[k]; else delete out[k]; });
+    return out;
+  }
+  R.route('GET /api/llm/aliases', aliasesAll);
   R.route('GET /api/llm/profiles', function (ctx) { return profilesAll(machineFor(ctx.query, 'llama')); });
+
+  // Model settings, nicknames and profiles the visitor changes are kept in this browser.
+  R.route('POST /api/llm/config', function (ctx) {
+    var m = machineFor(ctx.query, 'llama');
+    var body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    var mine = saved('llmConfig', m);
+    Object.keys(body).forEach(function (id) {
+      if (id !== '*' && id !== '__DEFAULTS__' && body[id] && typeof body[id] === 'object') mine[id] = body[id];
+    });
+    return save('llmConfig', m, mine).then(function () { return { ok: true }; });
+  }, { read: true });
+  R.route('POST /api/llm/aliases', function (ctx) {
+    var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    var id = String(b.model_id || '').trim();
+    if (!id) return json({ ok: false, error: 'model_id required' }, 400);
+    var mine = R.state().get('aliases', {});
+    mine[id] = String(b.alias || '').trim().slice(0, 80);
+    return R.state().set('aliases', mine).then(function () { return { ok: true, aliases: aliasesAll() }; });
+  }, { read: true });
+
+  // Profile changes follow the manager's rules (names up to 64 characters, the last profile stays).
+  function profileOp(ctx, op) {
+    var m = machineFor(ctx.query, 'llama');
+    var id = ctx.params.id;
+    var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    var all = profilesAll(m);
+    var p = all[id];
+    var name = String(b.name || '').trim();
+    if (op === 'save') {
+      if (!name) return json({ ok: false, error: 'agent and name required' }, 400);
+      if (name.length > 64) return json({ ok: false, error: 'name too long' }, 400);
+      if (b.values != null && typeof b.values !== 'object') return json({ ok: false, error: 'values must be an object' }, 400);
+      p = p || { active: name, profiles: {} };
+      p.profiles[name] = b.values || {};
+      if (b.make_active || !p.profiles[p.active]) p.active = name;
+    } else if (op === 'rename') {
+      var from = String(b.from || '').trim(), to = String(b.to || '').trim();
+      if (to.length > 64) return json({ ok: false, error: 'name too long' }, 400);
+      if (!p || !p.profiles[from]) return json({ ok: false, error: 'no such profile' }, 404);
+      if (!to || p.profiles[to]) return json({ ok: false, error: 'name exists or empty' }, 409);
+      p.profiles[to] = p.profiles[from];
+      delete p.profiles[from];
+      if (p.active === from) p.active = to;
+    } else {
+      if (!p || !p.profiles[name]) return json({ ok: false, error: 'no such profile' }, 404);
+      if (op === 'activate') {
+        p.active = name;
+      } else {
+        if (Object.keys(p.profiles).length <= 1) return json({ ok: false, error: 'cannot delete the last profile' }, 409);
+        delete p.profiles[name];
+        if (p.active === name) p.active = p.profiles['default'] ? 'default' : Object.keys(p.profiles)[0];
+      }
+    }
+    var mine = saved('profiles', m);
+    mine[id] = p;
+    return save('profiles', m, mine).then(function () {
+      var out = { ok: true, model: p };
+      if (op === 'activate') out.values = p.profiles[name];
+      return out;
+    });
+  }
+  ['save', 'activate', 'rename', 'delete'].forEach(function (op) {
+    R.route('POST /api/llm/profiles/:id/' + op, function (ctx) { return profileOp(ctx, op); }, { read: true });
+  });
 
   R.route('GET /api/llm/server/status', function (ctx) {
     var m = machineFor(ctx.query, 'llama');

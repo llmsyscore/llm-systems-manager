@@ -172,7 +172,7 @@ async function fire(self, type, extra = {}) {
 test('activate deletes old lsm-demo caches, keeps this release and claims clients', async () => {
   const { self, stores, claimed } = swEnv(['lsm-demo-old', 'lsm-demo-v9.9.9', 'other']);
   await fire(self, 'activate');
-  assert.deepEqual([...stores.keys()].sort(), ['lsm-demo-v9.9.9', 'other']);
+  assert.deepEqual([...stores.keys()].sort(), ['lsm-demo-v9.9.9', 'lsmdemo-state', 'other']);
   assert.equal(claimed(), true);
 });
 
@@ -272,7 +272,7 @@ test('asset list takes single- and double-quoted src/href but not data-src; cach
 test('with every handler file loaded in build order, each literal route is matched by its own entry', () => {
   const files = readdirSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'runtime', 'handlers'))
     .filter((f) => f.endsWith('.js')).sort();
-  const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', ...files.map((f) => `handlers/${f}`)]);
+  const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', ...files.map((f) => `handlers/${f}`)]);
   const R = self.DemoRouter;
   const literal = [...R.keys()].filter((k) => !k.includes('/:'));
   assert.ok(literal.includes('GET /api/lmstudio/server/log') && literal.includes('GET /api/vllm/server/svcconfig'));

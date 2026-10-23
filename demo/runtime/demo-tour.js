@@ -12,17 +12,29 @@
       text: 'This is the first page you see. The chart shows how fast all your machines answered over the last day, with their power use on top.' },
     { tab: 'overall', selector: '#ovAgentsStrip', title: 'Each machine',
       text: 'Every machine you add shows up here with the model it is running and how busy it is.' },
-    { tab: 'llm', selector: '#llm-llamacpp', title: 'Models',
+    { tab: 'dashboard', sub: 'subTabBtnDashEnergy', selector: '#dash-energy', title: 'Energy and cost',
+      text: 'See how much power each machine uses and what it costs to run, by the hour and by the day.' },
+    { tab: 'dashboard', sub: 'subTabBtnDashForecast', selector: '#dash-forecast', title: 'Forecast',
+      text: 'Forecast looks back over the last two weeks and warns you early, for example when a disk is filling up or a machine keeps getting warmer.' },
+    { tab: 'llm', sub: 'subTabBtnLlmLlamacpp', selector: '#secModels', title: 'Models',
       text: 'Pick a model, start or stop it, and see how fast it runs. LM Studio has its own tab at the top of this page.' },
-    { tab: 'events', selector: '#alarmEngineIframe', title: 'Alarms',
+    { tab: 'llm', sub: 'subTabBtnLlmTools', selector: '#llm-tools', title: 'Benchmarks and tuning',
+      text: 'Measure how fast a model runs on each machine. Autotune tries different settings for you and keeps the fastest ones.' },
+    { tab: 'events', selector: '#eventsTab', title: 'Alarms',
       text: 'Alarms tell you when something needs a look, like a machine running hot. New sample alarms show up here every minute or two.' },
     { tab: 'overall', selector: '#towerBtn', title: 'Ask Tower',
-      text: 'Tower answers questions about your machines in plain words. Open it and try "Which machine is slow?"' },
-    { tab: 'admin', selector: '#adminHealthCard', title: 'Admin',
-      text: 'Here you add machines, manage users and change settings. In the demo you can look around, but changes are turned off.' }
+      text: 'Tower answers questions about your machines in plain words. Open it and try "Which machine is slow?" or "How do I get help?"' },
+    { tab: 'admin', selector: '#adminHealthCard', title: 'System health',
+      text: 'See at a glance whether every part of the system is running, and which jobs are waiting or running.' },
+    { tab: 'admin', sub: 'subTabBtnAdminAgents', selector: '#admin-agents', title: 'Add machines',
+      text: 'Each machine runs a small helper program that reports to this dashboard. New machines ask to join here, and you approve them.' },
+    { tab: 'admin', sub: 'subTabBtnAdminRouting', selector: '#admin-routing', title: 'Where requests go',
+      text: 'Choose which machines answer questions for each model, and which one goes first. You can also keep a model on one machine.' },
+    { tab: 'admin', sub: 'subTabBtnAdminJobs', selector: '#admin-jobs', title: 'Jobs',
+      text: 'Long tasks like benchmarks and downloads are listed here, with who started them and how they went.' }
   ];
 
-  var state = { index: -1, root: null, ring: null, card: null, timer: null, touched: false };
+  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false };
 
   function seen() {
     try { return !!self.localStorage.getItem(SEEN_KEY); } catch (e) { return false; }
@@ -54,6 +66,23 @@
     if (b) b.click();
   }
 
+  // Opens a step's sub-tab by clicking its button, the way a visitor would.
+  function showSub(id) {
+    var b = id && doc.getElementById(id);
+    if (b) b.click();
+  }
+
+  // The step's element, or its nearest ancestor at least 40 px tall when the element itself is thinner.
+  function targetOf(s) {
+    var t = s && doc.querySelector(s.selector);
+    while (t && t.parentElement && t !== doc.body && t.getBoundingClientRect().height < 40) {
+      var p = t.parentElement;
+      if (p === doc.body || p === doc.documentElement) break;
+      t = p;
+    }
+    return t;
+  }
+
   function build() {
     var root = el('div', 'demo-tour');
     root.style.pointerEvents = 'none';
@@ -73,7 +102,7 @@
   function place() {
     if (!state.card) return;
     var s = steps[state.index];
-    var target = s && doc.querySelector(s.selector);
+    var target = targetOf(s);
     var r = target && target.getBoundingClientRect();
     var vw = self.innerWidth || 1024, vh = self.innerHeight || 768;
     var card = state.card, ring = state.ring;
@@ -84,11 +113,14 @@
       return;
     }
     var top = Math.max(r.top, 0), bottom = Math.min(r.bottom, vh);
+    // The ring stays inside the window so all four sides show, even for a full-page section.
+    var rl = Math.max(r.left - 4, 2), rr = Math.min(r.right + 4, vw - 2);
+    var rt = Math.max(top - 4, 2), rb = Math.min(bottom + 4, vh - 2);
     ring.style.display = '';
-    ring.style.left = (r.left - 4) + 'px';
-    ring.style.top = (top - 4) + 'px';
-    ring.style.width = (r.width + 8) + 'px';
-    ring.style.height = (Math.max(bottom - top, 0) + 8) + 'px';
+    ring.style.left = rl + 'px';
+    ring.style.top = rt + 'px';
+    ring.style.width = Math.max(rr - rl, 0) + 'px';
+    ring.style.height = Math.max(rb - rt, 0) + 'px';
     var ch = card.offsetHeight, cw = card.offsetWidth;
     var y = bottom + 12;
     if (y + ch > vh - 12) y = top - ch - 12;
@@ -118,10 +150,13 @@
   function go(i) {
     state.index = Math.max(0, Math.min(steps.length - 1, i));
     showTab(steps[state.index].tab);
+    showSub(steps[state.index].sub);
     render();
     place();
     clearTimeout(state.timer);
+    clearTimeout(state.timer2);
     state.timer = setTimeout(place, 400);
+    state.timer2 = setTimeout(place, 1200);
   }
 
   function track(action, step) { if (typeof self.DemoTrack === 'function') self.DemoTrack('tour', { action: action, step: step }); }
@@ -137,6 +172,7 @@
     if (state.index >= 0) track(finished === true ? 'finish' : 'close', state.index);
     markSeen();
     clearTimeout(state.timer);
+    clearTimeout(state.timer2);
     if (state.root && state.root.parentNode) state.root.parentNode.removeChild(state.root);
     state.root = state.ring = state.card = null;
     state.index = -1;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +10,9 @@ import { build, checkOutDir, parseArgs, stampStaticUrls } from '../build.mjs';
 
 const DEMO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('stampStaticUrls hashes known files and keeps missing ones', async () => {
+test('stampStaticUrls hashes known files and keeps missing ones', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'stamp-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   await mkdir(join(dir, 'js')); await mkdir(join(dir, 'css'));
   await writeFile(join(dir, 'js', 'a.js'), 'aaa');
   await writeFile(join(dir, 'css', 'b.css'), 'bbb');
@@ -24,8 +25,9 @@ test('stampStaticUrls hashes known files and keeps missing ones', async () => {
   assert.ok(out.includes('src="/static/js/gone.js"'));
 });
 
-test('build produces the stamped, injected site', async () => {
+test('build produces the stamped, injected site', async (t) => {
   const out = await mkdtemp(join(tmpdir(), 'dist-'));
+  t.after(() => rm(out, { recursive: true, force: true }));
   await build({ outDir: out, release: 'v9.9.9' });
   const dash = await readFile(join(out, 'dashboard.html'), 'utf8');
   assert.ok(dash.includes('window.__MGR_AGENT="demo-mgr"'));

@@ -83,6 +83,18 @@
     }
     return v;
   }
+  // Live jobs and their counts, shared by the Jobs page and the System Health card.
+  function liveSummary(s) {
+    var out = { failed_24h: 0, next_due: s + 120, queued: 0, running: 0 };
+    JOBS.forEach(function (j) { if (LIVE[j[3]]) out[j[3]]++; });
+    return out;
+  }
+  function healthJobs(s) {
+    var summ = liveSummary(s);
+    var rows = JOBS.filter(function (j) { return LIVE[j[3]]; }).slice(0, 8).map(function (j) { return jobView(j, s, false); });
+    return { failed: [], failed_24h: summ.failed_24h, more: Math.max(0, summ.queued + summ.running - rows.length),
+      next_due: summ.next_due, queued: summ.queued, rows: rows, running: summ.running };
+  }
   R.route('GET /api/jobs', function (ctx) {
     var s = sec(ctx);
     var status = ctx.query.get('status') || 'live';
@@ -95,7 +107,7 @@
     var limit = Math.max(1, Math.min(200, num(ctx.query, 'limit', 50)));
     var offset = Math.max(0, num(ctx.query, 'offset', 0));
     return { ok: true, jobs: rows.slice(offset, offset + limit).map(function (j) { return jobView(j, s, false); }),
-      summary: { failed_24h: 0, next_due: s + 120, queued: 1, running: 1 }, total: rows.length,
+      summary: liveSummary(s), total: rows.length,
       kinds: KINDS.map(function (k) { return { name: k[0], title: k[1] }; }), users: ['alex', 'sam'] };
   });
   R.route('GET /api/jobs/:id', function (ctx) {
@@ -219,7 +231,7 @@
         primary_vllm_push: { age_s: 1.6, has_agent: true, ok: true } },
       flow: { ae_ingest_points_per_s: pts, agent_pushes_per_s: 1.6, anon_budget_per_min: 600, anon_refused_per_min: 0,
         anon_req_per_min: 0, history_req_per_s: round(1.4 + 0.3 * Math.sin(s / 29), 2), influx_writes_per_s: round(pts + 0.3, 3) },
-      jobs: { failed: [], failed_24h: 0, more: 0, next_due: s + 120, queued: 1, rows: [], running: 1 },
+      jobs: healthJobs(s),
       manager: { connections: { agents: 4, browsers: 2, worker_threads: 160, worker_threads_busy: 3 },
         hostname: 'atlas.example', ok: true, process: { cpu_pct: round(2 + Math.abs(Math.sin(s / 11)) * 3, 1), ram_pct: 6.4, rss_mb: 312 },
         push_subscriptions: 1, ram_total_mb: 128000, streams: { active: 6, limit: 40, peak: 11, refusals: 0, refusals_recent: 0 },
@@ -333,29 +345,143 @@
   });
   R.route('GET /tools-ping', function () { return { ok: true }; });
 
-  function agentRow(name, sessions, last) {
-    var recent = [];
-    for (var i = 0; i < 3; i++) {
-      recent.push({ id: name + '-session-' + (i + 1) + '-0000', messages: 14 - i * 3, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-        tool_uses: 9 - i * 2, cost: 0, last_ts: iso(last - i * 5400) });
-    }
-    return { name: name, sessions: sessions, messages: sessions * 11, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-      cost: 0, tool_uses: sessions * 7, last_ts: iso(last), recent: recent, monthly_projection_usd: null, trend: { trend: 'stable' } };
+  // ---- OpenClaw: three agents on the sample machines, sessions spread over the last day ----
+  var OC_AGENTS = [
+    { name: 'atlas-assistant', host: 'atlas', model: 'Llama-3.1-8B-Instruct-Q8_0', n: 9, think: false, fail: [5, 'failed'],
+      tools: [['read_file', 4], ['search', 3], ['web_fetch', 2], ['run_command', 1]],
+      goals: ['Summarize overnight alarms for the team', 'Draft the weekly status note', 'Answer a question from the support inbox',
+        'Check which models are loaded on every machine', 'Collect GPU temperatures from forge.example'],
+      error: 'web_fetch: the page took too long to answer' },
+    { name: 'forge-coder', host: 'forge', model: 'Qwen2.5-14B-Instruct-Q5_K_M', n: 7, think: false, fail: [3, 'failed'],
+      tools: [['read_file', 4], ['write_file', 3], ['run_command', 3], ['search', 1]],
+      goals: ['Fix the failing unit test in the parser', 'Review a pull request for style issues',
+        'Write a script that rotates log files', 'Add input checks to the upload form'],
+      error: 'run_command: tests exited with code 1' },
+    { name: 'studio-research', host: 'studio', model: 'Llama-3.3-70B-Instruct-4bit', n: 5, think: true, fail: [2, 'timed_out'],
+      tools: [['web_fetch', 3], ['search', 3], ['read_file', 2]],
+      goals: ['Compare three papers on speculative decoding', 'Write a short report on power use per model',
+        'Plan a reading list on quantization'],
+      error: 'subagent: no reply after 120 s' }
+  ];
+  var OC_TRENDS = { read_file: 'up', search: 'up', run_command: 'stable', write_file: 'stable', web_fetch: 'down' };
+
+  function frac(str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return (h >>> 0) / 4294967296;
   }
+  function hex(str, n) {
+    var out = '';
+    for (var i = 0; out.length < n; i++) out += ('0000000' + Math.floor(frac(str + i) * 4294967296).toString(16)).slice(-8);
+    return out.slice(0, n);
+  }
+  function uuid(str) {
+    return hex(str + 'a', 8) + '-' + hex(str + 'b', 4) + '-4' + hex(str + 'c', 3) + '-a' + hex(str + 'd', 3) + '-' + hex(str + 'e', 12);
+  }
+
+  // One agent's sessions, newest first; times move in 10-minute steps; the first agent's newest one is still running.
+  function ocSessions(a, s, first) {
+    var anchor = Math.floor(s / 600) * 600;
+    var out = [];
+    for (var k = 0; k < a.n; k++) {
+      var key = a.name + ':' + k;
+      var h = [frac(key + '1'), frac(key + '2'), frac(key + '3'), frac(key + '4')];
+      var running = first && k === 0;
+      var last = running ? anchor : anchor - Math.round((k + 0.15 + 0.5 * h[0]) * (82800 / a.n));
+      var messages = 6 + Math.floor(h[1] * 18);
+      var input = Math.round(messages * (1800 + 2400 * h[2]));
+      var dur = Math.round(40 + 560 * h[3]);
+      var events = a.think ? 2 + Math.floor(h[2] * 6) : 0;
+      out.push({ id: uuid(key), messages: messages, input: input, output: Math.round(messages * (220 + 380 * h[0])),
+        cacheRead: Math.round(input * (0.35 + 0.3 * h[1])), cacheWrite: 0, cost: 0,
+        tool_uses: Math.floor(messages * (0.4 + 0.4 * h[2])), first_ts: iso(last - dur), last_ts: iso(last), models: [a.model],
+        thinking_events: events, thinking_chars: events * (900 + Math.round(1200 * h[3])),
+        _last: last, _dur: dur, _goal: a.goals[k % a.goals.length],
+        _status: running ? 'running' : k === a.fail[0] ? a.fail[1] : 'succeeded' });
+    }
+    return out;
+  }
+  function pub(x) {
+    var o = {};
+    Object.keys(x).forEach(function (k) { if (k.charAt(0) !== '_') o[k] = x[k]; });
+    return o;
+  }
+  function sum(list, k) { return list.reduce(function (t, x) { return t + (x[k] || 0); }, 0); }
+
   R.route('GET /api/openclaw/analytics', function (ctx) {
     var s = sec(ctx);
+    var KEYS = ['sessions', 'messages', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost', 'tool_uses'];
+    var totals = {};
+    KEYS.forEach(function (k) { totals[k] = 0; });
+    var tools = {}, all = [], agents = [];
+    OC_AGENTS.forEach(function (a, ai) {
+      var list = ocSessions(a, s, ai === 0);
+      var row = { name: a.name, sessions: list.length, cost: 0, models: [a.model], last_ts: list[0].last_ts,
+        recent: list.slice(0, 10).map(pub), monthly_projection_usd: null };
+      ['messages', 'input', 'output', 'cacheRead', 'cacheWrite', 'tool_uses'].forEach(function (k) { row[k] = sum(list, k); });
+      var day = row.input + row.output;
+      row.trend = { trend: 'stable', dailyAvg: day, monthlyPrediction: day * 30 };
+      var weight = a.tools.reduce(function (t, x) { return t + x[1]; }, 0), left = row.tool_uses;
+      a.tools.forEach(function (t, i) {
+        var c = i === a.tools.length - 1 ? left : Math.round(row.tool_uses * t[1] / weight);
+        left -= c;
+        tools[t[0]] = (tools[t[0]] || 0) + c;
+      });
+      KEYS.forEach(function (k) { totals[k] += row[k]; });
+      list.forEach(function (x) { x._agent = a; all.push(x); });
+      agents.push(row);
+    });
+    agents.sort(function (x, y) { return x.last_ts < y.last_ts ? 1 : -1; });
+    var toolCalls = Object.keys(tools).reduce(function (t, k) { return t + tools[k]; }, 0) || 1;
+    var attribution = Object.keys(tools).map(function (k) { return { tool: k, count: tools[k], pct: round(100 * tools[k] / toolCalls, 1) }; })
+      .sort(function (x, y) { return y.count - x.count; });
+    all.sort(function (x, y) { return y._last - x._last; });
+
+    var flows = all.filter(function (x) { return x.tool_uses >= 6 || x._status === 'running'; });
+    var flowStatus = {};
+    flows.forEach(function (x) { flowStatus[x._status] = (flowStatus[x._status] || 0) + 1; });
+    var failed = all.filter(function (x) { return x._status === 'failed' || x._status === 'timed_out'; });
+    var taskStatus = { succeeded: 0, failed: 0, timed_out: 0, running: 0 };
+    failed.forEach(function (x) { taskStatus[x._status]++; });
+    var runtime = { subagent: 0, cli: 0 };
+    all.forEach(function (x, i) {
+      var n = Math.max(1, Math.floor(x.tool_uses / 5));
+      if (x._status === 'running') { taskStatus.running++; n--; }
+      taskStatus.succeeded += failed.indexOf(x) >= 0 ? n - 1 : n;
+      runtime[i % 3 === 0 ? 'cli' : 'subagent'] += n;
+    });
+    var hour = all.filter(function (x) { return s - x._last < 3600; });
+    var hourTokens = sum(hour, 'input') + sum(hour, 'output');
+    var dayTokens = totals.input + totals.output;
     var daily = {};
     for (var d = 6; d >= 0; d--) daily[new Date((s - d * DAY) * 1000).toISOString().slice(0, 10)] = 0;
-    return { ts: s,
-      totals: { sessions: 42, messages: 462, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, tool_uses: 294 },
-      trend: { trend: 'stable', dailyAvg: 6, monthlyPrediction: 0 },
-      tasks: { by_status: { succeeded: 38, failed: 2, running: 1 }, avg_duration_s: 4.2, by_runtime: { subagent: 31, cli: 10 }, recent_failures: [] },
-      flows: { by_status: {}, recent: [] }, delivery: { total: 0, by_channel: {}, common_errors: [] },
-      daily_cost: daily, token_dist: { total: 0 }, thinking: { agents: [], sessions: [] }, velocity: { tokens_per_min: 0, active_sessions: 1 },
-      budget: {}, anomalies: [],
-      tool_attribution: [{ tool: 'read_file', count: 96, pct: 32.7 }, { tool: 'run_command', count: 71, pct: 24.1 },
-        { tool: 'search', count: 58, pct: 19.7 }, { tool: 'write_file', count: 40, pct: 13.6 }, { tool: 'web_fetch', count: 29, pct: 9.9 }],
-      tool_trends: { read_file: 'up', run_command: 'stable', search: 'up', write_file: 'stable', web_fetch: 'down' },
-      agents: [agentRow('atlas-assistant', 24, s - 600), agentRow('forge-helper', 18, s - 4300)] };
+    var tokAll = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
+    var pct = function (v) { return round(v / Math.max(tokAll, 1) * 100, 1); };
+    var thinkers = all.filter(function (x) { return x.thinking_events > 0; });
+    var thinkAgents = OC_AGENTS.filter(function (a) { return a.think; }).map(function (a) {
+      var mine = thinkers.filter(function (x) { return x._agent === a; });
+      return { name: a.name, thinking_events: sum(mine, 'thinking_events'), thinking_chars: sum(mine, 'thinking_chars'), cost: 0 };
+    });
+    return { ts: s, totals: totals,
+      trend: { trend: 'stable', dailyAvg: dayTokens, monthlyPrediction: dayTokens * 30 },
+      tasks: { total: Object.keys(taskStatus).reduce(function (t, k) { return t + taskStatus[k]; }, 0), by_status: taskStatus,
+        by_runtime: runtime, avg_duration_s: 6.4,
+        recent_failures: failed.slice(0, 10).map(function (x) {
+          return { label: x._goal, kind: /^subagent/.test(x._agent.error) ? 'subagent' : 'cli', status: x._status,
+            error: x._agent.error, created_iso: x.first_ts };
+        }) },
+      flows: { total: flows.length, by_status: flowStatus, recent: flows.slice(0, 20).map(function (x) {
+        return { goal: x._goal, status: x._status, duration_s: x._status === 'running' ? null : x._dur, created_iso: x.first_ts };
+      }) },
+      delivery: { total: 0, by_channel: {}, total_retries: 0, common_errors: [], oldest_enqueue_iso: null },
+      daily_cost: daily,
+      token_dist: { input_pct: pct(totals.input), output_pct: pct(totals.output), cache_r_pct: pct(totals.cacheRead),
+        cache_w_pct: pct(totals.cacheWrite), cache_hit_pct: round(totals.cacheRead / Math.max(totals.input + totals.cacheRead, 1) * 100, 1),
+        total: tokAll },
+      thinking: { agents: thinkAgents, sessions: thinkers.sort(function (x, y) { return y.thinking_events - x.thinking_events; })
+        .slice(0, 10).map(function (x) { var o = pub(x); o.agent = x._agent.name; return o; }) },
+      velocity: { tokens_1h: hourTokens, active_sessions: hour.length, tokens_per_min: round(hourTokens / 60, 1), window: 'hour' },
+      budget: { monthly_budget_usd: null, warning_pct: 80, projected_monthly_usd: null, used_pct: null },
+      anomalies: [], tool_attribution: attribution, tool_trends: OC_TRENDS, agents: agents };
   });
 })(self);

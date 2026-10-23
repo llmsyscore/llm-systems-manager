@@ -5,6 +5,8 @@
   var REFUSAL = { ok: false, error: 'Not available in the demo' };
   var MISS = { ok: false, error: 'demo: no answer' };
   var FAILED = { ok: false, error: 'demo: handler error' };
+  var REFUSE = { demoRefuse: true };
+  var NO_STATE = { ready: null, get: function (k, dflt) { return dflt; }, set: function () { return Promise.resolve(); } };
 
   function compile(pattern) {
     var names = [];
@@ -36,6 +38,10 @@
 
   var DemoRouter = {
     misses: [],
+    // A { read: true } handler returns this to refuse one request like an unmatched change.
+    REFUSE: REFUSE,
+    // The visitor's saved changes (DemoState), or defaults that keep nothing when that file is missing.
+    state: function () { return self.DemoState || NO_STATE; },
     route: function (key, handler, opts) {
       var sp = key.indexOf(' ');
       var method = key.slice(0, sp).toUpperCase();
@@ -92,10 +98,14 @@
         return notify(clientId, { type: 'demo-refused', key: f.route.key })
           .then(function () { return json(REFUSAL, 403); });
       }
-      return readBody(request).then(function (body) {
-        var ctx = { now: now, params: f.params, query: url.searchParams, body: body, fleet: self.DemoFleet };
+      var saved = self.DemoState ? self.DemoState.ready : null;
+      return Promise.all([readBody(request), saved]).then(function (got) {
+        var ctx = { now: now, params: f.params, query: url.searchParams, body: got[0], fleet: self.DemoFleet };
         return f.route.handler(ctx);
       }).then(function (out) {
+        if (out === REFUSE) {
+          return notify(clientId, { type: 'demo-refused', key: f.route.key }).then(function () { return json(REFUSAL, 403); });
+        }
         if (out instanceof Response) return out;
         return json(out === undefined ? null : out, 200);
       });

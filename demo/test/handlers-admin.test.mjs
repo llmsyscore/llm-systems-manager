@@ -7,7 +7,7 @@ import { load } from './load.mjs';
 import { assertCompatible } from './shape.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'handlers/admin-settings-data.js', 'handlers/admin.js'],
+const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', 'handlers/admin-settings-data.js', 'handlers/admin.js'],
   { DEMO_RELEASE: 'v9.9.9' });
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 

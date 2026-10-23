@@ -27,7 +27,13 @@
         + 'The machines draw far more power while they are answering requests than when they are idle, so the bill '
         + 'follows how busy they are. For the same number of words, running them yourself is much cheaper than a '
         + 'paid cloud service.' },
-    model: { tool: 'get_models', args: {}, ms: 97, text: '' }
+    model: { tool: 'get_models', args: {}, ms: 97, text: '' },
+    about: { text: 'LLM Systems Manager is built by LLM SysCore. It is an open-source project under the AGPL-3.0 license, '
+      + 'and the code is on GitHub at github.com/llmsyscore/llm-systems-manager. Everything runs on your own hardware: '
+      + 'your machines, your models and your data stay with you.' },
+    help: { text: 'The guides are at https://www.llmsyscore.com/docs.html. For questions, email support@llmsyscore.com. '
+      + 'Report bugs and ask for new features as GitHub issues at github.com/llmsyscore/llm-systems-manager/issues. '
+      + 'Please send security problems privately by email instead of opening a public issue.' }
   };
   ANSWERS.model.text = 'atlas.example is running ' + F.byId('atlas').models[0] + ' and also has '
     + F.byId('atlas').models[1] + ' and ' + F.byId('atlas').models[2] + ' available. forge.example has '
@@ -37,6 +43,8 @@
   // Picks the canned answer key for a question; null means the fallback.
   function keyFor(text) {
     var t = String(text || '').toLowerCase();
+    if (/\bwho\b/.test(t) && /develop|make|made|build|built|maintain|behind|creat/.test(t)) return 'about';
+    if (/\b(help|support|contact)\b|\bbugs?\b/.test(t)) return 'help';
     if (/slow/.test(t)) return 'slow';
     if (/alarm|alert/.test(t)) return 'alarm';
     if (/cost/.test(t)) return 'cost';
@@ -85,18 +93,25 @@
         detail: 'It peaked at 86 °C and cleared on its own after about 9 minutes.',
         action: 'No action needed.', checks: [] }
     ];
+    var mine = R.state().get('insights', {});
     return notes.map(function (n, i) {
       var a = al[i] || {};
       var at = a.created_at ? createdS(a) : s - 3600 * (i + 1);
+      var id = 'demo-ins-' + (i + 1);
+      var my = mine[id] || {};
       return {
-        id: 'demo-ins-' + (i + 1), alert_id: a.alert_id || '', rule: a.rule_name || 'Alert', host: a.source_host || '',
+        id: id, alert_id: a.alert_id || '', rule: a.rule_name || 'Alert', host: a.source_host || '',
         severity: a.severity || 'warning', summary: n.summary, detail: n.detail, suggested_action: n.action,
         playbook_id: null, playbook_title: null, playbook_safe: null, steps: [], checks: n.checks, thread_id: null,
-        status: n.status, created: at, resolved: null, applied_by: null, result: null,
-        seen_at: n.status === 'seen' ? at + 120 : null, snapshot: n.snap ? snapshot(s) : null
+        status: my.status || n.status, created: at, resolved: my.resolved || null, applied_by: my.applied_by || null,
+        result: my.result || null, seen_at: n.status === 'seen' ? at + 120 : null, snapshot: n.snap ? snapshot(s) : null
       };
     });
   }
+  function openInsights(ctx) {
+    return insightRows(ctx).filter(function (r) { return r.status !== 'dismissed'; });
+  }
+  function newCount(rows) { return rows.filter(function (r) { return r.status === 'new'; }).length; }
 
   function thread(id, title, created, updated) {
     return { id: id, title: title, created: created, updated: updated, page: {} };
@@ -118,13 +133,16 @@
 
   R.route('GET /api/tower/state', function (ctx) {
     var st = stateBody();
-    var ins = self.DemoAlarms ? insightRows(ctx)[0] : null;
+    var rows = self.DemoAlarms ? openInsights(ctx) : [];
+    var ins = rows[0] || null;
+    st.insights_new = newCount(rows);
     st.latest_insight = ins ? { id: ins.id, rule: ins.rule, host: ins.host, severity: ins.severity, summary: ins.summary, created: ins.created } : null;
     return st;
   });
   R.route('GET /api/tower/timers', function () { return { ok: true, timers: [] }; });
   R.route('GET /api/tower/insights', function (ctx) {
-    return { ok: true, insights: insightRows(ctx), new: 1 };
+    var rows = insightRows(ctx);
+    return { ok: true, insights: rows, new: newCount(rows) };
   });
 
   R.route('GET /api/tower/eval', function (ctx) {
@@ -159,9 +177,17 @@
   });
 
   // Threads: literal path first, then the id route.
+  // Renamed and deleted conversations are kept in this browser.
+  function threadState() { return R.state().get('threads', { titles: {}, deleted: {} }); }
+  function known(id) { return id === PREV_THREAD || id.indexOf('demo-t') === 0; }
+  function notFound(msg) {
+    return new Response(JSON.stringify({ ok: false, error: msg }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+  }
   R.route('GET /api/tower/threads', function (ctx) {
     var t = prevThread(ctx);
-    return { ok: true, threads: [{ id: t.id, title: t.title, created: t.created, updated: t.updated }], discord: [] };
+    var ts = threadState();
+    var list = ts.deleted[t.id] ? [] : [{ id: t.id, title: ts.titles[t.id] || t.title, created: t.created, updated: t.updated }];
+    return { ok: true, threads: list, discord: [] };
   });
   R.route('POST /api/tower/threads', function (ctx) {
     var s = sec(ctx);
@@ -169,15 +195,35 @@
   }, { read: true });
   R.route('GET /api/tower/threads/:tid', function (ctx) {
     var id = ctx.params.tid;
+    var ts = threadState();
+    if (!known(id) || ts.deleted[id]) return notFound('unknown thread');
     if (id === PREV_THREAD) {
-      return { ok: true, thread: prevThread(ctx), messages: prevMessages(ctx), read_only: false, active_run: null };
+      var p = prevThread(ctx);
+      if (ts.titles[id]) p.title = ts.titles[id];
+      return { ok: true, thread: p, messages: prevMessages(ctx), read_only: false, active_run: null };
     }
-    if (id.indexOf('demo-t') === 0) {
-      var s = sec(ctx);
-      return { ok: true, thread: thread(id, 'New thread', s, s), messages: [], read_only: false, active_run: null };
-    }
-    return new Response(JSON.stringify({ ok: false, error: 'unknown thread' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    var s = sec(ctx);
+    return { ok: true, thread: thread(id, ts.titles[id] || 'New thread', s, s), messages: [], read_only: false, active_run: null };
   });
+  R.route('PATCH /api/tower/threads/:tid', function (ctx) {
+    var id = ctx.params.tid;
+    var title = String((ctx.body && ctx.body.title) || '').trim().slice(0, 60);
+    var ts = threadState();
+    if (!known(id) || ts.deleted[id]) return notFound('unknown thread');
+    if (!title) {
+      return new Response(JSON.stringify({ ok: false, error: 'title required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    ts.titles[id] = title;
+    var s = sec(ctx);
+    return R.state().set('threads', ts).then(function () { return { ok: true, thread: thread(id, title, s, s) }; });
+  }, { read: true });
+  R.route('DELETE /api/tower/threads/:tid', function (ctx) {
+    var id = ctx.params.tid;
+    var ts = threadState();
+    if (!known(id) || ts.deleted[id]) return notFound('unknown thread');
+    ts.deleted[id] = true;
+    return R.state().set('threads', ts).then(function () { return { ok: true }; });
+  }, { read: true });
   R.route('POST /api/tower/threads/:tid/messages', function (ctx) {
     var text = ctx.body && ctx.body.text;
     if (!String(text || '').trim()) {
@@ -198,7 +244,7 @@
   function runEvents(key) {
     var a = ANSWERS[key];
     var ev = [{ event: 'status', state: 'thinking' }];
-    if (a) {
+    if (a && a.tool) {
       ev.push({ event: 'tool', name: a.tool, ok: true, ms: a.ms,
         summary: 'read ' + a.tool.replace(/_/g, ' ') + (a.args.host ? ' · ' + a.args.host : '') + ' · ' + a.ms + ' ms',
         result: { ok: true } });
@@ -219,6 +265,40 @@
   // Page-fired writes (insights opened, panel closed) are answered quietly.
   R.route('POST /api/tower/insights/seen', function () { return { ok: true, seen: 0 }; }, { read: true });
   R.route('POST /api/tower/runs/:rid/park', function () { return { ok: true }; }, { read: true });
+  R.route('POST /api/tower/runs/:rid/stop', function () { return { ok: true }; }, { read: true });
+
+  // Dismissed and applied insights are kept in this browser; literal path before the id routes.
+  function setInsights(mine, out) {
+    return R.state().set('insights', mine).then(function () { return out; });
+  }
+  R.route('POST /api/tower/insights/dismiss_all', function (ctx) {
+    var mine = R.state().get('insights', {});
+    var n = 0;
+    insightRows(ctx).forEach(function (r) {
+      if (r.status === 'dismissed' || r.status === 'applying') return;
+      mine[r.id] = { status: 'dismissed', resolved: sec(ctx), applied_by: r.applied_by, result: r.result };
+      n++;
+    });
+    return setInsights(mine, { ok: true, dismissed: n });
+  }, { read: true });
+  function insightOp(ctx, to, allow) {
+    var row = insightRows(ctx).filter(function (r) { return r.id === ctx.params.iid; })[0];
+    if (!row) return notFound('unknown insight');
+    if (allow.indexOf(row.status) < 0) {
+      return new Response(JSON.stringify({ ok: false, error: 'not open' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
+    var mine = R.state().get('insights', {});
+    var my = { status: to, resolved: sec(ctx), applied_by: row.applied_by, result: row.result };
+    if (to === 'applied') { my.applied_by = 'tower via alex'; my.result = { ok: true, message: 'done', steps: [] }; }
+    mine[row.id] = my;
+    return setInsights(mine, to === 'applied' ? { ok: true, status: 'applied', result: my.result } : { ok: true });
+  }
+  R.route('POST /api/tower/insights/:iid/dismiss', function (ctx) {
+    return insightOp(ctx, 'dismissed', ['new', 'seen', 'applied']);
+  }, { read: true });
+  R.route('POST /api/tower/insights/:iid/apply', function (ctx) {
+    return insightOp(ctx, 'applied', ['new', 'seen']);
+  }, { read: true });
 
   self.DemoTower = { keyFor: keyFor, FALLBACK: FALLBACK };
 })(self);

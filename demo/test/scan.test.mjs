@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scanSource, pageScripts, DEFAULT_DIRS } from '../scan.mjs';
@@ -43,8 +43,9 @@ test('scanSource finds literal, template, method, base and wrapper forms', () =>
   assert.ok(scanSource(SRC, 'f.js').every((e) => !('stream' in e)));
 });
 
-test('pageScripts takes local script tags only; defaults follow the index pages', () => {
+test('pageScripts takes local script tags only; defaults follow the index pages', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'scan-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'p.html'), '<script src="/static/js/a.js?v=1"></script><script src="js/b.js"></script>' +
     '<script src="/static/vendor/v.js"></script><script src="https://x.invalid/c.js"></script><script>1</script>');
   assert.deepEqual(pageScripts(join(dir, 'p.html'), '/root'), ['/root/js/a.js', join(dir, 'js/b.js')]);

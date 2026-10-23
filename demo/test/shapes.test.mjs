@@ -23,7 +23,7 @@ test('assertCompatible fails on a missing key or a type change, allows extra key
 function loadRouter() {
   let files = [];
   try { files = readdirSync(join(ROOT, 'runtime', 'handlers')).filter((f) => f.endsWith('.js')).sort(); } catch { files = []; }
-  return load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', ...files.map((f) => `handlers/${f}`)]);
+  return load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', ...files.map((f) => `handlers/${f}`)]);
 }
 
 test('every template with a handler route matches the handler output shape', async () => {

@@ -13,7 +13,7 @@ function routerKeys() {
   const dir = join(HERE, '..', 'runtime', 'handlers');
   let files = [];
   try { files = readdirSync(dir).filter((f) => f.endsWith('.js')).sort(); } catch { files = []; }
-  const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', ...files.map((f) => `handlers/${f}`)]);
+  const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', ...files.map((f) => `handlers/${f}`)]);
   return self.DemoRouter.keys();
 }
 

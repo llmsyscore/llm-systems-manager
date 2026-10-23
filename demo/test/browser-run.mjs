@@ -168,6 +168,27 @@ async function main() {
     }
   }
   for (const id of subIds) await click(id);
+
+  // OpenClaw dashboard and the System Health card, with a shot of each.
+  await click('tabBtnDashboard');
+  await click('subTabBtnOpenclaw');
+  await sleep(1500);
+  await page.screenshot({ path: join(shots, 'dashboards-openclaw.png'), fullPage: true }).catch(() => {});
+  const oc = await page.evaluate(() => ({
+    sessions: (document.getElementById('opcaTotSessions') || {}).textContent || '',
+    agents: document.querySelectorAll('#opcaAgentTbody tr').length,
+    flows: document.querySelectorAll('#opcaFlowRecentWrap tbody tr').length,
+  }));
+  if (!(Number(oc.sessions) > 0) || oc.agents < 2 || oc.flows < 2) bad(`openclaw: panels not filled (${JSON.stringify(oc)})`);
+  await click('tabBtnAdmin');
+  await sleep(1500);
+  const hc = await page.$('#adminHealthCard');
+  if (hc) await hc.screenshot({ path: join(shots, 'admin-system-health.png') }).catch(() => {});
+  const jobsNone = await page.evaluate(() => {
+    const c = document.getElementById('adminHealthCard');
+    return !c || c.querySelectorAll('.hj.live').length < 2;
+  });
+  if (jobsNone) bad('system health: Jobs card shows no jobs');
   const subFallbacks = subIds.filter((id) => jsClicks.has(id)).length;
   for (const id of mainIds) if (jsClicks.has(id)) bad(`main tab button ${id} could not be clicked by a visitor (needed a script click)`);
   console.log(`script-click fallbacks: ${mainIds.filter((id) => jsClicks.has(id)).length} main tabs, ${subFallbacks} sub-tabs`);
@@ -234,11 +255,23 @@ async function main() {
   });
   await page.evaluate(() => document.getElementById('tabBtnEvents').click());
   await sleep(1500);
-  await expectRefusal('alarm acknowledge', async () => {
+  // Acknowledging an alarm is a saved change: no refusal, and the alert reads back as acknowledged.
+  {
+    await page.evaluate(() => { document.querySelectorAll('body > div').forEach((e) => { if (/var\(--crit\)/.test(e.getAttribute('style') || '')) e.remove(); }); });
+    await sleep(2100);
     const f = page.frames().find((x) => x.url().includes('/alarm'));
-    if (!f) throw new Error('no alarm frame');
-    await f.locator('[data-act="ack"]').first().click({ timeout: 5000 });
-  });
+    const before = refusedLogs;
+    try {
+      if (!f) throw new Error('no alarm frame');
+      await f.locator('[data-act="ack"]').first().click({ timeout: 5000 });
+      await sleep(1500);
+      if (refusedLogs > before) bad('alarm acknowledge: refused, expected a saved change');
+      if ((await errToasts(page)).some((x) => x.includes(REFUSAL))) bad('alarm acknowledge: showed the refusal toast');
+      const acked = await page.evaluate(() => fetch('/api/alarm/alerts?status=active').then((r) => r.json())
+        .then((l) => l.filter((a) => a.acknowledged_by).length));
+      if (!acked) bad('alarm acknowledge: no alert reads back as acknowledged');
+    } catch (e) { bad(`alarm acknowledge: could not trigger (${e.message.split('\n')[0]})`); }
+  }
 
   // Hard reload ends back on the dashboard.
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -257,9 +290,18 @@ async function main() {
     });
     const a = await snap();
     await sleep(90000);
-    const b = await snap();
+    let b = await snap();
+    // The last point keeps the bucket's highest value, so a quiet spell may only show at the next bucket.
+    if (a && a === b) {
+      const wait = await page.evaluate(() => {
+        const ms = typeof ovHeroBucketMs === 'function' ? ovHeroBucketMs() : 300000;
+        return Math.min(ms - (Date.now() % ms) + 20000, 330000);
+      });
+      await sleep(wait);
+      b = await snap();
+    }
     if (!a) bad('overall: hero chart not found');
-    else if (a === b) bad('overall: hero chart did not change in 90 s');
+    else if (a === b) bad('overall: hero chart did not change within one chart bucket');
   }
   await page.evaluate(() => self.DemoAnalytics && self.DemoAnalytics.flush(false));
   await sleep(500);
@@ -276,6 +318,22 @@ async function main() {
     await p2.goto(origin + '/', { waitUntil: 'domcontentloaded' });
     await p2.waitForURL('**/dashboard', { timeout: 30000 }).catch(() => bad('tour: did not reach /dashboard'));
     await p2.waitForSelector('.demo-tour', { timeout: 15000 }).catch(() => bad('tour did not appear on a fresh profile'));
+    // Walks every step: the ring must frame a real box (at least 40 x 40 px); one shot per step.
+    const nSteps = await p2.evaluate(() => (self.DemoTour ? self.DemoTour.steps.length : 0));
+    for (let i = 0; i < nSteps; i++) {
+      await sleep(1600);
+      const r = await p2.evaluate(() => {
+        const ring = document.querySelector('.demo-tour-ring');
+        if (!ring || ring.style.display === 'none') return null;
+        const b = ring.getBoundingClientRect();
+        const inside = b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight;
+        return { w: Math.round(b.width), h: Math.round(b.height), inside, title: (document.querySelector('.demo-tour-title') || {}).textContent };
+      });
+      if (!r || r.w < 40 || r.h < 40 || !r.inside) bad(`tour step ${i + 1}: ring too small or off screen (${JSON.stringify(r)})`);
+      await p2.screenshot({ path: join(shots, `tour-${i + 1}.png`) }).catch(() => {});
+      if (!(await p2.$('.demo-tour-close'))) bad(`tour step ${i + 1}: no Close button`);
+      if (i < nSteps - 1) await p2.click('.demo-tour-next', { timeout: 5000 }).catch(() => bad(`tour step ${i + 1}: Next not clickable`));
+    }
     await p2.click('.demo-tour-close', { timeout: 5000 }).catch(() => bad('tour Close button not clickable'));
     await sleep(300);
     if (await p2.$('.demo-tour')) bad('tour still present after Close');

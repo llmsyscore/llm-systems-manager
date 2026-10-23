@@ -7,7 +7,7 @@ import { load } from './load.mjs';
 import { assertCompatible } from './shape.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'handlers/overall.js', 'handlers/models.js']);
+const self = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', 'handlers/overall.js', 'handlers/models.js']);
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 
 async function call(path, now = NOW) {

@@ -565,8 +565,59 @@
     g.autopilot.entries.forEach(function (e) {
       if (e.placement !== 'auto') g[e.provider + '_model_pins'][e.model] = e.placement;
     });
+    var mine = R.state().get('registry', {});
+    Object.keys(mine.pools || {}).forEach(function (p) { g[p + '_pool'] = mine.pools[p]; });
+    Object.keys(mine.pins || {}).forEach(function (p) { g[p + '_model_pins'] = mine.pins[p]; });
     return g;
   }
+
+  // Pool order and model pins the visitor changes in Admin are kept in this browser.
+  function saveRegistry(ctx, prov, fn) {
+    var g = registryGlobal(ctx);
+    var mine = R.state().get('registry', {});
+    mine.pools = mine.pools || {}; mine.pins = mine.pins || {};
+    var out = fn(g[prov + '_pool'].slice(), JSON.parse(JSON.stringify(g[prov + '_model_pins'])), mine);
+    return R.state().set('registry', mine).then(function () { return out; });
+  }
+  function regError(status, error) {
+    return new Response(JSON.stringify({ ok: false, error: error }), { status: status, headers: { 'Content-Type': 'application/json' } });
+  }
+  ['llama', 'lms', 'vllm'].forEach(function (prov) {
+    R.route('POST /api/agents/:id/' + prov + '-pool', function (ctx) {
+      var m = F.byId(ctx.params.id);
+      if (!m) return regError(404, 'unknown agent');
+      var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+      var inPool = b.in_pool === undefined ? true : !!b.in_pool;
+      if (inPool && !has(m, prov)) return regError(400, 'agent does not advertise ' + prov + ' capability');
+      return saveRegistry(ctx, prov, function (pool, pins, mine) {
+        pool = pool.filter(function (id) { return id !== m.id; });
+        if (inPool) {
+          var pos = typeof b.position === 'number' ? Math.max(0, Math.min(pool.length, Math.floor(b.position))) : pool.length;
+          pool.splice(pos, 0, m.id);
+        }
+        mine.pools[prov] = pool;
+        var out = { ok: true };
+        out[prov + '_pool'] = pool;
+        return out;
+      });
+    }, { read: true });
+    R.route('POST /api/admin/' + prov + '-pins', function (ctx) {
+      var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+      var model = String(b.model_id || '').trim();
+      var aid = String(b.agent_id || '');
+      if (!model) return regError(400, 'model_id required');
+      var m = aid ? F.byId(aid) : null;
+      if (aid && !m) return regError(404, 'unknown agent');
+      if (m && !has(m, prov)) return regError(400, 'agent does not advertise ' + prov + ' capability');
+      return saveRegistry(ctx, prov, function (pool, pins, mine) {
+        if (m) pins[model] = m.id; else delete pins[model];
+        mine.pins[prov] = pins;
+        var out = { ok: true };
+        out[prov + '_model_pins'] = pins;
+        return out;
+      });
+    }, { read: true });
+  });
 
   function agentsList(ctx) {
     var t = sec(ctx);
@@ -609,6 +660,11 @@
     ['alarm_patterns', 'Alarm patterns', 7]
   ];
 
+  var FORECAST_DIGEST = {
+    'demo-fc-1,demo-fc-2': 'Two things to watch: a slow temperature rise on forge.example and a disk that is filling on atlas.example.',
+    'demo-fc-1': 'One thing to watch: a slow temperature rise on forge.example.',
+    'demo-fc-2': 'One thing to watch: a disk that is filling on atlas.example.'
+  };
   function forecast(ctx) {
     var t = sec(ctx);
     var findings = [
@@ -621,13 +677,20 @@
         detail: 'Downloads are adding roughly 18 GB a day.',
         suggested_action: 'Remove models you no longer use.', predicted_at: t + 61 * 86400, confidence: 'high' }
     ];
+    var gone = R.state().get('forecastDismissed', {});
+    var cleared = findings.filter(function (f) { return gone[f.id]; }).map(function (f) {
+      f.status = 'dismissed'; f.dismissed_by = 'alex'; f.resolved = gone[f.id];
+      return f;
+    });
+    findings = findings.filter(function (f) { return !gone[f.id]; });
     return {
       checks: FORECAST_CHECKS.map(function (c) {
         var found = findings.filter(function (f) { return f.title === c[1]; }).length;
         return { id: c[0], title: c[1], min_days: c[2], state: 'ok', found: found, have_days: 14 };
       }),
-      cleared: [], digest: 'Two things to watch: a slow temperature rise on forge.example and a disk that is filling on atlas.example.',
-      enabled: true, findings: findings, last_result: '2 findings', last_run: t - 5400, mode: 'auto',
+      cleared: cleared, digest: FORECAST_DIGEST[findings.map(function (f) { return f.id; }).join(',')] || 'Nothing to watch right now.',
+      enabled: true, findings: findings, last_result: findings.length + ' finding' + (findings.length === 1 ? '' : 's'),
+      last_run: t - 5400, mode: 'auto',
       next_run: t + 81000, ok: true, run: null, running: false,
       tower: { reason: 'On', model: 'Qwen2.5-14B-Instruct-Q5_K_M' }, window_days: 14
     };
@@ -654,32 +717,27 @@
   });
 
   R.route('GET /api/config', function () {
+    var manual = R.state().get('interval', null);
     return {
       agents: { llama_present: true, lms_present: true, vllm_present: true },
-      interval_mode: 'auto', interval_override: null, interval_reason: 'active',
-      poll_interval: 5, poll_interval_active: 5, poll_interval_idle: 30,
+      interval_mode: manual ? 'manual' : 'auto', interval_override: manual, interval_reason: 'active',
+      poll_interval: manual || 5, poll_interval_active: 5, poll_interval_idle: 30,
       proxies: { image_gen: true, llm_chat: true, openclaw: true }
     };
   });
 
-  // The visitor's card layout, kept in this browser's Cache Storage so it survives reloads.
-  var LAYOUT_CACHE = 'lsmdemo-layout', LAYOUT_KEY = '/demo-state/layout';
-  var layoutMem = null;
-  function layoutStore() {
-    return self.caches && self.caches.open ? self.caches.open(LAYOUT_CACHE) : Promise.reject(new Error('no caches'));
-  }
-  R.route('GET /api/layout', function () {
-    if (layoutMem) return layoutMem;
-    return layoutStore().then(function (c) { return c.match(LAYOUT_KEY); })
-      .then(function (r) { return r ? r.json() : {}; })
-      .then(function (l) { layoutMem = l; return l; }, function () { return layoutMem || {}; });
-  });
+  // The visitor's card layout and refresh choice, kept in this browser (DemoState) so they survive reloads.
+  R.route('GET /api/layout', function () { return R.state().get('layout', {}); });
   R.route('POST /api/layout', function (ctx) {
     var body = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
-    layoutMem = body;
-    return layoutStore().then(function (c) {
-      return c.put(LAYOUT_KEY, new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
-    }).then(function () { return { ok: true }; }, function () { return { ok: true }; });
+    return R.state().set('layout', body).then(function () { return { ok: true }; });
+  }, { read: true });
+  R.route('POST /api/config/interval', function (ctx) {
+    var b = ctx.body && typeof ctx.body === 'object' ? ctx.body : {};
+    var val = b.mode === 'manual' ? Math.max(5, Math.min(300, parseInt(b.value, 10) || 30)) : null;
+    return R.state().set('interval', val).then(function () {
+      return { ok: true, mode: val ? 'manual' : 'auto', value: val };
+    });
   }, { read: true });
 
   R.route('GET /api/agents/list-by-provider', listByProvider);
@@ -738,6 +796,15 @@
   });
 
   R.route('GET /api/forecast', forecast);
+  // Dismissing a finding is kept in this browser and moves it to the Dismissed list.
+  R.route('POST /api/forecast/:id/dismiss', function (ctx) {
+    var gone = R.state().get('forecastDismissed', {});
+    if (ctx.params.id !== 'demo-fc-1' && ctx.params.id !== 'demo-fc-2') {
+      return new Response(JSON.stringify({ ok: false, error: 'not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }
+    gone[ctx.params.id] = gone[ctx.params.id] || sec(ctx);
+    return R.state().set('forecastDismissed', gone).then(function () { return { ok: true }; });
+  }, { read: true });
   // Autopilot keeps three models placed: two llama.cpp (one pinned to forge) and one LM Studio.
   function autopilot(ctx) {
     var t = sec(ctx);
