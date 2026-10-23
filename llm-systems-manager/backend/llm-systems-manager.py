@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.22-2"
+__version__ = "v2026.10.22-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1219,6 +1219,9 @@ _HISTORY_LEGACY_FIELD_MAP = [
     ("llama",   "prompt_tokens_per_second",                   "llama_pps"),
     ("llama",   "n_tokens_max",                               "llama_ctx"),
     ("llama",   "total_tokens_generated",                     "llama_gen_tokens"),
+    # Windowed prompt-cache reuse + speculative acceptance ratios (#1303).
+    ("llama",   "cache_reuse_ratio",                          "llama_cache_reuse"),
+    ("llama",   "spec_accept_ratio",                          "llama_spec_accept"),
     # vLLM stats (#358) — flattened by the AE ingest under source="vllm".
     ("vllm",    "kv_cache_usage_pct",                         "vllm_kv"),
     ("vllm",    "tokens_per_second",                          "vllm_tps"),
@@ -1407,6 +1410,7 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "net_sent": "sum", "net_recv": "sum", "io_read": "sum", "io_write": "sum",
     "llama_tps": "sum", "llama_pps": "sum", "llama_ctx": "sum",
     "llama_gen_tokens": "sum",
+    "llama_cache_reuse": "mean", "llama_spec_accept": "mean",
     "lms_tps": "sum", "lms_pps": "sum",
     "vllm_tps": "sum", "vllm_pps": "sum", "vllm_kv": "max",
     "vllm_req_running": "sum", "vllm_req_waiting": "sum",

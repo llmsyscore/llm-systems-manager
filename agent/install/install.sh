@@ -577,6 +577,7 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/_shared.py"
     "$SRC_DIR/providers/lms.py"
     "$SRC_DIR/providers/llama.py"
+    "$SRC_DIR/providers/llama_counters.py"
     "$SRC_DIR/providers/llama_sse.py"
     "$SRC_DIR/providers/terminal.py"
     "$SRC_DIR/providers/vllm.py"

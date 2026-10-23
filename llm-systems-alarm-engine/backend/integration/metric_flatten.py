@@ -59,6 +59,19 @@ ALIAS_TABLE: dict[
     ("llama", "kv_cache_usage_ratio"):        ("llama", "kv_cache_usage_ratio",     "ratio",  None),
     ("llama", "kv_cache_tokens"):             ("llama", "kv_cache_tokens",          "tokens", None),
     ("llama", "n_remain"):                    ("llama", "n_remain",                 "tokens", None),
+    # Prompt-cache reuse + speculative/MTP acceptance (#1303): raw counters and
+    # the agent's windowed deltas, flattened from the nested cache_reuse/spec_accept blocks.
+    ("llama", "prompt_tokens_cached_total"):  ("llama", "prompt_tokens_cached_total", "tokens", None),
+    ("llama", "spec_draft_tokens_total"):     ("llama", "spec_draft_tokens_total",  "tokens", None),
+    ("llama", "spec_accepted_tokens_total"):  ("llama", "spec_accepted_tokens_total", "tokens", None),
+    ("llama", "spec_drafts_total"):           ("llama", "spec_drafts_total",        None,     None),
+    ("llama", "cache_reuse", "ratio"):        ("llama", "cache_reuse_ratio",        "ratio",  None),
+    ("llama", "cache_reuse", "processed"):    ("llama", "cache_reuse_processed",    "tokens", None),
+    ("llama", "cache_reuse", "cached"):       ("llama", "cache_reuse_cached",       "tokens", None),
+    ("llama", "spec_accept", "ratio"):        ("llama", "spec_accept_ratio",        "ratio",  None),
+    ("llama", "spec_accept", "drafted"):      ("llama", "spec_accept_drafted",      "tokens", None),
+    ("llama", "spec_accept", "accepted"):     ("llama", "spec_accept_accepted",     "tokens", None),
+    ("llama", "spec_accept", "accepted_per_draft"): ("llama", "spec_accept_accepted_per_draft", "tokens", None),
     # vLLM metrics (#358) — same names, with units for the AE catalog.
     ("vllm", "tokens_per_second"):            ("vllm", "tokens_per_second",         "tps",    None),
     ("vllm", "prompt_tokens_per_second"):     ("vllm", "prompt_tokens_per_second",  "tps",    None),
