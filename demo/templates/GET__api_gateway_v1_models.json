@@ -1,0 +1,8 @@
+{
+  "key": "GET /api/gateway/v1/models",
+  "status": 200,
+  "body": {
+    "data": [],
+    "object": "list"
+  }
+}

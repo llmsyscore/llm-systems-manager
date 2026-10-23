@@ -1,0 +1,149 @@
+{
+  "key": "GET /api/forecast",
+  "status": 200,
+  "body": {
+    "checks": [
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "disk_fill",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Disk fill"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "load_shift",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Load shift"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "memory_headroom",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Memory headroom"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "thermal_trend",
+        "min_days": 7,
+        "state": "pending",
+        "title": "Thermal trend"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "power_cost",
+        "min_days": 7,
+        "state": "pending",
+        "title": "Power and cost"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "throughput",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Throughput"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "model_errors",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Model errors"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "slot_pressure",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Slot pressure"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "model_churn",
+        "min_days": 7,
+        "state": "pending",
+        "title": "Model churn"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "alarm_patterns",
+        "min_days": 7,
+        "state": "pending",
+        "title": "Alarm patterns"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "agent_health",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Agent health"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "service_health",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Service health"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "bench_outcomes",
+        "min_days": 0,
+        "state": "pending",
+        "title": "Bench outcomes"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "capacity",
+        "min_days": 3,
+        "state": "pending",
+        "title": "Capacity"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "idle_waste",
+        "min_days": 7,
+        "state": "pending",
+        "title": "Idle waste"
+      },
+      {
+        "found": 0,
+        "have_days": null,
+        "id": "weekly_digest",
+        "min_days": 0,
+        "state": "pending",
+        "title": "Weekly digest"
+      }
+    ],
+    "cleared": [],
+    "digest": null,
+    "enabled": false,
+    "findings": [],
+    "last_result": null,
+    "last_run": null,
+    "mode": null,
+    "next_run": null,
+    "ok": true,
+    "run": null,
+    "running": false,
+    "tower": null,
+    "window_days": 14
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "key": "GET /api/energy/summary",
+  "status": 200,
+  "body": {
+    "cloud_in": 0.15,
+    "cloud_out": 0.6,
+    "config": {
+      "cloud_price_in_per_mtok": 0.15,
+      "cloud_price_label": "budget cloud API tier (GPT-4o-mini class, 2026-07 list)",
+      "cloud_price_out_per_mtok": 0.6,
+      "price_kwh": 0.15
+    },
+    "hosts": [],
+    "models": [],
+    "ok": true,
+    "price_kwh": 0.15,
+    "savings_usd": null,
+    "since_ts": null,
+    "totals": {
+      "active_kwh": null,
+      "active_pct": null,
+      "active_s": 0,
+      "avg_watts": null,
+      "cloud_cost_usd": 0,
+      "cost_usd": null,
+      "coverage_pct": 0,
+      "has_power": false,
+      "has_tokens": false,
+      "idle_cost_usd": null,
+      "idle_kwh": null,
+      "kwh": null,
+      "mtok_energy_coverage_pct": null,
+      "observed_s": 0,
+      "power_coverage_pct": null,
+      "power_source": null,
+      "tokens_gen": 0,
+      "tokens_prompt": 0,
+      "usd_per_mtok": null,
+      "usd_per_mtok_active": null
+    },
+    "window": {
+      "elapsed_s": 1921865,
+      "end_ts": 1793491200,
+      "label": "2026-10",
+      "start_ts": 1790812800
+    }
+  }
+}

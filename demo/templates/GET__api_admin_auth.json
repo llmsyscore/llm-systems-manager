@@ -1,0 +1,25 @@
+{
+  "key": "GET /api/admin/auth",
+  "status": 200,
+  "body": {
+    "admin_cidrs": [
+      "192.0.2.1",
+      "::1",
+      "192.0.2.3/24"
+    ],
+    "bypass_role": "admin",
+    "current_user": "llmadmin",
+    "default_user": "llmadmin",
+    "instant": true,
+    "is_default": false,
+    "mode": "required",
+    "modes": [
+      "required",
+      "disabled",
+      "trusted_cidr",
+      "auto"
+    ],
+    "ok": true,
+    "policy": "auto"
+  }
+}

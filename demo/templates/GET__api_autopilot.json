@@ -1,0 +1,17 @@
+{
+  "key": "GET /api/autopilot",
+  "status": 200,
+  "body": {
+    "entry_status": {},
+    "last_plan_ts": 1792734723.8548732,
+    "proposals": [],
+    "state": {
+      "enabled": false,
+      "entries": [],
+      "hosts": {},
+      "protect_unmanaged": false,
+      "speed_max_age_days": 30
+    },
+    "tick_period_s": 30
+  }
+}

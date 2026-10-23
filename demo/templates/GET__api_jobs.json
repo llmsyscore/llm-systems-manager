@@ -1,0 +1,46 @@
+{
+  "key": "GET /api/jobs",
+  "status": 200,
+  "body": {
+    "jobs": [],
+    "kinds": [
+      {
+        "name": "tool_run",
+        "title": "Tool run"
+      },
+      {
+        "name": "report_card",
+        "title": "Report Card"
+      },
+      {
+        "name": "autotune_batch",
+        "title": "Autotune batch"
+      },
+      {
+        "name": "tower_timer",
+        "title": "Tower timer"
+      },
+      {
+        "name": "tower_eval",
+        "title": "Tower eval"
+      },
+      {
+        "name": "tower_get_model",
+        "title": "Download Tower model"
+      },
+      {
+        "name": "forecast_run",
+        "title": "Forecast run"
+      }
+    ],
+    "ok": true,
+    "summary": {
+      "failed_24h": 0,
+      "next_due": null,
+      "queued": 0,
+      "running": 0
+    },
+    "total": 0,
+    "users": []
+  }
+}

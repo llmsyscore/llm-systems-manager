@@ -1,0 +1,94 @@
+{
+  "key": "GET /api/alarm/metrics",
+  "status": 200,
+  "body": [
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "ae_health_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 3.681986999936271,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "rule_eval_cycle_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 0.4537769999615193,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "influx_query_5m_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 2.7750240000159465,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "influx_query_24h_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 2.5458520000256613,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "influx_write_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 10.719118999986676,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "manager_anon_requests_per_min",
+      "hostname": "atlas.example",
+      "unit": null,
+      "latest_value": 0,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "ae_query_24h_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 4.416739000021153,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "manager_anon_refused_per_min",
+      "hostname": "atlas.example",
+      "unit": null,
+      "latest_value": 0,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "manager_api_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 1.7319869999710136,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "manager_history_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 1.3297630000579375,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    },
+    {
+      "source": "manager_self_monitor",
+      "metric_name": "ae_ingest_latency_ms",
+      "hostname": "atlas.example",
+      "unit": "ms",
+      "latest_value": 0.9625019999930373,
+      "latest_timestamp": "2026-10-23T05:50:44.734332Z"
+    }
+  ]
+}

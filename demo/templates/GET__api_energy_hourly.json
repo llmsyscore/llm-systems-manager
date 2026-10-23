@@ -1,0 +1,14 @@
+{
+  "key": "GET /api/energy/hourly",
+  "status": 200,
+  "body": {
+    "cap_days": 45,
+    "end_ts": 1793491200,
+    "hours": 744,
+    "label": "2026-10",
+    "ok": true,
+    "rows": [],
+    "start_ts": 1790812800,
+    "truncated": false
+  }
+}

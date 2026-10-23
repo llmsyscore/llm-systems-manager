@@ -1,0 +1,15 @@
+{
+  "key": "GET /api/companion/release",
+  "status": 200,
+  "body": {
+    "ahead": 14,
+    "build": "v2026.10.23-1",
+    "describe": "v3.2.0-14-gba59b51",
+    "enabled": false,
+    "install_kind": "package",
+    "installed": "v3.2.0",
+    "ok": true,
+    "repo": "alexcore/llm-systems-manager",
+    "source": "release-file"
+  }
+}

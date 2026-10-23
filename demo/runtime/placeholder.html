@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Systems Manager demo</title>
+<style>
+:root{--bg:#111;--bg-card:#1a1a1a;--border:#2a2a2a;--fg:#ddd;--fg-muted:#888;--accent:#7af;color-scheme:dark}
+@media (prefers-color-scheme: light){:root{--bg:#f4f5f7;--bg-card:#fff;--border:#d4d6dc;--fg:#1a1d22;--fg-muted:#555a64;--accent:#0a66c2;color-scheme:light}}
+html,body{margin:0;height:100%}
+body{display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif}
+.card{max-width:26rem;padding:24px 28px;text-align:center;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;line-height:1.5}
+.card p{margin:0 0 16px}
+.btn{display:inline-block;padding:7px 18px;border-radius:6px;background:var(--accent);color:var(--bg);font-weight:600;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <p>This works on your own install.</p>
+  <a class="btn" href="https://get.llmsyscore.com/?ref=demo" target="_blank" rel="noopener">Install</a>
+</div>
+<script>
+// Copies the dashboard's theme colours into this frame when it is shown inside the dashboard.
+(function () {
+  try {
+    var cs = getComputedStyle(parent.document.documentElement);
+    ['--bg', '--bg-card', '--border', '--fg', '--fg-muted', '--accent', '--scheme'].forEach(function (v) {
+      var val = cs.getPropertyValue(v).trim();
+      if (val) document.documentElement.style.setProperty(v === '--scheme' ? 'color-scheme' : v, val);
+    });
+  } catch (e) {}
+  // Tells the dashboard which tool showed this card.
+  try {
+    var m = /^\/proxy\/([^/]+)/.exec(location.pathname);
+    if (parent !== self) parent.postMessage({ type: 'demo-card', panel: m ? m[1] : 'tool' }, location.origin);
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

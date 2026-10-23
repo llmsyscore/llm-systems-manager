@@ -1,0 +1,9 @@
+{
+  "key": "GET /api/benchmark/live/latest",
+  "status": 200,
+  "body": {
+    "agent_id": "",
+    "models": {},
+    "ok": true
+  }
+}

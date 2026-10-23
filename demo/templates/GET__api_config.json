@@ -1,0 +1,22 @@
+{
+  "key": "GET /api/config",
+  "status": 200,
+  "body": {
+    "agents": {
+      "llama_present": false,
+      "lms_present": false,
+      "vllm_present": false
+    },
+    "interval_mode": "auto",
+    "interval_override": null,
+    "interval_reason": "idle",
+    "poll_interval": 60,
+    "poll_interval_active": 15,
+    "poll_interval_idle": 60,
+    "proxies": {
+      "image_gen": false,
+      "llm_chat": false,
+      "openclaw": false
+    }
+  }
+}

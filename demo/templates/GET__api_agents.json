@@ -1,0 +1,126 @@
+{
+  "key": "GET /api/agents",
+  "status": 200,
+  "body": {
+    "agents": [
+      {
+        "agent_id": "atlas",
+        "agent_user": "alex",
+        "approved_at": "2026-10-23T05:40:42.293253+00:00",
+        "approved_by": "192.0.2.1",
+        "bind_url": "https://192.0.2.2:8082",
+        "capabilities": {
+          "image_gen": false,
+          "llama": false,
+          "lms": false,
+          "monitor_alarm_engine": true,
+          "monitor_manager": true,
+          "openclaw": false,
+          "perf_controller": false,
+          "sysperf": true,
+          "vllm": false
+        },
+        "cert_role_sent_at": "2026-10-23T05:41:12.361103+00:00",
+        "colocated_infra": [
+          {
+            "role": "manager",
+            "version": "v2026.10.23-1"
+          },
+          {
+            "role": "alarm_engine",
+            "version": "v2026.10.22-1"
+          },
+          {
+            "role": "influxdb",
+            "version": "v2.9.1"
+          }
+        ],
+        "description": "",
+        "fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "first_seen": "2026-10-23T05:40:41.277494+00:00",
+        "fp_version": "v2026.10.23-1",
+        "hostname": "atlas.example",
+        "image_gen_port": 1234,
+        "is_host_agent": false,
+        "last_cert_issued_at": "2026-10-23T05:41:12.361103+00:00",
+        "last_heartbeat": "2026-10-23T05:50:19.289272+00:00",
+        "last_heartbeat_data": {
+          "clock_skew_s": -0.001,
+          "collection_enabled": true,
+          "control_channel_tls": true,
+          "llama_state": null,
+          "samples_posted": 107,
+          "tls_cert_has_role": true,
+          "tls_expires_at": "2027-10-23T05:41:12+00:00",
+          "tls_serves_role": true
+        },
+        "last_register": "2026-10-23T05:41:18.131659+00:00",
+        "liveness": "live",
+        "os": "linux",
+        "power": null,
+        "registered_from": "192.0.2.2",
+        "role": "system_only",
+        "status": "approved",
+        "tls_restart_until": "2026-10-23T05:42:42.361109+00:00",
+        "tls_role_checked_at": "2026-10-23T05:41:33.351942+00:00",
+        "token": "<redacted>",
+        "update_available": false,
+        "version": "v2026.10.23-1"
+      }
+    ],
+    "ca_fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "collect_interval_s": 60,
+    "enrollment": {
+      "mode": "auto",
+      "open": true,
+      "source": "startup",
+      "until": "2026-10-23T05:55:33.342817+00:00",
+      "window_min": 15
+    },
+    "enrollment_secret_required": true,
+    "global": {
+      "auth_disabled": false
+    },
+    "host_auto_detected": true,
+    "latest_agent_version": "v2026.10.23-1",
+    "manager_https_url": "https://192.0.2.2:5443",
+    "manager_version": "v2026.10.23-1",
+    "pool_providers": [
+      {
+        "label": "llama.cpp",
+        "name": "llama",
+        "pin_key": "llama_model_pins"
+      },
+      {
+        "label": "LM Studio",
+        "name": "lms",
+        "pin_key": "lms_model_pins"
+      },
+      {
+        "label": "vLLM",
+        "name": "vllm",
+        "pin_key": "vllm_model_pins"
+      }
+    ],
+    "providers": [
+      {
+        "capability_key": "llama",
+        "label": "llama.cpp",
+        "name": "llama",
+        "sub_tab": "llamacpp"
+      },
+      {
+        "capability_key": "lms",
+        "label": "LM Studio",
+        "name": "lms",
+        "sub_tab": "lmstudio"
+      },
+      {
+        "capability_key": "vllm",
+        "label": "vLLM",
+        "name": "vllm",
+        "sub_tab": "vllm"
+      }
+    ]
+  }
+}

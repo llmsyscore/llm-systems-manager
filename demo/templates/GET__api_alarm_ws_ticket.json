@@ -1,0 +1,8 @@
+{
+  "key": "GET /api/alarm-ws-ticket",
+  "status": 200,
+  "body": {
+    "ticket": "1792734954.613dfe3c610866f3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "ttl_s": 300
+  }
+}

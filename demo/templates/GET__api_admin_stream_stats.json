@@ -1,0 +1,39 @@
+{
+  "key": "GET /api/admin/stream-stats",
+  "status": 200,
+  "body": {
+    "agent_connections": 0,
+    "agents": [
+      {
+        "active": 0,
+        "agent_id": "atlas",
+        "cap": 40,
+        "hostname": "atlas.example",
+        "peak": 0,
+        "reachable": true,
+        "refusals": 0,
+        "terminal_sessions": 0,
+        "worker_threads_busy": 0
+      }
+    ],
+    "anon_budget_per_min": 600,
+    "anon_refused_per_min": 0,
+    "anon_requests_per_min": 0,
+    "browser_connections": 1,
+    "hostname": "atlas.example",
+    "pool": {
+      "active": 0,
+      "limit": 40,
+      "peak": 0,
+      "refusals": 0,
+      "refusals_recent": 0
+    },
+    "sse_daemon_running": true,
+    "sse_daemon_streams": 0,
+    "ts": 1792734649.1853824,
+    "worker_backlog": 0,
+    "worker_threads": 160,
+    "worker_threads_busy": 0,
+    "worker_threads_idle": 160
+  }
+}

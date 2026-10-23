@@ -1,0 +1,6 @@
+{
+  "GET /api/llm/server/log/tail": "log output shows the install card (Task 10)",
+  "GET /api/terminal/output/:p": "terminal/log output shows the install card (Task 10)",
+  "GET /api/tower/actions/:p/:p": "approve and deny are changes; the frontend call is a POST the scanner reads as GET",
+  "GET /health": "standalone alarm engine only; in the demo the alarm page runs under /alarm/ and calls /alarm/health"
+}

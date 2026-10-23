@@ -1,0 +1,13 @@
+{
+  "key": "GET /api/tools/activity",
+  "status": 200,
+  "body": {
+    "agents": {},
+    "autotune": false,
+    "benchmark": false,
+    "quality": false,
+    "queue": {},
+    "reportcard": false,
+    "unqueueable": []
+  }
+}

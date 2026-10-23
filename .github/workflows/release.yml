@@ -201,6 +201,45 @@ jobs:
             --notes-file /tmp/release-notes.md \
             "$ASSET" "$ASSET.sha256"
 
+  demo:
+    name: build + deploy demo site
+    needs: publish
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+
+      - name: Install demo dependencies
+        run: npm ci --prefix demo
+
+      - name: Build demo site
+        run: node demo/build.mjs --release "$TAG"
+
+      - name: Install Playwright Chromium
+        run: npx --prefix demo playwright install --with-deps chromium
+
+      - name: Browser run
+        run: node demo/test/browser-run.mjs --dist demo/dist --shots "$RUNNER_TEMP/shots"
+
+      - name: Deploy to Cloudflare Pages
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        run: npx --yes wrangler@4.152.0 pages deploy demo/dist --project-name llmsyscore-demo --branch main
+
+      - name: Skip deploy (no Cloudflare secrets)
+        if: env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == ''
+        run: echo '::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set; demo deploy skipped'
+
   packages:
     name: build + attach .deb/.rpm
     runs-on: ubuntu-latest
