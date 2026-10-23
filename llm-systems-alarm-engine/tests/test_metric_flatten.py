@@ -234,6 +234,25 @@ class TestMetricToPoints:
         assert (p["source"], p["metric_name"], p["value"]) == ("llama", "active_slots", 4.0)
         assert "unit" not in p
 
+    def test_llama_cache_and_spec_blocks_flatten_with_units(self):
+        # #1303: nested windowed blocks become llama/<block>_<leaf> series; the
+        # state label is a string and stays out of the point list.
+        points = metric_to_points({"llama": {
+            "prompt_tokens_cached_total": 238834,
+            "spec_draft_tokens_total": 23627,
+            "cache_reuse": {"state": "ok", "processed": 10, "cached": 8200, "ratio": 0.9988},
+            "spec_accept": {"state": "off", "drafted": 0, "accepted": 0,
+                            "drafts": 0, "ratio": None, "accepted_per_draft": None},
+        }})
+        by = _by_metric(points)
+        assert by[("llama", "prompt_tokens_cached_total")]["unit"] == "tokens"
+        assert by[("llama", "cache_reuse_ratio")]["value"] == 0.9988
+        assert by[("llama", "cache_reuse_ratio")]["unit"] == "ratio"
+        assert by[("llama", "cache_reuse_cached")]["value"] == 8200.0
+        assert by[("llama", "spec_accept_drafted")]["value"] == 0.0
+        assert ("llama", "spec_accept_ratio") not in by
+        assert not any(n.endswith("_state") for _, n in by)
+
     def test_last_write_wins_on_source_metric_collision(self):
         # Both paths alias to (cpu, usage_percent) — last one observed wins.
         # The flatten iteration order follows dict insertion order in CPython 3.7+.

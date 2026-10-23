@@ -45,6 +45,8 @@ Returns the current hardware snapshot across all monitored agents: CPU, RAM, GPU
 
 **Parameters:** `?agent=<agent_id>` — restrict the response to a single agent's data.
 
+**llama.cpp block:** besides the token counters and rates, `llama` carries the raw prompt-cache and speculative counters when the running build publishes them (`prompt_tokens_cached_total`, `spec_draft_tokens_total`, `spec_accepted_tokens_total`, `spec_drafts_total`) and two windowed blocks: `cache_reuse` (`processed`, `cached`, `ratio`) and `spec_accept` (`drafted`, `accepted`, `drafts`, `ratio`, `accepted_per_draft`), each covering the last 60 seconds with a `state` of `ok`, `idle`, `reset`, `paused`, `unsupported` or (acceptance only) `off` when the server runs without speculative decoding. A `ratio` is `null` when the build does not publish the counters or nothing ran inside the window. The two ratios are also stored in history as `llama_cache_reuse` and `llama_spec_accept`.
+
 ---
 
 ### `GET /api/manager/request-stats`

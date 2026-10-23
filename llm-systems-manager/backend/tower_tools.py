@@ -499,7 +499,8 @@ def with_liveness(row: dict, agent: Optional[dict], liveness_of: Callable[[dict]
 
 _LLAMA_LIVE = ("state", "model", "build", "n_ctx", "total_slots", "active_slots", "requests_processing", "requests_deferred",
                "kv_cache_tokens", "kv_cache_usage_ratio", "tokens_per_second", "prompt_tokens_per_second", "is_sleeping",
-               "total_tokens_generated", "total_tokens_prompted", "download_progress", "port")
+               "total_tokens_generated", "total_tokens_prompted", "download_progress", "port",
+               "prompt_tokens_cached_total", "cache_reuse", "spec_accept")
 _VLLM_LIVE = ("state", "model", "kv_cache_usage_pct", "requests_running", "requests_waiting", "port")
 
 

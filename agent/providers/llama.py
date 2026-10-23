@@ -33,6 +33,7 @@ from _bench_replay import BenchReplayBuffer, AUTOTUNE_KEEP_TYPES  # type: ignore
 
 from collectors.gpu import collect_gpu  # type: ignore
 from . import _shared
+from . import llama_counters
 from . import llama_install
 from . import llama_sse
 from . import llama_upgrade
@@ -78,6 +79,8 @@ _llama_info_last_poll: float = 0.0
 _llama_info_last_active_ts: float = 0.0
 _llama_info_last_tokens_total: "int | None" = None
 _llama_loaded = {"last": None}
+# Per-model windowed prompt-cache / speculative counters (#1303).
+_llama_counters = llama_counters.CounterWindow()
 _llama_info_idle_logged: bool = False
 _llama_build_last: str = ""
 
@@ -346,6 +349,25 @@ def _perf_job_set(phase: str, put, holder: str = "") -> None:
     put(ev)
 
 
+def _apply_counter_window(llama: dict[str, Any], model_id: "str | None", now: float,
+                          metrics_text: "str | None") -> None:
+    """Raw cache/speculative counters plus windowed derived blocks; text None = poll skipped."""
+    if metrics_text is not None:
+        _llama_counters.observe(model_id, now, llama_counters.parse_counters(metrics_text))
+    polled = metrics_text is not None
+    raw = _llama_counters.latest() if _llama_counters.model == model_id else {}
+    for key, name in (("prompt_cached", "prompt_tokens_cached_total"),
+                      ("spec_drafted", "spec_draft_tokens_total"),
+                      ("spec_accepted", "spec_accepted_tokens_total"),
+                      ("spec_drafts", "spec_drafts_total")):
+        llama[name] = raw.get(key)
+    if not raw:
+        llama["cache_reuse"] = llama["spec_accept"] = None
+        return
+    llama["cache_reuse"] = _llama_counters.cache_reuse(now, polled=polled)
+    llama["spec_accept"] = _llama_counters.spec_accept(now, polled=polled)
+
+
 def collect_llama_for_metrics() -> dict[str, Any]:
     """Agent-side rich llama snapshot; skips /metrics + /slots when sleeping or token-idle."""
     if not _require_ctx().config.LLAMA_ENABLED:
@@ -367,6 +389,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         if _llama_main_pid["last"] is not None:
             log.info("llama unit MainPID %s -> %s; re-probing", _llama_main_pid["last"], pid)
             _llama_loaded["last"] = None
+            _llama_counters.reset(now)
         _llama_main_pid["last"] = pid
 
     api_base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
@@ -399,6 +422,12 @@ def collect_llama_for_metrics() -> dict[str, Any]:
         "total_slots": None,
         "is_sleeping": None,
         "n_ctx": None,
+        "prompt_tokens_cached_total": None,
+        "spec_draft_tokens_total": None,
+        "spec_accepted_tokens_total": None,
+        "spec_drafts_total": None,
+        "cache_reuse": None,
+        "spec_accept": None,
     }
 
     sse_snap = dict(_require_ctx().state.get("llama_sse") or {})
@@ -588,6 +617,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                         elif line.startswith("llamacpp:kv_cache_tokens"):
                             v = _llama_metric_val(line)
                             llama["kv_cache_tokens"] = int(v) if v is not None else None
+                    _apply_counter_window(llama, loaded_id, now, resp.text)
             except Exception as e:
                 log.debug("llama /metrics: %s", e)
         else:
@@ -595,6 +625,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
                 for k in _llama_info_cache:
                     if llama.get(k) is None:
                         llama[k] = _llama_info_cache.get(k)
+            _apply_counter_window(llama, loaded_id, now, None)
             if not _llama_info_idle_logged:
                 log.info(
                     "llama /metrics polling paused — no token activity for %.0fs (threshold %ds)",

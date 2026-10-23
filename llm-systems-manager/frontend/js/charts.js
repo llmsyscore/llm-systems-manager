@@ -926,6 +926,33 @@ async function openAgentSse(infoPath, fallbackPath) {
   });
 }
 
+// {text, label, title} for a windowed counter tile (#1303): the ratio as a
+// percent, or the block's state word when there is no ratio.
+const _LLAMA_WINDOW_STATE_TEXT = {
+  unsupported: 'Not reported', off: 'Not in use', idle: 'Idle', reset: 'Reset', paused: 'Paused',
+};
+const _LLAMA_WINDOW_S = 60;
+function _fmtLlamaWindowStat(block, name, numLbl, denLbl) {
+  if (!block || typeof block !== 'object') return { text: '—', label: name, title: '' };
+  const pct = block.ratio != null ? (block.ratio * 100).toFixed(1) + '%' : null;
+  const state = _LLAMA_WINDOW_STATE_TEXT[block.state];
+  const text = pct == null ? (state || '—') : (state && block.state !== 'idle' ? `${pct} · ${state}` : pct);
+  const noWindow = block.state === 'unsupported' || block.state === 'off';
+  const label = noWindow ? name : `${name} · ${_LLAMA_WINDOW_S} s`;
+  const num = block[numLbl], den = block[denLbl];
+  const title = !noWindow && num != null && den != null
+    ? `${numLbl} ${Number(num).toLocaleString()} · ${denLbl} ${Number(den).toLocaleString()} in the last ${_LLAMA_WINDOW_S} s`
+    : '';
+  return { text, label, title };
+}
+function _setLlamaWindowTile(id, tile) {
+  const el = document.getElementById(id);
+  if (el && el.textContent !== tile.text) el.textContent = tile.text;
+  if (el && el.title !== tile.title) el.title = tile.title;
+  const lbl = document.getElementById(id + '-lbl');
+  if (lbl && lbl.textContent !== tile.label) lbl.textContent = tile.label;
+}
+
 // Mirrors backend clean_display_model(): '(unloaded)' → '' (no model);
 // strips the '(sleeping)' suffix (model still resident).
 function _cleanLlamaModelName(raw) {
@@ -1725,6 +1752,8 @@ async function fetchMetrics() {
     document.getElementById('llamaCtxHigh').textContent      = ll.n_tokens_max             != null ? ll.n_tokens_max.toLocaleString() : '—';
     document.getElementById('llamaKvRatio').textContent      = ll.kv_cache_usage_ratio     != null ? (ll.kv_cache_usage_ratio * 100).toFixed(1) + '%' : '—';
     document.getElementById('llamaKvTokens').textContent     = ll.kv_cache_tokens          != null ? ll.kv_cache_tokens.toLocaleString() : '—';
+    _setLlamaWindowTile('llamaCacheReuse', _fmtLlamaWindowStat(ll.cache_reuse, 'Prompt cache reuse', 'cached', 'processed'));
+    _setLlamaWindowTile('llamaSpecAccept', _fmtLlamaWindowStat(ll.spec_accept, 'Draft tokens accepted', 'accepted', 'drafted'));
     document.getElementById('llamaNRemain').textContent      = ll.n_remain                 != null ? ll.n_remain.toLocaleString() : '—';
     document.getElementById('llamaTotalSlots').textContent   = ll.total_slots              != null ? ll.total_slots.toLocaleString() : '—';
     const modsEl = document.getElementById('llamaModalities');
