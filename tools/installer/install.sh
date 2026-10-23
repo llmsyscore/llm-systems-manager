@@ -784,7 +784,10 @@ if ! declare -F telemetry_report_as_user >/dev/null; then
   telemetry_pick_root() { return 1; }
   telemetry_report_as_user() { return 0; }
 fi
-declare -F telemetry_export_source >/dev/null && telemetry_export_source "$REPO_SRC"
+if ! declare -F telemetry_export_source >/dev/null; then
+  telemetry_export_source() { return 0; }
+fi
+telemetry_export_source "$REPO_SRC"
 _TELEMETRY_VERSION="$(grep -E '^__version__ = ' "$REPO_SRC/llm-systems-manager/backend/llm-systems-manager.py" 2>/dev/null | head -1 | sed -E 's/.*"(.*)".*/\1/' || true)"
 if [[ "$UPDATE" != "1" && "$UNINSTALL" != "1" ]]; then
   _tele_preview_dir="$(mktemp -d)"
