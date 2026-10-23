@@ -40,6 +40,8 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      HOMEBREW_LLMSYS_TELEMETRY: "0"
     steps:
       - uses: llmsyscore/homebrew-tap/.github/actions/setup-brew-ci@main
         with:

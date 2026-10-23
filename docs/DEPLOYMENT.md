@@ -217,7 +217,7 @@ Every report also carries a random install ID created at install time and the in
 
 Turning reports off or on:
 
-- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. (Homebrew installs do not read these variables: set `install_report = false` in the shared config before the first `brew services start`, or switch it off in Settings.)
+- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. Homebrew installs read `HOMEBREW_LLMSYS_TELEMETRY=0` instead, which turns off the install and crash reports in the new config. You can also switch them off in Settings.
 - Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
 - Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
 - Nothing is sent when a `CI` variable is set.
@@ -257,6 +257,7 @@ brew install llm-systems-manager llm-systems-alarm-engine influxdb@2 influxdb-cl
 ```
 
 - **Config** is shared at `$(brew --prefix)/etc/llm-systems-manager/llm-systems.toml`, seeded on first install with generated alarm-engine ingest/management tokens (equivalent to a co-located script install). It is kept across upgrades: your values stay, settings a new release introduces are added with their defaults and comments, and the previous file is kept next to it as `llm-systems.toml.bak.<timestamp>` whenever an upgrade changed it.
+- **Anonymous reports**: install with `HOMEBREW_LLMSYS_TELEMETRY=0 brew install …` to start with the install and crash reports turned off.
 - **State** (internal CA, agent registry, TLS certs, SQLite DBs) lives under `$(brew --prefix)/var/llm-systems-manager/` and also survives upgrades — the kegs hold only code + venvs.
 - **InfluxDB**: run `llm-systems-influx-setup` (installed by the manager formula) — it starts the `influxdb@2` service, onboards it on first boot, creates the buckets + scoped tokens, and writes them into `[influxdb.tokens]`. It needs both `influxdb@2` (the v2 server — Homebrew's plain `influxdb` formula is InfluxDB 3.x, whose API this stack does not speak) and `influxdb-cli` (the `influx` command ships in the separate `influxdb-cli` formula). Manual alternative: `brew services start influxdb@2`, `influx setup`, then create the buckets/tokens per [Configuration](#configuration) and fill `[influxdb]` + `[influxdb.tokens]` yourself. The manager and alarm engine run without it, but history and alert evaluation stay degraded until then.
 - **First sign-in**: run `llm-systems-admin-password reset` (installed by the manager formula). It prints a temporary admin password; sign in with it and the dashboard asks you to replace it. The login page shows the same step when opened from the manager's own machine.

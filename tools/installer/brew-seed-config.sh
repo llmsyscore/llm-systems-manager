@@ -12,6 +12,7 @@
 #                     $(brew --prefix)/etc/llm-systems-manager/llm-systems.toml (required)
 #   LSM_BREW_LOG_DIR  log dir written to [paths].log_dir, e.g.
 #                     $(brew --prefix)/var/log/llm-systems-manager (required)
+#   HOMEBREW_LLMSYS_TELEMETRY  0 = fresh config gets install_report/crash_reports = false
 #
 # Does:
 #   - If LSM_BREW_CONFIG already exists (an upgrade), keeps it: adds keys the
@@ -37,6 +38,9 @@ LOG_DIR="${LSM_BREW_LOG_DIR:-}"
 [ -n "$TARGET" ]  || die "LSM_BREW_CONFIG is not set"
 [ -n "$LOG_DIR" ] || die "LSM_BREW_LOG_DIR is not set"
 [ -f "$EXAMPLE" ] || die "example config not found: $EXAMPLE"
+# HOMEBREW_LLMSYS_TELEMETRY=0 seeds a fresh config with install and crash reports off.
+TELEMETRY_OFF=0
+[ "${HOMEBREW_LLMSYS_TELEMETRY:-}" = "0" ] && TELEMETRY_OFF=1
 
 # Python with tomllib: the keg venv first, then the PATH interpreter.
 find_python() {
@@ -161,6 +165,12 @@ while IFS= read -r line || [ -n "$line" ]; do
       printf 'management_token = "%s"\n' "$MGMT_TOKEN" >> "$TMP" ;;
     'enrollment_secret = ""'*)
       printf 'enrollment_secret = "%s"\n' "$ENROLL_SECRET" >> "$TMP" ;;
+    'install_report = true'*|'crash_reports = true'*)
+      if [ "$TELEMETRY_OFF" = "1" ]; then
+        printf '%s = false\n' "${line%% *}" >> "$TMP"
+      else
+        printf '%s\n' "$line" >> "$TMP"
+      fi ;;
     *)
       printf '%s\n' "$line" >> "$TMP" ;;
   esac
@@ -172,6 +182,10 @@ grep -q "^ingest_token = \"$INGEST_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "inges
 grep -q "^management_token = \"$MGMT_TOKEN\"" "$TMP" || { rm -f "$TMP"; die "management_token rewrite failed — .example drifted?"; }
 grep -q "^enrollment_secret = \"$ENROLL_SECRET\"" "$TMP" || { rm -f "$TMP"; die "enrollment_secret rewrite failed — .example drifted?"; }
 grep -q '^\[manager.telemetry\]' "$TMP" || { rm -f "$TMP"; die "telemetry block missing — .example drifted?"; }
+if [ "$TELEMETRY_OFF" = "1" ]; then
+  grep -q '^install_report = false' "$TMP" || { rm -f "$TMP"; die "install_report rewrite failed — .example drifted?"; }
+  grep -q '^crash_reports = false' "$TMP"  || { rm -f "$TMP"; die "crash_reports rewrite failed — .example drifted?"; }
+fi
 
 mv "$TMP" "$TARGET"
 chmod 0600 "$TARGET"

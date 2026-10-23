@@ -14,7 +14,7 @@ OLD_LIST = "http://localhost:5000,http://localhost:8081"
 NEW_LIST = "http://localhost:5000,https://localhost:5443,http://localhost:8081,https://localhost:8081"
 
 
-def seed(tmp_path, script=SCRIPT, shim_dir=None):
+def seed(tmp_path, script=SCRIPT, shim_dir=None, extra_env=None):
     cfg = tmp_path / "etc" / "llm-systems.toml"
     path = f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin"
     if shim_dir is not None:
@@ -22,7 +22,8 @@ def seed(tmp_path, script=SCRIPT, shim_dir=None):
     proc = subprocess.run(
         ["bash", str(script)], capture_output=True, text=True,
         env={"PATH": path, "LSM_BREW_EXAMPLE": str(EXAMPLE),
-             "LSM_BREW_CONFIG": str(cfg), "LSM_BREW_LOG_DIR": str(tmp_path / "log")},
+             "LSM_BREW_CONFIG": str(cfg), "LSM_BREW_LOG_DIR": str(tmp_path / "log"),
+             **(extra_env or {})},
     )
     assert proc.returncode == 0, proc.stderr
     return cfg, proc.stdout + proc.stderr
@@ -36,6 +37,31 @@ def test_fresh_seed_lists_http_and_https(tmp_path):
     cfg, _ = seed(tmp_path)
     assert origins_in(cfg) == NEW_LIST
     assert oct(cfg.stat().st_mode & 0o777) == "0o600"
+
+
+def test_fresh_seed_keeps_reports_on_without_the_opt_out(tmp_path):
+    cfg, _ = seed(tmp_path)
+    tele = tomllib.loads(cfg.read_text())["manager"]["telemetry"]
+    assert tele["install_report"] is True and tele["crash_reports"] is True
+
+
+def test_fresh_seed_turns_reports_off_with_the_opt_out(tmp_path):
+    cfg, _ = seed(tmp_path, extra_env={"HOMEBREW_LLMSYS_TELEMETRY": "0"})
+    tele = tomllib.loads(cfg.read_text())["manager"]["telemetry"]
+    assert tele["install_report"] is False and tele["crash_reports"] is False
+
+
+def test_fresh_seed_keeps_reports_on_when_the_opt_out_is_not_zero(tmp_path):
+    cfg, _ = seed(tmp_path, extra_env={"HOMEBREW_LLMSYS_TELEMETRY": "1"})
+    tele = tomllib.loads(cfg.read_text())["manager"]["telemetry"]
+    assert tele["install_report"] is True and tele["crash_reports"] is True
+
+
+def test_upgrade_ignores_the_opt_out(tmp_path):
+    cfg, _ = seed(tmp_path)
+    before = cfg.read_text()
+    seed(tmp_path, extra_env={"HOMEBREW_LLMSYS_TELEMETRY": "0"})
+    assert cfg.read_text() == before
 
 
 def test_upgrade_adds_https_to_an_existing_config(tmp_path):
