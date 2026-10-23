@@ -119,6 +119,37 @@ def test_throughput_drop_against_baseline():
     runs = [{"ts": NOW - 20 * DAY, "model": "m", "host": "rig", "gen_tps": 42.0, "ppt_tps": 900.0, "accept_rate": None, "baseline": 1, "ok": 1}]
     (f,) = run("throughput", data({("llama", "tokens_per_second", "rig"): tps}, bench_runs=lambda: runs))
     assert f.severity in ("info", "warning") and "%" in f.summary and "baseline" in f.detail
+    assert f.subject == "m" and f.summary.startswith("Generation speed ")
+    assert f.suggested_action == "Re-run the benchmark on rig and check for a model, quantisation or setting change."
+
+
+def test_throughput_prompt_speed_is_its_own_finding():
+    runs = [{"ts": NOW - 20 * DAY, "model": "m", "host": "rig", "gen_tps": 42.0, "ppt_tps": 900.0, "accept_rate": None, "baseline": 1, "ok": 1}]
+    series = {("llama", "tokens_per_second", "rig"): ramp(per_day=-0.8, start=42.0),
+              ("llama", "prompt_tokens_per_second", "rig"): ramp(per_day=-20.0, start=900.0)}
+    by = {f.subject: f for f in run("throughput", data(series, bench_runs=lambda: runs))}
+    assert set(by) == {"m", "prompt:m"}
+    assert by["m"].summary.startswith("Generation speed ") and by["m"].graph["name"] == "tokens_per_second"
+    assert by["prompt:m"].summary.startswith("Prompt processing speed ") and "baseline" in by["prompt:m"].detail
+    assert by["prompt:m"].graph["name"] == "prompt_tokens_per_second" and by["prompt:m"].graph["threshold"] == 900.0
+    assert "prompt-cache" in by["prompt:m"].suggested_action
+
+
+def test_throughput_prompt_drop_alone_leaves_generation_quiet():
+    series = {("llama", "tokens_per_second", "rig"): flat(42.0),
+              ("llama", "prompt_tokens_per_second", "rig"): ramp(per_day=-20.0, start=900.0)}
+    (f,) = run("throughput", data(series))
+    assert f.subject == "prompt:llama" and f.summary.startswith("Prompt processing speed ") and "earlier" in f.summary
+    assert "first three days" in f.detail
+
+
+def test_throughput_prompt_baseline_missing_falls_back_to_earlier_level():
+    runs = [{"ts": NOW - 20 * DAY, "model": "m", "host": "rig", "gen_tps": 42.0, "ppt_tps": None, "accept_rate": None, "baseline": 1, "ok": 1}]
+    series = {("llama", "tokens_per_second", "rig"): ramp(per_day=-0.8, start=42.0),
+              ("llama", "prompt_tokens_per_second", "rig"): ramp(per_day=-20.0, start=900.0)}
+    by = {f.subject: f for f in run("throughput", data(series, bench_runs=lambda: runs))}
+    assert set(by) == {"m", "prompt:llama"}
+    assert "baseline" in by["m"].detail and "earlier" in by["prompt:llama"].summary
 
 
 def test_slot_pressure_predicts_saturation():
