@@ -1,1 +1,4 @@
 RELEASE export-subst
+demo/ export-ignore
+website/ export-ignore
+docs/screenshots/ export-ignore

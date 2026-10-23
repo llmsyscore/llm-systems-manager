@@ -854,7 +854,7 @@ deploy_into_install_dir() {
               --exclude='.dockerignore' --exclude='.env.example' \
               --exclude='/design/' --exclude='/devel/' \
               --exclude='/docs/screenshots/' --exclude='/tools/packaging/' \
-              --exclude='/website/' \
+              --exclude='/website/' --exclude='/demo/' \
               --exclude='ci-*.sh' --exclude='/dist/' \
               "${rsync_extra[@]}" \
               "$src/" "$dest/"
