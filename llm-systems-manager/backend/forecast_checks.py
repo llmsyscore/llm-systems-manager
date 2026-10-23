@@ -319,45 +319,51 @@ def _thermal_trend(d: CheckData) -> "list[Finding]":
     return out
 
 
+_TPS_SERIES = (("tokens_per_second", "gen_tps", "Generation speed", "",
+                "Re-run the benchmark on {host} and check for a model, quantisation or setting change."),
+               ("prompt_tokens_per_second", "ppt_tps", "Prompt processing speed", "prompt:",
+                "Re-run the benchmark on {host} and check for a model, quantisation, batch-size or prompt-cache change."))
+
+
 def _throughput(d: CheckData) -> "list[Finding]":
-    """Generation speed falling away from its benchmark baseline."""
+    """Generation and prompt processing speed falling away from their benchmark baselines."""
     out, best, seen = [], 0.0, False
     runs = d.bench_runs() or []
     for host in d.hosts():
-        pts = [(t, v) for t, v in d.window("llama", "tokens_per_second", host, agg="max") if v > 0]
-        if not pts:
-            continue
-        seen = True
-        best = max(best, d.span(pts))
-        if d.span(pts) < 3.0:
-            continue
-        fit = fm.linear_fit(pts)
-        if fit is None or fit.slope_per_s >= 0:
-            continue
-        recent = [v for t, v in pts if t >= d.now - 3 * DAY]
-        rows = [r for r in runs if r.get("host") == host and r.get("baseline") and r.get("ok") and r.get("gen_tps")]
-        row = max(rows, key=lambda r: r.get("ts") or 0.0) if rows else None
-        if row:
-            base, word, subject = float(row["gen_tps"]), "baseline", row.get("model") or "llama"
-            detail_base = f"a baseline of {base:.1f} tok/s"
-        else:
-            early = [v for t, v in pts if t <= pts[0][0] + 3 * DAY]
-            base, word, subject = (sum(early) / len(early)) if early else 0.0, "earlier", "llama"
-            detail_base = f"{base:.1f} tok/s over the first three days"
-        if not recent or base <= 0:
-            continue
-        now_tps = sum(recent) / len(recent)
-        if now_tps >= 0.9 * base:
-            continue
-        pct = (1.0 - now_tps / base) * 100.0
-        out.append(Finding("throughput", host, subject, "warning" if now_tps < 0.75 * base else "info",
-                           f"Generation speed {pct:.0f} % under the {word} level",
-                           detail=f"The last three days average {now_tps:.1f} tok/s against {detail_base}.",
-                           since=pts[0][0], rate=fit.slope_per_s * DAY, unit="tok/s/day",
-                           confidence=fm.confidence(fit),
-                           suggested_action=f"Re-run the benchmark on {host} and check for a model, quantisation or setting change.",
-                           graph=graph_spec("llama", "tokens_per_second", host, d.start, d.now + TREND_AHEAD_S,
-                                            base, fit, agg="max", limit=False)))
+        for name, base_key, label, prefix, action in _TPS_SERIES:
+            pts = [(t, v) for t, v in d.window("llama", name, host, agg="max") if v > 0]
+            if not pts:
+                continue
+            seen = True
+            best = max(best, d.span(pts))
+            if d.span(pts) < 3.0:
+                continue
+            fit = fm.linear_fit(pts)
+            if fit is None or fit.slope_per_s >= 0:
+                continue
+            recent = [v for t, v in pts if t >= d.now - 3 * DAY]
+            rows = [r for r in runs if r.get("host") == host and r.get("baseline") and r.get("ok") and r.get(base_key)]
+            row = max(rows, key=lambda r: r.get("ts") or 0.0) if rows else None
+            if row:
+                base, word, subject = float(row[base_key]), "baseline", row.get("model") or "llama"
+                detail_base = f"a baseline of {base:.1f} tok/s"
+            else:
+                early = [v for t, v in pts if t <= pts[0][0] + 3 * DAY]
+                base, word, subject = (sum(early) / len(early)) if early else 0.0, "earlier", "llama"
+                detail_base = f"{base:.1f} tok/s over the first three days"
+            if not recent or base <= 0:
+                continue
+            now_tps = sum(recent) / len(recent)
+            if now_tps >= 0.9 * base:
+                continue
+            pct = (1.0 - now_tps / base) * 100.0
+            out.append(Finding("throughput", host, prefix + subject, "warning" if now_tps < 0.75 * base else "info",
+                               f"{label} {pct:.0f} % under the {word} level",
+                               detail=f"The last three days average {now_tps:.1f} tok/s against {detail_base}.",
+                               since=pts[0][0], rate=fit.slope_per_s * DAY, unit="tok/s/day",
+                               confidence=fm.confidence(fit), suggested_action=action.format(host=host),
+                               graph=graph_spec("llama", name, host, d.start, d.now + TREND_AHEAD_S,
+                                                base, fit, agg="max", limit=False)))
     if not out and (not seen or best < 3.0):
         raise Collecting(best, 3.0)
     return out
