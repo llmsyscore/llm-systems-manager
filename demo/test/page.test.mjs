@@ -125,6 +125,7 @@ const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
   <div id="serverLogPanel" style="display:none;"><div id="serverLogBox"></div></div>
 </div>
 <div id="eventsTab"><iframe id="alarmEngineIframe"></iframe></div>
+<div id="towerOverlay"><div id="twBox"><textarea id="twInput"></textarea></div></div>
 <div id="adminTab"><div id="adminHealthCard"></div>
   <button class="sub-tab-btn" id="subTabBtnAdminAgents">Agents</button><button class="sub-tab-btn" id="subTabBtnAdminRouting">Gateway</button>
   <button class="sub-tab-btn" id="subTabBtnAdminJobs">Jobs</button>
@@ -148,10 +149,20 @@ test('tour does not start when the seen flag is set', async () => {
   assert.ok(w.document.getElementById('demoBanner'), 'banner still shows');
 });
 
-test('tour starts on a first visit, walks the steps with switchTab and Close sets the flag', async () => {
-  const tabs = [];
-  const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); } });
+test('a first visit shows the welcome card; its tour button starts the tour, which walks the steps and Close sets the flag', async () => {
+  const tabs = [], tracked = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
   const steps = w.DemoTour.steps;
+  assert.equal(w.document.querySelector('.demo-tour'), null, 'the tour waits for the welcome choice');
+  const welcome = w.document.querySelector('.demo-welcome-card');
+  assert.equal(welcome.getAttribute('role'), 'dialog');
+  assert.equal(welcome.querySelector('.demo-welcome-title').textContent, 'Welcome to the LLM Systems Manager demo');
+  assert.match(welcome.textContent, /real dashboard running on sample data\. Everything works/);
+  assert.doesNotMatch(welcome.textContent, /leaves your browser/);
+  assert.equal(w.document.activeElement, welcome.querySelector('.demo-welcome-tour'));
+  welcome.querySelector('.demo-welcome-tour').click();
+  assert.equal(w.document.querySelector('.demo-welcome'), null);
+  assert.deepEqual(tracked, [['click', 'welcome-tour'], ['tour', undefined]]);
   assert.equal(steps.length, 12);
   assert.ok(steps.every((s) => s.text.split(/(?<=\.|\?"?)\s+(?=[A-Z])/).length <= 2), 'one or two sentences per step');
   for (const t of ['Energy', 'Forecast', 'Benchmarks', 'System health', 'Where requests go', 'Jobs', 'Add machines']) {
@@ -163,7 +174,7 @@ test('tour starts on a first visit, walks the steps with switchTab and Close set
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(s.title && s.text, s.selector);
   }
-  assert.ok(steps.some((s) => s.selector === '#towerBtn' && /slow|alarm|cost|model/i.test(s.text)));
+  assert.ok(steps.some((s) => s.selector === '#twBox' && s.tower && /slow|alarm|cost|model/i.test(s.text)));
   const card = w.document.querySelector('.demo-tour-card');
   assert.ok(card);
   assert.equal(card.querySelector('.demo-tour-title').textContent, steps[0].title);
@@ -173,10 +184,89 @@ test('tour starts on a first visit, walks the steps with switchTab and Close set
   w.document.querySelector('.demo-tour-back').click();
   assert.equal(w.DemoTour.index, 0);
   assert.deepEqual(tabs, [steps[0].tab, steps[1].tab, steps[0].tab]);
-  assert.equal(w.localStorage.getItem('lsmDemoTourSeen'), null);
   w.document.querySelector('.demo-tour-close').click();
   assert.equal(w.document.querySelector('.demo-tour'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
+});
+
+for (const [how, pick] of [
+  ['its button', (w) => w.document.querySelector('.demo-welcome-explore').click()],
+  ['Esc', (w) => w.document.body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))],
+  ['a click outside the card', (w) => {
+    const root = w.document.querySelector('.demo-welcome');
+    root.dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
+    root.click();
+  }],
+]) {
+  test(`explore on my own by ${how} closes the welcome card without a tour and sets the flag`, async () => {
+    const tracked = [];
+    const w = await dom(['demo-tour.js'], { before: (w) => { w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
+    pick(w);
+    assert.equal(w.document.querySelector('.demo-welcome'), null);
+    assert.equal(w.document.querySelector('.demo-tour'), null);
+    assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
+    assert.deepEqual(tracked, [['click', 'welcome-explore']]);
+  });
+}
+
+test('the welcome card stays closed on the next visit', async () => {
+  const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  assert.equal(w.document.querySelector('.demo-welcome'), null);
+});
+
+function towerStubs(w, calls) {
+  const ov = () => w.document.getElementById('towerOverlay');
+  w.towerOpen = () => { calls.push('open'); ov().classList.add('open'); };
+  w.towerClose = (o) => { calls.push('close:' + (o && o.returnFocus)); ov().classList.remove('open'); };
+}
+
+test('a drag that ends outside the welcome card does not close it', async () => {
+  const w = await dom(['demo-tour.js']);
+  w.document.querySelector('.demo-welcome-card').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
+  w.document.querySelector('.demo-welcome').click();
+  assert.ok(w.document.querySelector('.demo-welcome'));
+});
+
+test('a step whose element is below the window scrolls it into view and keeps the card on screen', async () => {
+  const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  Object.defineProperty(w, 'innerHeight', { configurable: true, value: 844 });
+  const strip = w.document.getElementById('ovAgentsStrip');
+  let top = 1153;
+  strip.getBoundingClientRect = () => ({ top, bottom: top + 170, left: 10, right: 380, width: 370, height: 170, x: 10, y: top });
+  const scrolled = [];
+  strip.scrollIntoView = (o) => { scrolled.push(o.block); top = 300; };
+  w.DemoTour.start(w.DemoTour.steps.findIndex((s) => s.selector === '#ovAgentsStrip'));
+  assert.deepEqual(scrolled, ['center']);
+  const card = w.document.querySelector('.demo-tour-card');
+  assert.ok(parseFloat(card.style.top) >= 12 && parseFloat(card.style.top) <= 844 - 12);
+  w.DemoTour.close();
+});
+
+test('the tour leaves a Tower the visitor opened alone', async () => {
+  const calls = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => { w.localStorage.setItem('lsmDemoTourSeen', '1'); towerStubs(w, calls); } });
+  w.document.getElementById('towerOverlay').classList.add('open');
+  const i = w.DemoTour.steps.findIndex((s) => s.tower);
+  w.DemoTour.start(i);
+  w.DemoTour.next();
+  w.DemoTour.close();
+  assert.deepEqual(calls, []);
+  assert.ok(w.document.getElementById('towerOverlay').classList.contains('open'));
+});
+
+test('the Ask Tower step opens Tower and the tour closes it again when it moves on or closes', async () => {
+  const calls = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => { w.localStorage.setItem('lsmDemoTourSeen', '1'); towerStubs(w, calls); } });
+  const i = w.DemoTour.steps.findIndex((s) => s.tower);
+  w.DemoTour.start(i - 1);
+  assert.deepEqual(calls, []);
+  w.DemoTour.next();
+  assert.deepEqual(calls, ['open']);
+  w.DemoTour.next();
+  assert.deepEqual(calls, ['open', 'close:false']);
+  w.DemoTour.back();
+  w.DemoTour.close();
+  assert.deepEqual(calls, ['open', 'close:false', 'open', 'close:false']);
 });
 
 test('finishing the tour sets the flag; the banner Tour button restarts it; tab buttons are clicked without switchTab', async () => {
@@ -229,6 +319,7 @@ test('tour still starts and closes when storage throws', async () => {
   const w = await dom(['demo-tour.js'], { before: (w) => {
     Object.defineProperty(w, 'localStorage', { configurable: true, get() { throw new w.DOMException('blocked', 'SecurityError'); } });
   } });
+  w.document.querySelector('.demo-welcome-tour').click();
   assert.ok(w.document.querySelector('.demo-tour-card'));
   w.document.querySelector('.demo-tour-close').click();
   assert.equal(w.document.querySelector('.demo-tour'), null);
@@ -290,6 +381,7 @@ for (const [kind, fire] of [
     const tabs = [];
     const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); }, after: fire });
     assert.equal(w.document.querySelector('.demo-tour'), null);
+    assert.equal(w.document.querySelector('.demo-welcome'), null);
     assert.deepEqual(tabs, []);
     assert.equal(w.localStorage.getItem('lsmDemoTourSeen'), null);
     w.document.querySelector('.demo-banner-tour').click();
