@@ -93,8 +93,8 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") lb.classList.remove("open");
       if (main && lb.classList.contains("open")) {
-        if (e.key === "ArrowLeft") { show(current - 1); lbImg.src = main.src; }
-        if (e.key === "ArrowRight") { show(current + 1); lbImg.src = main.src; }
+        if (e.key === "ArrowLeft") { show(current - 1); lbImg.src = main.src; lbImg.alt = main.alt; }
+        if (e.key === "ArrowRight") { show(current + 1); lbImg.src = main.src; lbImg.alt = main.alt; }
       }
     });
   }
