@@ -54,6 +54,10 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
     if (window.DemoLanding) window.DemoLanding(reason);
   }
   function fail(reason) { failed = true; show('demoNotice', reason); }
+  if (/bot[\/;)-]|bot$|crawl|spider|slurp|Google-InspectionTool|GoogleOther/i.test(navigator.userAgent)) {
+    ['demoLoading', 'demoSlow'].forEach(function (n) { document.getElementById(n).style.display = n === 'demoSlow' ? 'block' : 'none'; });
+    return;
+  }
   if (!('serviceWorker' in navigator)) { fail('unsupported'); return; }
   if (navigator.serviceWorker.controller) { go(); return; }
   navigator.serviceWorker.addEventListener('controllerchange', go);
