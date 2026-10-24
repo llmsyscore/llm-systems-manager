@@ -106,3 +106,20 @@ test('isVisit and report read only what the receiver classifies by', () => {
     ['demo.llmsyscore.com', '/dashboard', 'launch', 'US', 7922, 'Example', 'Search Engine Crawler', 'en-US']);
   assert.ok(!('ip' in r));
 });
+
+test('pages.dev responses are noindex and the demo domain is not', async () => {
+  const dev = await run(new Request('https://llmsyscore-demo.pages.dev/'), html);
+  assert.equal(dev.res.headers.get('X-Robots-Tag'), 'noindex');
+  assert.ok(dev.body.includes('lsm-landing'));
+  const own = await run(new Request('https://demo.llmsyscore.com/'), html);
+  assert.equal(own.res.headers.get('X-Robots-Tag'), null);
+});
+
+test('dashboard links with no demo page redirect to the landing page', async () => {
+  for (const path of ['/logout', '/login', '/llm/log']) {
+    const { res, posts } = await run(new Request('https://demo.llmsyscore.com' + path), html);
+    assert.equal(res.status, 302, path);
+    assert.equal(res.headers.get('Location'), 'https://demo.llmsyscore.com/', path);
+    assert.equal(posts.length, 0, path);
+  }
+});
