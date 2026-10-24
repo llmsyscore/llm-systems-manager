@@ -17,6 +17,8 @@ const WS_URL = 'wss://demo.invalid/ws';
 // Default (indigo) brand palette, as _brand_css_vars renders it.
 const BRAND_CSS = ':root{--brand-accent:#5b7cfa;--brand-core:#5b7cfa;--brand-mid:#4257b0;'
   + '--brand-stroke:#2f3d80;--brand-chip1:#0a0e1f;--brand-chip2:#0e1430;}';
+// Robots meta tag injected into the dashboard and alarm pages.
+const NOINDEX = '<meta name="robots" content="noindex">\n';
 const TEXT_EXT = /\.(html|js|mjs|css|json|webmanifest|svg|txt)$/;
 
 const STATIC_URL_RE = /((?:src|href)=")(\/static\/[^"?#]+)(?:\?[^"#]*)?(")/g;
@@ -98,7 +100,7 @@ export async function build({ outDir, release }) {
   await cp(AE_FRONTEND, join(outDir, 'alarm'), { recursive: true });
   await cp(RUNTIME, join(outDir, 'demo'), { recursive: true });
 
-  const globals = `<script>window.DEMO_RELEASE="${release}";</script>\n` + '<script>window.__MGR_AGENT="demo-mgr";window.__LMS_AGENT="demo-mgr";'
+  const globals = `${NOINDEX}<script>window.DEMO_RELEASE="${release}";</script>\n` + '<script>window.__MGR_AGENT="demo-mgr";window.__LMS_AGENT="demo-mgr";'
     + `window.__VLLM_AGENT="demo-mgr";window.__AE_WS_URL__="${WS_URL}";</script>\n`
     + `<style>${BRAND_CSS}</style>\n${pageScript(release)}`;
   const dash = await readFile(join(MGR_FRONTEND, 'index.html'), 'utf8');
@@ -109,12 +111,14 @@ export async function build({ outDir, release }) {
 
   const ae = await readFile(join(AE_FRONTEND, 'index.html'), 'utf8');
   await writeFile(join(outDir, 'alarm', 'index.html'),
-    injectHead(ae, `<script>window.ALARM_WS_URL="${WS_URL}";</script>\n${pageScript(release)}`));
+    injectHead(ae, `${NOINDEX}<script>window.ALARM_WS_URL="${WS_URL}";</script>\n${pageScript(release)}`));
 
   await cp(join(RUNTIME, 'bootstrap.html'), join(outDir, 'index.html'));
   await rm(join(outDir, 'demo', 'bootstrap.html'), { force: true });
   await rm(join(outDir, 'demo', 'demo-sw.js'), { force: true });
-  for (const f of ['_worker.js', '_routes.json']) await cp(join(PAGES, f), join(outDir, f));
+  for (const f of ['_worker.js', '_routes.json', '404.html', 'robots.txt', 'sitemap.xml']) {
+    await cp(join(PAGES, f), join(outDir, f));
+  }
 
   const hdir = join(RUNTIME, 'handlers');
   const handlers = existsSync(hdir)

@@ -1,16 +1,27 @@
 // Demo site Pages worker: serves the static site and reports each page visit to the telemetry receiver.
 // The page gets a landing id that the demo's analytics send with the visit's first event.
 const RECEIVER = 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo/landing';
+// Dashboard links with no demo page (log out, log in, server log window), sent to the landing page.
+const TO_LANDING = ['/logout', '/login', '/llm/log'];
 const TAGS = ['ref', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
 const CF = { country: 'country', region: 'region', city: 'city', timezone: 'timezone', asn: 'asn', as_org: 'asOrganization',
   colo: 'colo', bot_category: 'verifiedBotCategory' };
 
 export default {
   async fetch(request, env, ctx) {
-    const res = await env.ASSETS.fetch(request);
+    if (TO_LANDING.includes(new URL(request.url).pathname)) return Response.redirect(new URL('/', request.url).href, 302);
+    const res = noindex(request, await env.ASSETS.fetch(request));
     try { return visit(request, res, env, ctx); } catch { return res; }
   },
 };
+
+// Adds X-Robots-Tag: noindex to responses served on the pages.dev address.
+export function noindex(req, res) {
+  if (!new URL(req.url).hostname.endsWith('.pages.dev')) return res;
+  const out = new Response(res.body, res);
+  out.headers.set('X-Robots-Tag', 'noindex');
+  return out;
+}
 
 function hex16() {
   const a = new Uint8Array(8);

@@ -8,4 +8,6 @@
   <url><loc>https://www.llmsyscore.com/docs/components.html</loc><priority>0.7</priority></url>
   <url><loc>https://www.llmsyscore.com/docs/api.html</loc><priority>0.7</priority></url>
   <url><loc>https://www.llmsyscore.com/docs/deployment.html</loc><priority>0.7</priority></url>
+  <url><loc>https://www.llmsyscore.com/docs/features.html</loc><priority>0.8</priority></url>
+  <url><loc>https://www.llmsyscore.com/docs/install-script.html</loc><priority>0.7</priority></url>
 </urlset>

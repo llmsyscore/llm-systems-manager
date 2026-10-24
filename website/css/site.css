@@ -30,7 +30,7 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-img { max-width: 100%; display: block; }
+img { max-width: 100%; height: auto; display: block; }
 a { color: var(--peri-soft); text-decoration: none; }
 a:hover { color: var(--text); }
 :focus-visible { outline: 2px solid var(--peri); outline-offset: 2px; border-radius: 4px; }
