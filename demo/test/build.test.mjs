@@ -75,6 +75,7 @@ test('build produces the stamped, injected site', async (t) => {
   assert.ok(idx.includes('<link rel="canonical" href="https://demo.llmsyscore.com/">') && idx.includes('og:image'));
   for (const html of [dash, ae]) assert.ok(html.includes('<meta name="robots" content="noindex">'));
   assert.ok(!idx.includes('noindex'));
+  assert.ok(idx.includes('<h1>LLM Systems Manager demo</h1>'));
   assert.match(await readFile(join(out, 'robots.txt'), 'utf8'), /^User-agent: \*$/m);
   assert.ok((await readFile(join(out, 'sitemap.xml'), 'utf8')).includes('<loc>https://demo.llmsyscore.com/</loc>'));
   assert.ok((await readFile(join(out, '404.html'), 'utf8')).includes('noindex'));

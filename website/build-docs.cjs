@@ -104,7 +104,7 @@ function page(doc, body) {
 <header class="nav">
   <div class="wrap nav-inner">
     <a class="nav-brand" href="../index.html" aria-label="LLM SysCore home">
-      <img src="../assets/logo.svg" alt="">
+      <img src="../assets/logo.svg" alt="LLM SysCore logo">
       <span>LLM&nbsp;Sys<b class="core">Core</b></span>
     </a>
     <nav class="nav-links" aria-label="Main">
