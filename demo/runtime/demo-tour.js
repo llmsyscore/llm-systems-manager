@@ -22,8 +22,8 @@
       text: 'Measure how fast a model runs on each machine. Autotune tries different settings for you and keeps the fastest ones.' },
     { tab: 'events', selector: '#eventsTab', title: 'Alarms',
       text: 'Alarms tell you when something needs a look, like a machine running hot. New sample alarms show up here every minute or two.' },
-    { tab: 'overall', selector: '#towerBtn', title: 'Ask Tower',
-      text: 'Tower answers questions about your machines in plain words. Open it and try "Which machine is slow?" or "How do I get help?"' },
+    { tab: 'overall', selector: '#twBox', tower: true, title: 'Ask Tower',
+      text: 'Tower answers questions about your machines in plain words. Type here and try "Which machine is slow?" or "How do I get help?"' },
     { tab: 'admin', selector: '#adminHealthCard', title: 'System health',
       text: 'See at a glance whether every part of the system is running, and which jobs are waiting or running.' },
     { tab: 'admin', sub: 'subTabBtnAdminAgents', selector: '#admin-agents', title: 'Add machines',
@@ -34,7 +34,7 @@
       text: 'Long tasks like benchmarks and downloads are listed here, with who started them and how they went.' }
   ];
 
-  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false };
+  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false, tower: false, welcome: null };
 
   function seen() {
     try { return !!self.localStorage.getItem(SEEN_KEY); } catch (e) { return false; }
@@ -125,6 +125,7 @@
     var y = bottom + 12;
     if (y + ch > vh - 12) y = top - ch - 12;
     if (y < 12) y = Math.max(12, vh - ch - 24);
+    y = Math.max(12, Math.min(y, vh - ch - 12));
     card.style.top = y + 'px';
     card.style.left = Math.min(Math.max(12, r.left), Math.max(12, vw - cw - 12)) + 'px';
   }
@@ -147,15 +148,37 @@
     card.appendChild(nav);
   }
 
+  function towerShown() { var o = doc.getElementById('towerOverlay'); return !!(o && o.classList.contains('open')); }
+  // Opens Tower for a step that asks for it and closes it again when the tour moves on, if the tour opened it.
+  function showTower(on) {
+    if (on && !state.tower && !towerShown() && typeof self.towerOpen === 'function') {
+      try { self.towerOpen(); } catch (e) { /* Tower not ready */ }
+      state.tower = towerShown();
+    } else if (!on && state.tower) {
+      state.tower = false;
+      if (towerShown() && typeof self.towerClose === 'function') try { self.towerClose({ returnFocus: false }); } catch (e) { /* already closed */ }
+    }
+  }
+
+  // Scrolls the step's element into the window when any of it is off screen.
+  function reveal() {
+    var t = targetOf(steps[state.index]);
+    if (!t || typeof t.scrollIntoView !== 'function') return;
+    var r = t.getBoundingClientRect(), vh = self.innerHeight || 768;
+    if (r.top < 0 || r.bottom > vh) t.scrollIntoView({ block: r.height < vh ? 'center' : 'start' });
+  }
+
   function go(i) {
     state.index = Math.max(0, Math.min(steps.length - 1, i));
+    showTower(!!steps[state.index].tower);
     showTab(steps[state.index].tab);
     showSub(steps[state.index].sub);
     render();
     place();
     clearTimeout(state.timer);
     clearTimeout(state.timer2);
-    state.timer = setTimeout(place, 400);
+    reveal();
+    state.timer = setTimeout(function () { reveal(); place(); }, 400);
     state.timer2 = setTimeout(place, 1200);
   }
 
@@ -171,6 +194,7 @@
   function close(finished) {
     if (state.index >= 0) track(finished === true ? 'finish' : 'close', state.index);
     markSeen();
+    showTower(false);
     clearTimeout(state.timer);
     clearTimeout(state.timer2);
     if (state.root && state.root.parentNode) state.root.parentNode.removeChild(state.root);
@@ -202,19 +226,59 @@
     if (self.DemoPage && self.DemoPage.measure) self.DemoPage.measure();
   }
 
-  // Shows the banner, then starts the tour shortly after load on a first visit with no click or key yet.
+  // Closes the welcome card and records the choice; 'tour' starts the tour.
+  function leaveWelcome(choice) {
+    if (!state.welcome) return;
+    doc.removeEventListener('keydown', state.welcome.onKey, true);
+    if (state.welcome.root.parentNode) state.welcome.root.parentNode.removeChild(state.welcome.root);
+    state.welcome = null;
+    if (typeof self.DemoTrack === 'function') self.DemoTrack('click', { target: 'welcome-' + choice, href: '' });
+    if (choice === 'tour') start(0);
+    markSeen();
+  }
+
+  // Centered first-visit card that offers the tour or the dashboard; Esc or a click outside it picks the dashboard.
+  function welcome() {
+    if (!doc || !doc.body || state.welcome) return;
+    var root = el('div', 'demo-welcome');
+    var card = el('div', 'demo-welcome-card');
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-labelledby', 'demoWelcomeTitle');
+    var title = el('h2', 'demo-welcome-title', 'Welcome to the LLM Systems Manager demo');
+    title.id = 'demoWelcomeTitle';
+    card.appendChild(title);
+    card.appendChild(el('p', 'demo-welcome-text',
+      'This is the real dashboard running on sample data. Everything works: click around, start models, run tools and ask Tower.'));
+    var nav = el('div', 'demo-welcome-nav');
+    var tour = button('Take the 1-minute tour', 'demo-btn demo-welcome-tour', function () { leaveWelcome('tour'); });
+    nav.appendChild(tour);
+    nav.appendChild(button('Explore on my own', 'demo-btn demo-btn-ghost demo-welcome-explore', function () { leaveWelcome('explore'); }));
+    card.appendChild(nav);
+    root.appendChild(card);
+    var downOutside = false;
+    root.addEventListener('pointerdown', function (e) { downOutside = e.target === root; });
+    root.addEventListener('click', function (e) { if (e.target === root && downOutside) leaveWelcome('explore'); });
+    var onKey = function (e) { if (e.key === 'Escape') { e.stopPropagation(); leaveWelcome('explore'); } };
+    doc.addEventListener('keydown', onKey, true);
+    doc.body.appendChild(root);
+    state.welcome = { root: root, onKey: onKey };
+    try { tour.focus({ preventScroll: true }); } catch (e) { /* no focus */ }
+  }
+
+  // Shows the banner, then the welcome card shortly after load on a first visit with no click or key yet.
   function init() {
     banner();
     if (seen()) return;
     var begin = function () {
-      setTimeout(function () { if (!state.touched && !seen() && !state.root) start(0); }, 1200);
+      setTimeout(function () { if (!state.touched && !seen() && !state.root) welcome(); }, 1200);
     };
     if (doc.readyState === 'complete') begin();
     else self.addEventListener('load', begin);
   }
 
   self.DemoTour = { steps: steps, start: start, close: close, next: nextStep, back: backStep,
-    place: place, init: init, seen: seen, get index() { return state.index; }, SEEN_KEY: SEEN_KEY };
+    place: place, init: init, seen: seen, welcome: welcome, get index() { return state.index; }, SEEN_KEY: SEEN_KEY };
 
   if (doc && self.addEventListener) {
     var touch = function () { state.touched = true; };

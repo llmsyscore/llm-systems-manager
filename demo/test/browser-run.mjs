@@ -317,7 +317,10 @@ async function main() {
     const { ctx: c2, page: p2 } = await newCtx(false);
     await p2.goto(origin + '/', { waitUntil: 'domcontentloaded' });
     await p2.waitForURL('**/dashboard', { timeout: 30000 }).catch(() => bad('tour: did not reach /dashboard'));
-    await p2.waitForSelector('.demo-tour', { timeout: 15000 }).catch(() => bad('tour did not appear on a fresh profile'));
+    await p2.waitForSelector('.demo-welcome-card', { timeout: 15000 }).catch(() => bad('welcome card did not appear on a fresh profile'));
+    await p2.screenshot({ path: join(shots, 'welcome.png') }).catch(() => {});
+    await p2.click('.demo-welcome-tour', { timeout: 5000 }).catch(() => bad('welcome: tour button not clickable'));
+    await p2.waitForSelector('.demo-tour', { timeout: 15000 }).catch(() => bad('tour did not start from the welcome card'));
     // Walks every step: the ring must frame a real box (at least 40 x 40 px); one shot per step.
     const nSteps = await p2.evaluate(() => (self.DemoTour ? self.DemoTour.steps.length : 0));
     for (let i = 0; i < nSteps; i++) {
