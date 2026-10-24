@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { build, checkOutDir, parseArgs, stampStaticUrls } from '../build.mjs';
@@ -79,6 +79,17 @@ test('build produces the stamped, injected site', async (t) => {
     assert.ok(!t.includes('__MGR_VERSION__'), f.name);
   }
   assert.ok(!built.some((f) => f.parentPath.includes('node_modules') || f.name === 'companion-dom.test.js'));
+  const routes = JSON.parse(await readFile(join(out, '_routes.json'), 'utf8'));
+  assert.equal(routes.version, 1);
+  assert.deepEqual(routes.include, ['/*']);
+  const excluded = (path) => routes.exclude.some((r) => (r.endsWith('/*') ? path.startsWith(r.slice(0, -1)) : path === r));
+  for (const f of built) {
+    if (!f.isFile()) continue;
+    const path = '/' + relative(out, join(f.parentPath, f.name)).split(sep).join('/');
+    if (path === '/_worker.js' || path === '/_routes.json') continue;
+    assert.equal(excluded(path), !['/index.html', '/dashboard.html'].includes(path), path);
+  }
+  assert.ok((await readFile(join(out, '_worker.js'), 'utf8')).includes('/v1/demo/landing'));
 });
 
 

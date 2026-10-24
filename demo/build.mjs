@@ -11,6 +11,7 @@ const ROOT = resolve(HERE, '..');
 const MGR_FRONTEND = join(ROOT, 'llm-systems-manager', 'frontend');
 const AE_FRONTEND = join(ROOT, 'llm-systems-alarm-engine', 'frontend');
 const RUNTIME = join(HERE, 'runtime');
+const PAGES = join(HERE, 'pages');
 
 const WS_URL = 'wss://demo.invalid/ws';
 // Default (indigo) brand palette, as _brand_css_vars renders it.
@@ -113,6 +114,7 @@ export async function build({ outDir, release }) {
   await cp(join(RUNTIME, 'bootstrap.html'), join(outDir, 'index.html'));
   await rm(join(outDir, 'demo', 'bootstrap.html'), { force: true });
   await rm(join(outDir, 'demo', 'demo-sw.js'), { force: true });
+  for (const f of ['_worker.js', '_routes.json']) await cp(join(PAGES, f), join(outDir, f));
 
   const hdir = join(RUNTIME, 'handlers');
   const handlers = existsSync(hdir)

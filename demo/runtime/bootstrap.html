@@ -27,22 +27,24 @@ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:c
   function go() {
     if (done) return;
     done = true;
+    if (window.DemoLanding) window.DemoLanding('open');
     location.replace('/dashboard');
   }
-  function show(id) {
+  function show(id, reason) {
     if (done) return;
     ['demoLoading', 'demoSlow', 'demoNotice'].forEach(function (n) {
       document.getElementById(n).style.display = n === id ? 'block' : 'none';
     });
+    if (window.DemoLanding) window.DemoLanding(reason);
   }
-  function fail() { failed = true; show('demoNotice'); }
-  if (!('serviceWorker' in navigator)) { fail(); return; }
+  function fail(reason) { failed = true; show('demoNotice', reason); }
+  if (!('serviceWorker' in navigator)) { fail('unsupported'); return; }
   if (navigator.serviceWorker.controller) { go(); return; }
   navigator.serviceWorker.addEventListener('controllerchange', go);
-  setTimeout(function () { if (!failed && !navigator.serviceWorker.controller) show('demoSlow'); }, 10000);
+  setTimeout(function () { if (!failed && !navigator.serviceWorker.controller) show('demoSlow', 'slow'); }, 10000);
   navigator.serviceWorker.register('/demo-sw.js', { scope: '/' }).then(function () {
     if (navigator.serviceWorker.controller) go();
-  }, fail);
+  }, function () { fail('failed'); });
 })();
 </script>
 </body>

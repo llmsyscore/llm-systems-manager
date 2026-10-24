@@ -86,7 +86,9 @@
       var raw = self.sessionStorage.getItem(LANDING_KEY);
       if (raw) return JSON.parse(raw);
     } catch (e) { /* storage blocked */ }
-    var l = { landing: (self.location.pathname || '') + (self.location.search || ''), referrer: doc.referrer || '', p: params() };
+    var m = doc.querySelector && doc.querySelector('meta[name="lsm-landing"]');
+    var l = { landing: (self.location.pathname || '') + (self.location.search || ''), referrer: doc.referrer || '', p: params(),
+      lid: (m && m.getAttribute('content')) || '' };
     try { self.sessionStorage.setItem(LANDING_KEY, JSON.stringify(l)); } catch (e) { /* storage blocked */ }
     return l;
   }
@@ -98,20 +100,42 @@
     try { dark = !!(self.matchMedia && self.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) { /* no matchMedia */ }
     var f = { referrer: land.referrer, landing: land.landing, screen: (scr.width || 0) + 'x' + (scr.height || 0),
       viewport: (self.innerWidth || 0) + 'x' + (self.innerHeight || 0), lang: (self.navigator && self.navigator.language) || '',
-      tz: '', theme: dark ? 'dark' : 'light' };
+      tz: '', theme: dark ? 'dark' : 'light', lid: land.lid || undefined };
     try { f.tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* no Intl */ }
     for (var k in land.p) f[k] = land.p[k];
     track('start', f);
   }
 
-  // The bootstrap page only records the landing; the dashboard records the session.
+  // The loading page sends a landing event only when the dashboard does not open: left, slow, unsupported or failed.
+  function loadingPage() {
+    var shown = 'left', last = null, perf = self.performance, t0 = (perf && perf.timeOrigin) || now();
+    function report(reason) {
+      if (shown === 'open' || reason === last) return;
+      last = reason;
+      var f = { reason: reason, total_ms: Math.round(now() - t0), lid: land.lid || undefined, referrer: land.referrer, landing: land.landing };
+      for (var k in land.p) f[k] = land.p[k];
+      track('landing', f);
+      flush(true);
+    }
+    self.DemoLanding = function (state) {
+      if (state === 'open' || state === 'slow') shown = state;
+      else if (state === 'unsupported' || state === 'failed') { shown = state; report(state); }
+    };
+    doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') report(shown); });
+    self.addEventListener('pagehide', function () { report(shown); });
+    self.DemoTrack = function () {};
+    self.DemoAnalytics = { flush: flush, session: session, ENDPOINT: ENDPOINT, landing: land };
+  }
+
+  // The bootstrap page records the landing; the dashboard records the session.
   var isDashboard = /^\/dashboard/.test(self.location.pathname || '');
-  if (!isDashboard) { self.DemoTrack = function () {}; return; }
+  if (!isDashboard) { loadingPage(); return; }
   var started = false;
   try { started = self.sessionStorage.getItem('lsmDemoStarted') === session.id; } catch (e) { /* storage blocked */ }
   if (!started) {
     startEvent();
     try { self.sessionStorage.setItem('lsmDemoStarted', session.id); } catch (e) { /* storage blocked */ }
+    flush(false);
   }
 
   var tab = 'overall', tabSince = now();
