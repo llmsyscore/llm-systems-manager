@@ -97,14 +97,84 @@ test('leaving the page sends an end event with sendBeacon', async () => {
   assert.ok(end.total_ms >= 0);
 });
 
-test('works with storage blocked, and does nothing inside a frame or on the bootstrap page', () => {
+test('works with storage blocked, and sends nothing from the bootstrap page while it loads', () => {
   const blocked = boot('https://demo.llmsyscore.com/dashboard', { blockStorage: true });
   blocked.w.DemoAnalytics.flush(false);
   assert.ok(blocked.events().some((e) => e.type === 'start'));
 
   const boot2 = boot('https://demo.llmsyscore.com/');
-  assert.equal(boot2.w.DemoAnalytics, undefined);
+  boot2.w.DemoLanding('slow');
   assert.equal(boot2.sent.length, 0);
+});
+
+test('the dashboard sends the start event right away, with the landing id from the loading page', () => {
+  const store = {};
+  const shared = (w) => {
+    Object.defineProperty(w, 'sessionStorage', { value: {
+      getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } } });
+  };
+  const withId = (w) => {
+    shared(w);
+    const m = w.document.createElement('meta');
+    m.setAttribute('name', 'lsm-landing');
+    m.setAttribute('content', '0123456789abcdef');
+    w.document.head.appendChild(m);
+  };
+  boot('https://demo.llmsyscore.com/', { before: withId });
+  const { sent } = boot('https://demo.llmsyscore.com/dashboard', { before: shared });
+  assert.equal(sent.length, 1);
+  const s = sent[0].events.find((e) => e.type === 'start');
+  assert.equal(s.lid, '0123456789abcdef');
+});
+
+test('the loading page reports a visit that did not open: left, slow or unsupported', async () => {
+  const left = boot('https://demo.llmsyscore.com/?ref=hn');
+  left.w.dispatchEvent(new left.w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(left.sent.length, 1);
+  const e = left.events()[0];
+  assert.deepEqual([e.type, e.reason, e.ref, e.landing], ['landing', 'left', 'hn', '/?ref=hn']);
+  assert.ok(e.total_ms >= 0);
+  left.w.dispatchEvent(new left.w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(left.sent.length, 1);
+
+  const slow = boot('https://demo.llmsyscore.com/');
+  slow.w.DemoLanding('slow');
+  slow.w.dispatchEvent(new slow.w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(slow.events()[0].reason, 'slow');
+
+  const old = boot('https://demo.llmsyscore.com/');
+  old.w.DemoLanding('unsupported');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(old.events()[0].reason, 'unsupported');
+});
+
+test('a later reason on the loading page replaces a provisional left; a failed start is its own reason', async () => {
+  const { w, events } = boot('https://demo.llmsyscore.com/');
+  w.document.dispatchEvent(new w.Event('visibilitychange'));
+  Object.defineProperty(w.document, 'visibilityState', { value: 'hidden', configurable: true });
+  w.document.dispatchEvent(new w.Event('visibilitychange'));
+  w.DemoLanding('slow');
+  w.dispatchEvent(new w.Event('pagehide'));
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().map((e) => e.reason), ['left', 'slow']);
+
+  const bad = boot('https://demo.llmsyscore.com/');
+  bad.w.DemoLanding('failed');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(bad.events()[0].reason, 'failed');
+});
+
+test('the loading page sends nothing when it hops to the dashboard', async () => {
+  const { w, sent } = boot('https://demo.llmsyscore.com/');
+  w.DemoLanding('slow');
+  w.DemoLanding('open');
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(sent.length, 0);
 });
 
 test('a refused change on the dashboard is recorded with its method and path', async () => {
