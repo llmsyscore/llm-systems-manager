@@ -414,3 +414,30 @@ test('the tab panels top follows the measured tab bar bottom', async () => {
   const css = src('demo-tour.css');
   assert.match(css, /#eventsTab, #toolsTab, #adminTab \{ top: var\(--demo-panel-top/);
 });
+
+// Runs the bootstrap page's inline script with a given user agent; returns registered workers and redirects.
+function runBootstrap(userAgent) {
+  const html = src('bootstrap.html');
+  const code = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
+  const registered = [], replaced = [];
+  const serviceWorker = { controller: null, addEventListener() {}, register: (u) => { registered.push(u); return new Promise(() => {}); } };
+  const document = { getElementById: () => ({ style: {} }) };
+  new Function('navigator', 'location', 'document', 'window', 'setTimeout', code)(
+    { userAgent, serviceWorker }, { replace: (u) => replaced.push(u) }, document, {}, () => 0);
+  return { registered, replaced };
+}
+
+test('bootstrap page registers the demo worker for browsers but stays put for search crawlers', () => {
+  for (const ua of ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15',
+    'Mozilla/5.0 (Linux; Android 11; CUBOT KINGKONG 5 Pro) AppleWebKit/537.36 Chrome/130.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Instagram 350.0.0']) {
+    assert.deepEqual(runBootstrap(ua).registered, ['/demo-sw.js'], ua);
+  }
+  for (const ua of ['Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0 Safari/537.36',
+    'Mozilla/5.0 (Linux; Android 6.0.1) Chrome/130.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1)',
+    'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)']) {
+    assert.deepEqual(runBootstrap(ua), { registered: [], replaced: [] });
+  }
+});
