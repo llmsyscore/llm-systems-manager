@@ -135,3 +135,30 @@ test('a direct visit to the phone app is reported like the dashboard; the switch
   const own = await run(nav('https://demo.llmsyscore.com/phone', { Referer: 'https://demo.llmsyscore.com/dashboard' }), html);
   assert.equal(own.posts.length, 0);
 });
+
+test('/internal with the key sets the device cookie, is not reported, and tagged visits carry own', async () => {
+  const env = { LANDING_SECRET: 's3cret', INTERNAL_TAG_KEY: 'k1' };
+  const tag = await run(nav('https://demo.llmsyscore.com/internal?key=k1'), html, env);
+  assert.equal(tag.posts.length, 0);
+  const c = tag.res.headers.get('Set-Cookie');
+  assert.match(c, /^lsm_device=[0-9a-f]{64}; Max-Age=\d+; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
+  assert.match(tag.body, /marked as yours/);
+  assert.equal(tag.res.headers.get('Referrer-Policy'), 'no-referrer');
+  const value = c.split(';')[0];
+  const own = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'x=1; ' + value }), html, env);
+  assert.equal(own.posts[0].body.own, 1);
+  const other = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'lsm_device=nope' }), html, env);
+  assert.equal(other.posts[0].body.own, 0);
+  const off = await run(nav('https://demo.llmsyscore.com/internal?key=k1&remove=1'), html, env);
+  assert.match(off.res.headers.get('Set-Cookie'), /^lsm_device=; Max-Age=0;/);
+});
+
+test('/internal with a wrong or unset key is an ordinary reported request', async () => {
+  const wrong = await run(nav('https://demo.llmsyscore.com/internal?key=bad'), html, { LANDING_SECRET: 's3cret', INTERNAL_TAG_KEY: 'k1' });
+  assert.equal(wrong.res.headers.get('Set-Cookie'), null);
+  assert.equal(wrong.posts.length, 1);
+  assert.equal(wrong.posts[0].body.path, '/internal');
+  const unset = await run(nav('https://demo.llmsyscore.com/internal?key='), html);
+  assert.equal(unset.res.headers.get('Set-Cookie'), null);
+  assert.equal(unset.posts[0].body.own, 0);
+});
