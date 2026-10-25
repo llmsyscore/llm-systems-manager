@@ -184,3 +184,23 @@ test('a refused change on the dashboard is recorded with its method and path', a
   w.DemoAnalytics.flush(false);
   assert.deepEqual(events().filter((e) => e.type === 'refused').map((e) => e.key), ['PUT /api/admin/settings']);
 });
+
+test('the phone app records the session, and switching between it and the dashboard keeps the same session', () => {
+  const store = {};
+  const shared = (w) => {
+    Object.defineProperty(w, 'sessionStorage', { value: {
+      getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } } });
+  };
+  const dash = boot('https://demo.llmsyscore.com/dashboard', { before: shared });
+  dash.w.DemoAnalytics.flush(false);
+  const phone = boot('https://demo.llmsyscore.com/phone', { before: shared });
+  assert.equal(typeof phone.w.DemoAnalytics.onTab, 'function', 'the phone app records, not the loading page');
+  phone.w.document.dispatchEvent(new phone.w.CustomEvent('lsm:tab', { detail: { tab: 'phone' } }));
+  phone.w.document.dispatchEvent(new phone.w.CustomEvent('lsm:tab', { detail: { tab: 'phone-alerts' } }));
+  phone.w.DemoAnalytics.flush(false);
+  assert.equal(phone.sent[0].session, dash.sent[0].session);
+  assert.equal(phone.sent[0].seq, dash.sent[0].seq + 1);
+  const ev = phone.events();
+  assert.ok(!ev.some((e) => e.type === 'start'), 'no second start');
+  assert.deepEqual(ev.filter((e) => e.type === 'tab').map((e) => [e.tab, e.prev]), [['phone', 'overall'], ['phone-alerts', 'phone']]);
+});

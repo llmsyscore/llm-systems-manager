@@ -133,8 +133,10 @@
   var inFrame = path.indexOf('/alarm/') === 0 || path === '/alarm';
   var sw = self.navigator && self.navigator.serviceWorker;
 
-  // An uncontrolled dashboard (hard reload) goes back through the bootstrap page.
+  if (path === '/dashboard') try { self.sessionStorage.removeItem('lsmDemoReturn'); } catch (e) { /* storage blocked */ }
+  // An uncontrolled page (hard reload, first visit) goes through the bootstrap page, which returns to /phone.
   if (!inFrame && sw && !sw.controller && self.location && self.location.replace) {
+    try { if (path === '/phone' || path === '/phone/') self.sessionStorage.setItem('lsmDemoReturn', '/phone'); } catch (e) { /* storage blocked */ }
     self.location.replace('/');
     return;
   }
@@ -210,7 +212,7 @@
     a.href = INSTALL_URL;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.textContent = 'Install';
+    a.textContent = 'Installation directions';
     box.appendChild(p);
     box.appendChild(a);
     c.appendChild(box);

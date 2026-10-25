@@ -1,4 +1,4 @@
-// Endpoint inventory: finds API calls in the dashboard and alarm engine frontend sources.
+// Endpoint inventory: finds API calls in the dashboard, phone app and alarm engine frontend sources.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -238,6 +238,7 @@ const MGR = join(ROOT, 'llm-systems-manager/frontend');
 const AE = join(ROOT, 'llm-systems-alarm-engine/frontend');
 export const DEFAULT_DIRS = [
   join(MGR, 'index.html'), ...pageScripts(join(MGR, 'index.html'), MGR),
+  join(MGR, 'companion.html'), ...pageScripts(join(MGR, 'companion.html'), MGR),
   join(AE, 'index.html'), ...pageScripts(join(AE, 'index.html'), AE),
 ];
 

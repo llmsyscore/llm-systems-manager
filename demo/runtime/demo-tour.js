@@ -1,13 +1,15 @@
-// Demo banner and highlights tour: a floating card that walks a first-time visitor through the tabs.
+// Demo banner and highlights tour: a floating card that walks a first-time visitor through the tabs or phone screens.
 (function (self) {
   if (self.DemoTour) return;
   var doc = self.document;
   var SEEN_KEY = 'lsmDemoTourSeen';
   var INSTALL_URL = 'https://get.llmsyscore.com/?ref=demo';
+  var INSTALL_LABEL = 'Installation directions';
+  var onPhone = /^\/phone\/?$/.test((self.location && self.location.pathname) || '');
   var TAB_BUTTONS = { overall: 'tabBtnOverall', dashboard: 'tabBtnDashboard', llm: 'tabBtnLlmControl',
     tools: 'tabBtnTools', events: 'tabBtnEvents', admin: 'tabBtnAdmin' };
 
-  var steps = [
+  var deskSteps = [
     { tab: 'overall', selector: '#overallTab .ov-hero', title: 'Your whole fleet',
       text: 'This is the first page you see. The chart shows how fast all your machines answered over the last day, with their power use on top.' },
     { tab: 'overall', selector: '#ovAgentsStrip', title: 'Each machine',
@@ -34,7 +36,21 @@
       text: 'Long tasks like benchmarks and downloads are listed here, with who started them and how they went.' }
   ];
 
-  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false, tower: false, welcome: null };
+  var phoneSteps = [
+    { screen: 'glance', selector: '#glanceStrip', title: 'Your fleet at a glance',
+      text: 'The phone app opens here: how fast your machines are answering right now, each provider, and the power they use.' },
+    { screen: 'alerts', selector: '#scr-alerts', title: 'Alerts',
+      text: 'Alarms from every machine land here. Tap one to see what happened. On your own install they can also arrive as phone notifications.' },
+    { screen: 'tower', selector: '#scr-tower', title: 'Ask Tower',
+      text: 'Ask Tower about your machines in plain words, right from your phone.' },
+    { screen: 'energy', selector: '#energyStrip', title: 'Energy and cost',
+      text: 'Power use over the last day and what each day cost to run.' },
+    { screen: 'models', selector: '#modelsLoaded', title: 'Models',
+      text: 'See which models are loaded on which machine, and restart a provider or switch models.' }
+  ];
+  var steps = onPhone ? phoneSteps : deskSteps;
+
+  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false, tower: false, welcome: null, obs: null };
 
   function seen() {
     try { return !!self.localStorage.getItem(SEEN_KEY); } catch (e) { return false; }
@@ -50,6 +66,34 @@
     return e;
   }
 
+  function link(label, cls) {
+    var a = el('a', cls, label);
+    a.href = INSTALL_URL;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    return a;
+  }
+
+  // A same-tab link to the other version of the demo that records which way the visitor switched.
+  function switchLink(label, cls, href, target, before) {
+    var a = el('a', cls, label);
+    a.href = href;
+    a.addEventListener('click', function () {
+      if (before) before();
+      if (typeof self.DemoTrack === 'function') self.DemoTrack('click', { target: target, href: '' });
+    });
+    return a;
+  }
+
+  // A phone: a narrow window with a touch screen or a mobile browser; tablets count as desktops.
+  function isPhone() {
+    var w = self.innerWidth || 0;
+    if (!w || w > 640) return false;
+    var coarse = false;
+    try { coarse = !!(self.matchMedia && self.matchMedia('(pointer: coarse)').matches); } catch (e) { /* no matchMedia */ }
+    return coarse || /Mobi|Android|iPhone/.test((self.navigator && self.navigator.userAgent) || '');
+  }
+
   function button(label, cls, fn) {
     var b = el('button', cls, label);
     b.type = 'button';
@@ -57,8 +101,13 @@
     return b;
   }
 
-  // Switches with the dashboard's switchTab, or clicks the tab button when it is not there.
-  function showTab(tab) {
+  // Switches with the dashboard's switchTab, or clicks the tab button when it is not there; phone steps click the tab bar.
+  function showTab(tab, screen) {
+    if (screen) {
+      var t = doc.querySelector('#tabbar .tab[data-tab="' + screen + '"]');
+      if (t) t.click();
+      return;
+    }
     if (typeof self.switchTab === 'function') {
       try { self.switchTab(tab); return; } catch (e) { /* fall back to the button */ }
     }
@@ -96,6 +145,11 @@
     root.appendChild(card);
     doc.body.appendChild(root);
     state.root = root; state.ring = ring; state.card = card;
+    var ov = doc.getElementById('towerOverlay');
+    if (ov && typeof MutationObserver === 'function') {
+      state.obs = new MutationObserver(function () { if (state.card) refresh(); });
+      state.obs.observe(ov, { attributes: true, attributeFilter: ['class'] });
+    }
   }
 
   // Places the ring on the step's element and the card below it, or above when there is no room.
@@ -106,6 +160,7 @@
     var r = target && target.getBoundingClientRect();
     var vw = self.innerWidth || 1024, vh = self.innerHeight || 768;
     var card = state.card, ring = state.ring;
+    if (s.tower && !towerShown()) { state.tower = false; r = null; }
     if (!r || (!r.width && !r.height)) {
       ring.style.display = 'none';
       card.style.left = Math.max(12, (vw - card.offsetWidth) / 2) + 'px';
@@ -144,7 +199,13 @@
     back.disabled = state.index === 0;
     nav.appendChild(back);
     var last = state.index === steps.length - 1;
-    nav.appendChild(button(last ? 'Done' : 'Next', 'demo-btn demo-tour-next', nextStep));
+    var right = el('div', 'demo-tour-nav-right');
+    if (last) right.appendChild(link(INSTALL_LABEL, 'demo-btn demo-tour-install'));
+    right.appendChild(button(last ? 'Done' : 'Next', last ? 'demo-btn demo-btn-ghost demo-tour-next' : 'demo-btn demo-tour-next', nextStep));
+    nav.appendChild(right);
+    if (s.tower && !towerShown()) {
+      card.appendChild(button('Open Tower', 'demo-btn demo-btn-ghost demo-tour-open-tower', function () { showTower(true); render(); place(); }));
+    }
     card.appendChild(nav);
   }
 
@@ -168,18 +229,24 @@
     if (r.top < 0 || r.bottom > vh) t.scrollIntoView({ block: r.height < vh ? 'center' : 'start' });
   }
 
+  // Re-renders the Ask Tower card so its Open Tower button follows the drawer, then places the ring.
+  function refresh() {
+    if (state.card && steps[state.index].tower) render();
+    place();
+  }
+
   function go(i) {
     state.index = Math.max(0, Math.min(steps.length - 1, i));
     showTower(!!steps[state.index].tower);
-    showTab(steps[state.index].tab);
+    showTab(steps[state.index].tab, steps[state.index].screen);
     showSub(steps[state.index].sub);
     render();
     place();
     clearTimeout(state.timer);
     clearTimeout(state.timer2);
     reveal();
-    state.timer = setTimeout(function () { reveal(); place(); }, 400);
-    state.timer2 = setTimeout(place, 1200);
+    state.timer = setTimeout(function () { reveal(); refresh(); }, 400);
+    state.timer2 = setTimeout(refresh, 1200);
   }
 
   function track(action, step) { if (typeof self.DemoTrack === 'function') self.DemoTrack('tour', { action: action, step: step }); }
@@ -195,6 +262,7 @@
     if (state.index >= 0) track(finished === true ? 'finish' : 'close', state.index);
     markSeen();
     showTower(false);
+    if (state.obs) { state.obs.disconnect(); state.obs = null; }
     clearTimeout(state.timer);
     clearTimeout(state.timer2);
     if (state.root && state.root.parentNode) state.root.parentNode.removeChild(state.root);
@@ -208,38 +276,40 @@
   }
   function backStep() { if (state.index > 0) { track('back', state.index - 1); go(state.index - 1); } }
 
-  // Adds the one-line demo notice with the install link and the Tour button above the header.
+  // Adds the demo notice above the header: install link, Tour, and a switch to the phone or desktop version.
   function banner() {
     if (!doc || !doc.body || doc.getElementById('demoBanner')) return;
     var b = el('div', 'demo-banner');
     b.id = 'demoBanner';
-    var msg = el('span', 'demo-banner-msg');
-    msg.appendChild(el('span', 'demo-banner-text', 'Demo with sample data. '));
-    var a = el('a', 'demo-banner-link', 'Install it on your own machines →');
-    a.href = INSTALL_URL;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    msg.appendChild(a);
-    b.appendChild(msg);
-    b.appendChild(button('Tour', 'demo-btn demo-btn-ghost demo-banner-tour', function () { start(0); }));
+    b.appendChild(el('span', 'demo-banner-text', 'Demo with sample data'));
+    var acts = el('span', 'demo-banner-actions');
+    acts.appendChild(link(INSTALL_LABEL, 'demo-btn demo-banner-install'));
+    acts.appendChild(button('Tour', 'demo-btn demo-btn-ghost demo-banner-tour', function () { start(0); }));
+    acts.appendChild(onPhone
+      ? switchLink('Desktop version', 'demo-btn demo-btn-ghost demo-banner-switch', '/dashboard', 'switch-desktop')
+      : switchLink('Phone version', 'demo-btn demo-btn-ghost demo-banner-switch', '/phone', 'switch-phone'));
+    b.appendChild(acts);
     doc.body.insertBefore(b, doc.body.firstChild);
     if (self.DemoPage && self.DemoPage.measure) self.DemoPage.measure();
   }
 
-  // Closes the welcome card and records the choice; 'tour' starts the tour.
+  // Closes the welcome card and records the choice; 'tour' starts the tour, 'phone' leaves for the phone app.
   function leaveWelcome(choice) {
     if (!state.welcome) return;
     doc.removeEventListener('keydown', state.welcome.onKey, true);
     if (state.welcome.root.parentNode) state.welcome.root.parentNode.removeChild(state.welcome.root);
     state.welcome = null;
-    if (typeof self.DemoTrack === 'function') self.DemoTrack('click', { target: 'welcome-' + choice, href: '' });
+    if (choice !== 'install' && choice !== 'phone' && typeof self.DemoTrack === 'function') {
+      self.DemoTrack('click', { target: 'welcome-' + choice, href: '' });
+    }
     if (choice === 'tour') start(0);
     markSeen();
   }
 
-  // Centered first-visit card that offers the tour or the dashboard; Esc or a click outside it picks the dashboard.
+  // Centered first-visit card: the tour or the dashboard, or on a phone the phone app or the desktop version; Esc or a click outside closes it.
   function welcome() {
     if (!doc || !doc.body || state.welcome) return;
+    var phone = isPhone(), stay = phone ? 'dismiss' : 'explore';
     var root = el('div', 'demo-welcome');
     var card = el('div', 'demo-welcome-card');
     card.setAttribute('role', 'dialog');
@@ -248,28 +318,41 @@
     var title = el('h2', 'demo-welcome-title', 'Welcome to the LLM Systems Manager demo');
     title.id = 'demoWelcomeTitle';
     card.appendChild(title);
-    card.appendChild(el('p', 'demo-welcome-text',
-      'This is the real dashboard running on sample data. Everything works: click around, start models, run tools and ask Tower.'));
     var nav = el('div', 'demo-welcome-nav');
-    var tour = button('Take the 1-minute tour', 'demo-btn demo-welcome-tour', function () { leaveWelcome('tour'); });
-    nav.appendChild(tour);
-    nav.appendChild(button('Explore on my own', 'demo-btn demo-btn-ghost demo-welcome-explore', function () { leaveWelcome('explore'); }));
+    var first;
+    if (phone) {
+      card.appendChild(el('p', 'demo-welcome-text',
+        'This demo is best viewed on a desktop or tablet. You can still look around the desktop version here, or switch to the phone app, which is made for small screens.'));
+      first = switchLink('Switch to the phone app', 'demo-btn demo-welcome-phone', '/phone', 'welcome-phone',
+        function () { leaveWelcome('phone'); });
+      nav.appendChild(first);
+      nav.appendChild(button('Open the desktop version', 'demo-btn demo-btn-ghost demo-welcome-desktop', function () { leaveWelcome('desktop'); }));
+    } else {
+      card.appendChild(el('p', 'demo-welcome-text',
+        'This is the real dashboard running on sample data. Everything works: click around, start models, run tools and ask Tower.'));
+      first = button('Take the 1-minute tour', 'demo-btn demo-welcome-tour', function () { leaveWelcome('tour'); });
+      nav.appendChild(first);
+      nav.appendChild(button('Explore on my own', 'demo-btn demo-btn-ghost demo-welcome-explore', function () { leaveWelcome('explore'); }));
+    }
+    var inst = link(INSTALL_LABEL, 'demo-btn demo-btn-ghost demo-welcome-install');
+    inst.addEventListener('click', function () { setTimeout(function () { leaveWelcome('install'); }, 0); });
+    nav.appendChild(inst);
     card.appendChild(nav);
     root.appendChild(card);
     var downOutside = false;
     root.addEventListener('pointerdown', function (e) { downOutside = e.target === root; });
-    root.addEventListener('click', function (e) { if (e.target === root && downOutside) leaveWelcome('explore'); });
-    var onKey = function (e) { if (e.key === 'Escape') { e.stopPropagation(); leaveWelcome('explore'); } };
+    root.addEventListener('click', function (e) { if (e.target === root && downOutside) leaveWelcome(stay); });
+    var onKey = function (e) { if (e.key === 'Escape') { e.stopPropagation(); leaveWelcome(stay); } };
     doc.addEventListener('keydown', onKey, true);
     doc.body.appendChild(root);
     state.welcome = { root: root, onKey: onKey };
-    try { tour.focus({ preventScroll: true }); } catch (e) { /* no focus */ }
+    try { first.focus({ preventScroll: true }); } catch (e) { /* no focus */ }
   }
 
-  // Shows the banner, then the welcome card shortly after load on a first visit with no click or key yet.
+  // Shows the banner, then on the dashboard the welcome card shortly after load on a first visit with no click or key yet.
   function init() {
     banner();
-    if (seen()) return;
+    if (onPhone || seen()) return;
     var begin = function () {
       setTimeout(function () { if (!state.touched && !seen() && !state.root) welcome(); }, 1200);
     };
@@ -277,7 +360,7 @@
     else self.addEventListener('load', begin);
   }
 
-  self.DemoTour = { steps: steps, start: start, close: close, next: nextStep, back: backStep,
+  self.DemoTour = { steps: steps, phoneSteps: phoneSteps, onPhone: onPhone, isPhone: isPhone, start: start, close: close, next: nextStep, back: backStep,
     place: place, init: init, seen: seen, welcome: welcome, get index() { return state.index; }, SEEN_KEY: SEEN_KEY };
 
   if (doc && self.addEventListener) {

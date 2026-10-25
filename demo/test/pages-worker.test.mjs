@@ -123,3 +123,15 @@ test('dashboard links with no demo page redirect to the landing page', async () 
     assert.equal(posts.length, 0, path);
   }
 });
+
+test('a direct visit to the phone app is reported like the dashboard; the switch from the dashboard is not', async () => {
+  for (const path of ['/phone', '/dashboard']) {
+    const { body, posts } = await run(nav('https://demo.llmsyscore.com' + path + '?ref=hn'), html);
+    assert.equal(posts.length, 1, path);
+    assert.equal(posts[0].body.path, path);
+    assert.equal(posts[0].body.ref, 'hn');
+    assert.ok(body.includes(`<meta name="lsm-landing" content="${posts[0].body.id}">`), path);
+  }
+  const own = await run(nav('https://demo.llmsyscore.com/phone', { Referer: 'https://demo.llmsyscore.com/dashboard' }), html);
+  assert.equal(own.posts.length, 0);
+});
