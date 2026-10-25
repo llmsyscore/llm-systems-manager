@@ -190,6 +190,31 @@ def test_pinned_import_error_does_not_fall_back(cfg, monkeypatch):
     assert used == []
 
 
+def test_urllib_fallback_sets_product_user_agent(cfg, monkeypatch):
+    import urllib.request
+    from tests.conftest import REAL_TELEMETRY_POST
+    monkeypatch.setattr(telemetry, "_post", REAL_TELEMETRY_POST)
+    monkeypatch.setitem(sys.modules, "companion", None)
+    seen = []
+
+    class _R:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _open(self, req, *a, **k):
+        seen.append(req.get_header("User-agent"))
+        return _R()
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", _open)
+    p = telemetry.build_payload("install", data_dir=cfg, version="v1", channel="script")
+    assert telemetry.send(p, "https://telemetry.example.test/v1/event") is True
+    assert seen == ["llm-systems-manager"]
+
+
 def test_allow_crash_threads(cfg):
     import threading
     now = time.time()

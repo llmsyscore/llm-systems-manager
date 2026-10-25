@@ -457,7 +457,8 @@ def _post(url: str, body: bytes, timeout: float):
             session.close()
     import urllib.request
     req = urllib.request.Request(url, data=body, method="POST",
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "llm-systems-manager"})
     opener = urllib.request.OpenerDirector()
     opener.add_handler(urllib.request.ProxyHandler({}))
     opener.add_handler(urllib.request.HTTPSHandler())
