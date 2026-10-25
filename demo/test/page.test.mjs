@@ -429,11 +429,27 @@ function runBootstrap(userAgent, { controller = null, window = {} } = {}) {
   const code = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
   const registered = [], replaced = [];
   const serviceWorker = { controller, addEventListener() {}, register: (u) => { registered.push(u); return new Promise(() => {}); } };
-  const document = { getElementById: () => ({ style: {} }) };
+  const links = ['screenshots', 'install'].map((t) => ({ t, on: {}, getAttribute: () => t, addEventListener(k, fn) { this.on[k] = fn; } }));
+  const document = { getElementById: () => ({ style: {} }), querySelectorAll: (sel) => (sel === '.demo-load-link' ? links : []) };
   new Function('navigator', 'location', 'document', 'window', 'setTimeout', code)(
     { userAgent, serviceWorker }, { replace: (u) => replaced.push(u) }, document, window, () => 0);
-  return { registered, replaced };
+  return { registered, replaced, links };
 }
+
+test('the loading-page links carry ref=demo-loading, open a new tab, and report their click', () => {
+  const html = src('bootstrap.html');
+  const hrefs = [...html.matchAll(/<a class="demo-load-link"[^>]*>/g)].map((m) => m[0]);
+  assert.equal(hrefs.length, 4);
+  for (const a of hrefs) {
+    assert.match(a, /href="https:\/\/(www\.llmsyscore\.com\/\?ref=demo-loading#screenshots|get\.llmsyscore\.com\/\?ref=demo-loading)"/);
+    assert.match(a, /target="_blank" rel="noopener"/);
+  }
+  assert.ok(!/install it on your own machine/.test(html));
+  const seen = [];
+  const { links } = runBootstrap('Mozilla/5.0 (X11; Linux x86_64) Firefox/133.0', { window: { DemoLanding: (s) => seen.push(s) } });
+  links.forEach((l) => l.on.click());
+  assert.deepEqual(seen, ['screenshots', 'install']);
+});
 
 test('the bootstrap page opens /phone once when the phone app sent the visitor there, else the dashboard', () => {
   const ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1';
@@ -456,7 +472,8 @@ test('bootstrap page registers the demo worker for browsers but stays put for se
     'Mozilla/5.0 (Linux; Android 6.0.1) Chrome/130.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1)',
     'Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)']) {
-    assert.deepEqual(runBootstrap(ua), { registered: [], replaced: [] });
+    const { registered, replaced } = runBootstrap(ua);
+    assert.deepEqual({ registered, replaced }, { registered: [], replaced: [] });
   }
 });
 

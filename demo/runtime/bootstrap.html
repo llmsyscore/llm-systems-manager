@@ -30,10 +30,10 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
 <h1>LLM Systems Manager demo</h1>
 <div id="demoLoading">Loading the demo...</div>
 <div id="demoSlow">
-  <p>Still loading the demo... If it does not open, see the <a href="https://www.llmsyscore.com/#screenshots">screenshots</a> or <a href="https://get.llmsyscore.com/?ref=demo">install it on your own machine</a>.</p>
+  <p>Still loading the demo... If it does not open, see the <a class="demo-load-link" data-target="screenshots" href="https://www.llmsyscore.com/?ref=demo-loading#screenshots" target="_blank" rel="noopener">screenshots</a> or the <a class="demo-load-link" data-target="install" href="https://get.llmsyscore.com/?ref=demo-loading" target="_blank" rel="noopener">Installation directions</a>.</p>
 </div>
 <div id="demoNotice">
-  <p>This demo needs a browser that supports service workers. See the <a href="https://www.llmsyscore.com/#screenshots">screenshots</a> or <a href="https://get.llmsyscore.com/?ref=demo">install it on your own machine</a>.</p>
+  <p>This demo needs a browser that supports service workers. See the <a class="demo-load-link" data-target="screenshots" href="https://www.llmsyscore.com/?ref=demo-loading#screenshots" target="_blank" rel="noopener">screenshots</a> or the <a class="demo-load-link" data-target="install" href="https://get.llmsyscore.com/?ref=demo-loading" target="_blank" rel="noopener">Installation directions</a>.</p>
 </div>
 </main>
 <script>
@@ -59,6 +59,9 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
     if (window.DemoLanding) window.DemoLanding(reason);
   }
   function fail(reason) { failed = true; show('demoNotice', reason); }
+  Array.prototype.forEach.call(document.querySelectorAll('.demo-load-link'), function (a) {
+    a.addEventListener('click', function () { if (window.DemoLanding) window.DemoLanding(a.getAttribute('data-target')); });
+  });
   if (/bot[\/;)-]|bot$|crawl|spider|slurp|Google-InspectionTool|GoogleOther/i.test(navigator.userAgent)) {
     ['demoLoading', 'demoSlow'].forEach(function (n) { document.getElementById(n).style.display = n === 'demoSlow' ? 'block' : 'none'; });
     return;

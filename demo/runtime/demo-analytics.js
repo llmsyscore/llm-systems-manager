@@ -106,11 +106,12 @@
     track('start', f);
   }
 
-  // The loading page sends a landing event only when the dashboard does not open: left, slow, unsupported or failed.
+  // The loading page sends a landing event when the dashboard does not open (left, slow, unsupported, failed), when it opens
+  // after "Still loading" (slow_open), or when a visitor clicks one of its links (screenshots, install); a click is kept.
   function loadingPage() {
-    var shown = 'left', last = null, perf = self.performance, t0 = (perf && perf.timeOrigin) || now();
+    var shown = 'left', last = null, clicked = false, perf = self.performance, t0 = (perf && perf.timeOrigin) || now();
     function report(reason) {
-      if (shown === 'open' || reason === last) return;
+      if (shown === 'open' || clicked || reason === last) return;
       last = reason;
       var f = { reason: reason, total_ms: Math.round(now() - t0), lid: land.lid || undefined, referrer: land.referrer, landing: land.landing };
       for (var k in land.p) f[k] = land.p[k];
@@ -118,8 +119,10 @@
       flush(true);
     }
     self.DemoLanding = function (state) {
-      if (state === 'open' || state === 'slow') shown = state;
+      if (state === 'open') { if (shown === 'slow') report('slow_open'); shown = state; }
+      else if (state === 'slow') shown = state;
       else if (state === 'unsupported' || state === 'failed') { shown = state; report(state); }
+      else if (state === 'screenshots' || state === 'install') { report(state); clicked = true; }
     };
     doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') report(shown); });
     self.addEventListener('pagehide', function () { report(shown); });

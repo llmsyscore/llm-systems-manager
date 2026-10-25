@@ -8,26 +8,13 @@
 
   // Demo pages answered from the cache when the visitor opens them.
   var PAGES = ['/dashboard', '/phone'];
-  var ASSET_RE = /(?<![\w-])(?:src|href)=(["'])([^"'#]+)\1/g;
-
-  // Lists same-origin /static and /alarm asset URLs referenced by a cached page.
-  function assetUrls(html, base) {
-    var out = [];
-    var m;
-    ASSET_RE.lastIndex = 0;
-    while ((m = ASSET_RE.exec(html))) {
-      var u = new URL(m[2], base);
-      if (u.origin !== new URL(base).origin) continue;
-      if (u.pathname.indexOf('/static/') === 0 || u.pathname.indexOf('/alarm/') === 0) out.push(u.href);
-    }
-    return out;
-  }
 
   // Copies a fetched response so a redirected one can still answer a navigation.
   function clean(res) {
     return res.redirected ? new Response(res.body, { status: res.status, statusText: res.statusText, headers: res.headers }) : res;
   }
 
+  // Stores the demo pages; their scripts and styles are cached on first use, so the demo opens without waiting for them.
   function precache() {
     var origin = self.location.origin;
     return self.caches.open(CACHE).then(function (cache) {
@@ -35,18 +22,9 @@
       return Promise.all(pages.map(function (url) {
         return fetch(new Request(url, { cache: 'reload' })).then(clean).then(function (res) {
           if (!res.ok) throw new Error('demo: precache ' + url + ' ' + res.status);
-          return res.clone().text().then(function (html) {
-            return cache.put(url, res).then(function () { return assetUrls(html, url); });
-          });
+          return cache.put(url, res);
         });
-      })).then(function (lists) {
-        var urls = [].concat.apply([], lists).filter(function (u, i, a) { return a.indexOf(u) === i; });
-        return Promise.allSettled(urls.map(function (url) {
-          return fetch(new Request(url, { cache: 'reload' })).then(clean).then(function (res) {
-            if (res.ok) return cache.put(url, res);
-          });
-        }));
-      });
+      }));
     });
   }
 
@@ -62,8 +40,6 @@
       });
     });
   }
-
-  self.DemoSw = { assetUrls: assetUrls };
 
   self.addEventListener('install', function (event) {
     self.skipWaiting();
