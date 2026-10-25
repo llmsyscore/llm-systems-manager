@@ -132,7 +132,7 @@ const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
   <div id="serverLogPanel" style="display:none;"><div id="serverLogBox"></div></div>
 </div>
 <div id="eventsTab"><iframe id="alarmEngineIframe"></iframe></div>
-<div id="towerOverlay"><div id="twBox"><textarea id="twInput"></textarea></div></div>
+<div id="towerOverlay"><aside id="towerAside"><div id="twBox"><textarea id="twInput"></textarea></div></aside></div>
 <div id="adminTab"><div id="adminHealthCard"></div>
   <button class="sub-tab-btn" id="subTabBtnAdminAgents">Agents</button><button class="sub-tab-btn" id="subTabBtnAdminRouting">Gateway</button>
   <button class="sub-tab-btn" id="subTabBtnAdminJobs">Jobs</button>
@@ -181,7 +181,7 @@ test('a first visit shows the welcome card; its tour button starts the tour, whi
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(s.title && s.text, s.selector);
   }
-  assert.ok(steps.some((s) => s.selector === '#twBox' && s.tower && /slow|alarm|cost|model/i.test(s.text)));
+  assert.ok(steps.some((s) => s.selector === '#towerAside' && s.tower && /slow|alarm|cost|model/i.test(s.text)));
   const card = w.document.querySelector('.demo-tour-card');
   assert.ok(card);
   assert.equal(card.querySelector('.demo-tour-title').textContent, steps[0].title);
@@ -464,7 +464,7 @@ test('Ask Tower step with Tower closed hides the ring and offers Open Tower; wit
   const w = await dom(['demo-tour.js'], { before: (w) => { w.localStorage.setItem('lsmDemoTourSeen', '1'); towerStubs(w, calls); } });
   const ov = w.document.getElementById('towerOverlay');
   const i = w.DemoTour.steps.findIndex((s) => s.tower);
-  w.document.getElementById('twBox').getBoundingClientRect = () => ({ top: 100, bottom: 300, left: 10, right: 400, width: 390, height: 200 });
+  w.document.getElementById('towerAside').getBoundingClientRect = () => ({ top: 100, bottom: 300, left: 10, right: 400, width: 390, height: 200 });
   w.DemoTour.start(i);
   const ring = w.document.querySelector('.demo-tour-ring');
   assert.equal(ring.style.display, '');
@@ -667,4 +667,19 @@ test('the phone layer reports the phone app and each screen change, and blocks t
   w.document.getElementById('pushStatus').textContent = 'service worker installing…';
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(w.document.getElementById('pushStatus').textContent, 'Not available in the demo');
+});
+
+test('the tour card sits outside the highlighted area: below, above, then beside it', async () => {
+  const w = await dom(['demo-tour.js']);
+  const spot = w.DemoTour.cardSpot;
+  const W = 1280, H = 800, cw = 320, ch = 200;
+  const overlaps = (p, a) => !(p.x + cw <= a.left || p.x >= a.right || p.y + ch <= a.top || p.y >= a.bottom);
+  const below = { left: 100, right: 600, top: 100, bottom: 300 };
+  assert.deepEqual(JSON.parse(JSON.stringify(spot(below, cw, ch, W, H))), { x: 100, y: 312 });
+  const drawer = { left: 820, right: 1278, top: 2, bottom: 798 };
+  const p = spot(drawer, cw, ch, W, H);
+  assert.ok(!overlaps(p, drawer));
+  assert.equal(p.x, 820 - 12 - cw);
+  const full = { left: 2, right: 1278, top: 2, bottom: 798 };
+  assert.equal(spot(full, cw, ch, W, H).y, H - ch - 24);
 });

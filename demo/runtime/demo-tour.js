@@ -24,7 +24,7 @@
       text: 'Measure how fast a model runs on each machine. Autotune tries different settings for you and keeps the fastest ones.' },
     { tab: 'events', selector: '#eventsTab', title: 'Alarms',
       text: 'Alarms tell you when something needs a look, like a machine running hot. New sample alarms show up here every minute or two.' },
-    { tab: 'overall', selector: '#twBox', tower: true, title: 'Ask Tower',
+    { tab: 'overall', selector: '#towerAside', tower: true, title: 'Ask Tower',
       text: 'Tower answers questions about your machines in plain words. Type here and try "Which machine is slow?" or "How do I get help?"' },
     { tab: 'admin', selector: '#adminHealthCard', title: 'System health',
       text: 'See at a glance whether every part of the system is running, and which jobs are waiting or running.' },
@@ -176,13 +176,20 @@
     ring.style.top = rt + 'px';
     ring.style.width = Math.max(rr - rl, 0) + 'px';
     ring.style.height = Math.max(rb - rt, 0) + 'px';
-    var ch = card.offsetHeight, cw = card.offsetWidth;
-    var y = bottom + 12;
-    if (y + ch > vh - 12) y = top - ch - 12;
-    if (y < 12) y = Math.max(12, vh - ch - 24);
-    y = Math.max(12, Math.min(y, vh - ch - 12));
-    card.style.top = y + 'px';
-    card.style.left = Math.min(Math.max(12, r.left), Math.max(12, vw - cw - 12)) + 'px';
+    var p = cardSpot({ left: rl, right: rr, top: rt, bottom: rb }, card.offsetWidth, card.offsetHeight, vw, vh);
+    card.style.top = p.y + 'px';
+    card.style.left = p.x + 'px';
+  }
+
+  // Card position outside the ring: below, above, left or right of it, else the bottom of the window.
+  function cardSpot(a, cw, ch, vw, vh) {
+    var gap = 12, clampX = function (x) { return Math.min(Math.max(gap, x), Math.max(gap, vw - cw - gap)); };
+    var clampY = function (y) { return Math.min(Math.max(gap, y), Math.max(gap, vh - ch - gap)); };
+    if (a.bottom + gap + ch <= vh - gap) return { x: clampX(a.left), y: clampY(a.bottom + gap) };
+    if (a.top - gap - ch >= gap) return { x: clampX(a.left), y: clampY(a.top - gap - ch) };
+    if (a.left - gap - cw >= gap) return { x: a.left - gap - cw, y: clampY(a.bottom - ch) };
+    if (a.right + gap + cw <= vw - gap) return { x: a.right + gap, y: clampY(a.bottom - ch) };
+    return { x: Math.max(gap, (vw - cw) / 2), y: Math.max(gap, vh - ch - 24) };
   }
 
   function render() {
@@ -361,7 +368,7 @@
   }
 
   self.DemoTour = { steps: steps, phoneSteps: phoneSteps, onPhone: onPhone, isPhone: isPhone, start: start, close: close, next: nextStep, back: backStep,
-    place: place, init: init, seen: seen, welcome: welcome, get index() { return state.index; }, SEEN_KEY: SEEN_KEY };
+    place: place, cardSpot: cardSpot, init: init, seen: seen, welcome: welcome, get index() { return state.index; }, SEEN_KEY: SEEN_KEY };
 
   if (doc && self.addEventListener) {
     var touch = function () { state.touched = true; };
