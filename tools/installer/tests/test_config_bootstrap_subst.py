@@ -165,3 +165,9 @@ def test_telemetry_keys_substitute(tmp_path):
     assert doc["manager"]["telemetry"]["install_report"] is False
     assert doc["manager"]["telemetry"]["heartbeat"] is True
     assert doc["manager"]["telemetry"]["crash_reports"] is False
+    assert doc["manager"]["telemetry"]["checkin"] is False
+
+
+def test_checkin_follows_the_report_answer(tmp_path):
+    doc = run_bootstrap_python(tmp_path, dict(MODE3_VALS, TELEMETRY_REPORT="true", TELEMETRY_HEARTBEAT="false"))
+    assert doc["manager"]["telemetry"]["checkin"] is True

@@ -873,12 +873,16 @@
       this.tele = tele;
       const T = [['install_report', 'Install and update reports', 'one report on install or update: version, where the code came from, channel, OS, hardware'],
                  ['crash_reports', 'Crash reports', 'error type and code location only'],
+                 ['checkin', 'Daily check-in', 'version, operating system and install channel'],
                  ['heartbeat', 'Daily diagnostic report', 'release and component versions, OS, hardware, agent count, provider mix, uptime, feature use counts']];
+      const dnt = !!(tele && tele.do_not_track);
       $('settingsReports').innerHTML = tele
-        ? T.map(([key, name, what]) => '<div class="arow"><div class="atxt">'
+        ? (dnt ? '<div class="arow"><div class="atxt"><div class="an">Reports</div>'
+          + '<div class="ad">Nothing is sent: DO_NOT_TRACK is set on this machine</div></div></div>' : '')
+          + T.map(([key, name, what]) => '<div class="arow"><div class="atxt">'
             + `<div class="an">${esc(name)}</div><div class="ad">${esc(what)}${this.teleDetail(tele, key)}</div></div>`
             + `<button class="switch" role="switch" aria-checked="${!!tele[key]}" aria-label="${esc(name)}" `
-            + `data-tele="${key}"${ADMIN ? '' : ' disabled'}><i></i></button></div>`).join('')
+            + `data-tele="${key}"${ADMIN && !dnt ? '' : ' disabled'}><i></i></button></div>`).join('')
         : '<div class="arow"><div class="atxt"><div class="an">Reports</div>'
           + '<div class="ad">unavailable</div></div></div>';
       paintPush();
@@ -886,7 +890,7 @@
     teleDetail(tele, key) {
       const last = tele.last;
       if (!last) return ' · nothing sent yet';
-      if (key === 'heartbeat' && last.event !== 'heartbeat') return '';
+      if ((key === 'heartbeat' || key === 'checkin') && last.event !== key) return '';
       return ' · last ' + esc(last.event) + ' ' + esc(CV.age(last.sent_at, Date.now() / 1000));
     },
     detail(rel) {

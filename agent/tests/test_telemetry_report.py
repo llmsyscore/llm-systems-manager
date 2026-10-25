@@ -103,3 +103,19 @@ def test_consent_file_endpoint_is_ignored(tmp_path, monkeypatch):
     except ValueError as e:
         TR.report_exception(e, e.__traceback__, state_dir=str(tmp_path), version="v1", root=str(_AGENT.parent))
     assert urls == [TR.DEFAULT_ENDPOINT]
+
+
+def test_do_not_track_skips_report(tmp_path, monkeypatch):
+    TR.write_consent(str(tmp_path), install_report=True, crash_reports=True,
+                     install_id="123e4567-e89b-12d3-a456-426614174000", installed_at="2026-10-14T00:00:00Z")
+    sent = []
+    monkeypatch.setattr(TR, "send", lambda *a, **k: sent.append(a))
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        TR.report_exception(e, e.__traceback__, state_dir=str(tmp_path), version="v1", root=str(_AGENT.parent))
+    assert sent == []
+    assert TR.do_not_track() is True
+    monkeypatch.setenv("DO_NOT_TRACK", "false")
+    assert TR.do_not_track() is False

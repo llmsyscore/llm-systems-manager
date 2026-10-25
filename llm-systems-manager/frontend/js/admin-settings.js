@@ -621,11 +621,34 @@
       text = `Last report: ${esc(s.last.event)} · ${esc(teleAge(s.last.sent_at))}`;
       btn = '<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetryView">View</button>';
     }
-    btn += `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetrySend"${_teleSending ? ' disabled' : ''}>${_teleSending ? 'Sending…' : 'Send now'}</button>`;
+    btn += `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" id="stTelemetrySend"${_teleSending || (s && s.do_not_track) ? ' disabled' : ''}>${_teleSending ? 'Sending…' : 'Send now'}</button>`;
     return '<div class="settings-row st-fld st-checkrow" id="stTelemetryStatus">'
       + '<div class="st-lb"><label>Last report</label></div>'
       + '<div class="help">What left this machine most recently. View shows the exact fields.</div>'
       + `<div class="st-ct"><div class="row"><span class="d">${text}</span>${btn}</div></div></div>`;
+  }
+  const TELE_NAMES = [['install_report', 'install and update reports'], ['crash_reports', 'crash reports'],
+                      ['checkin', 'daily check-in'], ['heartbeat', 'daily diagnostic report']];
+  function telemetrySendingHtml() {
+    const s = _teleState;
+    let text = 'Loading…';
+    if (s && s.failed) text = 'Status unavailable';
+    else if (s && s.do_not_track) text = 'Nothing is sent: DO_NOT_TRACK is set on this machine';
+    else if (s) {
+      const on = TELE_NAMES.filter(([k]) => s[k] && !(k === 'checkin' && s.heartbeat)).map(([, n]) => n);
+      text = on.length ? on.join(', ') : 'Nothing is being sent';
+    }
+    const link = s && !s.failed ? ' <a href="https://github.com/llmsyscore/llm-systems-manager/blob/main/docs/DEPLOYMENT.md#anonymous-reports" target="_blank" rel="noopener" class="st-doclink">Field list</a>' : '';
+    return '<div class="settings-row st-fld st-checkrow" id="stTelemetrySending">'
+      + '<div class="st-lb"><label>Sending</label></div>'
+      + '<div class="help">Which reports leave this machine. The field list shows every field of each report.</div>'
+      + `<div class="st-ct"><div class="row"><span class="d">${text}</span>${link}</div></div></div>`;
+  }
+  function telemetryRowsHtml() { return telemetrySendingHtml() + telemetryStatusHtml(); }
+  function redrawTelemetryRows() {
+    const a = $('stTelemetrySending'), b = $('stTelemetryStatus');
+    if (a) a.outerHTML = telemetrySendingHtml();
+    if (b) b.outerHTML = telemetryStatusHtml();
   }
   async function loadTelemetryState(force) {
     if (!force && _teleState && Date.now() - _teleAt < 15000) return;
@@ -633,18 +656,17 @@
     let st = null;
     try { const r = await fetch('/api/admin/telemetry'); if (r.ok) st = await r.json(); } catch (_) { /* offline */ }
     _teleState = st && st.ok !== false ? st : { failed: true };
-    const el = $('stTelemetryStatus');
-    if (el) el.outerHTML = telemetryStatusHtml();
+    redrawTelemetryRows();
   }
   async function sendTelemetryNow() {
     if (_teleSending) return;
     _teleSending = true;
     let err = '';
-    const redraw = () => { const el = $('stTelemetryStatus'); if (el) el.outerHTML = telemetryStatusHtml(); };
+    const redraw = redrawTelemetryRows;
     redraw();
     try {
       const r = await fetch('/api/admin/telemetry/send', { method: 'POST' });
-      if (!r.ok) err = r.status === 409 ? 'A report is already being sent' : 'The report could not be sent';
+      if (!r.ok) err = r.status === 403 ? 'Nothing is sent while DO_NOT_TRACK is set' : r.status === 409 ? 'A report is already being sent' : 'The report could not be sent';
     } catch (_) { err = 'The report could not be sent'; }
     _teleSending = false;
     if (err) {
@@ -929,7 +951,7 @@
       + `<div class="card-h"><h3>${esc(g.title)}</h3><span class="meta">${groupMeta(all)} · ${note}</span><span class="gap"></span></div>`
       + `<div class="card-b">${renderFields(entries, _data.values, defaults(), null, g.key === 'tower' ? [{ after: 'manager.tower.tool_mode', html: towerCheckHtml() },
                                                                                           { after: 'manager.tower.model', html: towerEvalHtml() + towerModelsHtml() }]
-        : g.key === 'telemetry' ? [{ after: 'manager.telemetry.heartbeat', html: telemetryStatusHtml() }] : null)}</div></div>`;
+        : g.key === 'telemetry' ? [{ after: 'manager.telemetry.heartbeat', html: telemetryRowsHtml() }] : null)}</div></div>`;
   }
   function paneHtml() {
     if (_filter) {

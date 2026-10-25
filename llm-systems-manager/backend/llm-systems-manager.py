@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.23-2"
+__version__ = "v2026.10.24-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -6977,7 +6977,7 @@ telemetry.configure(settings=settings, data_dir=DATA_DIR, version=__version__, r
                     agent_versions_fn=_telemetry_agent_versions, features_fn=_telemetry_features, log=log)
 telemetry.install_excepthooks("manager")
 
-_TELEMETRY_TOGGLES = ("install_report", "crash_reports", "heartbeat")
+_TELEMETRY_TOGGLES = ("install_report", "crash_reports", "checkin", "heartbeat")
 
 
 @app.route("/api/admin/telemetry", methods=["GET", "PUT"])
@@ -6987,7 +6987,7 @@ def admin_telemetry():
         st = telemetry.status()
         last = st.get("last")
         return jsonify({"ok": True, "read_only": True,
-                        **{k: st[k] for k in (*_TELEMETRY_TOGGLES, "pending")},
+                        **{k: st[k] for k in (*_TELEMETRY_TOGGLES, "pending", "do_not_track")},
                         "last": {"event": last["event"], "sent_at": last["sent_at"]} if last else None})
     deny = _require_admin()
     if deny is not None:
@@ -7013,7 +7013,8 @@ def admin_telemetry_send():
     if deny is not None:
         return deny
     r = telemetry.send_now()
-    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 409 if r.get("error") == "busy" else 502)
+    return jsonify({**telemetry.status(), **r}), (200 if r["ok"] else 403 if r.get("error") == "do_not_track"
+                                              else 409 if r.get("error") == "busy" else 502)
 
 
 _RUN_CONFIG_KEYS = {"benchmark": ("bench", "osl", "limit", "concurrency", "levels", "bench_tool"),

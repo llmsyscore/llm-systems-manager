@@ -24,6 +24,7 @@ x-lsm-env: &lsm-env
   LSM_DISCORD_WEBHOOK_URL: ${LSM_DISCORD_WEBHOOK_URL:-}
   LSM_TELEMETRY: ${LSM_TELEMETRY:-1}
   LSM_HEARTBEAT: ${LSM_HEARTBEAT:-0}
+  DO_NOT_TRACK: ${DO_NOT_TRACK:-}
 
 services:
   influxdb:

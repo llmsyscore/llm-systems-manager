@@ -21,6 +21,11 @@ _started = time.time()
 _lock = threading.RLock()
 
 
+def do_not_track():
+    v = os.environ.get("DO_NOT_TRACK", "").strip().lower()
+    return bool(v) and v not in ("0", "false")
+
+
 def _iso(ts=None):
     return datetime.fromtimestamp(ts if ts is not None else time.time(), timezone.utc) \
         .strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -137,6 +142,8 @@ def send(payload, endpoint, timeout=5.0):
 
 def report_exception(exc, tb, *, state_dir, version, root):
     try:
+        if do_not_track():
+            return
         c = load_consent(state_dir)
         if not c.get("crash_reports") or not c.get("install_id"):
             return

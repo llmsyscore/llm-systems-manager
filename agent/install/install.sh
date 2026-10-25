@@ -4098,6 +4098,10 @@ _write_enrollment_secret
 _tele_py="${PYTHON3:-$(command -v python3 || true)}"
 if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
   _tele_t="${LLMSYS_TELEMETRY:-}"
+  case "$(printf '%s' "${DO_NOT_TRACK:-}" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false) ;;
+    *) _tele_t=0 ;;
+  esac
   if [[ -z "$_tele_t" ]]; then
     if [[ -t 0 ]]; then
       echo

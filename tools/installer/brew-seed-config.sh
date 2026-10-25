@@ -38,9 +38,13 @@ LOG_DIR="${LSM_BREW_LOG_DIR:-}"
 [ -n "$TARGET" ]  || die "LSM_BREW_CONFIG is not set"
 [ -n "$LOG_DIR" ] || die "LSM_BREW_LOG_DIR is not set"
 [ -f "$EXAMPLE" ] || die "example config not found: $EXAMPLE"
-# HOMEBREW_LLMSYS_TELEMETRY=0 seeds a fresh config with install and crash reports off.
+# HOMEBREW_LLMSYS_TELEMETRY=0 or DO_NOT_TRACK seeds a fresh config with every report off.
 TELEMETRY_OFF=0
 [ "${HOMEBREW_LLMSYS_TELEMETRY:-}" = "0" ] && TELEMETRY_OFF=1
+case "$(printf '%s' "${DO_NOT_TRACK:-}" | tr '[:upper:]' '[:lower:]')" in
+  ''|0|false) ;;
+  *) TELEMETRY_OFF=1 ;;
+esac
 
 # Python with tomllib: the keg venv first, then the PATH interpreter.
 find_python() {
@@ -171,6 +175,12 @@ while IFS= read -r line || [ -n "$line" ]; do
       else
         printf '%s\n' "$line" >> "$TMP"
       fi ;;
+    'checkin = false'*)
+      if [ "$TELEMETRY_OFF" = "1" ]; then
+        printf '%s\n' "$line" >> "$TMP"
+      else
+        printf 'checkin = true\n' >> "$TMP"
+      fi ;;
     *)
       printf '%s\n' "$line" >> "$TMP" ;;
   esac
@@ -185,6 +195,9 @@ grep -q '^\[manager.telemetry\]' "$TMP" || { rm -f "$TMP"; die "telemetry block 
 if [ "$TELEMETRY_OFF" = "1" ]; then
   grep -q '^install_report = false' "$TMP" || { rm -f "$TMP"; die "install_report rewrite failed — .example drifted?"; }
   grep -q '^crash_reports = false' "$TMP"  || { rm -f "$TMP"; die "crash_reports rewrite failed — .example drifted?"; }
+  grep -q '^checkin = false' "$TMP"        || { rm -f "$TMP"; die "checkin rewrite failed — .example drifted?"; }
+else
+  grep -q '^checkin = true' "$TMP"         || { rm -f "$TMP"; die "checkin rewrite failed — .example drifted?"; }
 fi
 
 mv "$TMP" "$TARGET"

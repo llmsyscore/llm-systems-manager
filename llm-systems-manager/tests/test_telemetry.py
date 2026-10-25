@@ -18,7 +18,7 @@ BACKEND = Path(__file__).resolve().parents[1] / "backend"
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     s = SimpleNamespace(manager=SimpleNamespace(telemetry=SimpleNamespace(
-        install_report=True, crash_reports=True, heartbeat=False,
+        install_report=True, crash_reports=True, checkin=False, heartbeat=False,
         endpoint="https://telemetry.example.test/v1/event")))
     telemetry.configure(settings=s, data_dir=tmp_path, version="v2026.10.13-1",
                         root=BACKEND.parent.parent)
@@ -487,3 +487,60 @@ def test_install_source_falls_back_to_the_tree(cfg, tmp_path, monkeypatch):
     assert telemetry._install_source() == "local"
     (root / ".git").mkdir()
     assert telemetry._install_source() == "git"
+
+
+def test_checkin_payload_has_only_identity_version_os_channel(cfg):
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
+                        root=BACKEND.parent.parent, release_fn=lambda: "1.2.3")
+    p = telemetry.build_payload("checkin", data_dir=cfg, version="v1", channel="deb", mode="3")
+    assert set(p) == {"schema", "event", "install_id", "installed_at", "sent_at", "version",
+                      "release", "channel", "os", "os_version"}
+    assert p["event"] == "checkin" and "mode" not in p and p["release"] == "1.2.3"
+    for k in ("arch", "ram_gb", "gpu_vendor", "agent_count"):
+        assert k not in p
+
+
+def test_daily_event_prefers_heartbeat_then_checkin(cfg):
+    t = telemetry._settings.manager.telemetry
+    for hb, ci, want in ((True, True, "heartbeat"), (True, False, "heartbeat"),
+                         (False, True, "checkin"), (False, False, None)):
+        t.heartbeat, t.checkin = hb, ci
+        assert telemetry._daily_event() == want
+
+
+def test_tick_sends_checkin_when_only_checkin_is_on(cfg, monkeypatch):
+    telemetry._settings.manager.telemetry.checkin = True
+    sent = []
+    monkeypatch.setitem(telemetry._hb, "not_before", 0.0)
+    monkeypatch.setitem(telemetry._hb, "attempt", 0.0)
+    monkeypatch.setitem(telemetry._hb, "sent", 0.0)
+    monkeypatch.setattr(telemetry, "_deliver", lambda p: sent.append(p["event"]) or True)
+    telemetry._heartbeat_tick()
+    assert sent == ["checkin"]
+
+
+def test_deliver_writes_stamp_for_checkin(cfg, monkeypatch):
+    monkeypatch.setattr(telemetry, "send", lambda payload, endpoint, timeout=5.0: True)
+    telemetry._deliver({"event": "checkin", "sent_at": telemetry._iso()})
+    assert telemetry._heartbeat_age() < 60
+
+
+def test_do_not_track_disables_every_kind_and_send_now(cfg, sched, monkeypatch):
+    t = telemetry._settings.manager.telemetry
+    t.install_report = t.crash_reports = t.checkin = t.heartbeat = True
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    for k in ("install_report", "crash_reports", "checkin", "heartbeat"):
+        assert telemetry.enabled(k) is False
+    assert telemetry.send_now()["error"] == "do_not_track"
+    telemetry.write_pending(cfg, {"event": "install", "install_id": "x"})
+    assert sched() == []
+    assert (cfg / telemetry.PENDING).is_file()
+    assert telemetry.status()["do_not_track"] is True
+
+
+@pytest.mark.parametrize("val,expected", [("", False), ("0", False), ("false", False),
+                                          (" FALSE ", False), ("1", True), ("true", True),
+                                          ("yes", True)])
+def test_do_not_track_zero_or_false_is_not_set(monkeypatch, val, expected):
+    monkeypatch.setenv("DO_NOT_TRACK", val)
+    assert telemetry.do_not_track() is expected

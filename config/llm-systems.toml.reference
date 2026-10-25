@@ -241,6 +241,8 @@ push_notify_token = ""
 install_report = true
 # Anonymous crash reports: error type and code location only, no messages.
 crash_reports = true
+# Daily check-in: product version, operating system and install channel. New installs set it from the install-report answer.
+checkin = false
 # Daily diagnostic report: version, agent count, provider mix and uptime. Off unless chosen.
 heartbeat = false
 

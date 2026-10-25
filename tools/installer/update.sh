@@ -1075,7 +1075,7 @@ if $HAVE_MANAGER || $HAVE_AE; then
     _tele_new=0; _tele_ask=0
     if ! $SUDO grep -q '^\[manager.telemetry\]' "$_live_toml" 2>/dev/null; then
       _tele_new=1
-      if [[ -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] \
+      if telemetry_do_not_track || [[ -n "${LLMSYS_TELEMETRY:-}" || -n "${LLMSYS_HEARTBEAT:-}" ]] \
          || { [[ -t 0 ]] && (( ! ASSUME_YES )); }; then
         (( DRY_RUN )) || { telemetry_consent; _tele_ask=1; }
       fi

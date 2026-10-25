@@ -1401,10 +1401,20 @@ telemetry_payload() {
     ${src[@]+"${src[@]}"}
 }
 
+# telemetry_do_not_track — rc 0 when DO_NOT_TRACK is set (non-empty, not 0/false).
+telemetry_do_not_track() {
+  local v="${DO_NOT_TRACK:-}"
+  v="${v,,}"
+  [[ -n "$v" && "$v" != "0" && "$v" != "false" ]]
+}
+
 # telemetry_consent — exports LLMSYS_TELEMETRY / LLMSYS_HEARTBEAT (0|1) and LLMSYS_TELEMETRY_REASON.
 telemetry_consent() {
   local t="${LLMSYS_TELEMETRY:-}" h="${LLMSYS_HEARTBEAT:-}" reason="default"
-  if [[ -n "${CI:-}" ]]; then
+  if telemetry_do_not_track; then
+    t=0; h=0; reason="do_not_track"
+    log "Reports off: DO_NOT_TRACK is set"
+  elif [[ -n "${CI:-}" ]]; then
     t=0; h=0; reason="ci"
     log "Install report skipped: CI is set"
   elif [[ -n "$t" || -n "$h" ]]; then
@@ -1414,14 +1424,14 @@ telemetry_consent() {
   elif [[ -t 0 ]]; then
     reason="prompt"
     echo
-    echo "  Anonymous reports help us learn which systems the product runs on."
+    echo "  Anonymous reports tell the project which systems it runs on and how many installs are in use."
     echo "  Nothing in them identifies you: no names, addresses, paths or tokens."
     if [[ -n "${LLMSYS_TELEMETRY_PREVIEW:-}" ]]; then
       echo "  This is the install report that would be sent:"
       printf '%s\n' "$LLMSYS_TELEMETRY_PREVIEW" | sed 's/^/    /'
     fi
     local a
-    read -rp "  Send anonymous install and crash reports? [Y/n] " a
+    read -rp "  Send anonymous install and crash reports and a daily check-in (version, operating system, install channel)? [Y/n] " a
     case "$(printf '%s' "${a:-y}" | tr '[:upper:]' '[:lower:]')" in n|no) t=0 ;; *) t=1 ;; esac
     read -rp "  Also send a daily diagnostic report (version, OS, hardware, agent count, uptime, feature use counts)? [y/N] " a
     case "$(printf '%s' "${a:-n}" | tr '[:upper:]' '[:lower:]')" in y|yes) h=1 ;; *) h=0 ;; esac
@@ -1449,6 +1459,7 @@ telemetry_report() {
 _telemetry_report_run() {
   [[ -z "${CI:-}" ]] || return 0
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
+  ! telemetry_do_not_track || return 0
   local event="$1" channel="$2" mode="$3" outcome="$4" dir="$5" ver="$6" root="$7" ep="$8"
   local py tmp pend="$5/telemetry-pending.json" logf="$5/telemetry.log"
   py="$(telemetry_python)" || return 0
@@ -1564,6 +1575,7 @@ with os.fdopen(fd) as fh:
     text = fh.read()
 text = sub_bool_in_section(text, "manager.telemetry", "install_report", sys.argv[2])
 text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", sys.argv[2])
+text = sub_bool_in_section(text, "manager.telemetry", "checkin", sys.argv[2])
 text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", sys.argv[3])
 tmp = os.path.join(os.path.dirname(path) or ".", ".%s.%s.tmp" % (os.path.basename(path), secrets.token_hex(8)))
 wfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, stat.S_IMODE(st.st_mode))

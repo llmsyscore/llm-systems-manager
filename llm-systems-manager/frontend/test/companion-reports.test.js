@@ -16,7 +16,7 @@ describe('companion reports card', () => {
   it('toggles PUT the allowed keys only', () => {
     expect(js).toMatch(/jpost\('\/api\/admin\/telemetry', \{ \[key\]: next \}, 'PUT'\)/);
     expect(js).toMatch(/data-tele="\$\{key\}"/);
-    for (const k of ['install_report', 'crash_reports', 'heartbeat']) expect(js).toContain(`'${k}'`);
+    for (const k of ['install_report', 'crash_reports', 'checkin', 'heartbeat']) expect(js).toContain(`'${k}'`);
   });
 });
 
@@ -26,7 +26,7 @@ describe('companion reports card (jsdom)', () => {
     const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/companion?tab=settings' });
     const w = dom.window;
     const calls = [];
-    const TELE = { ok: true, install_report: true, crash_reports: true, heartbeat: false, pending: false, last: null };
+    const TELE = { ok: true, install_report: true, crash_reports: true, checkin: false, heartbeat: false, pending: false, last: null };
     w.matchMedia = w.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
     w.fetch = (url, opts = {}) => {
       calls.push({ url: String(url), method: opts.method || 'GET', body: opts.body });
@@ -52,6 +52,63 @@ describe('companion reports card (jsdom)', () => {
     const put = calls.find((c) => c.url === '/api/admin/telemetry' && c.method === 'PUT');
     expect(put).toBeTruthy();
     expect(JSON.parse(put.body)).toEqual({ heartbeat: true });
+    w.close();
+  });
+  it('DO_NOT_TRACK shows the notice and disables every switch', async () => {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/companion?tab=settings' });
+    const w = dom.window;
+    const TELE = { ok: true, install_report: false, crash_reports: false, checkin: false, heartbeat: false, pending: false, last: null, do_not_track: true };
+    w.matchMedia = w.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    w.fetch = (url) => {
+      let data = {};
+      if (url === '/api/me') data = { user: 'a', role: 'admin', admin_access: true };
+      else if (url === '/api/admin/telemetry') data = TELE;
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
+    };
+    ['js/lib/companion-view.js', 'js/companion.js'].forEach((p) => {
+      const s = w.document.createElement('script');
+      s.textContent = fs.readFileSync(path.join(root, p), 'utf8');
+      w.document.body.appendChild(s);
+    });
+    w.document.dispatchEvent(new w.Event('DOMContentLoaded'));
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+    const card = w.document.querySelector('#settingsReports');
+    expect(card.textContent).toContain('Nothing is sent: DO_NOT_TRACK is set on this machine');
+    const sws = card.querySelectorAll('[data-tele]');
+    expect(sws.length).toBe(4);
+    sws.forEach((s) => expect(s.disabled).toBe(true));
+    w.close();
+  });
+  it('clicking the check-in switch PUTs {checkin: true}', async () => {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/companion?tab=settings' });
+    const w = dom.window;
+    const calls = [];
+    const TELE = { ok: true, install_report: true, crash_reports: true, checkin: false, heartbeat: false, pending: false, last: null };
+    w.matchMedia = w.matchMedia || (() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+    w.fetch = (url, opts = {}) => {
+      calls.push({ url: String(url), method: opts.method || 'GET', body: opts.body });
+      let data = {};
+      if (url === '/api/me') data = { user: 'a', role: 'admin', admin_access: true };
+      else if (url === '/api/admin/telemetry') data = TELE;
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(data))) });
+    };
+    const inject = (p) => {
+      const s = w.document.createElement('script');
+      s.textContent = fs.readFileSync(path.join(root, p), 'utf8');
+      w.document.body.appendChild(s);
+    };
+    ['js/lib/companion-view.js', 'js/companion.js'].forEach(inject);
+    w.document.dispatchEvent(new w.Event('DOMContentLoaded'));
+    const settle = async () => { for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0)); };
+    await settle();
+    const sw = w.document.querySelector('#settingsReports [data-tele="checkin"]');
+    expect(sw).not.toBeNull();
+    sw.click();
+    await settle();
+    const put = calls.find((c) => c.url === '/api/admin/telemetry' && c.method === 'PUT');
+    expect(JSON.parse(put.body)).toEqual({ checkin: true });
     w.close();
   });
 });

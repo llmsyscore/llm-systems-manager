@@ -255,6 +255,8 @@
 #admin-settings .st-checkrow { border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; margin: 6px 0; background: color-mix(in srgb, var(--bg-card-alt) 45%, transparent); }
 #admin-settings .st-checkrow:last-child { border-bottom: 1px solid var(--border-soft); }
 #admin-settings .st-checkrow .st-lb { gap: 8px; justify-items: start; }
+#admin-settings .st-doclink { color: var(--accent); white-space: nowrap; }
+#admin-settings .st-doclink:hover { text-decoration: underline; }
 #admin-settings .st-checkrow :is(.st-ct, .st-body) .row { gap: 6px; font-size: 12px; }
 #admin-settings .st-checkrow :is(.st-ct, .st-body) .row.fb { margin-top: 2px; }
 #admin-settings .st-checkrow .d { color: var(--fg-muted); font-size: 12px; }
