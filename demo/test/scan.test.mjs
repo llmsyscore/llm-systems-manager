@@ -43,7 +43,7 @@ test('scanSource finds literal, template, method, base and wrapper forms', () =>
   assert.ok(scanSource(SRC, 'f.js').every((e) => !('stream' in e)));
 });
 
-test('pageScripts takes local script tags only; defaults follow the index pages', (t) => {
+test('pageScripts takes local script tags only; defaults follow the index pages and the phone app', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'scan-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'p.html'), '<script src="/static/js/a.js?v=1"></script><script src="js/b.js"></script>' +
@@ -51,5 +51,5 @@ test('pageScripts takes local script tags only; defaults follow the index pages'
   assert.deepEqual(pageScripts(join(dir, 'p.html'), '/root'), ['/root/js/a.js', join(dir, 'js/b.js')]);
   const names = DEFAULT_DIRS.map((p) => p.split('/').slice(-1)[0]);
   assert.ok(names.includes('boot.js') && names.includes('api.js'));
-  assert.ok(!names.includes('companion.js') && !names.includes('companion-tower.js'));
+  assert.ok(names.includes('companion.html') && names.includes('companion.js') && names.includes('companion-tower.js'));
 });

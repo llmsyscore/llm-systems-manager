@@ -145,6 +145,7 @@ function swEnv(cacheNames, { redirected = false } = {}) {
     if (url.endsWith('/dashboard')) {
       return new Response('<html><script src="/static/js/app.js?v=abc"></script></html>');
     }
+    if (url.endsWith('/phone')) return new Response('<html><script src="/static/js/companion.js?v=def"></script></html>');
     if (url.endsWith('/alarm/')) return new Response('<html><script src="js/ae.js"></script></html>');
     return new Response(`asset ${url}`);
   };
@@ -182,7 +183,19 @@ test('install skips waiting and pre-caches the pages and their assets', async ()
   assert.equal(self.skipped, true);
   assert.deepEqual([...stores.get('lsm-demo-v9.9.9').keys()].sort(), [
     'http://demo.example/alarm/', 'http://demo.example/alarm/js/ae.js',
-    'http://demo.example/dashboard', 'http://demo.example/static/js/app.js?v=abc']);
+    'http://demo.example/dashboard', 'http://demo.example/phone',
+    'http://demo.example/static/js/app.js?v=abc', 'http://demo.example/static/js/companion.js?v=def']);
+});
+
+test('fetch serves the cached phone app for /phone and /phone/', async () => {
+  const { self, fetched } = swEnv([]);
+  await fire(self, 'install');
+  const before = fetched.length;
+  for (const u of ['http://demo.example/phone', 'http://demo.example/phone/']) {
+    const nav = await fire(self, 'fetch', { request: { url: u, method: 'GET', mode: 'navigate' } });
+    assert.match(await nav.text(), /companion\.js\?v=def/, u);
+  }
+  assert.equal(fetched.length, before);
 });
 
 test('fetch serves cached dashboard for /dashboard, routes /api, passes other origins', async () => {

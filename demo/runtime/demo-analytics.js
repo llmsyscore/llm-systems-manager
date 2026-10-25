@@ -127,8 +127,8 @@
     self.DemoAnalytics = { flush: flush, session: session, ENDPOINT: ENDPOINT, landing: land };
   }
 
-  // The bootstrap page records the landing; the dashboard records the session.
-  var isDashboard = /^\/dashboard/.test(self.location.pathname || '');
+  // The bootstrap page records the landing; the dashboard and the phone app record the session.
+  var isDashboard = /^\/(dashboard|phone)(\/|$)/.test(self.location.pathname || '');
   if (!isDashboard) { loadingPage(); return; }
   var started = false;
   try { started = self.sessionStorage.getItem('lsmDemoStarted') === session.id; } catch (e) { /* storage blocked */ }

@@ -5,15 +5,21 @@
 .demo-btn:hover { filter: brightness(1.1); }
 .demo-btn:disabled { opacity: .4; cursor: default; filter: none; }
 
-.demo-banner { box-sizing: border-box; height: 28px; display: flex; align-items: center; justify-content: center; gap: 10px;
-  padding: 0 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg-tabnav);
-  border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
-.demo-banner-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.demo-banner-link { color: var(--accent); text-decoration: none; }
-.demo-banner-link:hover { text-decoration: underline; }
-.demo-banner .demo-btn { flex: 0 0 auto; padding: 1px 10px; }
+.demo-banner { box-sizing: border-box; min-height: 38px; flex: none; display: flex; align-items: center; justify-content: center;
+  gap: 8px 14px; flex-wrap: wrap; padding: 5px 12px; font-size: 14px; font-weight: 600; color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg-tabnav));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.demo-banner-text { min-width: 0; }
+.demo-banner-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.demo-banner .demo-btn { flex: 0 0 auto; font-size: 13px; padding: 4px 12px; line-height: 1.4; }
+.demo-banner .demo-btn-ghost { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--bg) 45%, transparent); }
+@media (max-width: 640px) {
+  .demo-banner { padding: 5px 8px; gap: 5px 8px; font-size: 13px; }
+  .demo-banner-text { flex: 1 1 100%; text-align: center; }
+  .demo-banner .demo-btn { font-size: 12px; padding: 3px 10px; }
+}
 /* The full-height tab panels start below the tab bar; demo-page.js measures it into --demo-panel-top. */
-#eventsTab, #toolsTab, #adminTab { top: var(--demo-panel-top, calc(88px + 28px)) !important; }
+#eventsTab, #toolsTab, #adminTab { top: var(--demo-panel-top, calc(88px + 38px)) !important; }
 
 .demo-cover { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(2px); border-radius: 6px; }
@@ -25,13 +31,18 @@
 .demo-tour-ring { position: fixed; border: 2px solid var(--accent); border-radius: 8px; pointer-events: none;
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); transition: all .2s ease; }
 .demo-tour-card { position: fixed; width: 320px; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 14px 16px;
-  background: var(--bg-card); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 10px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.35); pointer-events: auto; font-size: 13px; line-height: 1.5; }
+  background: var(--bg-card); color: var(--fg); border: 2px solid var(--accent); border-radius: 10px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent), 0 10px 32px rgba(0,0,0,.45);
+  pointer-events: auto; font-size: 13px; line-height: 1.5; animation: demo-tour-in .35s ease-out; }
+@keyframes demo-tour-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .demo-tour-card { animation: none; } }
 .demo-tour-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .demo-tour-step { color: var(--fg-dim); font-size: 11px; }
 .demo-tour-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
 .demo-tour-text { margin: 0 0 12px; color: var(--fg-muted); }
 .demo-tour-nav { display: flex; justify-content: space-between; gap: 8px; }
+.demo-tour-nav-right { display: flex; gap: 8px; }
+.demo-tour-open-tower { margin-bottom: 10px; }
 .demo-welcome { position: fixed; inset: 0; z-index: 9100; display: flex; align-items: center; justify-content: center; padding: 16px;
   background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(3px); }
 .demo-welcome-card { box-sizing: border-box; width: 520px; max-width: 100%; padding: 28px 30px; text-align: center;

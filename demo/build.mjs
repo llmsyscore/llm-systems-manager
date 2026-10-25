@@ -50,6 +50,9 @@ export function injectBodyEnd(html, snippet) {
 
 // Sample machines, series and alarm data (DemoAlarms) load ahead of demo-page.js for its WebSocket stand-in.
 const PAGE_SCRIPTS = ['demo-analytics.js', 'demo-fleet.js', 'demo-series.js', 'handlers/alarms.js', 'demo-page.js'];
+// Banner and tour, Tower starter questions and outside links, loaded after the page's own scripts.
+const BODY_SCRIPTS = ['demo-tour.js', 'demo-starters.js', 'demo-links.js'];
+const MANIFEST_RE = /[ \t]*<link rel="manifest"[^>]*>\n?/g;
 const pageScript = (release) => PAGE_SCRIPTS
   .map((s) => `<script src="/demo/${s}?v=${release}"></script>`).join('\n');
 
@@ -105,9 +108,14 @@ export async function build({ outDir, release }) {
     + `<style>${BRAND_CSS}</style>\n${pageScript(release)}`;
   const dash = await readFile(join(MGR_FRONTEND, 'index.html'), 'utf8');
   const tour = `<link rel="stylesheet" href="/demo/demo-tour.css?v=${release}">\n`
-    + `<script src="/demo/demo-tour.js?v=${release}"></script>`;
+    + BODY_SCRIPTS.map((s) => `<script src="/demo/${s}?v=${release}"></script>`).join('\n');
   await writeFile(join(outDir, 'dashboard.html'),
     injectBodyEnd(injectHead(stampStaticUrls(dash, MGR_FRONTEND), globals), tour));
+
+  // The phone app at /phone: the companion page without its manifest, with the demo layer.
+  const phone = (await readFile(join(MGR_FRONTEND, 'companion.html'), 'utf8')).replace(MANIFEST_RE, '');
+  await writeFile(join(outDir, 'phone.html'), injectBodyEnd(injectHead(stampStaticUrls(phone, MGR_FRONTEND),
+    `${globals}\n<script src="/demo/demo-phone.js?v=${release}"></script>`), tour));
 
   const ae = await readFile(join(AE_FRONTEND, 'index.html'), 'utf8');
   await writeFile(join(outDir, 'alarm', 'index.html'),

@@ -88,8 +88,7 @@ test('keywords pick the canned answer; anything else gets the fallback', async (
   assert.match(await answerFor('Any alarms open?'), /two open alarms/);
   assert.match(await answerFor('What does it cost?'), /costs the most/);
   assert.match(await answerFor('Which model is loaded?'), /Llama-3\.1-8B/);
-  assert.equal(await answerFor('Tell me a joke'),
-    'In the demo I can only answer a few sample questions. Install it to ask about your own machines.');
+  assert.equal(await answerFor('Tell me a joke'), self.DemoTower.FALLBACK);
 });
 
 test('thread and message POSTs are answered as reads; other Tower writes are refused', async () => {
@@ -131,7 +130,7 @@ test('who makes it and how to get help have their own answers, with no tool call
   assert.match(about, /LLM SysCore/);
   assert.match(about, /AGPL-3\.0/);
   assert.match(about, /github\.com\/llmsyscore\/llm-systems-manager/);
-  assert.match(about, /own hardware/);
+  assert.match(about, /own machines/);
   const help = await answerFor('How do I get help?');
   for (const re of [/https:\/\/www\.llmsyscore\.com\/docs\.html/, /support@llmsyscore\.com/,
     /github\.com\/llmsyscore\/llm-systems-manager\/issues/, /security/i]) assert.match(help, re);
@@ -173,4 +172,189 @@ test('every suggestion and Ask Tower prompt the demo can show has its own script
   assert.deepEqual(missing, [], 'add a scripted answer in demo/runtime/handlers/tower.js');
   assert.match(await answerFor('Explain slot pressure'), /4 slots/);
   assert.match(await answerFor(FC.askRunText(view)), /forge\.example first/);
+});
+
+async function toolEvent(text) {
+  const out = await raw('POST', '/api/tower/threads/demo-t1/messages', { text });
+  const ev = await streamEvents(out.run_id);
+  return { run: out.run_id, tool: ev.find((e) => e.event === 'tool'), deltas: ev.filter((e) => e.event === 'delta').map((e) => e.text).join('') };
+}
+function assertChart(c) {
+  assert.ok(Array.isArray(c.points) && c.points.length >= 2);
+  c.points.forEach((p, i) => {
+    assert.ok(Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (i) assert.ok(p[0] > c.points[i - 1][0], 'ascending time');
+  });
+}
+
+test('the fallback is a formatted list of working example questions with the support contacts', () => {
+  const fb = self.DemoTower.FALLBACK;
+  assert.match(fb, /support@llmsyscore\.com/);
+  assert.match(fb, /https:\/\/www\.llmsyscore\.com/);
+  const ex = fb.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.slice(2));
+  assert.ok(ex.length >= 4);
+  ex.forEach((q) => assert.ok(self.DemoTower.keyFor(q), q));
+});
+
+test('every earlier question keeps its answer key', () => {
+  const K = self.DemoTower.keyFor;
+  const was = [
+    ['Which machine is slow?', 'slow'],
+    ['Any open alarms?', 'alarm'],
+    ['What does each machine cost to run?', 'cost'],
+    ['Show GPU temperature on forge.example over the last day', 'trendtemp'],
+    ['Chart power use over time', 'trendpower'],
+    ['How do I get help?', 'help'],
+    ['Which machine is slow right now?', 'slow'],
+    ['Chart answer speed over the last day', 'trendspeed'],
+    ['Watch the forge GPU temperature', 'watch'],
+    ['What alarms are open right now?', 'alarm'],
+    ['What does the forecast warn about?', 'forecast'],
+    ['Who develops LLM Systems Manager?', 'about'],
+    ['Who makes this?', 'about'],
+    ['who builds it', 'about'],
+    ['Who maintains the project?', 'about'],
+    ['Who is behind LLM Systems Manager?', 'about'],
+    ['Where is support?', 'help'],
+    ['How can I contact you?', 'help'],
+    ['How do I report a bug?', 'help'],
+    ['Why is forge so slow?', 'slow'],
+    ['Is the alarm engine healthy?', 'engine'],
+    ['What models are loaded everywhere?', 'model'],
+    ['Is forge getting hot? Show a graph', 'trendtemp'],
+    ['Chart tokens per second over time', 'trendspeed'],
+    ['Watch forge for me', 'watch'],
+    ['Keep an eye on the GPU', 'watch'],
+    ['Which graphics card uses the most power?', 'power'],
+    ['Is the alarm engine monitoring?', 'engine'],
+    ['Draw a graph of power use', 'trendpower'],
+    ['Explain slot pressure', 'slots'],
+    ['Tell me a joke', null],
+    ['Activity summary for today', 'activity'],
+    ['Alarm summary for today', 'alarm'],
+    ['Why is a host red?', 'red'],
+    ['What used the most power today?', 'power'],
+    ['Top alarm offenders this month', 'offenders'],
+    ['What hardware does each host have?', 'hardware'],
+    ['Unload a model nobody is using', 'unused'],
+    ['Summarise active alarms', 'alarm'],
+    ['Which alert needs me first?', 'alarm'],
+    ['Top 10 alarm rules over 30 days', 'offenders'],
+    ['Alarms per day this week as a chart', 'offenders'],
+    ['Which host alarms the most?', 'offenders'],
+    ['What changed in the last hour?', 'recent'],
+    ['Acknowledge the oldest active alert', 'alarm'],
+    ['What is my $/Mtok today?', 'mtok'],
+    ['Energy per host this week', 'power'],
+    ['Idle vs active energy today', 'idle'],
+    ['Which host is idle the most?', 'idle'],
+    ['Which model is fastest here?', 'fastest'],
+    ['Is anything loaded that nobody uses?', 'unused'],
+    ['What CPU and GPU does each host have?', 'hardware'],
+    ['Wake llama-server', null],
+    ['What version is each agent on?', 'versions'],
+    ['Are any hosts offline?', 'offline'],
+    ['What was the last benchmark run?', 'bench'],
+    ['Which host is fastest for a 27B model?', 'big'],
+    ['Any autotune runs this week?', 'bench'],
+    ['Why is forge.example red?', 'red'],
+    ['What hardware does forge.example have?', 'hardware']
+  ];
+  was.forEach(([q, key]) => assert.equal(K(q), key, q));
+});
+
+const PRODUCT_ASKS = {
+  whatis: ['What is LLM Systems Manager?', 'What can this do?', 'What can LLM Systems Manager do?', 'What does it do?'],
+  whofor: ['Who is this for?', 'Who should use it?'],
+  how: ['How does it work?', 'How does this work?', 'How does LLM Systems Manager work?'],
+  servers: ['Which model servers does it support?', 'Does it support vLLM?', 'Does it work with LM Studio?', 'Does this support NVIDIA GPUs?'],
+  needs: ['What do I need to run it?', 'What are the system requirements?', 'Does it run on Windows?'],
+  alarms: ['How do alarms work?', 'How do I get notified?', 'What is an alert?'],
+  autotune: ['How does autotune work?', 'What is Autotune?'],
+  whatforecast: ['What is Forecast?', 'How does Forecast work?'],
+  benchmarks: ['What is a Report Card?', 'How do benchmarks work?', 'What is a benchmark?'],
+  energy: ['How is energy tracked?', 'Does it measure electricity cost?'],
+  tower: ['What can Tower do?', 'What is Tower?', 'Which model does Tower use?'],
+  phone: ['Is there a phone app?', 'Can I use it on my phone?'],
+  addhost: ['How do I add a machine?', 'How can I add another host?'],
+  install: ['How do I install it?', 'How do I get started?'],
+  free: ['Is it free?', 'What license is it under?', 'Is it open source?'],
+  privacy: ['What data leaves my machines?', 'Does it collect telemetry?'],
+  update: ['How do I update it?', 'How do I upgrade the agents?'],
+  routing: ['Can it route requests between machines?', 'Is there an OpenAI-compatible API?'],
+  users: ['Can several users have access?', 'What user roles are there?']
+};
+
+test('product questions pick their own answers', () => {
+  const A = self.DemoTower.ANSWERS;
+  Object.keys(PRODUCT_ASKS).forEach((key) => {
+    assert.ok(A[key], key);
+    assert.equal(A[key].tool, undefined, key);
+    PRODUCT_ASKS[key].forEach((q) => assert.equal(self.DemoTower.keyFor(q), key, q));
+  });
+  assert.ok(Object.keys(PRODUCT_ASKS).length >= 15);
+});
+
+test('a product answer streams with no tool tick and its key in the run id', async () => {
+  const { run, tool, deltas } = await toolEvent('How do alarms work?');
+  assert.equal(/^demo-run-([a-z]+)-/.exec(run)[1], 'alarms');
+  assert.equal(tool, undefined);
+  assert.equal(deltas, self.DemoTower.ANSWERS.alarms.text);
+  assert.match(deltas, /Discord/);
+});
+
+test('trend questions pick the chart answers and stream a chart the dashboard can draw', async () => {
+  const K = self.DemoTower.keyFor;
+  assert.equal(K('Show GPU temperature on forge.example over the last day'), 'trendtemp');
+  assert.equal(K('Is forge getting hot? Show a graph'), 'trendtemp');
+  assert.equal(K('Chart tokens per second over time'), 'trendspeed');
+  assert.equal(K('Chart power use over time'), 'trendpower');
+  assert.equal(K('Watch forge for me'), 'watch');
+  assert.equal(K('Keep an eye on the GPU'), 'watch');
+  assert.equal(K('Which graphics card uses the most power?'), 'power');
+  assert.equal(K('Is the alarm engine monitoring?'), 'engine');
+  assert.equal(K('Draw a graph of power use'), 'trendpower');
+  const nowS = Math.floor(NOW / 1000);
+  for (const [q, hosts] of [['Show GPU temperature on forge.example over the last day', 1],
+    ['Chart tokens per second over time', 2], ['Chart power use over time', 2]]) {
+    const { run, tool } = await toolEvent(q);
+    assert.match(run, /^demo-run-[a-z]+-/);
+    assert.equal(tool.name, 'host_history');
+    assert.equal(tool.result.hosts.length, hosts);
+    tool.result.hosts.forEach((h) => { assertChart(h._chart); assert.equal(h._chart.points[h._chart.points.length - 1][0], nowS); });
+  }
+  const t = (await toolEvent('Show GPU temperature on forge.example over the last day')).tool.result.hosts[0]._chart;
+  assert.equal(t.points.length, 48);
+  assert.equal(t.threshold, 80);
+  assert.ok(t.points[t.points.length - 1][1] > 80);
+});
+
+test('watch streams a timer series', async () => {
+  const { tool } = await toolEvent('Watch the forge GPU temperature');
+  assert.equal(tool.name, 'timer');
+  const sr = tool.result.series;
+  assert.equal(sr[sr.length - 1][0] - sr[0][0], 20 * 60);
+  assertChart({ points: sr });
+  assert.ok(sr.every((p) => p[1] >= 80 && p[1] <= 82));
+});
+
+test('every answer is formatted and streams back as exactly its text', async () => {
+  const A = self.DemoTower.ANSWERS;
+  Object.keys(A).forEach((k) => {
+    assert.ok(A[k].text.includes('\n\n'), k);
+    assert.ok(!A[k].text.includes('undefined'), k);
+  });
+  assert.ok(self.DemoTower.FALLBACK.includes('\n'));
+  for (const [q, key] of [['Why is forge so slow?', 'slow'], ['Watch forge', 'watch'], ['Tell me a joke', null]]) {
+    const { deltas } = await toolEvent(q);
+    assert.equal(deltas, key ? A[key].text : self.DemoTower.FALLBACK);
+  }
+});
+
+test('fleet questions with product-sounding words keep fleet or fallback answers', () => {
+  const K = self.DemoTower.keyFor;
+  const product = ['needs', 'free', 'addhost', 'install', 'phone', 'whofor', 'users'];
+  for (const q of ['What model runs on forge.example?', 'Does forge have a free slot?', 'What is the electricity price?',
+    'What is the address of each host?', 'How do I set up an alarm rule?', 'Which app sends the most requests?',
+    'Who is waiting for approval?']) assert.ok(!product.includes(K(q)), q + ' -> ' + K(q));
 });

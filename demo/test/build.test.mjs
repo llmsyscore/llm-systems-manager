@@ -94,11 +94,39 @@ test('build produces the stamped, injected site', async (t) => {
     if (!f.isFile()) continue;
     const path = '/' + relative(out, join(f.parentPath, f.name)).split(sep).join('/');
     if (path === '/_worker.js' || path === '/_routes.json') continue;
-    assert.equal(excluded(path), !['/index.html', '/dashboard.html'].includes(path), path);
+    assert.equal(excluded(path), !['/index.html', '/dashboard.html', '/phone.html'].includes(path), path);
   }
   assert.ok((await readFile(join(out, '_worker.js'), 'utf8')).includes('/v1/demo/landing'));
 });
 
+test('build makes the phone app page with the demo layer and the body-end scripts on both pages', async (t) => {
+  const out = await mkdtemp(join(tmpdir(), 'dist-'));
+  t.after(() => rm(out, { recursive: true, force: true }));
+  await build({ outDir: out, release: 'v9.9.9' });
+  const phone = await readFile(join(out, 'phone.html'), 'utf8');
+  const dash = await readFile(join(out, 'dashboard.html'), 'utf8');
+  const srcs = (html) => [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((m) => m[1]);
+  const list = srcs(phone);
+  const first = list.findIndex((u) => u.startsWith('/static/js/'));
+  const head = ['demo-analytics.js', 'demo-fleet.js', 'demo-series.js', 'handlers/alarms.js', 'demo-page.js', 'demo-phone.js']
+    .map((f) => list.indexOf(`/demo/${f}?v=v9.9.9`));
+  assert.ok(head.every((n, i) => n >= 0 && n < first && (i === 0 || n > head[i - 1])), head.join(','));
+  for (const html of [phone, dash]) {
+    const l = srcs(html);
+    const tail = ['demo-tour.js', 'demo-starters.js', 'demo-links.js'].map((f) => l.indexOf(`/demo/${f}?v=v9.9.9`));
+    const lastStatic = l.map((u) => u.startsWith('/static/')).lastIndexOf(true);
+    assert.ok(tail.every((n, i) => n > lastStatic && (i === 0 || n > tail[i - 1])), tail.join(','));
+    assert.ok(html.includes('<link rel="stylesheet" href="/demo/demo-tour.css?v=v9.9.9">'));
+  }
+  assert.ok(!dash.includes('demo-phone.js'));
+  assert.ok(phone.includes('<meta name="robots" content="noindex">'));
+  assert.ok(phone.includes('window.__AE_WS_URL__="wss://demo.invalid/ws"') && phone.includes('--brand-accent'));
+  assert.ok(!phone.includes('rel="manifest"') && !phone.includes('__MGR_VERSION__'));
+  assert.match(phone, /src="\/static\/js\/companion\.js\?v=[0-9a-f]{10}"/);
+  assert.match(phone, /href="\/static\/css\/companion\.css\?v=[0-9a-f]{10}"/);
+  await assert.rejects(readFile(join(out, 'static', 'companion.html')));
+  assert.ok((await readFile(join(out, 'demo', 'demo-phone.js'), 'utf8')).length > 0);
+});
 
 test('build refuses unsafe output directories and flags without values', async () => {
   for (const bad of ['', '  ', '/', DEMO, resolve(DEMO, '..'), homedir()]) {

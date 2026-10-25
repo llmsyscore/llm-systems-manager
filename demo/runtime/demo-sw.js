@@ -6,6 +6,8 @@
   self.importScripts.apply(self, ['/demo/demo-router.js', '/demo/demo-sse.js',
     '/demo/demo-fleet.js', '/demo/demo-series.js', '/demo/demo-state.js'].concat(self.DEMO_HANDLERS || []).map(stamp));
 
+  // Demo pages answered from the cache when the visitor opens them.
+  var PAGES = ['/dashboard', '/phone'];
   var ASSET_RE = /(?<![\w-])(?:src|href)=(["'])([^"'#]+)\1/g;
 
   // Lists same-origin /static and /alarm asset URLs referenced by a cached page.
@@ -29,7 +31,7 @@
   function precache() {
     var origin = self.location.origin;
     return self.caches.open(CACHE).then(function (cache) {
-      var pages = ['/dashboard', '/alarm/'].map(function (p) { return new URL(p, origin).href; });
+      var pages = ['/dashboard', '/phone', '/alarm/'].map(function (p) { return new URL(p, origin).href; });
       return Promise.all(pages.map(function (url) {
         return fetch(new Request(url, { cache: 'reload' })).then(clean).then(function (res) {
           if (!res.ok) throw new Error('demo: precache ' + url + ' ' + res.status);
@@ -87,10 +89,11 @@
       event.respondWith(self.DemoRouter.respond(req, Date.now(), client));
     } else if (p.indexOf('/proxy/') === 0) {
       event.respondWith(cacheThenNetwork(event, new Request(new URL('/demo/placeholder', url).href)));
-    } else if (req.mode === 'navigate' && (p === '/dashboard' || p === '/dashboard/')) {
+    } else if (req.mode === 'navigate' && PAGES.indexOf(p.replace(/\/$/, '')) >= 0) {
+      var page = p.replace(/\/$/, '');
       event.respondWith(self.caches.open(CACHE).then(function (cache) {
-        return cache.match(new URL('/dashboard', url).href);
-      }).then(function (hit) { return hit || fetch('/dashboard').then(clean); }));
+        return cache.match(new URL(page, url).href);
+      }).then(function (hit) { return hit || fetch(page).then(clean); }));
     } else if (p.indexOf('/static/') === 0 || p.indexOf('/alarm/') === 0 || p.indexOf('/demo/') === 0) {
       event.respondWith(cacheThenNetwork(event, req));
     }

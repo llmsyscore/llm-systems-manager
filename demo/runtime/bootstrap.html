@@ -44,7 +44,12 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
     if (done) return;
     done = true;
     if (window.DemoLanding) window.DemoLanding('open');
-    location.replace('/dashboard');
+    var next = '/dashboard';
+    try {
+      if (window.sessionStorage.getItem('lsmDemoReturn') === '/phone') next = '/phone';
+      window.sessionStorage.removeItem('lsmDemoReturn');
+    } catch (e) { /* storage blocked */ }
+    location.replace(next);
   }
   function show(id, reason) {
     if (done) return;
