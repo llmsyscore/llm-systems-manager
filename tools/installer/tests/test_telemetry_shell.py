@@ -28,7 +28,7 @@ def fake_curl(tmp_path, rc=0):
 
 def run(tmp_path, script, env_extra=None, stdin=""):
     b = fake_curl(tmp_path, rc=env_extra.pop("_CURL_RC", 0) if env_extra else 0)
-    env = {k: v for k, v in os.environ.items() if k not in ("CI", "LLMSYS_TELEMETRY", "LLMSYS_HEARTBEAT")}
+    env = {k: v for k, v in os.environ.items() if k not in ("CI", "LLMSYS_TELEMETRY", "LLMSYS_HEARTBEAT", "DO_NOT_TRACK")}
     env["PATH"] = f"{b}:{env['PATH']}"
     env["LLMSYS_INSTALL_DIR"] = str(tmp_path)
     env.update(env_extra or {})
@@ -463,3 +463,59 @@ def test_update_exports_the_source_from_its_staged_tree():
     text = (INSTALLER / "update.sh").read_text()
     assert 'declare -F telemetry_export_source >/dev/null && telemetry_export_source "$REPO_SRC"' in text
     assert text.index('ok "source tree at $REPO_SRC"') < text.index("telemetry_export_source \"$REPO_SRC\"")
+
+
+def test_do_not_track_turns_everything_off(tmp_path):
+    r = run(tmp_path, "telemetry_consent; echo T=$LLMSYS_TELEMETRY H=$LLMSYS_HEARTBEAT R=$LLMSYS_TELEMETRY_REASON",
+            {"DO_NOT_TRACK": "1", "LLMSYS_TELEMETRY": "1", "LLMSYS_HEARTBEAT": "1"})
+    assert "T=0 H=0 R=do_not_track" in r.stdout
+    assert "Reports off: DO_NOT_TRACK is set" in r.stdout
+
+
+def test_do_not_track_zero_or_false_is_not_set(tmp_path):
+    for v in ("0", "false", "FALSE", ""):
+        r = run(tmp_path, "telemetry_consent; echo R=$LLMSYS_TELEMETRY_REASON", {"DO_NOT_TRACK": v})
+        assert "R=default" in r.stdout, v
+
+
+def test_report_is_noop_under_do_not_track(tmp_path):
+    r = run(tmp_path, f'telemetry_report install script 3 ok "{tmp_path}" v1 "{REPO}" http://x.invalid/e',
+            {"LLMSYS_TELEMETRY": "1", "DO_NOT_TRACK": "1"})
+    assert r.returncode == 0, r.stderr
+    assert not (tmp_path / "bin" / "curl.calls").exists()
+
+
+def test_wrapper_exits_quietly_under_do_not_track(tmp_path):
+    r, data = run_wrapper(tmp_path, [], {"LLMSYS_TELEMETRY": "1", "DO_NOT_TRACK": "1"})
+    assert r.returncode == 0, r.stderr
+    assert not (data / "telemetry-last.json").exists()
+
+
+def test_prompt_copy_names_the_daily_check_in():
+    t = LIB.read_text()
+    assert "Anonymous reports tell the project which systems it runs on and how many installs are in use." in t
+    assert "Send anonymous install and crash reports and a daily check-in (version, operating system, install channel)? [Y/n] " in t
+
+
+def test_write_answers_sets_checkin_with_report(tmp_path):
+    import tomllib
+    for flag, want in (("1", True), ("0", False)):
+        t = tmp_path / f"c{flag}.toml"
+        t.write_text("[manager.telemetry]\ninstall_report = false\ncrash_reports = false\n"
+                     "checkin = false\nheartbeat = false\n")
+        r = run(tmp_path, f'SUDO=""; telemetry_write_answers "{t}" {flag} 0')
+        assert r.returncode == 0, r.stderr
+        assert tomllib.loads(t.read_text())["manager"]["telemetry"]["checkin"] is want
+
+
+def test_merge_adds_checkin_false_to_a_live_block_without_it(tmp_path):
+    import tomllib
+    live = tmp_path / "live.toml"
+    ex = tmp_path / "ex.toml"
+    live.write_text("[manager.telemetry]\ninstall_report = true\ncrash_reports = true\nheartbeat = false\n")
+    ex.write_text("[manager.telemetry]\ninstall_report = true\ncrash_reports = true\n"
+                  "checkin = false\nheartbeat = false\n")
+    r = subprocess.run([sys.executable, str(INSTALLER / "toml_reconcile.py"), "merge", str(live), str(ex)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert tomllib.loads(r.stdout)["manager"]["telemetry"]["checkin"] is False

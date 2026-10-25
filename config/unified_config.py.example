@@ -194,10 +194,11 @@ class ManagerCompanion(BaseModel):
 
 
 class ManagerTelemetry(BaseModel):
-    """Anonymous install, crash and daily diagnostic reports (#1266)."""
+    """Anonymous install, crash, daily check-in and daily diagnostic reports (#1266, #1358)."""
     model_config = _MODEL_CFG
     install_report: bool = True
     crash_reports: bool = True
+    checkin: bool = False
     heartbeat: bool = False
 
 

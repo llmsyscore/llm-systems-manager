@@ -205,24 +205,26 @@ Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/b
 
 ### Anonymous reports
 
-The installer asks once, after the mode picker, whether to send an anonymous install report; it shows the report first. Saying yes also allows crash reports. Install and crash reports default to yes, the daily diagnostic report to no. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
+The installer asks once, after the mode picker, whether to send the anonymous install report and shows it first. Saying yes also allows crash reports and the daily check-in. On a new install the install report, crash reports and daily check-in default to yes, the daily diagnostic report to no. An upgrade keeps the answers already in the config. Reports go to a private service run by llmsyscore; its code lives in a private llmsyscore GitHub repository.
 
 | Report | When | Fields |
 |---|---|---|
 | Install | once per install or update | product release and version, where the code came from (a published release, a git copy of `main`, or a local copy), install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
 | Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
-| Daily diagnostic | once a day when turned on | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime, and how many times some features were used: benchmark, autotune, quality and Tower test runs and Tower questions in the last day, alarm rules set up, alarms raised in the last day, and models loaded |
+| Daily check-in | once a day | product release and version, operating system and version, install channel |
+| Daily diagnostic | once a day when turned on, instead of the check-in | product release, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime, and how many times some features were used: benchmark, autotune, quality and Tower test runs and Tower questions in the last day, alarm rules set up, alarms raised in the last day, and models loaded |
 
-Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The receiving service keeps ordinary request logs, including the sending address, for a short time; the stored reports do not contain it. The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
+Every report also carries a random install ID created at install time and the install date. Reports do not include names, addresses, paths, tokens or model names. The stored reports do not contain the sending address. The hosting provider keeps ordinary request logs for a short time. The last report that left the machine is stored in `data/telemetry-last.json`, and **Settings › Telemetry & analytics › View** shows it. Deleting `data/install-id` gives the machine a new random ID.
 
 Turning reports off or on:
 
-- Unattended installs: set `LLMSYS_TELEMETRY=0|1` and `LLMSYS_HEARTBEAT=0|1`. Homebrew installs read `HOMEBREW_LLMSYS_TELEMETRY=0` instead, which turns off the install and crash reports in the new config. You can also switch them off in Settings.
-- Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY` and `LLMSYS_HEARTBEAT` and otherwise print one line saying the report is on.
+- Unattended installs: set `LLMSYS_TELEMETRY=0|1`, which covers the install report, crash reports and the daily check-in, and `LLMSYS_HEARTBEAT=0|1`. Homebrew installs read `HOMEBREW_LLMSYS_TELEMETRY=0` instead, which turns off the install and crash reports and the daily check-in in the new config. You can also switch them off in Settings.
+- Debian packages ask the package question. RHEL packages read `LLMSYS_TELEMETRY`, `LLMSYS_HEARTBEAT` and `DO_NOT_TRACK`, and otherwise print one line saying the report is on.
 - Docker reads `LSM_TELEMETRY` and `LSM_HEARTBEAT` from `.env`. Docker and Homebrew installs are reported by the manager on its first start.
 - Nothing is sent when a `CI` variable is set.
+- `DO_NOT_TRACK=1` (any value other than empty, `0` or `false`) turns every report off in the manager, alarm engine, agent and installer. The services do not see a variable set in a terminal. For the services, run `sudo systemctl edit llm-systems-manager` (and the same for the alarm engine unit and `llm-systems-agent`), add `[Service]` and `Environment=DO_NOT_TRACK=1`, then restart. For Docker, put `DO_NOT_TRACK=1` in `.env`. For the installers, run `sudo DO_NOT_TRACK=1 bash install.sh`, because sudo drops the variable otherwise. Homebrew does not pass the variable through, so use `HOMEBREW_LLMSYS_TELEMETRY=0` at install time and the Settings switches afterwards.
 - Updating from a release without these settings: the updater asks once from a terminal; unattended updates and package or Homebrew upgrades keep reports on and print one line naming the off switch.
-- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen. The Send now button next to the last report sends a diagnostic report immediately.
+- Later changes: **Settings › Telemetry & analytics** on the dashboard, or the phone companion's Settings screen. It has switches for install and update reports, crash reports, the daily check-in and the daily diagnostic report. The **Sending** line names the reports that are on and links to the **Field list**. It also shows when `DO_NOT_TRACK` is set. The Send now button next to the last report sends a diagnostic report immediately.
 
 ### Mixing install methods
 
@@ -491,6 +493,7 @@ Refer to the reference when you need to understand what a setting does or when a
 | `[manager.companion].release_check` | Opt-in GitHub check for a newer release, shown in the companion | `false` |
 | `[manager.telemetry].install_report` | Send the anonymous install report | `true` |
 | `[manager.telemetry].crash_reports` | Send anonymous crash reports | `true` |
+| `[manager.telemetry].checkin` | Send the daily check-in | `false` in the file; a new install sets it from the install-report answer |
 | `[manager.telemetry].heartbeat` | Send the daily diagnostic report | `false` |
 | `[openclaw].metrics_push_interval_s` | How often, in seconds, OpenClaw budget figures are sent to the alarm engine (30 at the least) | `300.0` |
 | `[paths].log_max_bytes` | Size in bytes at which a service log file is rotated to a new one | `52428800` |
@@ -921,6 +924,7 @@ push_notify_token = ""                    # blank = fall back to the alarm-engin
 [manager.telemetry]
 install_report = true    # anonymous install report
 crash_reports = true     # anonymous crash reports
+checkin = false         # daily check-in
 heartbeat = false        # daily diagnostic report
 ```
 

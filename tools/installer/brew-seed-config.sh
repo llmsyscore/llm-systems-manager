@@ -171,6 +171,12 @@ while IFS= read -r line || [ -n "$line" ]; do
       else
         printf '%s\n' "$line" >> "$TMP"
       fi ;;
+    'checkin = false'*)
+      if [ "$TELEMETRY_OFF" = "1" ]; then
+        printf '%s\n' "$line" >> "$TMP"
+      else
+        printf 'checkin = true\n' >> "$TMP"
+      fi ;;
     *)
       printf '%s\n' "$line" >> "$TMP" ;;
   esac
@@ -185,6 +191,9 @@ grep -q '^\[manager.telemetry\]' "$TMP" || { rm -f "$TMP"; die "telemetry block 
 if [ "$TELEMETRY_OFF" = "1" ]; then
   grep -q '^install_report = false' "$TMP" || { rm -f "$TMP"; die "install_report rewrite failed — .example drifted?"; }
   grep -q '^crash_reports = false' "$TMP"  || { rm -f "$TMP"; die "crash_reports rewrite failed — .example drifted?"; }
+  grep -q '^checkin = false' "$TMP"        || { rm -f "$TMP"; die "checkin rewrite failed — .example drifted?"; }
+else
+  grep -q '^checkin = true' "$TMP"         || { rm -f "$TMP"; die "checkin rewrite failed — .example drifted?"; }
 fi
 
 mv "$TMP" "$TARGET"

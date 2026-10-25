@@ -97,11 +97,20 @@ render_config() {
   local tele="${LSM_TELEMETRY:-1}" hb="${LSM_HEARTBEAT:-0}" tele_b=true hb_b=false
   [ "$tele" = "1" ] || tele_b=false
   [ "$hb" = "1" ] && hb_b=true
-  local ir_b="$tele_b" cr_b="$tele_b"
+  # DO_NOT_TRACK (non-empty, not 0/false) turns every report off in a fresh config.
+  case "$(printf '%s' "${DO_NOT_TRACK:-}" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false) ;;
+    *) tele_b=false; hb_b=false ;;
+  esac
+  local ir_b="$tele_b" cr_b="$tele_b" ck_b="$tele_b"
   # An existing [manager.telemetry] block keeps its values; env seeds only a fresh config.
+  if [ -s "$CFG" ] && ! grep -q '^\[manager\.telemetry\]' "$CFG"; then
+    ck_b=false
+  fi
   if [ -s "$CFG" ] && grep -q '^\[manager\.telemetry\]' "$CFG"; then
     ir_b="$(_telemetry_key install_report "$ir_b")"
     cr_b="$(_telemetry_key crash_reports "$cr_b")"
+    ck_b="$(_telemetry_key checkin "false")"
     hb_b="$(_telemetry_key heartbeat "$hb_b")"
   fi
 
@@ -153,6 +162,7 @@ image_gen = "auto"
 [manager.telemetry]
 install_report = $ir_b
 crash_reports = $cr_b
+checkin = $ck_b
 heartbeat = $hb_b
 
 [manager.agents]

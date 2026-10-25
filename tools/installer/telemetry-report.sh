@@ -15,6 +15,7 @@ while (( $# )); do
 done
 [[ -n "$DATA" && -n "$ROOT" ]] || exit 0
 [[ -n "${CI:-}" ]] && exit 0
+telemetry_do_not_track && exit 0
 if [[ -n "$TOML" ]]; then
   consent="$(read_toml_key install_report "$TOML" 2>/dev/null || true)"
   [[ "$consent" == "true" ]] && export LLMSYS_TELEMETRY=1 || export LLMSYS_TELEMETRY=0

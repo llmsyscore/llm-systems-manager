@@ -699,6 +699,7 @@ tele_report = "true" if vals.get("TELEMETRY_REPORT") == "true" else "false"
 tele_beat = "true" if vals.get("TELEMETRY_HEARTBEAT") == "true" else "false"
 text = sub_bool_in_section(text, "manager.telemetry", "install_report", tele_report)
 text = sub_bool_in_section(text, "manager.telemetry", "crash_reports", tele_report)
+text = sub_bool_in_section(text, "manager.telemetry", "checkin", tele_report)
 text = sub_bool_in_section(text, "manager.telemetry", "heartbeat", tele_beat)
 
 path.write_text(text)

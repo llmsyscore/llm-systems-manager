@@ -294,9 +294,21 @@ llmsys_admin_signin() {
   esac
 }
 
+# True when DO_NOT_TRACK is set (non-empty, not 0/false).
+llmsys_do_not_track() {
+  local v
+  v="$(printf '%s' "${DO_NOT_TRACK:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$v" ] && [ "$v" != "0" ] && [ "$v" != "false" ]
+}
+
 # Fresh install without an answer (no debconf, rpm): report on, heartbeat off.
 llmsys_default_telemetry() {
   [ -z "${1:-}" ] || return 0
+  if llmsys_do_not_track; then
+    export LLMSYS_TELEMETRY=0 LLMSYS_DNT_NOTICED=1
+    echo "llm-systems-manager: Reports off: DO_NOT_TRACK is set"
+    return 0
+  fi
   if [ -n "${LLMSYS_TELEMETRY:-}" ] || [ -n "${CI:-}" ]; then return 0; fi
   export LLMSYS_TELEMETRY=1
   echo "llm-systems-manager: Anonymous install report on; set LLMSYS_TELEMETRY=0 before installing to turn it off"
@@ -306,8 +318,9 @@ llmsys_default_telemetry() {
 llmsys_telemetry_report() {
   local upgrade="$1" event=install
   [ "${LLMSYS_TELEMETRY:-}" = "0" ] && return 0
+  llmsys_do_not_track && return 0
   [ -n "$upgrade" ] && event=update
-  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" LLMSYS_INSTALL_DIR="$LLMSYS_INSTALL_DIR" \
+  runuser -u "$LLMSYS_RUN_USER" -- env CI="${CI:-}" DO_NOT_TRACK="${DO_NOT_TRACK:-}" LLMSYS_INSTALL_DIR="$LLMSYS_INSTALL_DIR" \
     LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
     LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" LLMSYS_TELEMETRY_SOURCE=release \
     bash "$LLMSYS_INSTALL_DIR/tools/installer/telemetry-report.sh" --event "$event" \
@@ -322,6 +335,11 @@ llmsys_telemetry_report() {
 llmsys_configure() {
   local upgrade="${1:-}" grp adopt=clean u
   LLMSYS_PKG_FORMAT="${LLMSYS_PKG_FORMAT:-pkg}"
+  # Fresh install under DO_NOT_TRACK writes every report answer off.
+  if [ -z "$upgrade" ] && llmsys_do_not_track; then
+    export LLMSYS_TELEMETRY=0 LLMSYS_HEARTBEAT=0
+    [ -n "${LLMSYS_DNT_NOTICED:-}" ] || echo "llm-systems-manager: Reports off: DO_NOT_TRACK is set"
+  fi
   if [ ! -f "$LLMSYS_PKG_MARKER" ]; then
     if [ -z "$upgrade" ]; then
       [ -f "$LLMSYS_CFG" ] && adopt=adopted

@@ -14,13 +14,14 @@ const E = (path, label) => ({ path, label, help: 'h', group: 'telemetry', servic
 const payload = () => ({
   ok: true, groups: [{ key: 'telemetry', title: 'Telemetry & analytics' }],
   entries: [E('manager.telemetry.install_report', 'Install and update reports'), E('manager.telemetry.crash_reports', 'Crash reports'),
+            E('manager.telemetry.checkin', 'Daily check-in'),
             E('manager.telemetry.heartbeat', 'Daily diagnostic report')],
   values: { 'manager.telemetry.install_report': true, 'manager.telemetry.crash_reports': true,
-            'manager.telemetry.heartbeat': false },
+            'manager.telemetry.checkin': false, 'manager.telemetry.heartbeat': false },
   defaults: {}, secrets: {}, drift: {}, restart_pending: [], ae_sync_pending: [], ae_sync_retry_s: 30,
   topology: { split: false, ae_config_reachable: true },
 });
-const STATUS = { ok: true, install_report: true, crash_reports: true, heartbeat: false, pending: false,
+const STATUS = { ok: true, install_report: true, crash_reports: true, checkin: false, do_not_track: false, heartbeat: false, pending: false,
                  last: { event: 'install', sent_at: new Date(Date.now() - 7200e3).toISOString(),
                          payload: { event: 'install', os: 'debian' } } };
 
@@ -64,9 +65,13 @@ describe('Telemetry & analytics group', () => {
     const rows = [...w.document.querySelectorAll('.st-rows > .settings-row')];
     const hb = rows.findIndex((r) => r.dataset.path === 'manager.telemetry.heartbeat');
     expect(hb).toBeGreaterThanOrEqual(0);
-    expect(rows[hb + 1].id).toBe('stTelemetryStatus');
-    expect(rows[hb + 1].textContent).toMatch(/install/);
-    expect(rows[hb + 1].textContent).toMatch(/2h ago/);
+    expect(rows[hb + 1].id).toBe('stTelemetrySending');
+    expect(rows[hb + 2].id).toBe('stTelemetryStatus');
+    expect(rows[hb + 2].textContent).toMatch(/install/);
+    expect(rows[hb + 2].textContent).toMatch(/2h ago/);
+    const order = rows.map((r) => r.dataset.path).filter((x) => x && x.startsWith('manager.telemetry.'));
+    expect(order.indexOf('manager.telemetry.checkin')).toBe(order.indexOf('manager.telemetry.crash_reports') + 1);
+    expect(order.indexOf('manager.telemetry.heartbeat')).toBe(order.indexOf('manager.telemetry.checkin') + 1);
     expect(w.document.body.innerHTML).not.toContain('example.invalid');
   });
   test('View opens the themed modal with the escaped payload', async () => {
@@ -116,6 +121,40 @@ describe('Telemetry & analytics group', () => {
     } finally {
       if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
     }
+  });
+  test('sending row names the enabled reports and links the field list', async () => {
+    const w = await boot();
+    const row = w.document.querySelector('#stTelemetrySending');
+    expect(row.textContent).toContain('install and update reports, crash reports');
+    expect(row.textContent).not.toContain('daily check-in');
+    const a = row.querySelector('a');
+    expect(a.textContent).toBe('Field list');
+    expect(a.getAttribute('href')).toBe('https://github.com/llmsyscore/llm-systems-manager/blob/main/docs/DEPLOYMENT.md#anonymous-reports');
+    const w2 = await boot({ ...STATUS, install_report: false, crash_reports: false });
+    expect(w2.document.querySelector('#stTelemetrySending').textContent).toContain('Nothing is being sent');
+    const w3 = await boot({ ...STATUS, checkin: true, heartbeat: true });
+    expect(w3.document.querySelector('#stTelemetrySending').textContent)
+      .toContain('install and update reports, crash reports, daily diagnostic report');
+    expect(w3.document.querySelector('#stTelemetrySending').textContent).not.toContain('daily check-in');
+    const w4 = await boot({ ...STATUS, checkin: true, heartbeat: false });
+    expect(w4.document.querySelector('#stTelemetrySending').textContent).toMatch(/crash reports, daily check-in/);
+  });
+  test('DO_NOT_TRACK says nothing is sent and disables Send now', async () => {
+    const w = await boot({ ...STATUS, do_not_track: true });
+    expect(w.document.querySelector('#stTelemetrySending').textContent)
+      .toContain('Nothing is sent: DO_NOT_TRACK is set on this machine');
+    expect(w.document.querySelector('#stTelemetrySend').disabled).toBe(true);
+  });
+  test('a 403 on send toasts the DO_NOT_TRACK message', async () => {
+    const w = await boot({ ...STATUS, last: null });
+    w.__postStatus = 403;
+    w.document.querySelector('#stTelemetrySend').click();
+    await flush(); await flush();
+    expect(w.__toasts).toEqual(['Nothing is sent while DO_NOT_TRACK is set']);
+  });
+  test('sending row reads Status unavailable when the fetch fails', async () => {
+    const w = await boot('fail');
+    expect(w.document.querySelector('#stTelemetrySending').textContent).toMatch(/Status unavailable/);
   });
   test('System Health has no telemetry row', () => {
     expect(healthSrc).not.toMatch(/telemetry|Telemetry/i);

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 SCHEMA = 1
-EVENTS = ("install", "update", "heartbeat", "crash")
+EVENTS = ("install", "update", "heartbeat", "checkin", "crash")
 PENDING = "telemetry-pending.json"
 LAST = "telemetry-last.json"
 CRASHES = "telemetry-crashes.json"
@@ -85,9 +85,16 @@ def _cfg():
     return getattr(getattr(s, "manager", None), "telemetry", None)
 
 
+def do_not_track() -> bool:
+    """True when DO_NOT_TRACK is set to anything other than empty, 0 or false."""
+    return os.environ.get("DO_NOT_TRACK", "").strip().lower() not in ("", "0", "false")
+
+
 def enabled(kind: str) -> bool:
+    if do_not_track():
+        return False
     c = _cfg()
-    default = kind != "heartbeat"
+    default = kind not in ("heartbeat", "checkin")
     return bool(getattr(c, kind, default)) if c is not None else default
 
 
@@ -287,8 +294,13 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
     if event not in EVENTS:
         raise ValueError(event)
     p = _blank(event, data_dir, version, channel)
-    p["mode"] = (mode or None)
-    if event in ("install", "update"):
+    if event in ("install", "update", "heartbeat"):
+        p["mode"] = (mode or None)
+    if event == "checkin":
+        os_id, os_ver = _os_release()
+        p.update(os=os_id, os_version=os_ver or None)
+        p["release"] = _call_str(_release_fn)
+    elif event in ("install", "update"):
         p.update(host_facts())
         p["outcome"] = (outcome or "ok")[:128]
         p["release"] = _call_str(_release_fn)
@@ -479,7 +491,7 @@ def _deliver(payload: dict) -> bool:
     if ok:
         record_sent(_data_dir, payload)
         _append_log(_data_dir, f"sent {payload['event']}")
-        if payload["event"] == "heartbeat":
+        if payload["event"] in ("heartbeat", "checkin"):
             _hb["sent"] = time.time()
             _write_stamp(_data_dir / HEARTBEAT_STAMP, payload.get("sent_at") or _iso())
     elif payload["event"] in ("install", "update"):
@@ -493,6 +505,8 @@ def _deliver(payload: dict) -> bool:
 def send_now() -> dict:
     """Sends a heartbeat report immediately, whatever the daily toggle says. Never raises.
     One send at a time; a second caller gets {"ok": False, "error": "busy"}."""
+    if do_not_track():
+        return {"ok": False, "error": "do_not_track"}
     if not _send_lock.acquire(blocking=False):
         return {"ok": False, "error": "busy"}
     try:
@@ -581,9 +595,17 @@ def _spread_s(data_dir: Optional[Path]) -> int:
         return 0
 
 
+def _daily_event() -> Optional[str]:
+    """The one report sent each day: the detailed heartbeat, else the check-in, else None."""
+    if enabled("heartbeat"):
+        return "heartbeat"
+    return "checkin" if enabled("checkin") else None
+
+
 def _heartbeat_tick() -> None:
     now = time.time()
-    if not enabled("heartbeat") or now < _hb["not_before"]:
+    event = _daily_event()
+    if event is None or now < _hb["not_before"]:
         return
     if min(_heartbeat_age(now), now - _hb["sent"]) < HEARTBEAT_EVERY_S:
         return
@@ -591,7 +613,7 @@ def _heartbeat_tick() -> None:
         return
     try:
         _hb["attempt"] = now
-        _deliver(build_payload("heartbeat", data_dir=_data_dir, version=_version,
+        _deliver(build_payload(event, data_dir=_data_dir, version=_version,
                                channel=detect_channel(_root)))
     finally:
         _send_lock.release()
@@ -607,7 +629,9 @@ def start_scheduler(stop_fn: Callable[[], bool] = lambda: False) -> threading.Th
             pass  # channel detection is best effort
         time.sleep(FIRST_DELAY_S)
         try:
-            if (_data_dir / PENDING).is_file():
+            if do_not_track():
+                pass  # nothing leaves while DO_NOT_TRACK is set
+            elif (_data_dir / PENDING).is_file():
                 flush_pending(_data_dir, endpoint())
             elif not (_data_dir / LAST).is_file() and enabled("install_report"):
                 _deliver(build_payload("install", data_dir=_data_dir, version=_version,
@@ -643,7 +667,8 @@ def status() -> dict:
     except Exception:
         last = None
     return {"install_report": enabled("install_report"), "crash_reports": enabled("crash_reports"),
-            "heartbeat": enabled("heartbeat"),
+            "checkin": enabled("checkin"), "heartbeat": enabled("heartbeat"),
+            "do_not_track": do_not_track(),
             "pending": bool(_data_dir and (_data_dir / PENDING).is_file()), "last": last}
 
 

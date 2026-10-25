@@ -30,9 +30,10 @@ Description: SMTP app-password:
 Template: llm-systems-manager/telemetry
 Type: boolean
 Default: true
-Description: Send an anonymous install and crash report?
+Description: Send anonymous install and crash reports and a daily check-in?
  One report of the product version, operating system, CPU, memory and GPU
- model, plus the error type and code location of unexpected crashes. No
+ model; the error type and code location of unexpected crashes; and a daily
+ check-in with the product version, operating system and install channel. No
  names, addresses, paths or tokens. The field list is in the README.
 
 Template: llm-systems-manager/heartbeat

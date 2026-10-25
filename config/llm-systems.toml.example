@@ -26,6 +26,7 @@ alarm_engine_url = "http://localhost:8081"               # where the manager fin
 [manager.telemetry]
 install_report = true
 crash_reports = true
+checkin = false
 heartbeat = false
 
 [manager.agents]
