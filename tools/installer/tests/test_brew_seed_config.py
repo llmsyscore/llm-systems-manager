@@ -53,6 +53,13 @@ def test_fresh_seed_turns_reports_off_with_the_opt_out(tmp_path):
     assert tele["checkin"] is False
 
 
+def test_fresh_seed_turns_reports_off_under_do_not_track(tmp_path):
+    cfg, _ = seed(tmp_path, extra_env={"DO_NOT_TRACK": "1"})
+    tele = tomllib.loads(cfg.read_text())["manager"]["telemetry"]
+    assert tele["install_report"] is False and tele["crash_reports"] is False
+    assert tele["checkin"] is False
+
+
 def test_fresh_seed_keeps_reports_on_when_the_opt_out_is_not_zero(tmp_path):
     cfg, _ = seed(tmp_path, extra_env={"HOMEBREW_LLMSYS_TELEMETRY": "1"})
     tele = tomllib.loads(cfg.read_text())["manager"]["telemetry"]
