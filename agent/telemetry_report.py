@@ -130,7 +130,8 @@ def send(payload, endpoint, timeout=5.0):
     try:
         body = json.dumps(payload, separators=(",", ":")).encode()
         req = urllib.request.Request(endpoint, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": f"llm-systems-agent/{payload.get('version', '')}"})
         opener = urllib.request.OpenerDirector()
         opener.add_handler(urllib.request.ProxyHandler({}))
         opener.add_handler(urllib.request.HTTPSHandler())
