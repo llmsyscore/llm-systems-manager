@@ -170,11 +170,31 @@ test('a later reason on the loading page replaces a provisional left; a failed s
 
 test('the loading page sends nothing when it hops to the dashboard', async () => {
   const { w, sent } = boot('https://demo.llmsyscore.com/');
-  w.DemoLanding('slow');
   w.DemoLanding('open');
   w.dispatchEvent(new w.Event('pagehide'));
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(sent.length, 0);
+});
+
+test('a late open after "Still loading" is reported once with the wait time', async () => {
+  const { w, events } = boot('https://demo.llmsyscore.com/');
+  w.DemoLanding('slow');
+  w.DemoLanding('open');
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().map((e) => e.reason), ['slow_open']);
+  assert.ok(events()[0].total_ms >= 0);
+});
+
+test('a loading-page link click is reported and kept over later reasons', async () => {
+  const { w, events } = boot('https://demo.llmsyscore.com/');
+  w.DemoLanding('slow');
+  w.DemoLanding('screenshots');
+  w.DemoLanding('install');
+  w.DemoLanding('open');
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().map((e) => e.reason), ['screenshots']);
 });
 
 test('a refused change on the dashboard is recorded with its method and path', async () => {

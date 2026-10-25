@@ -177,14 +177,12 @@ test('activate deletes old lsm-demo caches, keeps this release and claims client
   assert.equal(claimed(), true);
 });
 
-test('install skips waiting and pre-caches the pages and their assets', async () => {
+test('install skips waiting and pre-caches only the pages, so the demo opens without waiting for assets', async () => {
   const { self, stores } = swEnv([]);
   await fire(self, 'install');
   assert.equal(self.skipped, true);
   assert.deepEqual([...stores.get('lsm-demo-v9.9.9').keys()].sort(), [
-    'http://demo.example/alarm/', 'http://demo.example/alarm/js/ae.js',
-    'http://demo.example/dashboard', 'http://demo.example/phone',
-    'http://demo.example/static/js/app.js?v=abc', 'http://demo.example/static/js/companion.js?v=def']);
+    'http://demo.example/alarm/', 'http://demo.example/dashboard', 'http://demo.example/phone']);
 });
 
 test('fetch serves the cached phone app for /phone and /phone/', async () => {
@@ -206,12 +204,14 @@ test('fetch serves cached dashboard for /dashboard, routes /api, passes other or
   assert.match(await nav.text(), /app\.js\?v=abc/);
   const api = await fire(self, 'fetch', { request: new Request('http://demo.example/api/none') });
   assert.equal(api.status, 404);
-  const before = fetched.length;
   const other = await fire(self, 'fetch', { request: new Request('http://elsewhere.example/x.js') });
   assert.equal(other, undefined);
   const st = await fire(self, 'fetch', { request: new Request('http://demo.example/static/js/app.js?v=abc') });
   assert.equal(await st.text(), 'asset http://demo.example/static/js/app.js?v=abc');
-  assert.equal(fetched.length, before);
+  const before = fetched.length;
+  const again = await fire(self, 'fetch', { request: new Request('http://demo.example/static/js/app.js?v=abc') });
+  assert.equal(await again.text(), 'asset http://demo.example/static/js/app.js?v=abc');
+  assert.equal(fetched.length, before, 'second use comes from the cache');
 });
 
 test('fetch answers tool frames under /proxy/ with the placeholder and routes /tools-ping', async () => {
@@ -265,12 +265,8 @@ test('a throwing handler or a malformed path answers 500 JSON and posts demo-err
   ]);
 });
 
-test('asset list takes single- and double-quoted src/href but not data-src; cache writes go through waitUntil', async () => {
+test('an asset is fetched on first use and its cache write goes through waitUntil', async () => {
   const { self, stores } = swEnv([]);
-  const html = `<script src='/static/js/a.js'></script><link href="/static/css/b.css"><img data-src="/static/img/c.png">`
-    + `<div data-href='/alarm/x.js'></div><script src="https://cdn.example/x.js"></script>`;
-  assert.deepEqual([...self.DemoSw.assetUrls(html, 'http://demo.example/dashboard')],
-    ['http://demo.example/static/js/a.js', 'http://demo.example/static/css/b.css']);
   const waits = [];
   let answer;
   const event = { request: new Request('http://demo.example/static/js/new.js'),
