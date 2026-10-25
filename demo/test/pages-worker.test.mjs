@@ -143,6 +143,7 @@ test('/internal with the key sets the device cookie, is not reported, and tagged
   const c = tag.res.headers.get('Set-Cookie');
   assert.match(c, /^lsm_device=[0-9a-f]{64}; Max-Age=\d+; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
   assert.match(tag.body, /marked as yours/);
+  assert.equal(tag.res.headers.get('Referrer-Policy'), 'no-referrer');
   const value = c.split(';')[0];
   const own = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'x=1; ' + value }), html, env);
   assert.equal(own.posts[0].body.own, 1);

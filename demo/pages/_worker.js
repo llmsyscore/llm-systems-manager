@@ -45,12 +45,13 @@ function cookie(req, name) {
 }
 
 // /internal?key=<INTERNAL_TAG_KEY> marks this browser as the operator's with a cookie; &remove=1 clears it.
+// No referrer leaves the page, so the key never reaches the next page's analytics.
 export function tagDevice(url, tag) {
   const remove = url.searchParams.get('remove') === '1';
   const res = new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Device tag</title><meta name="robots" content="noindex"><body style="font:16px/1.5 system-ui,sans-serif;background:#0a0e1f;color:#e8ecf8;padding:24px">
 <p>${remove ? 'This browser is no longer marked as yours.' : 'This browser is now marked as yours. Its visits to the demo count as internal.'}</p>
-<p><a style="color:#8ea4ff" href="/">Demo</a></p></body>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+<p><a style="color:#8ea4ff" href="/">Demo</a></p></body>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
   res.headers.set('Set-Cookie', `${TAG_COOKIE}=${remove ? '' : tag}; Max-Age=${remove ? 0 : TAG_MAX_AGE_S}; Path=/; Secure; HttpOnly; SameSite=Lax`);
   return res;
 }
