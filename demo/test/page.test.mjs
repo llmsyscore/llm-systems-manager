@@ -132,6 +132,7 @@ const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
   <div id="serverLogPanel" style="display:none;"><div id="serverLogBox"></div></div>
 </div>
 <div id="eventsTab"><iframe id="alarmEngineIframe"></iframe></div>
+<div id="settingsOverlay"><aside class="sd"><section id="sdAppearance"></section></aside></div>
 <div id="towerOverlay"><aside id="towerAside"><div id="twBox"><textarea id="twInput"></textarea></div></aside></div>
 <div id="adminTab"><div id="adminHealthCard"></div>
   <button class="sub-tab-btn" id="subTabBtnAdminAgents">Agents</button><button class="sub-tab-btn" id="subTabBtnAdminRouting">Gateway</button>
@@ -170,7 +171,7 @@ test('a first visit shows the welcome card; its tour button starts the tour, whi
   welcome.querySelector('.demo-welcome-tour').click();
   assert.equal(w.document.querySelector('.demo-welcome'), null);
   assert.deepEqual(tracked, [['click', 'welcome-tour'], ['tour', undefined]]);
-  assert.equal(steps.length, 12);
+  assert.equal(steps.length, 13);
   assert.ok(steps.every((s) => s.text.split(/(?<=\.|\?"?)\s+(?=[A-Z])/).length <= 2), 'one or two sentences per step');
   for (const t of ['Energy', 'Forecast', 'Benchmarks', 'System health', 'Where requests go', 'Jobs', 'Add machines']) {
     assert.ok(steps.some((s) => s.title.includes(t)), t);
@@ -682,4 +683,31 @@ test('the tour card sits outside the highlighted area: below, above, then beside
   assert.equal(p.x, 820 - 12 - cw);
   const full = { left: 2, right: 1278, top: 2, bottom: 798 };
   assert.equal(spot(full, cw, ch, W, H).y, H - ch - 24);
+});
+
+test('the Settings step opens the cog drawer at the themes, offers Open Settings when closed, and closes it on Next', async () => {
+  const calls = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.localStorage.setItem('lsmDemoTourSeen', '1');
+    const ov = () => w.document.getElementById('settingsOverlay');
+    w.openSettings = () => { calls.push('open'); ov().classList.add('open'); };
+    w.closeSettings = () => { calls.push('close'); ov().classList.remove('open'); };
+  } });
+  const scrolled = [];
+  w.document.getElementById('sdAppearance').scrollIntoView = () => scrolled.push('themes');
+  const i = w.DemoTour.steps.findIndex((s) => s.settings);
+  assert.ok(i > 0);
+  assert.match(w.DemoTour.steps[i].text, /theme/i);
+  w.DemoTour.start(i);
+  assert.deepEqual(calls, ['open']);
+  assert.deepEqual(scrolled, ['themes']);
+  w.closeSettings();
+  await new Promise((r) => setTimeout(r, 20));
+  const btn = w.document.querySelector('.demo-tour-open-settings');
+  assert.ok(btn);
+  btn.click();
+  assert.ok(w.document.getElementById('settingsOverlay').classList.contains('open'));
+  w.DemoTour.next();
+  assert.equal(calls[calls.length - 1], 'close');
+  w.DemoTour.close();
 });

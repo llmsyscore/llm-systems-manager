@@ -26,6 +26,8 @@
       text: 'Alarms tell you when something needs a look, like a machine running hot. New sample alarms show up here every minute or two.' },
     { tab: 'overall', selector: '#towerAside', tower: true, title: 'Ask Tower',
       text: 'Tower answers questions about your machines in plain words. Type here and try "Which machine is slow?" or "How do I get help?"' },
+    { tab: 'overall', selector: '#settingsOverlay .sd', settings: true, title: 'Settings and themes',
+      text: 'The cog at the top right opens Settings, where you pick a color theme, choose which cards show and set how often the page refreshes. Try a theme now.' },
     { tab: 'admin', selector: '#adminHealthCard', title: 'System health',
       text: 'See at a glance whether every part of the system is running, and which jobs are waiting or running.' },
     { tab: 'admin', sub: 'subTabBtnAdminAgents', selector: '#admin-agents', title: 'Add machines',
@@ -50,7 +52,7 @@
   ];
   var steps = onPhone ? phoneSteps : deskSteps;
 
-  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false, tower: false, welcome: null, obs: null };
+  var state = { index: -1, root: null, ring: null, card: null, timer: null, timer2: null, touched: false, opened: null, welcome: null, obs: null };
 
   function seen() {
     try { return !!self.localStorage.getItem(SEEN_KEY); } catch (e) { return false; }
@@ -145,10 +147,12 @@
     root.appendChild(card);
     doc.body.appendChild(root);
     state.root = root; state.ring = ring; state.card = card;
-    var ov = doc.getElementById('towerOverlay');
-    if (ov && typeof MutationObserver === 'function') {
+    if (typeof MutationObserver === 'function') {
       state.obs = new MutationObserver(function () { if (state.card) refresh(); });
-      state.obs.observe(ov, { attributes: true, attributeFilter: ['class'] });
+      Object.keys(DRAWERS).forEach(function (k) {
+        var ov = doc.getElementById(DRAWERS[k].overlay);
+        if (ov) state.obs.observe(ov, { attributes: true, attributeFilter: ['class'] });
+      });
     }
   }
 
@@ -160,7 +164,8 @@
     var r = target && target.getBoundingClientRect();
     var vw = self.innerWidth || 1024, vh = self.innerHeight || 768;
     var card = state.card, ring = state.ring;
-    if (s.tower && !towerShown()) { state.tower = false; r = null; }
+    var dk = drawerOf(s);
+    if (dk && !drawerShown(dk)) { if (state.opened === dk) state.opened = null; r = null; }
     if (!r || (!r.width && !r.height)) {
       ring.style.display = 'none';
       card.style.left = Math.max(12, (vw - card.offsetWidth) / 2) + 'px';
@@ -210,22 +215,33 @@
     if (last) right.appendChild(link(INSTALL_LABEL, 'demo-btn demo-tour-install'));
     right.appendChild(button(last ? 'Done' : 'Next', last ? 'demo-btn demo-btn-ghost demo-tour-next' : 'demo-btn demo-tour-next', nextStep));
     nav.appendChild(right);
-    if (s.tower && !towerShown()) {
-      card.appendChild(button('Open Tower', 'demo-btn demo-btn-ghost demo-tour-open-tower', function () { showTower(true); render(); place(); }));
+    var dk = drawerOf(s);
+    if (dk && !drawerShown(dk)) {
+      card.appendChild(button(DRAWERS[dk].label, 'demo-btn demo-btn-ghost ' + DRAWERS[dk].cls, function () { showDrawer(dk); render(); place(); }));
     }
     card.appendChild(nav);
   }
 
-  function towerShown() { var o = doc.getElementById('towerOverlay'); return !!(o && o.classList.contains('open')); }
-  // Opens Tower for a step that asks for it and closes it again when the tour moves on, if the tour opened it.
-  function showTower(on) {
-    if (on && !state.tower && !towerShown() && typeof self.towerOpen === 'function') {
-      try { self.towerOpen(); } catch (e) { /* Tower not ready */ }
-      state.tower = towerShown();
-    } else if (!on && state.tower) {
-      state.tower = false;
-      if (towerShown() && typeof self.towerClose === 'function') try { self.towerClose({ returnFocus: false }); } catch (e) { /* already closed */ }
+  // Drawers a step can open: Tower and the Settings drawer behind the cog.
+  var DRAWERS = {
+    tower: { overlay: 'towerOverlay', open: 'towerOpen', close: 'towerClose', label: 'Open Tower', cls: 'demo-tour-open-tower' },
+    settings: { overlay: 'settingsOverlay', open: 'openSettings', close: 'closeSettings', label: 'Open Settings', cls: 'demo-tour-open-settings',
+      section: 'sdAppearance' }
+  };
+  function drawerOf(s) { return s && s.tower ? 'tower' : s && s.settings ? 'settings' : null; }
+  function drawerShown(k) { var o = doc.getElementById(DRAWERS[k].overlay); return !!(o && o.classList.contains('open')); }
+  // Opens the step's drawer, or closes the one the tour opened when the step has none.
+  function showDrawer(k) {
+    if (state.opened && state.opened !== k) {
+      var d = DRAWERS[state.opened];
+      if (drawerShown(state.opened) && typeof self[d.close] === 'function') try { self[d.close]({ returnFocus: false }); } catch (e) { /* already closed */ }
+      state.opened = null;
     }
+    if (!k || drawerShown(k) || typeof self[DRAWERS[k].open] !== 'function') return;
+    try { self[DRAWERS[k].open](); } catch (e) { /* drawer not ready */ }
+    if (drawerShown(k)) state.opened = k;
+    var sec = DRAWERS[k].section && doc.getElementById(DRAWERS[k].section);
+    if (sec && typeof sec.scrollIntoView === 'function') sec.scrollIntoView({ block: 'start' });
   }
 
   // Scrolls the step's element into the window when any of it is off screen.
@@ -236,15 +252,15 @@
     if (r.top < 0 || r.bottom > vh) t.scrollIntoView({ block: r.height < vh ? 'center' : 'start' });
   }
 
-  // Re-renders the Ask Tower card so its Open Tower button follows the drawer, then places the ring.
+  // Re-renders a drawer step's card so its Open button follows the drawer, then places the ring.
   function refresh() {
-    if (state.card && steps[state.index].tower) render();
+    if (state.card && drawerOf(steps[state.index])) render();
     place();
   }
 
   function go(i) {
     state.index = Math.max(0, Math.min(steps.length - 1, i));
-    showTower(!!steps[state.index].tower);
+    showDrawer(drawerOf(steps[state.index]));
     showTab(steps[state.index].tab, steps[state.index].screen);
     showSub(steps[state.index].sub);
     render();
@@ -268,7 +284,7 @@
   function close(finished) {
     if (state.index >= 0) track(finished === true ? 'finish' : 'close', state.index);
     markSeen();
-    showTower(false);
+    showDrawer(null);
     if (state.obs) { state.obs.disconnect(); state.obs = null; }
     clearTimeout(state.timer);
     clearTimeout(state.timer2);
