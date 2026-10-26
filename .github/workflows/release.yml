@@ -198,12 +198,15 @@ jobs:
           else
             echo "no docs/releases/${TAG}.md at ${TAG}; using generated notes ($(cat /tmp/custom-notes.err))"
           fi
+          # Homebrew-only copy of the release tarball.
+          BREW_ASSET="llm-systems-manager-${TAG}-brew.tar.gz"
+          cp "$ASSET" "$BREW_ASSET"
           gh release create "$TAG" \
             --verify-tag \
             --title "$TAG" \
             "${NOTES_ARGS[@]}" \
             --notes-file /tmp/release-notes.md \
-            "$ASSET" "$ASSET.sha256"
+            "$ASSET" "$ASSET.sha256" "$BREW_ASSET"
 
   demo:
     name: build + deploy demo site

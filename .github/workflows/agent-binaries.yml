@@ -274,9 +274,12 @@ jobs:
             sleep 15
           done
           [ "${ok:-}" = "1" ] || { echo "release $GITHUB_REF_NAME never appeared" >&2; exit 1; }
+          # Homebrew-only copy of the agent tarball.
+          cp "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz" "llm-systems-agent-${{ matrix.asset_suffix }}-brew.tar.gz"
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz" \
-            "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256"
+            "llm-systems-agent-${{ matrix.asset_suffix }}.tar.gz.sha256" \
+            "llm-systems-agent-${{ matrix.asset_suffix }}-brew.tar.gz"
 
       # The release was already awaited by the tarball upload above.
       - name: Upload packages to release
