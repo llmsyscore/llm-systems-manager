@@ -170,7 +170,7 @@ test('a first visit shows the welcome card; its tour button starts the tour, whi
   assert.equal(w.document.activeElement, welcome.querySelector('.demo-welcome-tour'));
   welcome.querySelector('.demo-welcome-tour').click();
   assert.equal(w.document.querySelector('.demo-welcome'), null);
-  assert.deepEqual(tracked, [['click', 'welcome-tour'], ['tour', undefined]]);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-tour'], ['tour', undefined]]);
   assert.equal(steps.length, 13);
   assert.ok(steps.every((s) => s.text.split(/(?<=\.|\?"?)\s+(?=[A-Z])/).length <= 2), 'one or two sentences per step');
   for (const t of ['Energy', 'Forecast', 'Benchmarks', 'System health', 'Where requests go', 'Jobs', 'Add machines']) {
@@ -197,10 +197,10 @@ test('a first visit shows the welcome card; its tour button starts the tour, whi
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
 });
 
-for (const [how, pick] of [
-  ['its button', (w) => w.document.querySelector('.demo-welcome-explore').click()],
-  ['Esc', (w) => w.document.body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))],
-  ['a click outside the card', (w) => {
+for (const [how, want, pick] of [
+  ['its button', 'welcome-explore', (w) => w.document.querySelector('.demo-welcome-explore').click()],
+  ['Esc', 'welcome-close', (w) => w.document.body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))],
+  ['a click outside the card', 'welcome-close', (w) => {
     const root = w.document.querySelector('.demo-welcome');
     root.dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
     root.click();
@@ -213,9 +213,25 @@ for (const [how, pick] of [
     assert.equal(w.document.querySelector('.demo-welcome'), null);
     assert.equal(w.document.querySelector('.demo-tour'), null);
     assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-    assert.deepEqual(tracked, [['click', 'welcome-explore']]);
+    assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', want]]);
   });
 }
+
+test('leaving the page with the welcome card open is recorded once and sent right away; a later choice is still recorded', async () => {
+  const tracked = [], flushed = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.DemoTrack = (t, f) => tracked.push([t, f.target]);
+    w.DemoAnalytics = { flush: (leaving) => flushed.push(leaving) };
+  } });
+  Object.defineProperty(w.document, 'visibilityState', { value: 'hidden', configurable: true });
+  w.document.dispatchEvent(new w.Event('visibilitychange'));
+  w.dispatchEvent(new w.Event('pagehide'));
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-left']]);
+  assert.deepEqual(flushed, [true]);
+  w.document.querySelector('.demo-welcome-explore').click();
+  w.dispatchEvent(new w.Event('pagehide'));
+  assert.deepEqual(tracked.slice(2), [['click', 'welcome-explore']]);
+});
 
 test('the welcome card stays closed on the next visit', async () => {
   const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
@@ -506,7 +522,8 @@ test('Ask Tower step with Tower closed hides the ring and offers Open Tower; wit
 });
 
 test('the banner, the last tour step and the welcome card each carry an install link', async () => {
-  const w = await dom(['demo-tour.js']);
+  const tracked = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => { w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
   const hasInstall = (a) => a && /get\.llmsyscore\.com/.test(a.href) && a.target === '_blank';
   assert.ok(hasInstall(w.document.querySelector('#demoBanner a.demo-banner-install')));
   const welcome = w.document.querySelector('.demo-welcome-install');
@@ -516,6 +533,7 @@ test('the banner, the last tour step and the welcome card each carry an install 
   assert.ok(w.document.querySelector('.demo-welcome'));
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(w.document.querySelector('.demo-welcome'), null);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-install']]);
   w.DemoTour.start(w.DemoTour.steps.length - 1);
   assert.ok(hasInstall(w.document.querySelector('.demo-tour-card a.demo-tour-install')));
   assert.match(w.document.querySelector('.demo-tour-next').className, /demo-btn-ghost/);
@@ -573,7 +591,7 @@ test('on a phone the welcome card suggests a desktop and offers the desktop vers
   assert.equal(w.document.querySelector('.demo-welcome'), null);
   assert.equal(w.document.querySelector('.demo-tour'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-  assert.deepEqual(tracked, [['click', 'welcome-desktop']]);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-desktop']]);
 });
 
 test('on a phone, Switch to the phone app is recorded and goes to /phone; Esc closes it', async () => {
@@ -586,11 +604,11 @@ test('on a phone, Switch to the phone app is recorded and goes to /phone; Esc cl
   assert.equal(navigated, '/phone');
   assert.equal(w.document.querySelector('.demo-welcome'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-  assert.deepEqual(tracked, [['click', 'welcome-phone']]);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-phone']]);
   const w2 = await dom(['demo-tour.js'], { before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
   w2.document.body.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(w2.document.querySelector('.demo-welcome'), null);
-  assert.deepEqual(tracked.slice(1), [['click', 'welcome-dismiss']]);
+  assert.deepEqual(tracked.slice(2), [['click', 'welcome-shown'], ['click', 'welcome-close']]);
 });
 
 test('the desktop welcome card keeps its tour and explore choices with the install directions', async () => {

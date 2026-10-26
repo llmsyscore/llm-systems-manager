@@ -316,15 +316,17 @@
     if (self.DemoPage && self.DemoPage.measure) self.DemoPage.measure();
   }
 
+  function welcomeTrack(what) { if (typeof self.DemoTrack === 'function') self.DemoTrack('click', { target: 'welcome-' + what, href: '' }); }
+
   // Closes the welcome card and records the choice; 'tour' starts the tour, 'phone' leaves for the phone app.
   function leaveWelcome(choice) {
     if (!state.welcome) return;
     doc.removeEventListener('keydown', state.welcome.onKey, true);
+    doc.removeEventListener('visibilitychange', state.welcome.onHide);
+    self.removeEventListener('pagehide', state.welcome.onLeave);
     if (state.welcome.root.parentNode) state.welcome.root.parentNode.removeChild(state.welcome.root);
     state.welcome = null;
-    if (choice !== 'install' && choice !== 'phone' && typeof self.DemoTrack === 'function') {
-      self.DemoTrack('click', { target: 'welcome-' + choice, href: '' });
-    }
+    if (choice !== 'phone') welcomeTrack(choice);
     if (choice === 'tour') start(0);
     markSeen();
   }
@@ -332,7 +334,7 @@
   // Centered first-visit card: the tour or the dashboard, or on a phone the phone app or the desktop version; Esc or a click outside closes it.
   function welcome() {
     if (!doc || !doc.body || state.welcome) return;
-    var phone = isPhone(), stay = phone ? 'dismiss' : 'explore';
+    var phone = isPhone(), stay = 'close';
     var root = el('div', 'demo-welcome');
     var card = el('div', 'demo-welcome-card');
     card.setAttribute('role', 'dialog');
@@ -367,8 +369,19 @@
     root.addEventListener('click', function (e) { if (e.target === root && downOutside) leaveWelcome(stay); });
     var onKey = function (e) { if (e.key === 'Escape') { e.stopPropagation(); leaveWelcome(stay); } };
     doc.addEventListener('keydown', onKey, true);
+    // Records leaving the page while the card is still open, once per card.
+    var left = false, onLeave = function () {
+      if (left || !state.welcome) return;
+      left = true;
+      welcomeTrack('left');
+      if (self.DemoAnalytics && self.DemoAnalytics.flush) self.DemoAnalytics.flush(true);
+    };
+    var onHide = function () { if (doc.visibilityState === 'hidden') onLeave(); };
+    doc.addEventListener('visibilitychange', onHide);
+    self.addEventListener('pagehide', onLeave);
     doc.body.appendChild(root);
-    state.welcome = { root: root, onKey: onKey };
+    state.welcome = { root: root, onKey: onKey, onHide: onHide, onLeave: onLeave };
+    welcomeTrack('shown');
     try { first.focus({ preventScroll: true }); } catch (e) { /* no focus */ }
   }
 
