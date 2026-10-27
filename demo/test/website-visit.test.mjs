@@ -138,6 +138,16 @@ test('no resend when nothing changed, resend after a new click', () => {
   assert.equal(p.sent[1].clicks.length, 1);
 });
 
+test('each send of a page is numbered from 1, skipped sends take no number', () => {
+  const p = open();
+  p.hide();
+  p.hide();
+  p.click('gh');
+  p.hide();
+  assert.deepEqual(p.sent.map((b) => b.s), [1, 2]);
+  assert.ok(p.sent.every((b) => b.page === p.sent[0].page));
+});
+
 test('visible time counts only while shown and resends only after 5 s more of it', () => {
   const clock = { now: 1000 };
   const p = open({ clock });
