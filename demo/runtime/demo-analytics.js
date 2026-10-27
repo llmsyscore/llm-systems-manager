@@ -200,13 +200,18 @@
     track('card', { panel: String(e.data.panel || '') });
   });
 
+  // One end event per exit: hidden and pagehide together count once, until the page is shown again.
+  var gone = false;
   function leave(reason) {
+    if (gone) return;
+    gone = true;
     var t = now();
     track('end', { total_ms: t - session.t0, tab: tab, dwell_ms: t - tabSince, reason: reason });
     flush(true);
   }
-  doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') leave('hidden'); });
+  doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') leave('hidden'); else gone = false; });
   self.addEventListener('pagehide', function () { leave('pagehide'); });
+  self.addEventListener('pageshow', function () { gone = false; });
 
   self.DemoTrack = track;
   self.DemoAnalytics = { track: track, flush: flush, session: session, ENDPOINT: ENDPOINT, onTab: onTab };

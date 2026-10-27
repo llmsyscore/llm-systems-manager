@@ -97,6 +97,21 @@ test('leaving the page sends an end event with sendBeacon', async () => {
   assert.ok(end.total_ms >= 0);
 });
 
+test('hidden then pagehide sends one end event; a page shown again can end again', async () => {
+  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const vis = (v) => { Object.defineProperty(w.document, 'visibilityState', { value: v, configurable: true }); w.document.dispatchEvent(new w.Event('visibilitychange')); };
+  vis('hidden');
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().filter((e) => e.type === 'end').map((e) => e.reason), ['hidden']);
+  vis('visible');
+  vis('hidden');
+  w.dispatchEvent(new w.Event('pageshow'));
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().filter((e) => e.type === 'end').map((e) => e.reason), ['hidden', 'hidden', 'pagehide']);
+});
+
 test('works with storage blocked, and sends nothing from the bootstrap page while it loads', () => {
   const blocked = boot('https://demo.llmsyscore.com/dashboard', { blockStorage: true });
   blocked.w.DemoAnalytics.flush(false);
