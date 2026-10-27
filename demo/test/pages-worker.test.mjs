@@ -162,3 +162,58 @@ test('/internal with a wrong or unset key is an ordinary reported request', asyn
   assert.equal(unset.res.headers.get('Set-Cookie'), null);
   assert.equal(unset.posts[0].body.own, 0);
 });
+
+// A WRITES queue binding that throws on the first `fails` sends and records the rest.
+function queue(fails = 0) {
+  const sent = [];
+  let calls = 0;
+  return { sent, get calls() { return calls; }, async send(m) { calls += 1; if (calls <= fails) throw new Error('down'); sent.push(m); } };
+}
+
+test('queues the report when WRITES is bound', async () => {
+  const q = queue();
+  const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn'), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  assert.equal(posts.length, 0);
+  assert.equal(q.sent.length, 1);
+  const m = q.sent[0];
+  assert.equal(m.kind, 'landing_report');
+  assert.match(m.at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(m.report.ref, 'hn');
+  assert.ok(body.includes(`<meta name="lsm-landing" content="${m.report.id}">`));
+});
+
+test('retries once then queues', async () => {
+  const q = queue(1);
+  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  assert.equal(q.calls, 2);
+  assert.equal(q.sent.length, 1);
+  assert.equal(posts.length, 0);
+});
+
+test('posts to the receiver after two failed sends', async () => {
+  const q = queue(2);
+  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  assert.equal(q.calls, 2);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].init.headers.Authorization, 'Bearer s3cret');
+});
+
+test('without the secret nothing is queued or posted even when WRITES is bound', async () => {
+  const q = queue();
+  const { body, posts } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q });
+  assert.equal(q.calls, 0);
+  assert.equal(posts.length, 0);
+  assert.ok(!body.includes('lsm-landing'));
+});
+
+test('the queued report matches the posted report field by field', async () => {
+  const req = () => nav('https://demo.llmsyscore.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch',
+    { Referer: 'https://news.ycombinator.com/', 'Accept-Language': 'en-US' });
+  const q = queue();
+  const queued = await run(req(), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  const posted = await run(req(), html);
+  const qr = q.sent[0].report, pr = posted.posts[0].body;
+  assert.ok(queued.body.includes(`<meta name="lsm-landing" content="${qr.id}">`));
+  assert.deepEqual(Object.keys(qr).sort(), Object.keys(pr).sort());
+  for (const k of Object.keys(pr)) if (k !== 'id') assert.deepEqual(qr[k], pr[k], k);
+});

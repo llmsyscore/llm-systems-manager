@@ -1,4 +1,4 @@
-// Demo site Pages worker: serves the static site and reports each page visit to the telemetry receiver.
+// Demo site Pages worker: serves the static site and reports each page visit to the telemetry queue or receiver.
 // The page gets a landing id that the demo's analytics send with the visit's first event.
 const RECEIVER = 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo/landing';
 // Dashboard links with no demo page (log out, log in, server log window), sent to the landing page.
@@ -80,15 +80,25 @@ export function report(id, req, res, own = false) {
   return out;
 }
 
-// Sends the visit (own: from a tagged browser) to the receiver after the response and adds the landing id to the page.
+// Queues the report on WRITES (two tries), else posts it to the receiver; failures are dropped.
+async function sendLanding(env, body) {
+  if (env.WRITES) {
+    for (let i = 0; i < 2; i++) {
+      try { await env.WRITES.send({ kind: 'landing_report', at: new Date().toISOString(), report: body }); return; } catch { /* try again, then post */ }
+    }
+  }
+  await fetch(env.LANDING_URL || RECEIVER, {
+    method: 'POST', body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${env.LANDING_SECRET}`, 'Content-Type': 'application/json' },
+  }).catch(() => {});
+}
+
+// Reports the visit (own: from a tagged browser) after the response and adds the landing id to the page.
 // Any failure leaves the page as is.
 export function visit(req, res, env, ctx, own = false) {
   if (!env.LANDING_SECRET || !isVisit(req, res)) return res;
   const id = hex16();
-  ctx.waitUntil(fetch(env.LANDING_URL || RECEIVER, {
-    method: 'POST', body: JSON.stringify(report(id, req, res, own)),
-    headers: { Authorization: `Bearer ${env.LANDING_SECRET}`, 'Content-Type': 'application/json' },
-  }).catch(() => {}));
+  ctx.waitUntil(sendLanding(env, report(id, req, res, own)));
   if (req.method !== 'GET' || res.status !== 200 || typeof HTMLRewriter !== 'function') return res;
   return new HTMLRewriter().on('head', {
     element(e) { e.prepend(`<meta name="lsm-landing" content="${id}">`, { html: true }); },
