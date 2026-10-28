@@ -1339,7 +1339,7 @@ report_service_health() {
 }
 
 # ── Telemetry: consent, payload preview, send, retry job ───────────────────
-LLMSYS_TELEMETRY_DEFAULT_ENDPOINT="https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+LLMSYS_TELEMETRY_DEFAULT_ENDPOINT="https://llmsyscore-reports.llmsyscore.workers.dev/v1/event"
 
 # Python with the stdlib the payload builder needs (3.11+ for tomllib is not required here).
 telemetry_python() {

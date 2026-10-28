@@ -7,7 +7,7 @@ import { JSDOM } from 'jsdom';
 
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'runtime');
 const SRC = readFileSync(join(RUNTIME, 'demo-analytics.js'), 'utf8');
-const ENDPOINT = 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo';
+const ENDPOINT = 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo';
 
 // Runs demo-analytics.js in a jsdom window at `url`, recording every batch it sends.
 function boot(url, { blockStorage = false, before } = {}) {

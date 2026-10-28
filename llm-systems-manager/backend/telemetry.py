@@ -98,7 +98,7 @@ def enabled(kind: str) -> bool:
     return bool(getattr(c, kind, default)) if c is not None else default
 
 
-DEFAULT_ENDPOINT = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+DEFAULT_ENDPOINT = "https://llmsyscore-reports.llmsyscore.workers.dev/v1/event"
 
 
 def endpoint() -> str:

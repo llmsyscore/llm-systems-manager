@@ -1,6 +1,6 @@
-// Demo site Pages worker: serves the static site and reports each page visit to the telemetry queue or receiver.
+// Demo site Pages worker: serves the static site and reports each page visit to the telemetry queue or the edge Worker.
 // The page gets a landing id that the demo's analytics send with the visit's first event.
-const RECEIVER = 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo/landing';
+const LANDING_ENDPOINT = 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo/landing';
 // Dashboard links with no demo page (log out, log in, server log window), sent to the landing page.
 const TO_LANDING = ['/logout', '/login', '/llm/log'];
 const TAGS = ['ref', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
@@ -80,14 +80,14 @@ export function report(id, req, res, own = false) {
   return out;
 }
 
-// Queues the report on WRITES (two tries), else posts it to the receiver; failures are dropped.
+// Queues the report on WRITES (two tries), else posts it to the edge Worker; failures are dropped.
 async function sendLanding(env, body) {
   if (env.WRITES) {
     for (let i = 0; i < 2; i++) {
       try { await env.WRITES.send({ kind: 'landing_report', at: new Date().toISOString(), report: body }); return; } catch { /* try again, then post */ }
     }
   }
-  await fetch(env.LANDING_URL || RECEIVER, {
+  await fetch(env.LANDING_URL || LANDING_ENDPOINT, {
     method: 'POST', body: JSON.stringify(body),
     headers: { Authorization: `Bearer ${env.LANDING_SECRET}`, 'Content-Type': 'application/json' },
   }).catch(() => {});

@@ -1,6 +1,6 @@
 /* Page visit summary: time on page, scroll depth, clicks and tour video plays, sent when the page is left */
 (function () {
-  var URL_ = self.SITE_ANALYTICS_URL || "https://telemetry-receiver.llmsyscore.workers.dev/v1/site";
+  var URL_ = self.SITE_ANALYTICS_URL || "https://llmsyscore-edge.llmsyscore.workers.dev/v1/site";
   var SITE_HOSTS = ["llmsyscore.com", "www.llmsyscore.com"];
   var MAX_CLICKS = 30;
   var MIN_MS = 5000;
