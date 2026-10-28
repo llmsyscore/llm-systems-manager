@@ -11,7 +11,7 @@ import traceback
 import urllib.request
 from datetime import datetime, timezone
 
-DEFAULT_ENDPOINT = "https://telemetry-receiver.llmsyscore.workers.dev/v1/event"
+DEFAULT_ENDPOINT = "https://llmsyscore-reports.llmsyscore.workers.dev/v1/event"
 CONSENT = "telemetry.json"
 CRASHES = "telemetry-crashes.json"
 WINDOW_S = 24 * 3600

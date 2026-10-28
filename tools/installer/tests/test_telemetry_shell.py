@@ -146,7 +146,7 @@ def test_endpoint_env_override_and_default(tmp_path):
     r = run(tmp_path, "telemetry_endpoint", {"LLMSYS_TELEMETRY_ENDPOINT": "https://x.example.test/e"})
     assert r.stdout.strip() == "https://x.example.test/e"
     r = run(tmp_path, "telemetry_endpoint", {"LLMSYS_TELEMETRY_ENDPOINT": "http://bad"})
-    assert r.stdout.strip().startswith("https://telemetry-receiver.")
+    assert r.stdout.strip() == "https://llmsyscore-reports.llmsyscore.workers.dev/v1/event"
 
 
 def run_wrapper(tmp_path, args, env_extra=None):

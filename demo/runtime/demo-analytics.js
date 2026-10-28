@@ -1,6 +1,6 @@
 // Records what a visitor does in the demo and sends it in batches to the telemetry receiver.
 (function (self) {
-  var ENDPOINT = self.DEMO_ANALYTICS_URL || 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo';
+  var ENDPOINT = self.DEMO_ANALYTICS_URL || 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo';
   var SESSION_KEY = 'lsmDemoSession';
   var FLUSH_MS = 15000;
   var MAX_BATCH = 50;

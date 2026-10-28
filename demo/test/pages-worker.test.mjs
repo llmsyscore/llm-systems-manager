@@ -48,7 +48,7 @@ test('a page navigation is reported and the page gets the same landing id', asyn
   const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn&utm_source=hn', { Referer: 'https://news.ycombinator.com/' }), html);
   assert.equal(posts.length, 1);
   const p = posts[0];
-  assert.equal(p.url, 'https://telemetry-receiver.llmsyscore.workers.dev/v1/demo/landing');
+  assert.equal(p.url, 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo/landing');
   assert.equal(p.init.headers.Authorization, 'Bearer s3cret');
   assert.match(p.body.id, /^[0-9a-f]{16}$/);
   assert.equal(p.body.path, '/');

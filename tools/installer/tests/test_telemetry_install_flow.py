@@ -48,7 +48,7 @@ def test_update_merges_keys_without_prompt():
 def test_agent_installer_writes_consent_file():
     assert "telemetry.json" in AGENT
     assert "LLMSYS_TELEMETRY" in AGENT
-    assert "telemetry-receiver" not in AGENT
+    assert "llmsyscore-reports" not in AGENT and "telemetry-receiver" not in AGENT
     assert '"endpoint"' not in AGENT
     assert "telemetry-report.sh" in AGENT
 
