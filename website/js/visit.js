@@ -40,7 +40,7 @@
   var scroll = 0;
   var clicks = [];
   var video = null;
-  var lastSig = null, lastMs = 0;
+  var lastSig = null, lastMs = 0, sends = 0;
 
   function tick() {
     if (shownAt !== null) {
@@ -144,7 +144,7 @@
     return JSON.stringify(body);
   }
 
-  // Sends when anything but the visible time changed, or the visible time grew by MIN_MS since the last send.
+  // Sends when anything but the visible time changed, or the visible time grew by MIN_MS since the last send; each send is numbered.
   function send() {
     var body = summary(), o = JSON.parse(body), t = o.ms;
     o.ms = 0;
@@ -152,6 +152,9 @@
     if (sig === lastSig && t - lastMs < MIN_MS) return;
     lastSig = sig;
     lastMs = t;
+    o.ms = t;
+    o.s = ++sends;
+    body = JSON.stringify(o);
     var ok = false;
     try { ok = navigator.sendBeacon && navigator.sendBeacon(URL_, body); } catch (e) {}
     if (!ok) {
