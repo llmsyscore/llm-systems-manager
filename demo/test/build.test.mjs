@@ -96,7 +96,7 @@ test('build produces the stamped, injected site', async (t) => {
     if (path === '/_worker.js' || path === '/_routes.json') continue;
     assert.equal(excluded(path), !['/index.html', '/dashboard.html', '/phone.html'].includes(path), path);
   }
-  assert.ok((await readFile(join(out, '_worker.js'), 'utf8')).includes('/v1/demo/landing'));
+  assert.ok((await readFile(join(out, '_worker.js'), 'utf8')).includes('STORE.write'));
 });
 
 test('build makes the phone app page with the demo layer and the body-end scripts on both pages', async (t) => {
