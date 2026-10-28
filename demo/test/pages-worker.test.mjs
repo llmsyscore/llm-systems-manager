@@ -21,20 +21,24 @@ class FakeRewriter {
   }
 }
 
-// Calls the worker with a stubbed ASSETS binding and global fetch, recording receiver posts.
-async function run(req, asset, env = { LANDING_SECRET: 's3cret' }, { fetchFails = false } = {}) {
-  const posts = [], waits = [];
+// A STORE service binding that throws on the first `fails` writes and records the rest.
+function store(fails = 0) {
+  const written = [];
+  let calls = 0;
+  return { written, get calls() { return calls; }, async write(m) { calls += 1; if (calls <= fails) throw new Error('down'); written.push(m); return 'stored'; } };
+}
+
+// Calls the worker with a stubbed ASSETS binding; any network fetch throws. posts lists the STORE writes.
+async function run(req, asset, env = { STORE: store() }) {
+  const waits = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (u, init) => {
-    if (fetchFails) throw new Error('down');
-    posts.push({ url: u, init, body: JSON.parse(init.body) });
-    return new Response(null, { status: 204 });
-  };
+  globalThis.fetch = async () => { throw new Error('network fetch not allowed'); };
   globalThis.HTMLRewriter = FakeRewriter;
   try {
     const res = await worker.fetch(req, { ...env, ASSETS: { fetch: async () => asset() } }, { waitUntil: (p) => waits.push(p) });
     await Promise.all(waits);
     const body = await res.text();
+    const posts = (env.STORE?.written || []).map((m) => ({ body: m.report }));
     return { res, body, posts };
   } finally {
     globalThis.fetch = realFetch;
@@ -48,8 +52,6 @@ test('a page navigation is reported and the page gets the same landing id', asyn
   const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn&utm_source=hn', { Referer: 'https://news.ycombinator.com/' }), html);
   assert.equal(posts.length, 1);
   const p = posts[0];
-  assert.equal(p.url, 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo/landing');
-  assert.equal(p.init.headers.Authorization, 'Bearer s3cret');
   assert.match(p.body.id, /^[0-9a-f]{16}$/);
   assert.equal(p.body.path, '/');
   assert.equal(p.body.ref, 'hn');
@@ -84,14 +86,14 @@ test('a page load from the demo itself (its own redirect to /) is not reported',
   assert.ok(!body.includes('lsm-landing'));
 });
 
-test('without the secret nothing is sent and the page is unchanged', async () => {
+test('without WRITES or STORE nothing is sent and the page is unchanged', async () => {
   const { body, posts } = await run(nav('https://demo.llmsyscore.com/'), html, {});
   assert.equal(posts.length, 0);
   assert.ok(!body.includes('lsm-landing'));
 });
 
-test('a failing receiver still serves the page', async () => {
-  const { res, body } = await run(nav('https://demo.llmsyscore.com/'), html, undefined, { fetchFails: true });
+test('a throwing STORE still serves the page', async () => {
+  const { res, body } = await run(nav('https://demo.llmsyscore.com/'), html, { STORE: store(5) });
   assert.equal(res.status, 200);
   assert.ok(body.includes('<title>x</title>'));
 });
@@ -137,24 +139,24 @@ test('a direct visit to the phone app is reported like the dashboard; the switch
 });
 
 test('/internal with the key sets the device cookie, is not reported, and tagged visits carry own', async () => {
-  const env = { LANDING_SECRET: 's3cret', INTERNAL_TAG_KEY: 'k1' };
-  const tag = await run(nav('https://demo.llmsyscore.com/internal?key=k1'), html, env);
+  const env = () => ({ STORE: store(), INTERNAL_TAG_KEY: 'k1' });
+  const tag = await run(nav('https://demo.llmsyscore.com/internal?key=k1'), html, env());
   assert.equal(tag.posts.length, 0);
   const c = tag.res.headers.get('Set-Cookie');
   assert.match(c, /^lsm_device=[0-9a-f]{64}; Max-Age=\d+; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
   assert.match(tag.body, /marked as yours/);
   assert.equal(tag.res.headers.get('Referrer-Policy'), 'no-referrer');
   const value = c.split(';')[0];
-  const own = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'x=1; ' + value }), html, env);
+  const own = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'x=1; ' + value }), html, env());
   assert.equal(own.posts[0].body.own, 1);
-  const other = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'lsm_device=nope' }), html, env);
+  const other = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'lsm_device=nope' }), html, env());
   assert.equal(other.posts[0].body.own, 0);
-  const off = await run(nav('https://demo.llmsyscore.com/internal?key=k1&remove=1'), html, env);
+  const off = await run(nav('https://demo.llmsyscore.com/internal?key=k1&remove=1'), html, env());
   assert.match(off.res.headers.get('Set-Cookie'), /^lsm_device=; Max-Age=0;/);
 });
 
 test('/internal with a wrong or unset key is an ordinary reported request', async () => {
-  const wrong = await run(nav('https://demo.llmsyscore.com/internal?key=bad'), html, { LANDING_SECRET: 's3cret', INTERNAL_TAG_KEY: 'k1' });
+  const wrong = await run(nav('https://demo.llmsyscore.com/internal?key=bad'), html, { STORE: store(), INTERNAL_TAG_KEY: 'k1' });
   assert.equal(wrong.res.headers.get('Set-Cookie'), null);
   assert.equal(wrong.posts.length, 1);
   assert.equal(wrong.posts[0].body.path, '/internal');
@@ -172,7 +174,7 @@ function queue(fails = 0) {
 
 test('queues the report when WRITES is bound', async () => {
   const q = queue();
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn'), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn'), html, { WRITES: q });
   assert.equal(posts.length, 0);
   assert.equal(q.sent.length, 1);
   const m = q.sent[0];
@@ -184,34 +186,54 @@ test('queues the report when WRITES is bound', async () => {
 
 test('retries once then queues', async () => {
   const q = queue(1);
-  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 's3cret', WRITES: q });
+  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q });
   assert.equal(q.calls, 2);
   assert.equal(q.sent.length, 1);
   assert.equal(posts.length, 0);
 });
 
-test('posts to the receiver after two failed sends', async () => {
-  const q = queue(2);
-  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 's3cret', WRITES: q });
-  assert.equal(q.calls, 2);
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].init.headers.Authorization, 'Bearer s3cret');
+test('queue ok makes no STORE call', async () => {
+  const q = queue(), st = store();
+  await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q, STORE: st });
+  assert.equal(q.sent.length, 1);
+  assert.equal(st.calls, 0);
 });
 
-test('without the secret nothing is queued or posted even when WRITES is bound', async () => {
-  const q = queue();
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q });
-  assert.equal(q.calls, 0);
-  assert.equal(posts.length, 0);
+test('writes through STORE after two failed queue sends', async () => {
+  const q = queue(2), st = store();
+  await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q, STORE: st });
+  assert.equal(q.calls, 2);
+  assert.equal(st.calls, 1);
+  const m = st.written[0];
+  assert.equal(m.kind, 'landing_report');
+  assert.match(m.at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(m.report.id);
+});
+
+test('STORE alone is enough to report a visit', async () => {
+  const st = store();
+  const { body } = await run(nav('https://demo.llmsyscore.com/'), html, { STORE: st });
+  assert.equal(st.calls, 1);
+  assert.ok(body.includes('lsm-landing'));
+});
+
+test('a throwing STORE after failed queue sends still serves the page', async () => {
+  const { res, body } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: queue(2), STORE: store(1) });
+  assert.equal(res.status, 200);
+  assert.ok(body.includes('<title>x</title>'));
+});
+
+test('with neither binding nothing is sent', async () => {
+  const { body } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 'x' });
   assert.ok(!body.includes('lsm-landing'));
 });
 
-test('the queued report matches the posted report field by field', async () => {
+test('the queued report matches the STORE report field by field', async () => {
   const req = () => nav('https://demo.llmsyscore.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch',
     { Referer: 'https://news.ycombinator.com/', 'Accept-Language': 'en-US' });
   const q = queue();
-  const queued = await run(req(), html, { LANDING_SECRET: 's3cret', WRITES: q });
-  const posted = await run(req(), html);
+  const queued = await run(req(), html, { WRITES: q });
+  const posted = await run(req(), html, { STORE: store() });
   const qr = q.sent[0].report, pr = posted.posts[0].body;
   assert.ok(queued.body.includes(`<meta name="lsm-landing" content="${qr.id}">`));
   assert.deepEqual(Object.keys(qr).sort(), Object.keys(pr).sort());
