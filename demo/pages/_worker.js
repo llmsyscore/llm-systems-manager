@@ -4,6 +4,9 @@
 const TO_LANDING = ['/logout', '/login', '/llm/log'];
 const TAGS = ['ref', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'];
 const TAG_COOKIE = 'lsm_device';
+// Old demo addresses, sent to the demo's own domain with the path and query.
+const MOVED = ['llmsyscore-demo.pages.dev', 'demo.llmsyscore.com'];
+const HOME = 'demo.llmsysmanager.com';
 const TAG_MAX_AGE_S = 400 * 86400;
 const CF = { country: 'country', region: 'region', city: 'city', timezone: 'timezone', asn: 'asn', as_org: 'asOrganization',
   colo: 'colo', bot_category: 'verifiedBotCategory' };
@@ -11,13 +14,21 @@ const CF = { country: 'country', region: 'region', city: 'city', timezone: 'time
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (TO_LANDING.includes(url.pathname)) return Response.redirect(new URL('/', request.url).href, 302);
     const tag = await tagValue(env);
+    if (MOVED.includes(url.hostname)) return moved(request, url, env, ctx, !!tag && cookie(request, TAG_COOKIE) === tag);
+    if (TO_LANDING.includes(url.pathname)) return Response.redirect(new URL('/', request.url).href, 302);
     if (url.pathname === '/internal' && tag && url.searchParams.get('key') === env.INTERNAL_TAG_KEY) return tagDevice(url, tag);
     const res = noindex(request, await env.ASSETS.fetch(request));
     try { return visit(request, res, env, ctx, !!tag && cookie(request, TAG_COOKIE) === tag); } catch { return res; }
   },
 };
+
+// A 301 to the same page on the demo's domain; a page navigation is reported with status 301.
+export function moved(req, url, env, ctx, own = false) {
+  const res = Response.redirect(`https://${HOME}${url.pathname}${url.search}`, 301), mode = req.headers.get('Sec-Fetch-Mode');
+  if ((env.WRITES || env.STORE) && (!mode || mode === 'navigate')) ctx.waitUntil(sendLanding(env, report(hex16(), req, res, own)));
+  return res;
+}
 
 // Adds X-Robots-Tag: noindex to responses served on the pages.dev address.
 export function noindex(req, res) {

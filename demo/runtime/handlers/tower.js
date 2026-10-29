@@ -198,7 +198,7 @@
       + '- Then approve the machine under Admin, Agents.\n'
       + '- Agents run on Linux and macOS, and Homebrew and a standalone agent binary are available too.\n'
       + '- New machines are accepted while enrollment is open, which it is for 15 minutes after the dashboard starts or until you close it.' },
-    install: { text: 'One command sets everything up on a Linux machine: get it at https://get.llmsyscore.com/?ref=demo.\n\n'
+    install: { text: 'One command sets everything up on a Linux machine: get it at https://get.llmsysmanager.com/?ref=demo.\n\n'
       + '- It checks the basics, downloads the latest release and verifies it.\n'
       + '- It installs InfluxDB, writes the settings file and creates the certificates.\n'
       + '- It asks a few questions, such as the admin login and email settings for alerts.\n'

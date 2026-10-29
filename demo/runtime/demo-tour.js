@@ -3,7 +3,7 @@
   if (self.DemoTour) return;
   var doc = self.document;
   var SEEN_KEY = 'lsmDemoTourSeen';
-  var INSTALL_URL = 'https://get.llmsyscore.com/?ref=demo';
+  var INSTALL_URL = 'https://get.llmsysmanager.com/?ref=demo';
   var INSTALL_LABEL = 'Installation directions';
   var onPhone = /^\/phone\/?$/.test((self.location && self.location.pathname) || '');
   var TAB_BUTTONS = { overall: 'tabBtnOverall', dashboard: 'tabBtnDashboard', llm: 'tabBtnLlmControl',

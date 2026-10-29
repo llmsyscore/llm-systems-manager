@@ -11,9 +11,9 @@
 # (offline / air-gapped path — no GitHub access needed).
 #
 # Quick start:
-#   bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
+#   bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 #   # or non-interactively:
-#   curl -fsSL https://get.llmsyscore.com/install.sh \
+#   curl -fsSL https://get.llmsysmanager.com/install.sh \
 #     | bash -s -- --mode 1
 #
 # Modes:

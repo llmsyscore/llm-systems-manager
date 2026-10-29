@@ -58,7 +58,7 @@ For a quick installation install on one host, choose the full install option:
 ### Step 1:
 
 ```bash
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 ```
 
 ### Step 2: Choose an Installation Mode
@@ -149,8 +149,8 @@ What the script does on your machine, step by step: [What the install script doe
 The installer deploys the **latest [GitHub Release](https://github.com/llmsyscore/llm-systems-manager/releases)**, a source tarball whose SHA-256 checksum is verified before anything is installed; a mismatch aborts. To pin a specific version, or to track the development tip from a git clone of `main` instead (code that hasn't been cut into a release yet):
 
 ```bash
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --ref v1.0.0     # pin a specific release
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --source git     # track unreleased main (advanced)
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --ref v1.0.0     # pin a specific release
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --source git     # track unreleased main (advanced)
 ```
 
 The same `--ref` / `--source` flags apply to every install mode and to `--update`. The short address serves the same script as `https://raw.githubusercontent.com/llmsyscore/llm-systems-manager/main/tools/installer/install.sh`, which still works.
@@ -293,7 +293,7 @@ With the fingerprint the agent checks the manager's certificate before it sends 
 Or you can optionally download and run the installer from github
 
 ```bash
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 ```
 
 **If an agent is waiting for a secure connection.** The agent log shows a line that starts with `control channel:` and mentions `holding the token`, and the agent does not register or report. This happens when the agent already has the manager's certificate but its settings still point at the manager's plain HTTP address, and the manager's secure address does not answer or its certificate has changed. To fix it, either make sure the manager's https port (5443 by default) can be reached from the agent, or run the installer again with the fingerprint shown in Admin › Agents (Manage ▾ → Enrollment):

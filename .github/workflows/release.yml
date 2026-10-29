@@ -174,7 +174,7 @@ jobs:
           Install this release:
 
           \`\`\`bash
-          bash <(curl -fsSL https://get.llmsyscore.com/install.sh) --ref ${TAG}
+          bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --ref ${TAG}
           \`\`\`
 
           The installer verifies \`${ASSET}.sha256\` before deploying anything.

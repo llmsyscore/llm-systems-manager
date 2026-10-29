@@ -1,6 +1,6 @@
 /* Page visit summary: time on page, scroll depth, clicks and tour video plays, sent when the page is left */
 (function () {
-  var URL_ = self.SITE_ANALYTICS_URL || "https://llmsyscore-edge.llmsyscore.workers.dev/v1/site";
+  var URL_ = self.SITE_ANALYTICS_URL || "https://edge.llmsysmanager.com/v1/site";
   var SITE_HOSTS = ["llmsyscore.com", "www.llmsyscore.com"];
   var MAX_CLICKS = 30;
   var MIN_MS = 5000;
@@ -70,8 +70,8 @@
     var proto = href ? href.protocol : "";
     var same = !href || proto === "mailto:" || sameSite(host);
     var t;
-    if (host === "get.llmsyscore.com" || el.hasAttribute("data-copy")) t = "install";
-    else if (host === "demo.llmsyscore.com") t = "demo";
+    if (host === "get.llmsysmanager.com" || el.hasAttribute("data-copy")) t = "install";
+    else if (host === "demo.llmsysmanager.com") t = "demo";
     else if (host === "github.com") t = "github";
     else if (href && same && proto !== "mailto:" && (path.indexOf("/docs/") === 0 || /(^|\/)docs\.html$/.test(path))) t = "docs";
     else if (el.hasAttribute("data-full")) t = "screenshot";

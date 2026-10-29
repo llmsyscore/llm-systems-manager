@@ -100,7 +100,7 @@ async function main() {
     const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, serviceWorkers: 'allow' });
     if (seen) await ctx.addInitScript(() => { try { localStorage.setItem('lsmDemoTourSeen', '1'); } catch (e) { /* none */ } });
     await ctx.addInitScript((u) => { self.DEMO_ANALYTICS_URL = u; }, ANALYTICS);
-    await ctx.route('https://llmsyscore-edge.llmsyscore.workers.dev/**', (route) => {
+    await ctx.route('https://edge.llmsysmanager.com/**', (route) => {
       bad('analytics went to the live receiver');
       return route.fulfill({ status: 204, body: '' });
     });

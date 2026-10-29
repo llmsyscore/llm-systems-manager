@@ -49,7 +49,7 @@ async function run(req, asset, env = { STORE: store() }) {
 const nav = (url, headers = {}) => new Request(url, { headers: { 'Sec-Fetch-Mode': 'navigate', 'User-Agent': 'Mozilla/5.0 Firefox/140', ...headers } });
 
 test('a page navigation is reported and the page gets the same landing id', async () => {
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn&utm_source=hn', { Referer: 'https://news.ycombinator.com/' }), html);
+  const { body, posts } = await run(nav('https://demo.llmsysmanager.com/?ref=hn&utm_source=hn', { Referer: 'https://news.ycombinator.com/' }), html);
   assert.equal(posts.length, 1);
   const p = posts[0];
   assert.match(p.body.id, /^[0-9a-f]{16}$/);
@@ -62,105 +62,118 @@ test('a page navigation is reported and the page gets the same landing id', asyn
 });
 
 test('a client without fetch-mode headers (crawlers, curl) is reported too', async () => {
-  const req = new Request('https://demo.llmsyscore.com/robots.txt', { headers: { 'User-Agent': 'Googlebot/2.1' } });
+  const req = new Request('https://demo.llmsysmanager.com/robots.txt', { headers: { 'User-Agent': 'Googlebot/2.1' } });
   const { posts } = await run(req, html);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].body.path, '/robots.txt');
 });
 
 test('the service worker precache, scripts and HEAD-only pages are handled without injection', async () => {
-  const pre = new Request('https://demo.llmsyscore.com/dashboard', { headers: { 'Sec-Fetch-Mode': 'same-origin' } });
+  const pre = new Request('https://demo.llmsysmanager.com/dashboard', { headers: { 'Sec-Fetch-Mode': 'same-origin' } });
   const a = await run(pre, html);
   assert.equal(a.posts.length, 0);
   assert.ok(!a.body.includes('lsm-landing'));
-  const b = await run(nav('https://demo.llmsyscore.com/x.js'), js);
+  const b = await run(nav('https://demo.llmsysmanager.com/x.js'), js);
   assert.equal(b.posts.length, 0);
-  const head = await run(new Request('https://demo.llmsyscore.com/', { method: 'HEAD', headers: { 'User-Agent': 'Slackbot' } }), html);
+  const head = await run(new Request('https://demo.llmsysmanager.com/', { method: 'HEAD', headers: { 'User-Agent': 'Slackbot' } }), html);
   assert.equal(head.posts.length, 1);
   assert.equal(head.posts[0].body.method, 'HEAD');
 });
 
 test('a page load from the demo itself (its own redirect to /) is not reported', async () => {
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/', { Referer: 'https://demo.llmsyscore.com/dashboard' }), html);
+  const { body, posts } = await run(nav('https://demo.llmsysmanager.com/', { Referer: 'https://demo.llmsysmanager.com/dashboard' }), html);
   assert.equal(posts.length, 0);
   assert.ok(!body.includes('lsm-landing'));
 });
 
 test('without WRITES or STORE nothing is sent and the page is unchanged', async () => {
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/'), html, {});
+  const { body, posts } = await run(nav('https://demo.llmsysmanager.com/'), html, {});
   assert.equal(posts.length, 0);
   assert.ok(!body.includes('lsm-landing'));
 });
 
 test('a throwing STORE still serves the page', async () => {
-  const { res, body } = await run(nav('https://demo.llmsyscore.com/'), html, { STORE: store(5) });
+  const { res, body } = await run(nav('https://demo.llmsysmanager.com/'), html, { STORE: store(5) });
   assert.equal(res.status, 200);
   assert.ok(body.includes('<title>x</title>'));
 });
 
 test('isVisit and report read only what the receiver classifies by', () => {
-  const req = nav('https://demo.llmsyscore.com/dashboard?utm_campaign=launch', { 'Accept-Language': 'en-US' });
+  const req = nav('https://demo.llmsysmanager.com/dashboard?utm_campaign=launch', { 'Accept-Language': 'en-US' });
   Object.defineProperty(req, 'cf', { value: { country: 'US', asn: 7922, asOrganization: 'Example', verifiedBotCategory: 'Search Engine Crawler' } });
   assert.equal(isVisit(req, html()), true);
   assert.equal(isVisit(req, js()), false);
   const r = report('0123456789abcdef', req, html());
   assert.deepEqual([r.site, r.path, r.utm_campaign, r.country, r.asn, r.as_org, r.bot_category, r.lang],
-    ['demo.llmsyscore.com', '/dashboard', 'launch', 'US', 7922, 'Example', 'Search Engine Crawler', 'en-US']);
+    ['demo.llmsysmanager.com', '/dashboard', 'launch', 'US', 7922, 'Example', 'Search Engine Crawler', 'en-US']);
   assert.ok(!('ip' in r));
 });
 
-test('pages.dev responses are noindex and the demo domain is not', async () => {
-  const dev = await run(new Request('https://llmsyscore-demo.pages.dev/'), html);
+test('the old demo addresses redirect to the demo domain with the path and query, and report the redirect', async () => {
+  for (const host of ['llmsyscore-demo.pages.dev', 'demo.llmsyscore.com']) {
+    const { res, posts } = await run(new Request(`https://${host}/dashboard?ref=x`, { headers: { 'Sec-Fetch-Mode': 'navigate' } }), html);
+    assert.equal(res.status, 301, host);
+    assert.equal(res.headers.get('Location'), 'https://demo.llmsysmanager.com/dashboard?ref=x', host);
+    assert.equal(posts.length, 1, host);
+    assert.deepEqual([posts[0].body.site, posts[0].body.path, posts[0].body.status, posts[0].body.ref], [host, '/dashboard', 301, 'x'], host);
+  }
+  const asset = await run(new Request('https://demo.llmsyscore.com/x.js', { headers: { 'Sec-Fetch-Mode': 'no-cors' } }), html);
+  assert.equal(asset.res.status, 301);
+  assert.equal(asset.posts.length, 0, 'only page navigations are reported');
+});
+
+test('preview pages.dev responses are noindex and the demo domain is not', async () => {
+  const dev = await run(new Request('https://abc123.llmsyscore-demo.pages.dev/'), html);
   assert.equal(dev.res.headers.get('X-Robots-Tag'), 'noindex');
   assert.ok(dev.body.includes('lsm-landing'));
-  const own = await run(new Request('https://demo.llmsyscore.com/'), html);
+  const own = await run(new Request('https://demo.llmsysmanager.com/'), html);
   assert.equal(own.res.headers.get('X-Robots-Tag'), null);
 });
 
 test('dashboard links with no demo page redirect to the landing page', async () => {
   for (const path of ['/logout', '/login', '/llm/log']) {
-    const { res, posts } = await run(new Request('https://demo.llmsyscore.com' + path), html);
+    const { res, posts } = await run(new Request('https://demo.llmsysmanager.com' + path), html);
     assert.equal(res.status, 302, path);
-    assert.equal(res.headers.get('Location'), 'https://demo.llmsyscore.com/', path);
+    assert.equal(res.headers.get('Location'), 'https://demo.llmsysmanager.com/', path);
     assert.equal(posts.length, 0, path);
   }
 });
 
 test('a direct visit to the phone app is reported like the dashboard; the switch from the dashboard is not', async () => {
   for (const path of ['/phone', '/dashboard']) {
-    const { body, posts } = await run(nav('https://demo.llmsyscore.com' + path + '?ref=hn'), html);
+    const { body, posts } = await run(nav('https://demo.llmsysmanager.com' + path + '?ref=hn'), html);
     assert.equal(posts.length, 1, path);
     assert.equal(posts[0].body.path, path);
     assert.equal(posts[0].body.ref, 'hn');
     assert.ok(body.includes(`<meta name="lsm-landing" content="${posts[0].body.id}">`), path);
   }
-  const own = await run(nav('https://demo.llmsyscore.com/phone', { Referer: 'https://demo.llmsyscore.com/dashboard' }), html);
+  const own = await run(nav('https://demo.llmsysmanager.com/phone', { Referer: 'https://demo.llmsysmanager.com/dashboard' }), html);
   assert.equal(own.posts.length, 0);
 });
 
 test('/internal with the key sets the device cookie, is not reported, and tagged visits carry own', async () => {
   const env = () => ({ STORE: store(), INTERNAL_TAG_KEY: 'k1' });
-  const tag = await run(nav('https://demo.llmsyscore.com/internal?key=k1'), html, env());
+  const tag = await run(nav('https://demo.llmsysmanager.com/internal?key=k1'), html, env());
   assert.equal(tag.posts.length, 0);
   const c = tag.res.headers.get('Set-Cookie');
   assert.match(c, /^lsm_device=[0-9a-f]{64}; Max-Age=\d+; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
   assert.match(tag.body, /marked as yours/);
   assert.equal(tag.res.headers.get('Referrer-Policy'), 'no-referrer');
   const value = c.split(';')[0];
-  const own = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'x=1; ' + value }), html, env());
+  const own = await run(nav('https://demo.llmsysmanager.com/', { Cookie: 'x=1; ' + value }), html, env());
   assert.equal(own.posts[0].body.own, 1);
-  const other = await run(nav('https://demo.llmsyscore.com/', { Cookie: 'lsm_device=nope' }), html, env());
+  const other = await run(nav('https://demo.llmsysmanager.com/', { Cookie: 'lsm_device=nope' }), html, env());
   assert.equal(other.posts[0].body.own, 0);
-  const off = await run(nav('https://demo.llmsyscore.com/internal?key=k1&remove=1'), html, env());
+  const off = await run(nav('https://demo.llmsysmanager.com/internal?key=k1&remove=1'), html, env());
   assert.match(off.res.headers.get('Set-Cookie'), /^lsm_device=; Max-Age=0;/);
 });
 
 test('/internal with a wrong or unset key is an ordinary reported request', async () => {
-  const wrong = await run(nav('https://demo.llmsyscore.com/internal?key=bad'), html, { STORE: store(), INTERNAL_TAG_KEY: 'k1' });
+  const wrong = await run(nav('https://demo.llmsysmanager.com/internal?key=bad'), html, { STORE: store(), INTERNAL_TAG_KEY: 'k1' });
   assert.equal(wrong.res.headers.get('Set-Cookie'), null);
   assert.equal(wrong.posts.length, 1);
   assert.equal(wrong.posts[0].body.path, '/internal');
-  const unset = await run(nav('https://demo.llmsyscore.com/internal?key='), html);
+  const unset = await run(nav('https://demo.llmsysmanager.com/internal?key='), html);
   assert.equal(unset.res.headers.get('Set-Cookie'), null);
   assert.equal(unset.posts[0].body.own, 0);
 });
@@ -174,7 +187,7 @@ function queue(fails = 0) {
 
 test('queues the report when WRITES is bound', async () => {
   const q = queue();
-  const { body, posts } = await run(nav('https://demo.llmsyscore.com/?ref=hn'), html, { WRITES: q });
+  const { body, posts } = await run(nav('https://demo.llmsysmanager.com/?ref=hn'), html, { WRITES: q });
   assert.equal(posts.length, 0);
   assert.equal(q.sent.length, 1);
   const m = q.sent[0];
@@ -186,7 +199,7 @@ test('queues the report when WRITES is bound', async () => {
 
 test('retries once then queues', async () => {
   const q = queue(1);
-  const { posts } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q });
+  const { posts } = await run(nav('https://demo.llmsysmanager.com/'), html, { WRITES: q });
   assert.equal(q.calls, 2);
   assert.equal(q.sent.length, 1);
   assert.equal(posts.length, 0);
@@ -194,14 +207,14 @@ test('retries once then queues', async () => {
 
 test('queue ok makes no STORE call', async () => {
   const q = queue(), st = store();
-  await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q, STORE: st });
+  await run(nav('https://demo.llmsysmanager.com/'), html, { WRITES: q, STORE: st });
   assert.equal(q.sent.length, 1);
   assert.equal(st.calls, 0);
 });
 
 test('writes through STORE after two failed queue sends', async () => {
   const q = queue(2), st = store();
-  await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: q, STORE: st });
+  await run(nav('https://demo.llmsysmanager.com/'), html, { WRITES: q, STORE: st });
   assert.equal(q.calls, 2);
   assert.equal(st.calls, 1);
   const m = st.written[0];
@@ -212,24 +225,24 @@ test('writes through STORE after two failed queue sends', async () => {
 
 test('STORE alone is enough to report a visit', async () => {
   const st = store();
-  const { body } = await run(nav('https://demo.llmsyscore.com/'), html, { STORE: st });
+  const { body } = await run(nav('https://demo.llmsysmanager.com/'), html, { STORE: st });
   assert.equal(st.calls, 1);
   assert.ok(body.includes('lsm-landing'));
 });
 
 test('a throwing STORE after failed queue sends still serves the page', async () => {
-  const { res, body } = await run(nav('https://demo.llmsyscore.com/'), html, { WRITES: queue(2), STORE: store(1) });
+  const { res, body } = await run(nav('https://demo.llmsysmanager.com/'), html, { WRITES: queue(2), STORE: store(1) });
   assert.equal(res.status, 200);
   assert.ok(body.includes('<title>x</title>'));
 });
 
 test('with neither binding nothing is sent', async () => {
-  const { body } = await run(nav('https://demo.llmsyscore.com/'), html, { LANDING_SECRET: 'x' });
+  const { body } = await run(nav('https://demo.llmsysmanager.com/'), html, { LANDING_SECRET: 'x' });
   assert.ok(!body.includes('lsm-landing'));
 });
 
 test('the queued report matches the STORE report field by field', async () => {
-  const req = () => nav('https://demo.llmsyscore.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch',
+  const req = () => nav('https://demo.llmsysmanager.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch',
     { Referer: 'https://news.ycombinator.com/', 'Accept-Language': 'en-US' });
   const q = queue();
   const queued = await run(req(), html, { WRITES: q });

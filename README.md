@@ -4,7 +4,7 @@ One self-hosted dashboard to monitor, control, benchmark and tune every machine 
 
 **Works with** llama.cpp, vLLM, LM Studio and stable-diffusion.cpp · **GPUs:** NVIDIA, AMD (ROCm and Vulkan) and Apple Silicon · **Hosts:** Linux and macOS
 
-Try the demo: https://demo.llmsyscore.com
+Try the demo: https://demo.llmsysmanager.com
 
 <img alt="LLM Systems Manager: Overall, llama.cpp, Energy, Forecast, Tower, Report Card, Autotune and the nine color themes" src="docs/screenshots/tour.gif" width="100%" />
 
@@ -13,7 +13,7 @@ Try the demo: https://demo.llmsyscore.com
 Run this on the Linux machine that will host the dashboard. One interactive command sets up everything: prerequisites, InfluxDB, config, TLS and the first agent.
 
 ```bash
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 ```
 
 Prefer containers? Bring up the dashboard with Docker Compose instead (fill in `.env` before the last command):

@@ -26,7 +26,7 @@ test('tag adds ref, keeps query and hash, leaves existing ref alone', async () =
   assert.equal(t('https://example.org/'), 'https://example.org/?ref=demo');
   assert.equal(t('https://example.org/a?x=1#top'), 'https://example.org/a?x=1&ref=demo#top');
   assert.equal(t('https://example.org/?ref=hn'), 'https://example.org/?ref=hn');
-  assert.equal(t('https://get.llmsyscore.com/?ref=demo'), 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(t('https://get.llmsysmanager.com/?ref=demo'), 'https://get.llmsysmanager.com/?ref=demo');
 });
 
 test('tag ignores same-origin, mailto, tel and javascript', async () => {
@@ -46,10 +46,10 @@ test('clicking an external link sets target, rel and ref', async () => {
 });
 
 test('install link keeps a single ref=demo', async () => {
-  const { w } = await boot('<a id="a" href="https://get.llmsyscore.com/?ref=demo">i</a>');
+  const { w } = await boot('<a id="a" href="https://get.llmsysmanager.com/?ref=demo">i</a>');
   const a = w.document.getElementById('a');
   click(w, a);
-  assert.equal(a.getAttribute('href'), 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(a.getAttribute('href'), 'https://get.llmsysmanager.com/?ref=demo');
 });
 
 test('same-origin, mailto and download links are untouched', async () => {
