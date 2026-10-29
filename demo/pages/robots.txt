@@ -2,3 +2,4 @@ User-agent: *
 Allow: /
 
 Sitemap: https://demo.llmsyscore.com/sitemap.xml
+Sitemap: https://www.llmsyscore.com/sitemap.xml
