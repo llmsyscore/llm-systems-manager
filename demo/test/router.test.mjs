@@ -295,3 +295,22 @@ test('with every handler file loaded in build order, each literal route is match
   assert.equal(R.match('GET', new URL(`${BASE}/api/vllm/server/status`)).key, 'GET /api/vllm/server/:action');
   assert.equal(R.match('GET', new URL(`${BASE}/api/lmstudio/server/status`)).key, 'GET /api/lmstudio/server/:other');
 });
+
+test('on an old demo address the worker removes its caches and itself and moves open tabs to the demo domain', async () => {
+  const { self, stores } = swEnv(['lsm-demo-v9.9.9', 'lsmdemo-state']);
+  const moved = [];
+  let removed = false;
+  self.location = new URL('https://demo.llmsyscore.com/demo-sw.js');
+  self.registration = { unregister: async () => { removed = true; return true; } };
+  self.clients.matchAll = async () => [{ url: 'https://demo.llmsyscore.com/dashboard?ref=x', navigate: async (u) => moved.push(u) }];
+  self.listeners.install = []; self.listeners.activate = []; self.listeners.fetch = [];
+  self.importScripts('/demo/demo-sw.js');
+  await fire(self, 'install');
+  assert.equal(self.skipped, true);
+  assert.equal(stores.get('lsm-demo-v9.9.9').size, 0, 'nothing is pre-cached');
+  await fire(self, 'activate');
+  assert.deepEqual(moved, ['https://demo.llmsysmanager.com/dashboard?ref=x']);
+  assert.equal(removed, true);
+  assert.deepEqual([...stores.keys()], []);
+  assert.equal(self.listeners.fetch.length, 0, 'answers nothing from the cache');
+});

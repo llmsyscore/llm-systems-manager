@@ -1,5 +1,18 @@
 // Demo service worker: answers every dashboard request in the browser from the demo runtime.
 (function (self) {
+  // On an old demo address: moves open tabs to the demo's domain, then removes its caches and itself.
+  var MOVED = ['llmsyscore-demo.pages.dev', 'demo.llmsyscore.com'], HOME = 'https://demo.llmsysmanager.com';
+  if (MOVED.indexOf(self.location.hostname) >= 0) {
+    self.addEventListener('install', function () { self.skipWaiting(); });
+    self.addEventListener('activate', function (event) {
+      event.waitUntil(self.clients.claim().then(function () { return self.clients.matchAll({ type: 'window' }); }).then(function (tabs) {
+        return Promise.all(tabs.map(function (t) { var u = new URL(t.url); return t.navigate(HOME + u.pathname + u.search); }));
+      }).then(function () { return self.caches.keys(); }).then(function (names) {
+        return Promise.all(names.map(function (n) { return self.caches.delete(n); }));
+      }).then(function () { return self.registration.unregister(); }));
+    });
+    return;
+  }
   var RELEASE = self.DEMO_RELEASE || 'dev';
   var CACHE = 'lsm-demo-' + RELEASE;
   var stamp = function (p) { return p + '?v=' + encodeURIComponent(RELEASE); };

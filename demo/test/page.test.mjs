@@ -300,7 +300,7 @@ test('finishing the tour sets the flag; the banner Tour button restarts it; tab 
   const banner = w.document.getElementById('demoBanner');
   assert.equal(w.document.body.firstElementChild, banner);
   assert.equal(banner.textContent, 'Demo with sample dataInstallation directionsTourPhone version');
-  assert.equal(banner.querySelector('a').href, 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(banner.querySelector('a').href, 'https://get.llmsysmanager.com/?ref=demo');
   w.localStorage.removeItem('lsmDemoTourSeen');
   banner.querySelector('.demo-banner-tour').click();
   assert.equal(w.DemoTour.index, 0);
@@ -373,7 +373,7 @@ test('terminal panels get the install card when they become visible; log panels 
   assert.match(cover.textContent, /This works on your own install\./);
   const a = cover.querySelector('a');
   assert.equal(a.textContent, 'Installation directions');
-  assert.equal(a.href, 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(a.href, 'https://get.llmsysmanager.com/?ref=demo');
   term.style.display = 'none';
   term.style.display = '';
   await new Promise((r) => setTimeout(r, 0));
@@ -457,7 +457,7 @@ test('the loading-page links carry ref=demo-loading, open a new tab, and report 
   const hrefs = [...html.matchAll(/<a class="demo-load-link"[^>]*>/g)].map((m) => m[0]);
   assert.equal(hrefs.length, 4);
   for (const a of hrefs) {
-    assert.match(a, /href="https:\/\/(www\.llmsyscore\.com\/\?ref=demo-loading#screenshots|get\.llmsyscore\.com\/\?ref=demo-loading)"/);
+    assert.match(a, /href="https:\/\/(www\.llmsyscore\.com\/\?ref=demo-loading#screenshots|get\.llmsysmanager\.com\/\?ref=demo-loading)"/);
     assert.match(a, /target="_blank" rel="noopener"/);
   }
   assert.ok(!/install it on your own machine/.test(html));
@@ -524,7 +524,7 @@ test('Ask Tower step with Tower closed hides the ring and offers Open Tower; wit
 test('the banner, the last tour step and the welcome card each carry an install link', async () => {
   const tracked = [];
   const w = await dom(['demo-tour.js'], { before: (w) => { w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
-  const hasInstall = (a) => a && /get\.llmsyscore\.com/.test(a.href) && a.target === '_blank';
+  const hasInstall = (a) => a && /get\.llmsysmanager\.com/.test(a.href) && a.target === '_blank';
   assert.ok(hasInstall(w.document.querySelector('#demoBanner a.demo-banner-install')));
   const welcome = w.document.querySelector('.demo-welcome-install');
   assert.ok(hasInstall(welcome));
@@ -585,7 +585,7 @@ test('on a phone the welcome card suggests a desktop and offers the desktop vers
   assert.equal(card.querySelector('.demo-welcome-desktop').textContent, 'Open the desktop version');
   const inst = card.querySelector('a.demo-welcome-install');
   assert.equal(inst.textContent, 'Installation directions');
-  assert.equal(inst.href, 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(inst.href, 'https://get.llmsysmanager.com/?ref=demo');
   assert.equal(w.document.activeElement, phone);
   card.querySelector('.demo-welcome-desktop').click();
   assert.equal(w.document.querySelector('.demo-welcome'), null);
@@ -626,7 +626,7 @@ test('the dashboard banner has the install directions, Tour and a Phone version 
   const b = w.document.getElementById('demoBanner');
   const inst = b.querySelector('a.demo-banner-install');
   assert.equal(inst.textContent, 'Installation directions');
-  assert.equal(inst.href, 'https://get.llmsyscore.com/?ref=demo');
+  assert.equal(inst.href, 'https://get.llmsysmanager.com/?ref=demo');
   assert.equal(inst.target, '_blank');
   assert.equal(inst.rel, 'noopener');
   assert.match(inst.className, /demo-btn(?! demo-btn-ghost)/);

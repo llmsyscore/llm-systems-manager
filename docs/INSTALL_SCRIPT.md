@@ -3,13 +3,13 @@
 The install command downloads one script and runs it:
 
 ```bash
-bash <(curl -fsSL https://get.llmsyscore.com/install.sh)
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 ```
 
 To read the script before running it, save it first:
 
 ```bash
-curl -fsSL https://get.llmsyscore.com/install.sh -o install.sh
+curl -fsSL https://get.llmsysmanager.com/install.sh -o install.sh
 less install.sh
 bash install.sh
 ```

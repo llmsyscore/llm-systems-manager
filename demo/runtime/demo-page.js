@@ -127,7 +127,7 @@
   self.__demoPageInstalled = true;
 
   var REFUSED_TEXT = 'Not available in the demo';
-  var INSTALL_URL = 'https://get.llmsyscore.com/?ref=demo';
+  var INSTALL_URL = 'https://get.llmsysmanager.com/?ref=demo';
   var PANEL_IDS = ['terminalPanel', 'lmsTerminalPanel', 'vllmTerminalPanel'];
   var path = (self.location && self.location.pathname) || '';
   var inFrame = path.indexOf('/alarm/') === 0 || path === '/alarm';

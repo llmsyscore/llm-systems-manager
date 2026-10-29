@@ -1,6 +1,6 @@
 // Records what a visitor does in the demo and sends it in batches to the telemetry receiver.
 (function (self) {
-  var ENDPOINT = self.DEMO_ANALYTICS_URL || 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo';
+  var ENDPOINT = self.DEMO_ANALYTICS_URL || 'https://edge.llmsysmanager.com/v1/demo';
   var SESSION_KEY = 'lsmDemoSession';
   var FLUSH_MS = 15000;
   var MAX_BATCH = 50;
@@ -152,7 +152,7 @@
   doc.addEventListener('lsm:tab', function (e) { onTab(e && e.detail && e.detail.tab); });
 
   function targetOf(href) {
-    if (/get\.llmsyscore\.com/.test(href)) return 'install';
+    if (/get\.llmsysmanager\.com/.test(href)) return 'install';
     if (/#screenshots/.test(href)) return 'gallery';
     if (/github\.com/.test(href)) return 'repo';
     return 'other';

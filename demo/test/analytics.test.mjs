@@ -7,11 +7,11 @@ import { JSDOM } from 'jsdom';
 
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'runtime');
 const SRC = readFileSync(join(RUNTIME, 'demo-analytics.js'), 'utf8');
-const ENDPOINT = 'https://llmsyscore-edge.llmsyscore.workers.dev/v1/demo';
+const ENDPOINT = 'https://edge.llmsysmanager.com/v1/demo';
 
 // Runs demo-analytics.js in a jsdom window at `url`, recording every batch it sends.
 function boot(url, { blockStorage = false, before } = {}) {
-  const dom = new JSDOM('<!doctype html><body><button id="subTabBtnDashLlamacpp">x</button><a id="inst" href="https://get.llmsyscore.com/?ref=demo">i</a></body>',
+  const dom = new JSDOM('<!doctype html><body><button id="subTabBtnDashLlamacpp">x</button><a id="inst" href="https://get.llmsysmanager.com/?ref=demo">i</a></body>',
     { url, runScripts: 'outside-only', referrer: 'https://news.ycombinator.com/item?id=1' });
   const w = dom.window;
   const sent = [];
@@ -33,7 +33,7 @@ function boot(url, { blockStorage = false, before } = {}) {
 }
 
 test('dashboard sends a start event with landing, referrer and campaign tags', () => {
-  const { w, sent, events } = boot('https://demo.llmsyscore.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch');
+  const { w, sent, events } = boot('https://demo.llmsysmanager.com/dashboard?ref=hn&utm_source=hn&utm_campaign=launch');
   w.DemoAnalytics.flush(false);
   assert.equal(sent.length, 1);
   const b = sent[0];
@@ -55,8 +55,8 @@ test('landing and referrer saved on the bootstrap page carry over to the dashboa
     Object.defineProperty(w, 'sessionStorage', { value: {
       getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } } });
   };
-  boot('https://demo.llmsyscore.com/?ref=reddit', { before: shared });
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard', { before: shared });
+  boot('https://demo.llmsysmanager.com/?ref=reddit', { before: shared });
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard', { before: shared });
   w.DemoAnalytics.flush(false);
   const s = events().find((e) => e.type === 'start');
   assert.equal(s.landing, '/?ref=reddit');
@@ -64,7 +64,7 @@ test('landing and referrer saved on the bootstrap page carry over to the dashboa
 });
 
 test('tab switches record the previous tab and time spent on it; sub-tabs and install clicks are recorded', () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
   w.document.dispatchEvent(new w.CustomEvent('lsm:tab', { detail: { tab: 'dashboards' } }));
   w.document.getElementById('subTabBtnDashLlamacpp').click();
   w.document.getElementById('inst').addEventListener('click', (e) => e.preventDefault());
@@ -79,7 +79,7 @@ test('tab switches record the previous tab and time spent on it; sub-tabs and in
 });
 
 test('Tower questions record the text and the canned answer key', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
   await w.fetch('/api/tower/threads/demo-t1/messages', { method: 'POST', body: JSON.stringify({ text: 'Any alarm right now?' }) });
   await new Promise((r) => setTimeout(r, 10));
   w.DemoAnalytics.flush(false);
@@ -88,7 +88,7 @@ test('Tower questions record the text and the canned answer key', async () => {
 });
 
 test('leaving the page sends an end event with sendBeacon', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
   w.dispatchEvent(new w.Event('pagehide'));
   await new Promise((r) => setTimeout(r, 10));
   const end = events().find((e) => e.type === 'end');
@@ -98,7 +98,7 @@ test('leaving the page sends an end event with sendBeacon', async () => {
 });
 
 test('hidden then pagehide sends one end event; a page shown again can end again', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
   const vis = (v) => { Object.defineProperty(w.document, 'visibilityState', { value: v, configurable: true }); w.document.dispatchEvent(new w.Event('visibilitychange')); };
   vis('hidden');
   w.dispatchEvent(new w.Event('pagehide'));
@@ -113,11 +113,11 @@ test('hidden then pagehide sends one end event; a page shown again can end again
 });
 
 test('works with storage blocked, and sends nothing from the bootstrap page while it loads', () => {
-  const blocked = boot('https://demo.llmsyscore.com/dashboard', { blockStorage: true });
+  const blocked = boot('https://demo.llmsysmanager.com/dashboard', { blockStorage: true });
   blocked.w.DemoAnalytics.flush(false);
   assert.ok(blocked.events().some((e) => e.type === 'start'));
 
-  const boot2 = boot('https://demo.llmsyscore.com/');
+  const boot2 = boot('https://demo.llmsysmanager.com/');
   boot2.w.DemoLanding('slow');
   assert.equal(boot2.sent.length, 0);
 });
@@ -135,15 +135,15 @@ test('the dashboard sends the start event right away, with the landing id from t
     m.setAttribute('content', '0123456789abcdef');
     w.document.head.appendChild(m);
   };
-  boot('https://demo.llmsyscore.com/', { before: withId });
-  const { sent } = boot('https://demo.llmsyscore.com/dashboard', { before: shared });
+  boot('https://demo.llmsysmanager.com/', { before: withId });
+  const { sent } = boot('https://demo.llmsysmanager.com/dashboard', { before: shared });
   assert.equal(sent.length, 1);
   const s = sent[0].events.find((e) => e.type === 'start');
   assert.equal(s.lid, '0123456789abcdef');
 });
 
 test('the loading page reports a visit that did not open: left, slow or unsupported', async () => {
-  const left = boot('https://demo.llmsyscore.com/?ref=hn');
+  const left = boot('https://demo.llmsysmanager.com/?ref=hn');
   left.w.dispatchEvent(new left.w.Event('pagehide'));
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(left.sent.length, 1);
@@ -154,20 +154,20 @@ test('the loading page reports a visit that did not open: left, slow or unsuppor
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(left.sent.length, 1);
 
-  const slow = boot('https://demo.llmsyscore.com/');
+  const slow = boot('https://demo.llmsysmanager.com/');
   slow.w.DemoLanding('slow');
   slow.w.dispatchEvent(new slow.w.Event('pagehide'));
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(slow.events()[0].reason, 'slow');
 
-  const old = boot('https://demo.llmsyscore.com/');
+  const old = boot('https://demo.llmsysmanager.com/');
   old.w.DemoLanding('unsupported');
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(old.events()[0].reason, 'unsupported');
 });
 
 test('a later reason on the loading page replaces a provisional left; a failed start is its own reason', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/');
+  const { w, events } = boot('https://demo.llmsysmanager.com/');
   w.document.dispatchEvent(new w.Event('visibilitychange'));
   Object.defineProperty(w.document, 'visibilityState', { value: 'hidden', configurable: true });
   w.document.dispatchEvent(new w.Event('visibilitychange'));
@@ -177,14 +177,14 @@ test('a later reason on the loading page replaces a provisional left; a failed s
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(events().map((e) => e.reason), ['left', 'slow']);
 
-  const bad = boot('https://demo.llmsyscore.com/');
+  const bad = boot('https://demo.llmsysmanager.com/');
   bad.w.DemoLanding('failed');
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(bad.events()[0].reason, 'failed');
 });
 
 test('the loading page sends nothing when it hops to the dashboard', async () => {
-  const { w, sent } = boot('https://demo.llmsyscore.com/');
+  const { w, sent } = boot('https://demo.llmsysmanager.com/');
   w.DemoLanding('open');
   w.dispatchEvent(new w.Event('pagehide'));
   await new Promise((r) => setTimeout(r, 10));
@@ -192,7 +192,7 @@ test('the loading page sends nothing when it hops to the dashboard', async () =>
 });
 
 test('a late open after "Still loading" is reported once with the wait time', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/');
+  const { w, events } = boot('https://demo.llmsysmanager.com/');
   w.DemoLanding('slow');
   w.DemoLanding('open');
   w.dispatchEvent(new w.Event('pagehide'));
@@ -202,7 +202,7 @@ test('a late open after "Still loading" is reported once with the wait time', as
 });
 
 test('a loading-page link click is reported and kept over later reasons', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/');
+  const { w, events } = boot('https://demo.llmsysmanager.com/');
   w.DemoLanding('slow');
   w.DemoLanding('screenshots');
   w.DemoLanding('install');
@@ -213,7 +213,7 @@ test('a loading-page link click is reported and kept over later reasons', async 
 });
 
 test('a refused change on the dashboard is recorded with its method and path', async () => {
-  const { w, events } = boot('https://demo.llmsyscore.com/dashboard');
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
   await w.fetch('/api/admin/settings', { method: 'PUT', body: '{}' });
   await new Promise((r) => setTimeout(r, 10));
   w.DemoAnalytics.flush(false);
@@ -226,9 +226,9 @@ test('the phone app records the session, and switching between it and the dashbo
     Object.defineProperty(w, 'sessionStorage', { value: {
       getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } } });
   };
-  const dash = boot('https://demo.llmsyscore.com/dashboard', { before: shared });
+  const dash = boot('https://demo.llmsysmanager.com/dashboard', { before: shared });
   dash.w.DemoAnalytics.flush(false);
-  const phone = boot('https://demo.llmsyscore.com/phone', { before: shared });
+  const phone = boot('https://demo.llmsysmanager.com/phone', { before: shared });
   assert.equal(typeof phone.w.DemoAnalytics.onTab, 'function', 'the phone app records, not the loading page');
   phone.w.document.dispatchEvent(new phone.w.CustomEvent('lsm:tab', { detail: { tab: 'phone' } }));
   phone.w.document.dispatchEvent(new phone.w.CustomEvent('lsm:tab', { detail: { tab: 'phone-alerts' } }));

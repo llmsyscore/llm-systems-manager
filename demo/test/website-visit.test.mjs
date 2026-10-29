@@ -8,9 +8,9 @@ import { JSDOM } from 'jsdom';
 const SRC = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'website', 'js', 'visit.js'), 'utf8');
 
 const BODY = `
-<a id="inst" href="https://get.llmsyscore.com/">i</a>
+<a id="inst" href="https://get.llmsysmanager.com/">i</a>
 <button id="copy" data-copy="#x">c</button>
-<a id="demo" href="https://demo.llmsyscore.com/">d</a>
+<a id="demo" href="https://demo.llmsysmanager.com/">d</a>
 <a id="gh" href="https://github.com/llmsyscore/x">g</a>
 <a id="docs" href="/docs/api.html">docs</a>
 <a id="docs2" href="docs.html">docs</a>
@@ -76,8 +76,8 @@ test('clicks are classified by target', () => {
   ['inst', 'copy', 'demo', 'gh', 'docs', 'docs2', 'shot', 'contact', 'mail', 'tab', 'page', 'ext', 'plain'].forEach(p.click);
   p.hide();
   assert.deepEqual(p.sent[0].clicks, [
-    { t: 'install', h: 'get.llmsyscore.com' }, { t: 'install', h: '' },
-    { t: 'demo', h: 'demo.llmsyscore.com' }, { t: 'github', h: 'github.com' },
+    { t: 'install', h: 'get.llmsysmanager.com' }, { t: 'install', h: '' },
+    { t: 'demo', h: 'demo.llmsysmanager.com' }, { t: 'github', h: 'github.com' },
     { t: 'docs', h: '' }, { t: 'docs', h: '' }, { t: 'screenshot', h: '' },
     { t: 'contact', h: '' }, { t: 'contact', h: '' }, { t: 'tab', h: '' },
     { t: 'page', h: '' }, { t: 'external', h: 'example.org' },
