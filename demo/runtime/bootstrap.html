@@ -23,6 +23,7 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
 #demoNotice,#demoSlow{display:none;max-width:30rem;padding:1.5rem;line-height:1.5}
 #demoNotice a,#demoSlow a{color:#5b7cfa}
 #demoLoading{opacity:.7}
+#demoRetry{margin-top:1rem;padding:.5rem 1rem;background:#5b7cfa;color:#fff;border:0;border-radius:.375rem;font:inherit;cursor:pointer}
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
 <div id="demoLoading">Loading the demo...</div>
 <div id="demoSlow">
   <p>Still loading the demo... If it does not open, see the <a class="demo-load-link" data-target="screenshots" href="https://www.llmsyscore.com/?ref=demo-loading#screenshots" target="_blank" rel="noopener">screenshots</a> or the <a class="demo-load-link" data-target="install" href="https://get.llmsysmanager.com/?ref=demo-loading" target="_blank" rel="noopener">Installation directions</a>.</p>
+  <button id="demoRetry" type="button">Try again</button>
 </div>
 <div id="demoNotice">
   <p>This demo needs a browser that supports service workers. See the <a class="demo-load-link" data-target="screenshots" href="https://www.llmsyscore.com/?ref=demo-loading#screenshots" target="_blank" rel="noopener">screenshots</a> or the <a class="demo-load-link" data-target="install" href="https://get.llmsysmanager.com/?ref=demo-loading" target="_blank" rel="noopener">Installation directions</a>.</p>
@@ -68,11 +70,43 @@ h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
   }
   if (!('serviceWorker' in navigator)) { fail('unsupported'); return; }
   if (navigator.serviceWorker.controller) { go(); return; }
-  navigator.serviceWorker.addEventListener('controllerchange', go);
-  setTimeout(function () { if (!failed && !navigator.serviceWorker.controller) show('demoSlow', 'slow'); }, 10000);
-  navigator.serviceWorker.register('/demo-sw.js', { scope: '/' }).then(function () {
-    if (navigator.serviceWorker.controller) go();
-  }, function () { fail('failed'); });
+  var listening = false;
+  var retrying = false;
+  var slowTimer;
+  function armSlow() {
+    if (slowTimer) clearTimeout(slowTimer);
+    slowTimer = setTimeout(function () {
+      if (failed || navigator.serviceWorker.controller) return;
+      retrying = false;
+      show('demoSlow', 'slow');
+    }, 10000);
+  }
+  function attempt() {
+    if (!listening) { listening = true; navigator.serviceWorker.addEventListener('controllerchange', go); }
+    armSlow();
+    navigator.serviceWorker.register('/demo-sw.js', { scope: '/' }).then(function () {
+      if (navigator.serviceWorker.controller) go();
+    }, function () { failed = true; show('demoSlow', 'failed'); });
+  }
+  function retryAgain() { retrying = false; attempt(); }
+  document.getElementById('demoRetry').addEventListener('click', function () {
+    if (retrying || done) return;
+    retrying = true;
+    if (window.DemoLanding) window.DemoLanding('retry');
+    show('demoLoading');
+    if (navigator.serviceWorker.controller) { go(); return; }
+    armSlow();
+    navigator.serviceWorker.getRegistration().then(function (reg) {
+      if (reg && reg.active && !navigator.serviceWorker.controller) { location.reload(); return; }
+      var worker = reg && (reg.installing || reg.waiting);
+      if (!worker) { retryAgain(); return; }
+      worker.addEventListener('statechange', function () {
+        if (worker.state !== 'activated' && worker.state !== 'redundant') return;
+        if (worker.state === 'activated' && navigator.serviceWorker.controller) go(); else retryAgain();
+      });
+    }, retryAgain);
+  });
+  attempt();
 })();
 </script>
 </body>
