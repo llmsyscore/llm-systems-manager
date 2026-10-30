@@ -151,31 +151,27 @@ test('a direct visit to the phone app is reported like the dashboard; the switch
   assert.equal(own.posts.length, 0);
 });
 
-test('/internal with the key sets the device cookie, is not reported, and tagged visits carry own', async () => {
+test('/s serves the storage page: no-store, no cookie, not reported', async () => {
+  const r = await run(nav('https://demo.llmsysmanager.com/s'), html, { STORE: store() });
+  assert.equal(r.res.status, 200);
+  assert.match(r.res.headers.get('Content-Type'), /text\/html/);
+  assert.equal(r.res.headers.get('Cache-Control'), 'no-store');
+  assert.equal(r.res.headers.get('Referrer-Policy'), 'no-referrer');
+  assert.equal(r.res.headers.get('Set-Cookie'), null);
+  assert.match(r.body, /noindex/);
+  assert.match(r.body, /lsmPref/);
+  assert.match(r.body, /<title>Settings<\/title>/);
+  assert.equal(r.posts.length, 0);
+});
+
+test('visits with the device cookie carry own', async () => {
   const env = () => ({ STORE: store(), INTERNAL_TAG_KEY: 'k1' });
-  const tag = await run(nav('https://demo.llmsysmanager.com/internal?key=k1'), html, env());
-  assert.equal(tag.posts.length, 0);
-  const c = tag.res.headers.get('Set-Cookie');
-  assert.match(c, /^lsm_device=[0-9a-f]{64}; Max-Age=\d+; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
-  assert.match(tag.body, /marked as yours/);
-  assert.equal(tag.res.headers.get('Referrer-Policy'), 'no-referrer');
-  const value = c.split(';')[0];
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('k1'));
+  const value = 'lsm_device=' + Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
   const own = await run(nav('https://demo.llmsysmanager.com/', { Cookie: 'x=1; ' + value }), html, env());
   assert.equal(own.posts[0].body.own, 1);
   const other = await run(nav('https://demo.llmsysmanager.com/', { Cookie: 'lsm_device=nope' }), html, env());
   assert.equal(other.posts[0].body.own, 0);
-  const off = await run(nav('https://demo.llmsysmanager.com/internal?key=k1&remove=1'), html, env());
-  assert.match(off.res.headers.get('Set-Cookie'), /^lsm_device=; Max-Age=0;/);
-});
-
-test('/internal with a wrong or unset key is an ordinary reported request', async () => {
-  const wrong = await run(nav('https://demo.llmsysmanager.com/internal?key=bad'), html, { STORE: store(), INTERNAL_TAG_KEY: 'k1' });
-  assert.equal(wrong.res.headers.get('Set-Cookie'), null);
-  assert.equal(wrong.posts.length, 1);
-  assert.equal(wrong.posts[0].body.path, '/internal');
-  const unset = await run(nav('https://demo.llmsysmanager.com/internal?key='), html);
-  assert.equal(unset.res.headers.get('Set-Cookie'), null);
-  assert.equal(unset.posts[0].body.own, 0);
 });
 
 // A WRITES queue binding that throws on the first `fails` sends and records the rest.

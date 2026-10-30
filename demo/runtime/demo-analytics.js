@@ -46,12 +46,17 @@
     else if (timer === null) timer = setTimeout(function () { timer = null; flush(false); }, FLUSH_MS);
   }
 
+  // A saved 64-hex preference value, else undefined/null.
+  function savedPref() {
+    try { var t = self.localStorage.getItem('lsmPref'); return /^[0-9a-f]{64}$/.test(t) ? t : undefined; } catch (e) { return undefined; }
+  }
+
   // Sends queued events; on page exit it uses sendBeacon so the last batch still leaves.
   function flush(leaving) {
     if (timer !== null) { clearTimeout(timer); timer = null; }
     while (queue.length) {
       var body = JSON.stringify({ v: 1, session: session.id, seq: session.seq, release: self.DEMO_RELEASE || '',
-        events: queue.splice(0, MAX_BATCH) });
+        events: queue.splice(0, MAX_BATCH), pv: savedPref() });
       session.seq += 1;
       save();
       var sent = false;

@@ -7,7 +7,6 @@ const TAG_COOKIE = 'lsm_device';
 // Old demo addresses, sent to the demo's own domain with the path and query.
 const MOVED = ['llmsyscore-demo.pages.dev', 'demo.llmsyscore.com'];
 const HOME = 'demo.llmsysmanager.com';
-const TAG_MAX_AGE_S = 400 * 86400;
 const CF = { country: 'country', region: 'region', city: 'city', timezone: 'timezone', asn: 'asn', as_org: 'asOrganization',
   colo: 'colo', bot_category: 'verifiedBotCategory' };
 
@@ -17,7 +16,7 @@ export default {
     const tag = await tagValue(env);
     if (MOVED.includes(url.hostname)) return moved(request, url, env, ctx, !!tag && cookie(request, TAG_COOKIE) === tag);
     if (TO_LANDING.includes(url.pathname)) return Response.redirect(new URL('/', request.url).href, 302);
-    if (url.pathname === '/internal' && tag && url.searchParams.get('key') === env.INTERNAL_TAG_KEY) return tagDevice(url, tag);
+    if (url.pathname === '/s') return settings();
     const res = noindex(request, await env.ASSETS.fetch(request));
     try { return visit(request, res, env, ctx, !!tag && cookie(request, TAG_COOKIE) === tag); } catch { return res; }
   },
@@ -54,17 +53,19 @@ function cookie(req, name) {
   return null;
 }
 
-// /internal?key=<INTERNAL_TAG_KEY> marks this browser as the operator's with a cookie; &remove=1 clears it.
-// No referrer leaves the page, so the key never reaches the next page's analytics.
-export function tagDevice(url, tag) {
-  const remove = url.searchParams.get('remove') === '1';
-  const res = new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Device tag</title><meta name="robots" content="noindex"><body style="font:16px/1.5 system-ui,sans-serif;background:#0a0e1f;color:#e8ecf8;padding:24px">
-<p>${remove ? 'This browser is no longer marked as yours.' : 'This browser is now marked as yours. Its visits to the demo count as internal.'}</p>
-<p><a style="color:#8ea4ff" href="/">Demo</a></p></body>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
-  res.headers.set('Set-Cookie', `${TAG_COOKIE}=${remove ? '' : tag}; Max-Age=${remove ? 0 : TAG_MAX_AGE_S}; Path=/; Secure; HttpOnly; SameSite=Lax`);
-  return res;
+// Serves the storage page; the response is never cached and sends no referrer.
+export function settings() {
+  return new Response(PAGE, { headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Type': 'text/html; charset=utf-8' } });
 }
+
+// Stores the value from the URL fragment (or clears it) in this browser, then moves on to the website's page.
+const PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings</title><meta name="robots" content="noindex"><body style="font:16px/1.5 system-ui,sans-serif;background:#0a0e1f;color:#e8ecf8;padding:24px">
+<p>One moment.</p><script>
+var h = location.hash, m = /^#v=([0-9a-f]{64})$/.exec(h);
+try { if (m) localStorage.setItem('lsmPref', m[1]); else if (h === '#v=0') localStorage.removeItem('lsmPref'); } catch (e) {}
+location.replace('https://www.llmsyscore.com/s.html' + (m || h === '#v=0' ? h : ''));
+</script></body>`;
 
 function hex16() {
   const a = new Uint8Array(8);
