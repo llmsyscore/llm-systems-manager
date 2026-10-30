@@ -8,7 +8,6 @@
     phone: { neu: 'towerNew', input: 'towerInput', send: 'towerSend', body: 'towerBody' }
   };
 
-  function sleep(ms) { return new Promise(function (r) { self.setTimeout(r, ms); }); }
   function track(n) {
     if (typeof self.DemoTrack === 'function') self.DemoTrack('click', { target: 'tour-ask-' + n, href: '' });
   }

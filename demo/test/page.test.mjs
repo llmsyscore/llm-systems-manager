@@ -897,7 +897,7 @@ test('bench-done is recorded once when the run completes on the benchmark step',
 });
 
 test('bench-done still records when #blStatus appears after the benchmark step opens', async () => {
-  const opened = [], tracked = [];
+  const tracked = [];
   const w = await dom(['demo-tour.js'], { before: (w) => {
     w.localStorage.setItem('lsmDemoTourSeen', '1');
     w.document.getElementById('blStatus').remove();
@@ -985,7 +985,7 @@ async function dashboardRedirect({ ua, width, search = '', desktop = false }) {
     await build({ outDir: out, release: 'v9.9.9' });
     const html = await readFile(join(out, 'dashboard.html'), 'utf8');
     const head = html.slice(0, html.indexOf('demo-analytics.js'));
-    const inline = [...head.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).find((c) => c.includes('wantsPhone'));
+    const inline = [...head.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)].map((m) => m[1]).find((c) => c.includes('wantsPhone'));
     const replaced = [];
     const store = desktop ? { lsmDemoDesktop: '1' } : {};
     const self = load(['demo-device.js'], {
