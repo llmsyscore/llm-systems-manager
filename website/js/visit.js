@@ -121,6 +121,11 @@
     return String(s == null ? "" : s).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, max);
   }
 
+  // A saved 64-hex preference value, else undefined/null.
+  function savedPref() {
+    try { var t = localStorage.getItem("lsmPref"); return /^[0-9a-f]{64}$/.test(t) ? t : null; } catch (e) { return null; }
+  }
+
   function summary() {
     tick();
     sampleScroll();
@@ -140,6 +145,8 @@
         if (q.get(k)) body[k] = clip(q.get(k), 100);
       });
     }
+    var pv = savedPref();
+    if (pv) body.pv = pv;
     if (video) body.video = { ms: video.ms, pct: video.pct };
     return JSON.stringify(body);
   }

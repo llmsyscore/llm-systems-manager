@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>Settings</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0a0e1f;color:#e8ecf8;padding:24px}</style>
+</head>
+<body>
+<p id="msg"></p>
+<script>
+var h = location.hash, m = /^#v=([0-9a-f]{64})$/.exec(h), msg = "Not saved.";
+try {
+  if (m) { localStorage.setItem("lsmPref", m[1]); msg = "Saved."; }
+  else if (h === "#v=0") { localStorage.removeItem("lsmPref"); msg = "Cleared."; }
+} catch (e) { msg = "Not saved."; }
+try { history.replaceState(null, "", location.pathname); } catch (e) {}
+document.getElementById("msg").textContent = msg;
+</script>
+</body>
+</html>
