@@ -60,12 +60,26 @@ test('build produces the stamped, injected site', async (t) => {
   assert.ok(files.length >= 2);
   const handlers = JSON.parse(/^self\.DEMO_HANDLERS=(\[.*\]);$/m.exec(sw)[1]);
   assert.deepEqual(handlers, files.map((f) => `/demo/handlers/${f}`));
+  assert.match(sw, /^self\.DEMO_BUNDLE="\/demo\/sw-bundle\.js";$/m);
+  const bundle = await readFile(join(out, 'demo', 'sw-bundle.js'), 'utf8');
+  const parts = ['demo-router.js', 'demo-sse.js', 'demo-fleet.js', 'demo-series.js', 'demo-state.js', ...files.map((f) => `handlers/${f}`)];
+  let at = -1;
+  for (const p of parts) {
+    const i = bundle.indexOf((await readFile(join(DEMO, 'runtime', p), 'utf8')).trim().slice(0, 200));
+    assert.ok(i > at, `bundle order: ${p}`); at = i;
+  }
+  const imported2 = [];
+  const ctx2 = { addEventListener() {}, location: new URL('https://demo.example/demo-sw.js'), importScripts: (...u) => imported2.push(...u) };
+  ctx2.self = ctx2;
+  vm.runInNewContext(sw, ctx2);
+  assert.deepEqual(imported2, ['/demo/sw-bundle.js?v=v9.9.9']);
   const imported = [];
   const ctx = { addEventListener() {}, location: new URL('https://demo.example/demo-sw.js'),
     importScripts: (...u) => imported.push(...u) };
   ctx.self = ctx;
-  vm.runInNewContext(sw, ctx);
+  vm.runInNewContext(sw.replace(/^self\.DEMO_BUNDLE=.*$/m, ''), ctx);
   assert.deepEqual(imported.slice(-files.length), files.map((f) => `/demo/handlers/${f}?v=v9.9.9`));
+  for (const f of files) assert.ok((await readFile(join(out, 'demo', 'handlers', f), 'utf8')).length > 0, f);
   await assert.rejects(readFile(join(out, 'demo', 'demo-sw.js')));
   for (const f of ['package.json', 'package-lock.json', 'vitest.config.mjs', 'sw.js', 'companion.html']) {
     await assert.rejects(readFile(join(out, 'static', f)), f);

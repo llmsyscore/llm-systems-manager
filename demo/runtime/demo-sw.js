@@ -16,8 +16,9 @@
   var RELEASE = self.DEMO_RELEASE || 'dev';
   var CACHE = 'lsm-demo-' + RELEASE;
   var stamp = function (p) { return p + '?v=' + encodeURIComponent(RELEASE); };
-  self.importScripts.apply(self, ['/demo/demo-router.js', '/demo/demo-sse.js',
-    '/demo/demo-fleet.js', '/demo/demo-series.js', '/demo/demo-state.js'].concat(self.DEMO_HANDLERS || []).map(stamp));
+  // Loads the one bundled script when built, else the core scripts and handlers one by one.
+  self.importScripts.apply(self, (self.DEMO_BUNDLE ? [self.DEMO_BUNDLE] : ['/demo/demo-router.js', '/demo/demo-sse.js',
+    '/demo/demo-fleet.js', '/demo/demo-series.js', '/demo/demo-state.js'].concat(self.DEMO_HANDLERS || [])).map(stamp));
 
   // Demo pages answered from the cache when the visitor opens them.
   var PAGES = ['/dashboard', '/phone'];
@@ -31,7 +32,7 @@
   function precache() {
     var origin = self.location.origin;
     return self.caches.open(CACHE).then(function (cache) {
-      var pages = ['/dashboard', '/phone', '/alarm/'].map(function (p) { return new URL(p, origin).href; });
+      var pages = ['/dashboard', '/phone'].map(function (p) { return new URL(p, origin).href; });
       return Promise.all(pages.map(function (url) {
         return fetch(new Request(url, { cache: 'reload' })).then(clean).then(function (res) {
           if (!res.ok) throw new Error('demo: precache ' + url + ' ' + res.status);
@@ -39,6 +40,19 @@
         });
       }));
     });
+  }
+
+  // Stores the given pages after activation; a failure is ignored and they load from the network instead.
+  function cacheLater(paths) {
+    var origin = self.location.origin;
+    return self.caches.open(CACHE).then(function (cache) {
+      return Promise.all(paths.map(function (p) {
+        var url = new URL(p, origin).href;
+        return fetch(new Request(url, { cache: 'reload' })).then(clean).then(function (res) {
+          if (res.ok) return cache.put(url, res);
+        });
+      }));
+    }).then(function () {}).catch(function () {});
   }
 
   // Answers from this release's cache, else fetches and stores a copy while the event stays alive.
@@ -67,6 +81,8 @@
     }).then(function () { return self.clients.claim(); }));
   });
 
+  var alarmQueued = false;
+
   self.addEventListener('fetch', function (event) {
     var req = event.request;
     var url = new URL(req.url);
@@ -80,6 +96,7 @@
       event.respondWith(cacheThenNetwork(event, new Request(new URL('/demo/placeholder', url).href)));
     } else if (req.mode === 'navigate' && PAGES.indexOf(p.replace(/\/$/, '')) >= 0) {
       var page = p.replace(/\/$/, '');
+      if (!alarmQueued) { alarmQueued = true; event.waitUntil(cacheLater(['/alarm/'])); }
       event.respondWith(self.caches.open(CACHE).then(function (cache) {
         return cache.match(new URL(page, url).href);
       }).then(function (hit) { return hit || fetch(page).then(clean); }));

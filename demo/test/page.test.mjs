@@ -440,16 +440,21 @@ test('the tab panels top follows the measured tab bar bottom', async () => {
 });
 
 // Runs the bootstrap page's inline script with a given user agent; returns registered workers and redirects.
-function runBootstrap(userAgent, { controller = null, window = {} } = {}) {
+function runBootstrap(userAgent, { controller = null, window = {}, getRegistration, register, setTimeout: timer = () => 0, clearTimeout: clearer = () => {} } = {}) {
   const html = src('bootstrap.html');
   const code = html.slice(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
-  const registered = [], replaced = [];
-  const serviceWorker = { controller, addEventListener() {}, register: (u) => { registered.push(u); return new Promise(() => {}); } };
+  const registered = [], replaced = [], reloaded = [], els = {};
+  const serviceWorker = { controller, addEventListener() {}, register: (u) => { registered.push(u); return register ? register() : new Promise(() => {}); } };
+  if (getRegistration) serviceWorker.getRegistration = getRegistration;
   const links = ['screenshots', 'install'].map((t) => ({ t, on: {}, getAttribute: () => t, addEventListener(k, fn) { this.on[k] = fn; } }));
-  const document = { getElementById: () => ({ style: {} }), querySelectorAll: (sel) => (sel === '.demo-load-link' ? links : []) };
-  new Function('navigator', 'location', 'document', 'window', 'setTimeout', code)(
-    { userAgent, serviceWorker }, { replace: (u) => replaced.push(u) }, document, window, () => 0);
-  return { registered, replaced, links };
+  const el = (id) => els[id] || (els[id] = { style: {}, on: {}, addEventListener(k, fn) { this.on[k] = fn; } });
+  const document = { getElementById: el, querySelectorAll: (sel) => (sel === '.demo-load-link' ? links : []) };
+  const nav = { userAgent, serviceWorker };
+  new Function('navigator', 'location', 'document', 'window', 'setTimeout', 'clearTimeout', code)(
+    nav, { replace: (u) => replaced.push(u), reload: () => reloaded.push(1) }, document, window, timer, clearer);
+  const click = (id) => els[id].on.click();
+  const shown = () => ['demoLoading', 'demoSlow', 'demoNotice'].filter((n) => els[n] && els[n].style.display === 'block');
+  return { registered, replaced, reloaded, links, click, shown, serviceWorker };
 }
 
 test('the loading-page links carry ref=demo-loading, open a new tab, and report their click', () => {
@@ -465,6 +470,99 @@ test('the loading-page links carry ref=demo-loading, open a new tab, and report 
   const { links } = runBootstrap('Mozilla/5.0 (X11; Linux x86_64) Firefox/133.0', { window: { DemoLanding: (s) => seen.push(s) } });
   links.forEach((l) => l.on.click());
   assert.deepEqual(seen, ['screenshots', 'install']);
+});
+
+test('retry waits on an installing worker instead of reloading', async () => {
+  const worker = { state: 'installing', on: {}, addEventListener(k, fn) { this.on[k] = fn; } };
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { getRegistration: () => Promise.resolve({ installing: worker }) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.deepEqual(r.replaced, []);
+  worker.state = 'activated';
+  r.serviceWorker.controller = {};
+  worker.on.statechange();
+  assert.deepEqual(r.replaced, ['/dashboard']);
+  assert.equal(r.registered.length, 1);
+});
+
+test('retry re-registers when no worker is installing', async () => {
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { getRegistration: () => Promise.resolve(undefined) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.equal(r.registered.length, 2);
+  assert.deepEqual(r.shown(), ['demoLoading']);
+});
+
+test('retry re-registers when the waited-on worker becomes redundant', async () => {
+  const worker = { state: 'installing', on: {}, addEventListener(k, fn) { this.on[k] = fn; } };
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { getRegistration: () => Promise.resolve({ installing: worker }) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  worker.state = 'redundant';
+  worker.on.statechange();
+  assert.equal(r.registered.length, 2);
+  assert.deepEqual(r.replaced, []);
+});
+
+test('retry re-registers when getRegistration rejects', async () => {
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { getRegistration: () => Promise.reject(new Error('x')) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.equal(r.registered.length, 2);
+});
+
+test('a stalled retry shows the still-loading notice again after 10 s and can be retried', async () => {
+  const worker = { state: 'installing', on: {}, addEventListener(k, fn) { this.on[k] = fn; } };
+  const timers = [];
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { setTimeout: (fn) => timers.push(fn), getRegistration: () => Promise.resolve({ installing: worker }) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.deepEqual(r.shown(), ['demoLoading']);
+  timers[timers.length - 1]();
+  assert.deepEqual(r.shown(), ['demoSlow']);
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.deepEqual(r.shown(), ['demoLoading']);
+});
+
+test('a failed registration shows Try again and still reports failed', async () => {
+  const seen = [];
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { window: { DemoLanding: (s) => seen.push(s) }, register: () => Promise.reject(new Error('x')) });
+  await new Promise((x) => setTimeout(x, 0));
+  assert.deepEqual(r.shown(), ['demoSlow']);
+  assert.ok(seen.includes('failed'));
+});
+
+test('retries do not stack slow timers', async () => {
+  let next = 1;
+  const live = new Set();
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', {
+    setTimeout: () => { const id = next++; live.add(id); return id; }, clearTimeout: (id) => live.delete(id),
+    getRegistration: () => Promise.resolve(undefined) });
+  assert.equal(live.size, 1);
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.equal(live.size, 1);
+});
+
+test('retry reloads when a worker is active but not controlling', async () => {
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { getRegistration: () => Promise.resolve({ active: {} }) });
+  r.click('demoRetry');
+  await new Promise((x) => setTimeout(x, 0));
+  assert.equal(r.reloaded.length, 1);
+  assert.equal(r.registered.length, 1);
+});
+
+test('retry is ignored once the page has moved on', async () => {
+  const r = runBootstrap('Mozilla/5.0 Firefox/133.0', { controller: undefined, getRegistration: () => Promise.resolve(undefined) });
+  r.serviceWorker.controller = {};
+  r.click('demoRetry');
+  r.click('demoRetry');
+  assert.deepEqual(r.replaced, ['/dashboard']);
+});
+
+test('the Try again button is in the still-loading notice', () => {
+  assert.match(src('bootstrap.html'), /<div id="demoSlow">[\s\S]*<button id="demoRetry" type="button">Try again<\/button>[\s\S]*<\/div>/);
 });
 
 test('the bootstrap page opens /phone once when the phone app sent the visitor there, else the dashboard', () => {

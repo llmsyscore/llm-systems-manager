@@ -121,6 +121,7 @@
     self.DemoLanding = function (state) {
       if (state === 'open') { if (shown === 'slow') report('slow_open'); shown = state; }
       else if (state === 'slow') shown = state;
+      else if (state === 'retry') report(state);
       else if (state === 'unsupported' || state === 'failed') { shown = state; report(state); }
       else if (state === 'screenshots' || state === 'install') { report(state); clicked = true; }
     };

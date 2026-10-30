@@ -201,6 +201,16 @@ test('a late open after "Still loading" is reported once with the wait time', as
   assert.ok(events()[0].total_ms >= 0);
 });
 
+test('retry is reported and later outcomes still report', async () => {
+  const { w, events } = boot('https://demo.llmsysmanager.com/');
+  w.DemoLanding('slow');
+  w.DemoLanding('retry');
+  w.DemoLanding('open');
+  w.dispatchEvent(new w.Event('pagehide'));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events().map((e) => e.reason), ['retry', 'slow_open']);
+});
+
 test('a loading-page link click is reported and kept over later reasons', async () => {
   const { w, events } = boot('https://demo.llmsysmanager.com/');
   w.DemoLanding('slow');

@@ -132,15 +132,27 @@ export async function build({ outDir, release }) {
   const handlers = existsSync(hdir)
     ? (await readdir(hdir)).filter((f) => f.endsWith('.js')).sort().map((f) => `/demo/handlers/${f}`)
     : [];
+  await writeFile(join(outDir, 'demo', 'sw-bundle.js'), await swBundle(RUNTIME, handlers));
   const sw = await readFile(join(RUNTIME, 'demo-sw.js'), 'utf8');
   await writeFile(join(outDir, 'demo-sw.js'),
     `// release ${release}\nself.DEMO_RELEASE=${JSON.stringify(release)};\n`
-    + `self.DEMO_HANDLERS=${JSON.stringify(handlers)};\n${sw}`);
+    + `self.DEMO_HANDLERS=${JSON.stringify(handlers)};\nself.DEMO_BUNDLE="/demo/sw-bundle.js";\n${sw}`);
 
   await walkText(outDir, async (p) => {
     const t = await readFile(p, 'utf8');
     if (t.includes('__MGR_VERSION__')) await writeFile(p, t.replaceAll('__MGR_VERSION__', release));
   });
+}
+
+// Worker scripts loaded before the handlers, in load order.
+export const SW_CORE = ['demo-router.js', 'demo-sse.js', 'demo-fleet.js', 'demo-series.js', 'demo-state.js'];
+
+// Joins the core scripts and the handlers (/demo/handlers/x.js paths) into one worker script.
+export async function swBundle(runtimeDir, handlers) {
+  const files = SW_CORE.map((f) => join(runtimeDir, f))
+    .concat(handlers.map((h) => join(runtimeDir, h.replace(/^\/demo\//, ''))));
+  const parts = await Promise.all(files.map(async (f) => (await readFile(f, 'utf8')).trimEnd()));
+  return `// demo worker bundle\n${parts.join(';\n')}\n`;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

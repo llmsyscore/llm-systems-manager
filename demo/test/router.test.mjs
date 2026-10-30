@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+import { SW_CORE, swBundle } from '../build.mjs';
 import { load } from './load.mjs';
 
 const BASE = 'http://demo.example';
@@ -117,7 +119,7 @@ test('DemoSse.stream skips a tick whose generator throws (logging once) and skip
   await reader.cancel();
 });
 
-function swEnv(cacheNames, { redirected = false } = {}) {
+function swEnv(cacheNames, { redirected = false, failAlarm = false } = {}) {
   const stores = new Map(cacheNames.map((n) => [n, new Map()]));
   const caches = {
     keys: async () => [...stores.keys()],
@@ -152,6 +154,7 @@ function swEnv(cacheNames, { redirected = false } = {}) {
   const fetch = async (r) => {
     const url = typeof r === 'string' ? new URL(r, 'http://demo.example/').href : r.url;
     fetched.push(url);
+    if (failAlarm && url.endsWith('/alarm/')) throw new Error('offline');
     const res = answer(url);
     if (redirected) Object.defineProperty(res, 'redirected', { value: true });
     return res;
@@ -182,7 +185,22 @@ test('install skips waiting and pre-caches only the pages, so the demo opens wit
   await fire(self, 'install');
   assert.equal(self.skipped, true);
   assert.deepEqual([...stores.get('lsm-demo-v9.9.9').keys()].sort(), [
-    'http://demo.example/alarm/', 'http://demo.example/dashboard', 'http://demo.example/phone']);
+    'http://demo.example/dashboard', 'http://demo.example/phone']);
+});
+
+test('alarm page is cached in the background after the first dashboard navigation, not on activate', async () => {
+  const { self, stores, fetched } = swEnv([]);
+  await fire(self, 'install');
+  await fire(self, 'activate');
+  assert.ok(!fetched.some((u) => u.endsWith('/alarm/')));
+  const dash = { url: 'http://demo.example/dashboard', method: 'GET', mode: 'navigate' };
+  await fire(self, 'fetch', { request: dash });
+  assert.ok(stores.get('lsm-demo-v9.9.9').has('http://demo.example/alarm/'));
+  const bad = swEnv([], { failAlarm: true });
+  await fire(bad.self, 'install');
+  const nav = await fire(bad.self, 'fetch', { request: dash });
+  assert.match(await nav.text(), /app\.js/);
+  assert.ok(!bad.stores.get('lsm-demo-v9.9.9').has('http://demo.example/alarm/'));
 });
 
 test('fetch serves the cached phone app for /phone and /phone/', async () => {
@@ -193,7 +211,7 @@ test('fetch serves the cached phone app for /phone and /phone/', async () => {
     const nav = await fire(self, 'fetch', { request: { url: u, method: 'GET', mode: 'navigate' } });
     assert.match(await nav.text(), /companion\.js\?v=def/, u);
   }
-  assert.equal(fetched.length, before);
+  assert.equal(fetched.filter((u) => !u.endsWith('/alarm/')).length, before);
 });
 
 test('fetch serves cached dashboard for /dashboard, routes /api, passes other origins', async () => {
@@ -313,4 +331,16 @@ test('on an old demo address the worker removes its caches and itself and moves 
   assert.equal(removed, true);
   assert.deepEqual([...stores.keys()], []);
   assert.equal(self.listeners.fetch.length, 0, 'answers nothing from the cache');
+});
+
+test('bundle-and-list-register-same-routes', async () => {
+  const runtime = join(dirname(fileURLToPath(import.meta.url)), '..', 'runtime');
+  const names = readdirSync(join(runtime, 'handlers')).filter((f) => f.endsWith('.js')).sort();
+  const bundle = await swBundle(runtime, names.map((f) => `/demo/handlers/${f}`));
+  const env = { clients: { get: async () => null } };
+  const one = load([], env);
+  vm.runInContext(bundle, vm.createContext(one));
+  const many = load([...SW_CORE, ...names.map((f) => `handlers/${f}`)], env);
+  assert.ok(many.DemoRouter.keys().length > 0);
+  assert.deepEqual([...one.DemoRouter.keys()], [...many.DemoRouter.keys()]);
 });
