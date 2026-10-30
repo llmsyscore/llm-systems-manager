@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>Device tag</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0a0e1f;color:#e8ecf8;padding:24px}</style>
+</head>
+<body>
+<p id="msg"></p>
+<script>
+var h = location.hash, m = /^#t=([0-9a-f]{64})$/.exec(h), msg = "This browser could not be marked.";
+try {
+  if (m) { localStorage.setItem("lsmTag", m[1]); msg = "This browser is marked as yours on the website, the demo and the installer."; }
+  else if (h === "#r=1") { localStorage.removeItem("lsmTag"); msg = "This browser is no longer marked as yours."; }
+} catch (e) { msg = "This browser could not be marked."; }
+try { history.replaceState(null, "", location.pathname); } catch (e) {}
+document.getElementById("msg").textContent = msg;
+</script>
+</body>
+</html>

@@ -24,10 +24,12 @@ const BODY = `
 <div class="tour-video"><video id="vid"></video></div>`;
 
 // Loads visit.js into a jsdom page and returns the page plus the recorded beacons.
-function open({ url = 'https://llmsyscore.com/', referrer, store = {}, clock } = {}) {
+function open({ url = 'https://llmsyscore.com/', referrer, store = {}, clock, local, before } = {}) {
   const dom = new JSDOM(`<!doctype html><body>${BODY}</body>`, { url, referrer, runScripts: 'outside-only' });
   const w = dom.window;
   Object.entries(store).forEach(([k, v]) => w.sessionStorage.setItem(k, v));
+  if (local) Object.entries(local).forEach(([k, v]) => w.localStorage.setItem(k, v));
+  if (before) before(w);
   const sent = [];
   w.navigator.sendBeacon = (u, b) => { sent.push(JSON.parse(b)); return true; };
   if (clock) w.Date.now = () => clock.now;
@@ -173,4 +175,24 @@ test('nothing is written to localStorage or cookies', () => {
   assert.equal(p.w.localStorage.length, 0);
   assert.equal(p.w.document.cookie, '');
   assert.deepEqual(Object.keys(p.w.sessionStorage).sort(), ['lsmSitePages', 'lsmSiteVisit']);
+});
+
+test('summary carries tag only when a valid lsmTag is stored', () => {
+  const TAG = 'b'.repeat(64);
+  const none = open();
+  none.hide();
+  assert.equal('tag' in none.sent[0], false);
+  const bad = open({ local: { lsmTag: 'xyz' } });
+  bad.hide();
+  assert.equal('tag' in bad.sent[0], false);
+  const ok = open({ local: { lsmTag: TAG } });
+  ok.hide();
+  assert.equal(ok.sent[0].tag, TAG);
+});
+
+test('throwing localStorage leaves the summary without tag', () => {
+  const p = open({ before: (w) => Object.defineProperty(w, 'localStorage', { get() { throw new Error('blocked'); } }) });
+  p.hide();
+  assert.equal(p.sent.length, 1);
+  assert.equal('tag' in p.sent[0], false);
 });

@@ -303,3 +303,24 @@ test('opening the Tower drawer is recorded', async () => {
   w.DemoAnalytics.flush(false);
   assert.equal(events().filter((e) => e.type === 'click' && e.target === 'tower-open').length, 2);
 });
+
+const TAG = 'a'.repeat(64);
+
+test('payload carries tag only when a valid lsmTag is stored', () => {
+  const none = boot('https://demo.llmsysmanager.com/dashboard');
+  none.w.DemoAnalytics.flush(false);
+  assert.equal('tag' in none.sent[0], false);
+  const bad = boot('https://demo.llmsysmanager.com/dashboard', { before: (w) => w.localStorage.setItem('lsmTag', 'nope') });
+  bad.w.DemoAnalytics.flush(false);
+  assert.equal('tag' in bad.sent[0], false);
+  const ok = boot('https://demo.llmsysmanager.com/dashboard', { before: (w) => w.localStorage.setItem('lsmTag', TAG) });
+  ok.w.DemoAnalytics.flush(false);
+  assert.equal(ok.sent[0].tag, TAG);
+});
+
+test('throwing localStorage leaves the payload without tag', () => {
+  const p = boot('https://demo.llmsysmanager.com/dashboard', { before: (w) => Object.defineProperty(w, 'localStorage', { get() { throw new Error('blocked'); } }) });
+  p.w.DemoAnalytics.flush(false);
+  assert.equal(p.sent.length, 1);
+  assert.equal('tag' in p.sent[0], false);
+});

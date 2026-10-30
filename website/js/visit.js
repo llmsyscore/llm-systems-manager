@@ -121,6 +121,11 @@
     return String(s == null ? "" : s).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, max);
   }
 
+  // The operator tag kept in localStorage when it is 64 hex characters, else null.
+  function storedTag() {
+    try { var t = localStorage.getItem("lsmTag"); return /^[0-9a-f]{64}$/.test(t) ? t : null; } catch (e) { return null; }
+  }
+
   function summary() {
     tick();
     sampleScroll();
@@ -140,6 +145,8 @@
         if (q.get(k)) body[k] = clip(q.get(k), 100);
       });
     }
+    var tag = storedTag();
+    if (tag) body.tag = tag;
     if (video) body.video = { ms: video.ms, pct: video.pct };
     return JSON.stringify(body);
   }
