@@ -410,12 +410,104 @@
     });
     return { ok: true, agent_id: m.id, models: models };
   });
+  // The visitor's live run: 'benchVisit' holds the run in progress and up to 5 finished runs, newest first.
+  var RUN_MS = 5000;
+  var LEVELS = [1, 4];
+  var STEPS = 4;
+  var TICK = 250;
+  var SPAN = RUN_MS / LEVELS.length;
+  var STEP_MS = SPAN / (STEPS + 1);
+  function visit() {
+    var v = R.state().get('benchVisit', null);
+    return v && typeof v === 'object' ? { active: v.active || null, done: v.done || [] } : { active: null, done: [] };
+  }
+  function visitRow(a, ctx) {
+    var m = F.byId(a.agent_id);
+    var row = liveRun(m, llamaModels(m).indexOf(a.model_id), 0, ctx);
+    row.run_id = a.run_id;
+    row.ts = iso(a.started_ms + RUN_MS);
+    row.baseline = false;
+    return row;
+  }
+  // Moves the active run to the finished list and saves.
+  function finish(v, ctx) {
+    v.done = [visitRow(v.active, ctx)].concat(v.done).slice(0, 5);
+    v.active = null;
+    return R.state().set('benchVisit', v);
+  }
+  // The visit with a run whose time is up already moved to the finished list.
+  function settled(ctx) {
+    var v = visit();
+    if (v.active && ctx.now >= v.active.started_ms + RUN_MS) finish(v, ctx);
+    return v;
+  }
+  // A visit run's document: the sample run with the visit's own run length.
+  function visitDoc(row) {
+    var doc = runDoc(row);
+    doc.elapsed_s = RUN_MS / 1000;
+    return doc;
+  }
+  // Stream events as [ms after start, event]: two levels of progress, then model_done and done.
+  function benchEvents(row) {
+    var id = row.run_id;
+    var doc = visitDoc(row);
+    var out = [[0, { type: 'model_start', run_id: id, bench: 'qualitative', levels: LEVELS.slice() }]];
+    LEVELS.forEach(function (conc, n) {
+      var base = n * SPAN;
+      out.push([base, { type: 'level_start', run_id: id, concurrency: conc }]);
+      for (var k = 1; k <= STEPS; k++) {
+        out.push([base + k * STEP_MS, { type: 'progress', run_id: id, level: conc, done: k * 2, total: 8 }]);
+      }
+      out.push([base + SPAN - TICK, Object.assign({ type: 'level_result', run_id: id }, doc.levels[n])]);
+    });
+    out.push([RUN_MS, Object.assign(doc, { type: 'model_done', run_id: id, model_id: row.model_id, ok: true, ts: row.ts })]);
+    out.push([RUN_MS, { type: 'done', run_id: id, ok: true }]);
+    return out;
+  }
+
+  R.route('POST /api/benchmark/live/run', function (ctx) {
+    var m = machineFor(ctx.query, 'llama');
+    var model = ctx.body && ctx.body.model_id;
+    if (llamaModels(m).indexOf(model) < 0) return json({ ok: false, error: 'pick a model' }, 400);
+    var v = settled(ctx);
+    if (v.active) return { ok: false, error: 'a benchmark is already running' };
+    v.active = { run_id: 'demo-bench-' + ctx.now, model_id: model, agent_id: m.id, started_ms: ctx.now };
+    return R.state().set('benchVisit', v).then(function () { return { ok: true, run_id: v.active.run_id }; });
+  }, { read: true });
+  // Follows the run in progress from the current step, or replays the end of one finished in the last minute.
+  R.route('GET /api/benchmark/stream', function (ctx) {
+    var v = settled(ctx);
+    var list = [], start = 0, sent = 0;
+    if (v.active) {
+      start = v.active.started_ms;
+      list = benchEvents(visitRow(v.active, ctx));
+      var from = Math.floor((ctx.now - start) / STEP_MS) * STEP_MS;
+      while (sent < list.length && list[sent][0] < from) sent++;
+    } else if (v.done.length && ctx.now - Date.parse(v.done[0].ts) <= 60000) {
+      list = benchEvents(v.done[0]).slice(-2);
+      start = Date.parse(v.done[0].ts) - RUN_MS;
+    }
+    return self.DemoSse.stream(function (now) {
+      if (sent >= list.length || now - start < list[sent][0]) return null;
+      var ev = list[sent++][1];
+      if (ev.type === 'done') {
+        var cur = visit();
+        if (cur.active && cur.active.run_id === ev.run_id) finish(cur, ctx);
+      }
+      return { data: ev };
+    }, TICK);
+  });
   R.route('GET /api/benchmark/live/runs', function (ctx) {
     var m = machineFor(ctx.query, 'llama');
     var want = ctx.query.get('model_id');
-    return { ok: true, runs: allRuns(m, ctx).filter(function (r) { return !want || r.model_id === want; }) };
+    var mine = settled(ctx).done.filter(function (r) { return r.agent_id === m.id; });
+    return { ok: true, runs: mine.concat(allRuns(m, ctx)).filter(function (r) { return !want || r.model_id === want; }) };
   });
   R.route('GET /api/benchmark/live/runs/:id', function (ctx) {
+    var mine = settled(ctx).done;
+    for (var d = 0; d < mine.length; d++) {
+      if (mine[d].run_id === ctx.params.id) return { ok: true, meta: mine[d], run: visitDoc(mine[d]) };
+    }
     var machines = llamaMachines();
     for (var a = 0; a < machines.length; a++) {
       var runs = allRuns(machines[a], ctx);

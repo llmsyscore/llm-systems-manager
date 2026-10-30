@@ -127,7 +127,7 @@ const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
   <div id="dash-energy"></div><div id="dash-forecast"></div></div>
 <div id="llmTab"><button class="sub-tab-btn" id="subTabBtnLlmLlamacpp">llama.cpp</button>
   <button class="sub-tab-btn" id="subTabBtnLlmTools">Tools</button>
-  <div id="llm-ctrl-wrap"><div class="llm-section" id="secModels"></div></div><div id="llm-llamacpp"></div><div id="llm-tools"></div>
+  <div id="llm-ctrl-wrap"><div class="llm-section" id="secModels"></div></div><div id="llm-llamacpp"></div><div id="llm-tools"><button id="blRunBtn">Run live benchmark</button><span id="blStatus">idle</span></div>
   <div id="terminalPanel" style="display:none;"><div id="terminalMount"></div></div>
   <div id="serverLogPanel" style="display:none;"><div id="serverLogBox"></div></div>
 </div>
@@ -140,14 +140,21 @@ const DASH_HTML = `<!DOCTYPE html><html><head></head><body>
   <div id="admin-agents"></div><div id="admin-routing"></div><div id="admin-jobs"></div></div>
 </body></html>`;
 
-// Builds a jsdom dashboard, runs the given runtime scripts in it and waits for the tour's start delay.
-async function dom(scripts, { before, after, url = 'https://demo.example/dashboard', html = DASH_HTML } = {}) {
+// Gives the page's first section a height so the welcome card sees a painted page.
+function paint(w) {
+  const e = w.document.querySelector('#overallTab .ov-hero, #glanceStrip');
+  if (e) e.getBoundingClientRect = () => ({ top: 100, bottom: 400, left: 10, right: 1000, width: 990, height: 300, x: 10, y: 100 });
+}
+
+// Builds a jsdom dashboard, runs the given runtime scripts in it and waits wait ms; painted:false leaves the page unpainted.
+async function dom(scripts, { before, after, url = 'https://demo.example/dashboard', html = DASH_HTML, wait = 1300, painted = true } = {}) {
   const d = new JSDOM(html, { url, runScripts: 'outside-only' });
   const w = d.window;
+  if (painted) paint(w);
   if (before) before(w);
-  for (const f of scripts) w.eval(src(f));
+  for (const f of scripts.includes('demo-tour.js') ? ['demo-device.js', 'demo-install.js', ...scripts] : scripts) w.eval(src(f));
   if (after) after(w);
-  await new Promise((r) => setTimeout(r, 1300));
+  await new Promise((r) => setTimeout(r, wait));
   return w;
 }
 
@@ -157,44 +164,57 @@ test('tour does not start when the seen flag is set', async () => {
   assert.ok(w.document.getElementById('demoBanner'), 'banner still shows');
 });
 
-test('a first visit shows the welcome card; its tour button starts the tour, which walks the steps and Close sets the flag', async () => {
+test('a first visit on a painted page shows the welcome card at once; Ask starts the tour at Ask Tower, which walks the steps and Close sets the flag', async () => {
   const tabs = [], tracked = [];
-  const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
+  const w = await dom(['demo-tour.js'], { wait: 0, before: (w) => {
+    w.switchTab = (t) => tabs.push(t);
+    w.DemoTrack = (t, f) => tracked.push(t === 'tour' ? [t, f.action, f.step] : [t, f.target]);
+  } });
   const steps = w.DemoTour.steps;
   assert.equal(w.document.querySelector('.demo-tour'), null, 'the tour waits for the welcome choice');
   const welcome = w.document.querySelector('.demo-welcome-card');
+  assert.ok(welcome, 'shown at once on a painted page');
   assert.equal(welcome.getAttribute('role'), 'dialog');
   assert.equal(welcome.querySelector('.demo-welcome-title').textContent, 'Welcome to the LLM Systems Manager demo');
-  assert.match(welcome.textContent, /real dashboard running on sample data\. Everything works/);
-  assert.doesNotMatch(welcome.textContent, /leaves your browser/);
-  assert.equal(w.document.activeElement, welcome.querySelector('.demo-welcome-tour'));
-  welcome.querySelector('.demo-welcome-tour').click();
+  assert.equal(welcome.querySelector('.demo-welcome-text').textContent, 'This is the real dashboard running on sample data.');
+  assert.deepEqual([...welcome.querySelectorAll('.demo-welcome-nav > *')].map((e) => e.className.split(' ').pop()),
+    ['demo-welcome-ask', 'demo-welcome-tour', 'demo-welcome-explore', 'demo-welcome-install']);
+  assert.equal(w.document.activeElement, welcome.querySelector('.demo-welcome-ask'));
+  welcome.querySelector('.demo-welcome-ask').click();
   assert.equal(w.document.querySelector('.demo-welcome'), null);
-  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-tour'], ['tour', undefined]]);
-  assert.equal(steps.length, 13);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-ask'], ['tour', 'start', 1]]);
+  assert.equal(w.DemoTour.index, 1);
+  assert.equal(steps.length, 7);
+  assert.deepEqual([...steps.map((s) => s.title)], ['Your whole fleet', 'Ask Tower', 'Energy and cost', 'Forecast',
+    'Models and Autotune', 'Try it: run a benchmark', 'Install it']);
   assert.ok(steps.every((s) => s.text.split(/(?<=\.|\?"?)\s+(?=[A-Z])/).length <= 2), 'one or two sentences per step');
-  for (const t of ['Energy', 'Forecast', 'Benchmarks', 'System health', 'Where requests go', 'Jobs', 'Add machines']) {
-    assert.ok(steps.some((s) => s.title.includes(t)), t);
-  }
   assert.ok(steps.every((s) => !/\bagents?\b|turned off/i.test(s.text)), 'plain words: no "agent", no reassurance');
-  assert.match(steps.find((s) => s.sub === 'subTabBtnLlmTools').text, /Autotune tries .* keeps the fastest/);
-  for (const s of steps) {
+  assert.match(steps.find((s) => s.sub === 'subTabBtnLlmLlamacpp').text, /Autotune tries .* keeps the fastest/);
+  for (const s of steps.filter((s) => !s.install)) {
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(s.title && s.text, s.selector);
   }
-  assert.ok(steps.some((s) => s.selector === '#towerAside' && s.tower && /slow|alarm|cost|model/i.test(s.text)));
+  assert.ok(steps.some((s) => s.selector === '#towerAside' && s.tower && s.ask));
   const card = w.document.querySelector('.demo-tour-card');
-  assert.ok(card);
-  assert.equal(card.querySelector('.demo-tour-title').textContent, steps[0].title);
-  assert.equal(card.querySelector('.demo-tour-back').disabled, true);
-  card.querySelector('.demo-tour-next').click();
-  assert.equal(w.DemoTour.index, 1);
-  w.document.querySelector('.demo-tour-back').click();
+  assert.equal(card.querySelector('.demo-tour-title').textContent, 'Ask Tower');
+  card.querySelector('.demo-tour-back').click();
   assert.equal(w.DemoTour.index, 0);
-  assert.deepEqual(tabs, [steps[0].tab, steps[1].tab, steps[0].tab]);
+  assert.equal(w.document.querySelector('.demo-tour-back').disabled, true);
+  w.document.querySelector('.demo-tour-next').click();
+  assert.equal(w.DemoTour.index, 1);
+  assert.deepEqual(tabs, [steps[1].tab, steps[0].tab, steps[1].tab]);
   w.document.querySelector('.demo-tour-close').click();
   assert.equal(w.document.querySelector('.demo-tour'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
+});
+
+test('the welcome tour button starts the tour at the first step', async () => {
+  const tracked = [];
+  const w = await dom(['demo-tour.js'], { wait: 0, before: (w) => { w.DemoTrack = (t, f) => tracked.push(t === 'tour' ? [t, f.action, f.step] : [t, f.target]); } });
+  w.document.querySelector('.demo-welcome-tour').click();
+  assert.equal(w.DemoTour.index, 0);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-tour'], ['tour', 'start', 0]]);
+  w.DemoTour.close();
 });
 
 for (const [how, want, pick] of [
@@ -254,12 +274,12 @@ test('a drag that ends outside the welcome card does not close it', async () => 
 test('a step whose element is below the window scrolls it into view and keeps the card on screen', async () => {
   const w = await dom(['demo-tour.js'], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
   Object.defineProperty(w, 'innerHeight', { configurable: true, value: 844 });
-  const strip = w.document.getElementById('ovAgentsStrip');
+  const strip = w.document.getElementById('dash-energy');
   let top = 1153;
   strip.getBoundingClientRect = () => ({ top, bottom: top + 170, left: 10, right: 380, width: 370, height: 170, x: 10, y: top });
   const scrolled = [];
   strip.scrollIntoView = (o) => { scrolled.push(o.block); top = 300; };
-  w.DemoTour.start(w.DemoTour.steps.findIndex((s) => s.selector === '#ovAgentsStrip'));
+  w.DemoTour.start(w.DemoTour.steps.findIndex((s) => s.selector === '#dash-energy'));
   assert.deepEqual(scrolled, ['center']);
   const card = w.document.querySelector('.demo-tour-card');
   assert.ok(parseFloat(card.style.top) >= 12 && parseFloat(card.style.top) <= 844 - 12);
@@ -299,7 +319,7 @@ test('finishing the tour sets the flag; the banner Tour button restarts it; tab 
   w.document.querySelectorAll('.tab-btn').forEach((b) => b.addEventListener('click', () => clicked.push(b.id)));
   const banner = w.document.getElementById('demoBanner');
   assert.equal(w.document.body.firstElementChild, banner);
-  assert.equal(banner.textContent, 'Demo with sample dataInstallation directionsTourPhone version');
+  assert.equal(banner.textContent, 'Demo with sample dataInstallation directionsShareGitHubTourPhone version');
   assert.equal(banner.querySelector('a').href, 'https://get.llmsysmanager.com/?ref=demo');
   w.localStorage.removeItem('lsmDemoTourSeen');
   banner.querySelector('.demo-banner-tour').click();
@@ -308,7 +328,8 @@ test('finishing the tour sets the flag; the banner Tour button restarts it; tab 
   for (let i = 0; i < w.DemoTour.steps.length; i++) w.document.querySelector('.demo-tour-next').click();
   assert.equal(w.document.querySelector('.demo-tour'), null);
   assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-  assert.ok(clicked.includes('tabBtnAdmin') && clicked.includes('tabBtnEvents'));
+  const ids = { overall: 'tabBtnOverall', dashboard: 'tabBtnDashboard', llm: 'tabBtnLlmControl' };
+  assert.deepEqual(clicked, [...w.DemoTour.steps.filter((s) => s.tab).map((s) => ids[s.tab])]);
 });
 
 test('steps with a sub-tab click its button; each step stays closable', async () => {
@@ -391,7 +412,7 @@ test('tour steps and tab buttons match the real dashboard page', () => {
   const tour = new JSDOM('<body></body>', { url: 'https://demo.example/dashboard', runScripts: 'outside-only' }).window;
   tour.localStorage.setItem('lsmDemoTourSeen', '1');
   tour.eval(src('demo-tour.js'));
-  for (const s of tour.DemoTour.steps) {
+  for (const s of tour.DemoTour.steps.filter((s) => !s.install)) {
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(w.document.querySelector(`.tab-btn[onclick="switchTab('${s.tab}')"]`), s.tab);
   }
@@ -401,16 +422,10 @@ for (const [kind, fire] of [
   ['click', (w) => w.document.getElementById('tabBtnAdmin').dispatchEvent(new w.Event('pointerdown', { bubbles: true }))],
   ['key', (w) => w.document.body.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))],
 ]) {
-  test(`tour does not auto-start after a ${kind} before its delay; the Tour button still starts it`, async () => {
-    const tabs = [];
-    const w = await dom(['demo-tour.js'], { before: (w) => { w.switchTab = (t) => tabs.push(t); }, after: fire });
+  test(`the welcome card shows even after an early ${kind}`, async () => {
+    const w = await dom(['demo-tour.js'], { after: fire });
+    assert.ok(w.document.querySelector('.demo-welcome-card'));
     assert.equal(w.document.querySelector('.demo-tour'), null);
-    assert.equal(w.document.querySelector('.demo-welcome'), null);
-    assert.deepEqual(tabs, []);
-    assert.equal(w.localStorage.getItem('lsmDemoTourSeen'), null);
-    w.document.querySelector('.demo-banner-tour').click();
-    assert.ok(w.document.querySelector('.demo-tour-card'));
-    assert.deepEqual(tabs, [w.DemoTour.steps[0].tab]);
   });
 }
 
@@ -619,7 +634,7 @@ test('Ask Tower step with Tower closed hides the ring and offers Open Tower; wit
   w.DemoTour.close();
 });
 
-test('the banner, the last tour step and the welcome card each carry an install link', async () => {
+test('the banner and the welcome card carry the install link; every tour card has an Install button that opens the install card', async () => {
   const tracked = [];
   const w = await dom(['demo-tour.js'], { before: (w) => { w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
   const hasInstall = (a) => a && /get\.llmsysmanager\.com/.test(a.href) && a.target === '_blank';
@@ -632,11 +647,25 @@ test('the banner, the last tour step and the welcome card each carry an install 
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(w.document.querySelector('.demo-welcome'), null);
   assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-install']]);
-  w.DemoTour.start(w.DemoTour.steps.length - 1);
-  assert.ok(hasInstall(w.document.querySelector('.demo-tour-card a.demo-tour-install')));
+  const steps = w.DemoTour.steps;
+  for (let i = 0; i < steps.length; i++) {
+    w.DemoTour.start(i);
+    const btn = w.document.querySelector('.demo-tour-card .demo-tour-install');
+    if (steps[i].install) assert.equal(btn, null, `step ${i + 1}`);
+    else assert.equal(btn && btn.textContent, 'Install', `step ${i + 1}`);
+  }
+  w.DemoTour.start(2);
+  tracked.length = 0;
+  w.document.querySelector('.demo-tour-install').click();
+  assert.deepEqual(tracked, [['click', 'tour-install-3']]);
+  assert.equal(w.DemoTour.index, steps.length - 1);
+  const card = w.document.querySelector('.demo-tour-card');
+  assert.equal(card.querySelector('.demo-tour-title').textContent, 'Install it');
+  assert.equal(card.querySelector('.demo-install-cmd').textContent, 'bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)');
+  assert.match(card.className, /demo-tour-card-center/);
+  assert.equal(w.document.querySelector('.demo-tour-ring').style.display, 'none');
   assert.match(w.document.querySelector('.demo-tour-next').className, /demo-btn-ghost/);
-  w.DemoTour.start(0);
-  assert.equal(w.document.querySelector('.demo-tour-install'), null);
+  assert.equal(w.document.querySelector('.demo-tour-next').textContent, 'Done');
   w.DemoTour.close();
 });
 
@@ -652,6 +681,7 @@ function device(w, { width = 390, coarse = true, ua = IPHONE_UA } = {}) {
 
 test('phones are narrow windows with touch or a mobile browser; tablets and desktops are not', async () => {
   const w = await dom([], { before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  w.eval(src('demo-device.js'));
   w.eval(src('demo-tour.js'));
   const DESK_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
   const IPAD_UA = 'Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1';
@@ -666,55 +696,34 @@ test('phones are narrow windows with touch or a mobile browser; tablets and desk
   ]) {
     device(w, opts);
     assert.equal(w.DemoTour.isPhone(), want, JSON.stringify(opts));
+    assert.equal(w.DemoDevice.isPhone(), want, JSON.stringify(opts));
   }
 });
 
-test('on a phone the welcome card suggests a desktop and offers the desktop version, the phone app and the install directions', async () => {
+test('on /phone the welcome card shows the same three choices', async () => {
   const tracked = [];
-  const w = await dom(['demo-tour.js'], { before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
+  const w = await dom(['demo-tour.js'], { url: 'https://demo.example/phone', html: COMPANION_HTML,
+    before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push(t === 'tour' ? [t, f.action, f.step] : [t, f.target]); } });
   const card = w.document.querySelector('.demo-welcome-card');
-  assert.equal(card.querySelector('.demo-welcome-title').textContent, 'Welcome to the LLM Systems Manager demo');
-  assert.match(card.textContent, /best viewed on a desktop or tablet/);
-  assert.equal(card.querySelector('.demo-welcome-tour'), null);
-  const phone = card.querySelector('a.demo-welcome-phone');
-  assert.equal(phone.textContent, 'Switch to the phone app');
-  assert.equal(new URL(phone.href).pathname, '/phone');
-  assert.equal(phone.target, '');
-  assert.equal(card.querySelector('.demo-welcome-desktop').textContent, 'Open the desktop version');
-  const inst = card.querySelector('a.demo-welcome-install');
-  assert.equal(inst.textContent, 'Installation directions');
-  assert.equal(inst.href, 'https://get.llmsysmanager.com/?ref=demo');
-  assert.equal(w.document.activeElement, phone);
-  card.querySelector('.demo-welcome-desktop').click();
-  assert.equal(w.document.querySelector('.demo-welcome'), null);
-  assert.equal(w.document.querySelector('.demo-tour'), null);
-  assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-desktop']]);
+  assert.equal(card.querySelector('.demo-welcome-text').textContent, 'This is the real phone app running on sample data.');
+  assert.deepEqual([...card.querySelectorAll('.demo-welcome-nav > *')].map((e) => e.textContent),
+    ['Ask your fleet a question', 'Take the 1-minute tour', 'Explore on my own', 'Installation directions']);
+  assert.equal(card.querySelector('.demo-welcome-phone'), null);
+  assert.equal(w.document.activeElement, card.querySelector('.demo-welcome-ask'));
+  card.querySelector('.demo-welcome-ask').click();
+  const i = w.DemoTour.phoneSteps.findIndex((s) => s.ask);
+  assert.equal(w.DemoTour.phoneSteps[i].screen, 'tower');
+  assert.equal(w.DemoTour.index, i);
+  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-ask'], ['tour', 'start', i]]);
+  w.DemoTour.close();
 });
 
-test('on a phone, Switch to the phone app is recorded and goes to /phone; Esc closes it', async () => {
-  const tracked = [];
-  const w = await dom(['demo-tour.js'], { before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
-  const phone = w.document.querySelector('a.demo-welcome-phone');
-  let navigated = null;
-  phone.addEventListener('click', (e) => { navigated = e.defaultPrevented ? null : new URL(phone.href).pathname; e.preventDefault(); });
-  phone.click();
-  assert.equal(navigated, '/phone');
-  assert.equal(w.document.querySelector('.demo-welcome'), null);
-  assert.ok(w.localStorage.getItem('lsmDemoTourSeen'));
-  assert.deepEqual(tracked, [['click', 'welcome-shown'], ['click', 'welcome-phone']]);
-  const w2 = await dom(['demo-tour.js'], { before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
-  w2.document.body.dispatchEvent(new w2.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  assert.equal(w2.document.querySelector('.demo-welcome'), null);
-  assert.deepEqual(tracked.slice(2), [['click', 'welcome-shown'], ['click', 'welcome-close']]);
-});
-
-test('the desktop welcome card keeps its tour and explore choices with the install directions', async () => {
+test('the desktop welcome card offers Ask, Tour, Explore and the install link', async () => {
   const w = await dom(['demo-tour.js'], { before: (w) => device(w, { width: 1600, coarse: false, ua: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0' }) });
   const card = w.document.querySelector('.demo-welcome-card');
   assert.match(card.textContent, /real dashboard running on sample data/);
   assert.deepEqual([...card.querySelectorAll('.demo-welcome-nav > *')].map((e) => e.textContent),
-    ['Take the 1-minute tour', 'Explore on my own', 'Installation directions']);
+    ['Ask your fleet a question', 'Take the 1-minute tour', 'Explore on my own', 'Installation directions']);
   assert.equal(card.querySelector('.demo-welcome-phone'), null);
 });
 
@@ -737,10 +746,10 @@ test('the dashboard banner has the install directions, Tour and a Phone version 
   assert.deepEqual(tracked, [['click', 'switch-phone']]);
 });
 
-test('on /phone the banner offers the desktop version, shows no welcome card and the Tour walks the phone screens', async () => {
+test('on /phone the banner offers the desktop version and the Tour walks the phone screens to the install card', async () => {
   const tracked = [];
   const w = await dom(['demo-tour.js'], { url: 'https://demo.example/phone', html: COMPANION_HTML,
-    before: (w) => { device(w); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
+    before: (w) => { device(w); w.localStorage.setItem('lsmDemoTourSeen', '1'); w.DemoTrack = (t, f) => tracked.push([t, f.target]); } });
   assert.equal(w.document.querySelector('.demo-welcome'), null);
   const b = w.document.getElementById('demoBanner');
   assert.equal(w.document.body.firstElementChild, b);
@@ -752,13 +761,16 @@ test('on /phone the banner offers the desktop version, shows no welcome card and
   assert.deepEqual(tracked, [['click', 'switch-desktop']]);
   const steps = w.DemoTour.steps;
   assert.equal(steps, w.DemoTour.phoneSteps);
-  assert.ok(steps.length >= 4 && steps.length <= 6);
+  assert.equal(steps.length, 6);
   const clicked = [];
   w.document.querySelectorAll('#tabbar .tab').forEach((t) => t.addEventListener('click', () => clicked.push(t.dataset.tab)));
   b.querySelector('.demo-banner-tour').click();
   for (let i = 1; i < steps.length; i++) w.document.querySelector('.demo-tour-next').click();
-  assert.deepEqual(clicked, [...steps].map((s) => s.screen));
-  assert.ok(w.document.querySelector('.demo-tour-card a.demo-tour-install'));
+  assert.deepEqual(clicked, [...steps.filter((s) => s.screen).map((s) => s.screen)]);
+  assert.ok(steps[steps.length - 1].install);
+  assert.equal(w.document.querySelector('.demo-tour-title').textContent, 'Install it');
+  assert.ok(w.document.querySelector('.demo-tour-card .demo-install-cmd'));
+  assert.equal(w.document.querySelector('.demo-tour-card [data-demo-track="copy-phone-tour"]').textContent, 'Copy');
   w.document.querySelector('.demo-tour-next').click();
   assert.equal(w.document.querySelector('.demo-tour'), null);
 });
@@ -768,7 +780,7 @@ test('phone tour steps match the real phone app page', () => {
   const tour = new JSDOM('<body></body>', { url: 'https://demo.example/dashboard', runScripts: 'outside-only' }).window;
   tour.localStorage.setItem('lsmDemoTourSeen', '1');
   tour.eval(src('demo-tour.js'));
-  for (const s of tour.DemoTour.phoneSteps) {
+  for (const s of tour.DemoTour.phoneSteps.filter((s) => !s.install)) {
     assert.ok(w.document.querySelector(s.selector), s.selector);
     assert.ok(w.document.querySelector(`#tabbar .tab[data-tab="${s.screen}"]`), s.screen);
     assert.ok(s.title && s.text && !/\bagents?\b/i.test(s.text), s.title);
@@ -818,29 +830,205 @@ test('the tour card sits outside the highlighted area: below, above, then beside
   assert.equal(spot(full, cw, ch, W, H).y, H - ch - 24);
 });
 
-test('the Settings step opens the cog drawer at the themes, offers Open Settings when closed, and closes it on Next', async () => {
-  const calls = [];
+test('the Ask Tower step runs the tour questions once per entry', async () => {
+  const calls = [], runs = [];
   const w = await dom(['demo-tour.js'], { before: (w) => {
     w.localStorage.setItem('lsmDemoTourSeen', '1');
-    const ov = () => w.document.getElementById('settingsOverlay');
-    w.openSettings = () => { calls.push('open'); ov().classList.add('open'); };
-    w.closeSettings = () => { calls.push('close'); ov().classList.remove('open'); };
+    towerStubs(w, calls);
+    w.DemoTourAsk = { run: (surface, isCurrent) => { runs.push({ surface, isCurrent }); return Promise.resolve(0); } };
   } });
-  const scrolled = [];
-  w.document.getElementById('sdAppearance').scrollIntoView = () => scrolled.push('themes');
-  const i = w.DemoTour.steps.findIndex((s) => s.settings);
-  assert.ok(i > 0);
-  assert.match(w.DemoTour.steps[i].text, /theme/i);
-  w.DemoTour.start(i);
-  assert.deepEqual(calls, ['open']);
-  assert.deepEqual(scrolled, ['themes']);
-  w.closeSettings();
-  await new Promise((r) => setTimeout(r, 20));
-  const btn = w.document.querySelector('.demo-tour-open-settings');
-  assert.ok(btn);
-  btn.click();
-  assert.ok(w.document.getElementById('settingsOverlay').classList.contains('open'));
+  const i = w.DemoTour.steps.findIndex((s) => s.ask);
+  w.DemoTour.start(i - 1);
+  assert.equal(runs.length, 0);
   w.DemoTour.next();
-  assert.equal(calls[calls.length - 1], 'close');
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].surface, 'desk');
+  assert.equal(runs[0].isCurrent(), true);
+  w.DemoTour.next();
+  assert.equal(runs[0].isCurrent(), false);
+  assert.equal(runs.length, 1);
+  w.DemoTour.back();
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1].isCurrent(), true);
   w.DemoTour.close();
+  assert.equal(runs[1].isCurrent(), false);
+});
+
+// Starts the tour on the benchmark step with toolsOpenTool and DemoTrack stubs.
+async function benchStep() {
+  const opened = [], tracked = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.localStorage.setItem('lsmDemoTourSeen', '1');
+    w.toolsOpenTool = (id) => opened.push(id);
+    w.DemoTrack = (t, f) => tracked.push([t, f.target]);
+  } });
+  const i = w.DemoTour.steps.findIndex((s) => s.tool === 'benchmark');
+  w.DemoTour.start(i);
+  tracked.length = 0;
+  const status = (t) => { w.document.getElementById('blStatus').textContent = t; return new Promise((r) => setTimeout(r, 0)); };
+  return { w, opened, tracked, status };
+}
+
+test('the benchmark step opens the benchmark tool and rings Run', async () => {
+  const { w, opened } = await benchStep();
+  assert.deepEqual(opened, ['benchmark']);
+  const run = w.document.getElementById('blRunBtn');
+  run.getBoundingClientRect = () => ({ top: 200, bottom: 232, left: 50, right: 250, width: 200, height: 32 });
+  w.document.getElementById('llm-tools').getBoundingClientRect = () => ({ top: 20, bottom: 700, left: 10, right: 420, width: 410, height: 680 });
+  w.DemoTour.place();
+  const ring = w.document.querySelector('.demo-tour-ring');
+  assert.equal(ring.style.display, '');
+  assert.equal(ring.style.top, '196px');
+  assert.equal(ring.style.height, '40px');
+  assert.equal(ring.style.width, '208px');
+  assert.ok(w.DemoTour.steps.filter((s) => s.exact).length === 1, 'only the benchmark step skips the climb');
+  w.DemoTour.close();
+});
+
+test('bench-done is recorded once when the run completes on the benchmark step', async () => {
+  const { w, tracked, status } = await benchStep();
+  await status('running');
+  assert.deepEqual(tracked, []);
+  await status('complete');
+  await status('running');
+  await status('complete');
+  assert.deepEqual(tracked, [['click', 'bench-done']]);
+  w.DemoTour.close();
+});
+
+test('bench-done still records when #blStatus appears after the benchmark step opens', async () => {
+  const opened = [], tracked = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.localStorage.setItem('lsmDemoTourSeen', '1');
+    w.document.getElementById('blStatus').remove();
+    w.DemoTrack = (t, f) => tracked.push([t, f.target]);
+  } });
+  w.DemoTour.start(w.DemoTour.steps.findIndex((s) => s.tool === 'benchmark'));
+  await new Promise((r) => setTimeout(r, 600));
+  const st = w.document.createElement('span');
+  st.id = 'blStatus';
+  st.textContent = 'idle';
+  w.document.getElementById('llm-tools').appendChild(st);
+  await new Promise((r) => setTimeout(r, 400));
+  st.textContent = 'running';
+  await new Promise((r) => setTimeout(r, 0));
+  st.textContent = 'complete';
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(tracked.filter((e) => e[0] === 'click'), [['click', 'bench-done']]);
+  w.DemoTour.close();
+});
+
+test('the welcome card waits for the dashboard to paint', async () => {
+  const w = await dom(['demo-tour.js'], { painted: false, wait: 300 });
+  assert.equal(w.document.querySelector('.demo-welcome'), null);
+  paint(w);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.ok(w.document.querySelector('.demo-welcome-card'));
+});
+
+test('the welcome card shows after 3 s even if the dashboard never paints', async () => {
+  const w = await dom(['demo-tour.js'], { painted: false, wait: 2500 });
+  assert.equal(w.document.querySelector('.demo-welcome'), null);
+  await new Promise((r) => setTimeout(r, 800));
+  assert.ok(w.document.querySelector('.demo-welcome-card'));
+});
+
+test('the banner Share says Link copied when there is no share sheet', async () => {
+  const copied = [];
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.localStorage.setItem('lsmDemoTourSeen', '1');
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { copied.push(t); return Promise.resolve(); } } });
+  } });
+  assert.equal(typeof w.navigator.share, 'undefined');
+  const b = w.document.getElementById('demoBanner');
+  const note = b.querySelector('.demo-banner-note');
+  assert.equal(note.getAttribute('aria-live'), 'polite');
+  assert.equal(note.previousElementSibling, b.querySelector('.demo-install-share'));
+  b.querySelector('.demo-install-share').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(note.textContent, 'Link copied');
+  assert.deepEqual(copied, ['https://get.llmsysmanager.com/?ref=demo-share']);
+});
+
+test('a repeat banner Share click restarts the clear timer', async () => {
+  const w = await dom(['demo-tour.js'], { before: (w) => {
+    w.localStorage.setItem('lsmDemoTourSeen', '1');
+    Object.defineProperty(w.navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.resolve() } });
+  } });
+  const b = w.document.getElementById('demoBanner');
+  const note = b.querySelector('.demo-banner-note');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  b.querySelector('.demo-install-share').click();
+  await sleep(2000);
+  b.querySelector('.demo-install-share').click();
+  await sleep(1000);
+  assert.equal(note.textContent, 'Link copied');
+});
+
+test('leaving the benchmark step mid-run is quiet', async () => {
+  const { w, tracked, status } = await benchStep();
+  await status('running');
+  w.DemoTour.next();
+  tracked.length = 0;
+  await status('complete');
+  assert.deepEqual(tracked, []);
+  w.DemoTour.close();
+});
+
+// Runs the built dashboard's head script against a stub window and returns the replace calls.
+async function dashboardRedirect({ ua, width, search = '', desktop = false }) {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { build } = await import('../build.mjs');
+  const out = await mkdtemp(join(tmpdir(), 'dist-'));
+  try {
+    await build({ outDir: out, release: 'v9.9.9' });
+    const html = await readFile(join(out, 'dashboard.html'), 'utf8');
+    const head = html.slice(0, html.indexOf('demo-analytics.js'));
+    const inline = [...head.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]).find((c) => c.includes('wantsPhone'));
+    const replaced = [];
+    const store = desktop ? { lsmDemoDesktop: '1' } : {};
+    const self = load(['demo-device.js'], {
+      innerWidth: width, navigator: { userAgent: ua }, matchMedia: () => ({ matches: false }),
+      sessionStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; }, removeItem: (k) => { delete store[k]; } },
+      location: { search, hash: '', replace: (u) => replaced.push(u) },
+    });
+    const vm = await import('node:vm');
+    vm.runInContext(inline, self);
+    return { replaced, inline: Boolean(inline) };
+  } finally { await rm(out, { recursive: true, force: true }); }
+}
+
+test('phones go from /dashboard to /phone keeping the query', async () => {
+  const r = await dashboardRedirect({ ua: IPHONE_UA, width: 390, search: '?ref=hn' });
+  assert.ok(r.inline);
+  assert.deepEqual(r.replaced, ['/phone?ref=hn']);
+});
+
+test('desktop choice survives the loading page', async () => {
+  const r = await dashboardRedirect({ ua: IPHONE_UA, width: 390, desktop: true });
+  assert.deepEqual(r.replaced, []);
+  const store = { lsmDemoDesktop: '1' };
+  const sessionStorage = { getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { delete store[k]; } };
+  const dev = load(['demo-device.js'], { innerWidth: 390, navigator: { userAgent: IPHONE_UA }, matchMedia: () => ({ matches: true }), sessionStorage });
+  assert.deepEqual(runBootstrap(IPHONE_UA, { controller: {}, window: { sessionStorage, DemoDevice: dev.DemoDevice } }).replaced, ['/dashboard']);
+});
+
+test('the loading page sends phones to /phone', () => {
+  const DESK_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+  const mk = (ua, width) => load(['demo-device.js'], { innerWidth: width, navigator: { userAgent: ua }, matchMedia: () => ({ matches: false }), sessionStorage: { getItem: () => null } }).DemoDevice;
+  assert.deepEqual(runBootstrap(IPHONE_UA, { controller: {}, window: { DemoDevice: mk(IPHONE_UA, 390) } }).replaced, ['/phone']);
+  assert.deepEqual(runBootstrap(DESK_UA, { controller: {}, window: { DemoDevice: mk(DESK_UA, 1600) } }).replaced, ['/dashboard']);
+  const store = { lsmDemoReturn: '/phone' };
+  const sessionStorage = { getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { delete store[k]; } };
+  assert.deepEqual(runBootstrap(DESK_UA, { controller: {}, window: { sessionStorage, DemoDevice: mk(DESK_UA, 1600) } }).replaced, ['/phone']);
+});
+
+test('Desktop version sets the desktop choice; Phone version clears it', async () => {
+  const phone = await dom(['demo-tour.js'], { url: 'https://demo.example/phone', before: (w) => w.localStorage.setItem('lsmDemoTourSeen', '1') });
+  phone.document.querySelector('.demo-banner-switch').dispatchEvent(new phone.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(phone.sessionStorage.getItem('lsmDemoDesktop'), '1');
+  const dash = await dom(['demo-tour.js'], { before: (w) => { w.localStorage.setItem('lsmDemoTourSeen', '1'); w.sessionStorage.setItem('lsmDemoDesktop', '1'); } });
+  dash.document.querySelector('.demo-banner-switch').dispatchEvent(new dash.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(dash.sessionStorage.getItem('lsmDemoDesktop'), null);
 });

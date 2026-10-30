@@ -127,7 +127,7 @@ test('build makes the phone app page with the demo layer and the body-end script
   assert.ok(head.every((n, i) => n >= 0 && n < first && (i === 0 || n > head[i - 1])), head.join(','));
   for (const html of [phone, dash]) {
     const l = srcs(html);
-    const tail = ['demo-tour.js', 'demo-starters.js', 'demo-links.js'].map((f) => l.indexOf(`/demo/${f}?v=v9.9.9`));
+    const tail = ['demo-install.js', 'demo-tour-ask.js', 'demo-tour.js', 'demo-starters.js', 'demo-links.js'].map((f) => l.indexOf(`/demo/${f}?v=v9.9.9`));
     const lastStatic = l.map((u) => u.startsWith('/static/')).lastIndexOf(true);
     assert.ok(tail.every((n, i) => n > lastStatic && (i === 0 || n > tail[i - 1])), tail.join(','));
     assert.ok(html.includes('<link rel="stylesheet" href="/demo/demo-tour.css?v=v9.9.9">'));
@@ -154,4 +154,19 @@ test('build refuses unsafe output directories and flags without values', async (
   assert.throws(() => parseArgs(['--release', '']), /needs a value/);
   assert.throws(() => parseArgs(['--out', 'x']), /--release is required/);
   assert.throws(() => parseArgs(['--release', 'v1', 'stray']), /unknown argument/);
+});
+
+test('dashboard head loads the device script and the phone redirect before analytics; phone page has no redirect', async (t) => {
+  const out = await mkdtemp(join(tmpdir(), 'dist-'));
+  t.after(() => rm(out, { recursive: true, force: true }));
+  await build({ outDir: out, release: 'v9.9.9' });
+  const dash = await readFile(join(out, 'dashboard.html'), 'utf8');
+  const phone = await readFile(join(out, 'phone.html'), 'utf8');
+  const idx = await readFile(join(out, 'index.html'), 'utf8');
+  const dev = dash.indexOf('<script src="/demo/demo-device.js?v=v9.9.9"></script>');
+  const inline = dash.indexOf('DemoDevice.wantsPhone()');
+  const analytics = dash.indexOf('demo-analytics.js');
+  assert.ok(dev >= 0 && inline > dev && analytics > inline);
+  assert.ok(!phone.includes('wantsPhone'));
+  assert.ok(idx.includes('<script src="/demo/demo-device.js">'));
 });
