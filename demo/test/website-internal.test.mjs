@@ -8,7 +8,7 @@ import { internal } from '../pages/_worker.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HEX = 'a'.repeat(64);
-const scriptOf = (html) => /<script>([\s\S]*?)<\/script>/.exec(html)[1];
+const scriptOf = (html) => /<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/i.exec(html)[1];
 
 // Runs an inline script against a jsdom storage and a stubbed location/history.
 function run(code, hash, { throwing = false } = {}) {
