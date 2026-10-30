@@ -161,13 +161,29 @@
   doc.addEventListener('click', function (e) {
     var el = e.target;
     for (var n = el; n && n.nodeType === 1; n = n.parentElement) {
+      var tag = n.getAttribute && n.getAttribute('data-demo-track');
+      if (tag) { track('click', { target: tag, href: '' }); return; }
       if (n.id && n.id.indexOf('subTabBtn') === 0) { track('subtab', { tab: tab, sub: n.id.slice(9) }); return; }
       if (n.classList && n.classList.contains('demo-banner-tour')) { track('click', { target: 'tour-button', href: '' }); return; }
       if (n.tagName === 'A' && n.href && n.host !== self.location.host) { track('click', { target: targetOf(n.href), href: n.href }); return; }
     }
   }, true);
 
-  // Watches the page's own requests: refused changes, and Tower questions with the canned answer key.
+  // Records each time the Tower drawer opens on the dashboard.
+  function watchTower() {
+    var o = doc.getElementById('towerOverlay');
+    if (!o || typeof self.MutationObserver !== 'function' || /^\/phone/.test(self.location.pathname || '')) return;
+    var wasOpen = o.classList.contains('open');
+    new self.MutationObserver(function () {
+      var open = o.classList.contains('open');
+      if (open && !wasOpen) track('click', { target: 'tower-open', href: '' });
+      wasOpen = open;
+    }).observe(o, { attributes: true, attributeFilter: ['class'] });
+  }
+  if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', watchTower);
+  else watchTower();
+
+  // Watches the page's own requests: refused changes, started benchmarks, and Tower questions with the canned answer key.
   var realFetch = self.fetch;
   if (typeof realFetch === 'function') {
     self.fetch = function (input, init) {
@@ -175,14 +191,19 @@
       var p = realFetch.apply(this, arguments);
       var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
       if (method !== 'GET' && method !== 'HEAD') {
+        var path = url.split('?')[0].replace(/^https?:\/\/[^/]+/, '');
         p.then(function (r) {
-          if (!r || r.status !== 403 || !r.clone) return;
+          if (!r || !r.clone) return;
+          if (r.status === 200 && method === 'POST' && path === '/api/benchmark/live/run') {
+            return r.clone().json().then(function (d) { if (d && d.ok) track('click', { target: 'bench-start', href: '' }); });
+          }
+          if (r.status !== 403) return;
           return r.clone().json().then(function (d) {
-            if (d && d.error === 'Not available in the demo') track('refused', { key: method + ' ' + url.split('?')[0].replace(/^https?:\/\/[^/]+/, '') });
+            if (d && d.error === 'Not available in the demo') track('refused', { key: method + ' ' + path });
           });
         }).catch(function () {});
       }
-      if (/\/api\/tower\/threads\/[^/]+\/messages$/.test(url.split('?')[0]) && init && init.body) {
+      if (self.DemoTourAsking !== true && /\/api\/tower\/threads\/[^/]+\/messages$/.test(url.split('?')[0]) && init && init.body) {
         var text = '';
         try { text = String(JSON.parse(init.body).text || ''); } catch (e) { /* not JSON */ }
         p.then(function (r) { return r.clone().json(); }).then(function (d) {

@@ -13,6 +13,8 @@
 .demo-banner-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .demo-banner .demo-btn { flex: 0 0 auto; font-size: 13px; padding: 4px 12px; line-height: 1.4; }
 .demo-banner .demo-btn-ghost { border-color: var(--accent); color: var(--fg); background: color-mix(in srgb, var(--bg) 45%, transparent); }
+.demo-banner-note { font-size: 12px; font-weight: 600; }
+.demo-banner-note:empty { display: none; }
 @media (max-width: 640px) {
   .demo-banner { padding: 5px 8px; gap: 5px 8px; font-size: 13px; }
   .demo-banner-text { flex: 1 1 100%; text-align: center; }
@@ -43,6 +45,11 @@
 .demo-tour-nav { display: flex; justify-content: space-between; gap: 8px; }
 .demo-tour-nav-right { display: flex; gap: 8px; }
 .demo-tour-open-tower { margin-bottom: 10px; }
+.demo-tour-nav-right .demo-tour-install { font-size: 11px; padding: 2px 8px; }
+/* Steps with no element to ring: the card sits in the middle of the window. */
+.demo-tour-card.demo-tour-card-center { top: 0 !important; left: 0 !important; right: 0; bottom: 0; margin: auto; height: fit-content;
+  width: 420px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.demo-tour-card-center .demo-install { margin-bottom: 12px; }
 .demo-welcome { position: fixed; inset: 0; z-index: 9100; display: flex; align-items: center; justify-content: center; padding: 16px;
   background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(3px); }
 .demo-welcome-card { box-sizing: border-box; width: 520px; max-width: 100%; padding: 28px 30px; text-align: center;
@@ -53,3 +60,9 @@
 .demo-welcome-nav { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
 .demo-welcome-nav .demo-btn { font-size: 14px; padding: 10px 18px; border-radius: 8px; }
 @media (max-width: 480px) { .demo-welcome-card { padding: 22px 18px; } .demo-welcome-nav .demo-btn { flex: 1 1 100%; } }
+.demo-install { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.demo-install-cmd { display: block; overflow-x: auto; white-space: nowrap; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--bg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; user-select: all; }
+.demo-install-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.demo-install-actions .demo-btn { text-decoration: none; text-align: center; }
+.demo-install-directions { font-size: 12px; color: var(--accent); }
+.demo-install-note { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--fg-muted); }

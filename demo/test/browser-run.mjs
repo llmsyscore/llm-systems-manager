@@ -321,10 +321,18 @@ async function main() {
     await p2.screenshot({ path: join(shots, 'welcome.png') }).catch(() => {});
     await p2.click('.demo-welcome-tour', { timeout: 5000 }).catch(() => bad('welcome: tour button not clickable'));
     await p2.waitForSelector('.demo-tour', { timeout: 15000 }).catch(() => bad('tour did not start from the welcome card'));
-    // Walks every step: the ring must frame a real box (at least 40 x 40 px); one shot per step.
-    const nSteps = await p2.evaluate(() => (self.DemoTour ? self.DemoTour.steps.length : 0));
+    // Walks every step: the ring must frame a real box (at least 40 x 40 px), the install step shows the command; one shot per step.
+    const kinds = await p2.evaluate(() => (self.DemoTour ? self.DemoTour.steps.map((s) => !!s.install) : []));
+    const nSteps = kinds.length;
     for (let i = 0; i < nSteps; i++) {
       await sleep(1600);
+      if (kinds[i]) {
+        if (!(await p2.$('.demo-tour-card .demo-install-cmd'))) bad(`tour step ${i + 1}: install card has no command`);
+        await p2.screenshot({ path: join(shots, `tour-${i + 1}.png`) }).catch(() => {});
+        if (!(await p2.$('.demo-tour-close'))) bad(`tour step ${i + 1}: no Close button`);
+        if (i < nSteps - 1) await p2.click('.demo-tour-next', { timeout: 5000 }).catch(() => bad(`tour step ${i + 1}: Next not clickable`));
+        continue;
+      }
       const r = await p2.evaluate(() => {
         const ring = document.querySelector('.demo-tour-ring');
         if (!ring || ring.style.display === 'none') return null;

@@ -249,3 +249,57 @@ test('the phone app records the session, and switching between it and the dashbo
   assert.ok(!ev.some((e) => e.type === 'start'), 'no second start');
   assert.deepEqual(ev.filter((e) => e.type === 'tab').map((e) => [e.tab, e.prev]), [['phone', 'overall'], ['phone-alerts', 'phone']]);
 });
+
+test('controls with data-demo-track record their own target', () => {
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
+  const d = w.document;
+  d.body.insertAdjacentHTML('beforeend', '<a id="s" data-demo-track="star-banner" href="https://github.com/llmsyscore/llm-systems-manager">s</a><a id="d" data-demo-track="directions-tour" href="https://get.llmsysmanager.com/?ref=demo">d</a>');
+  for (const id of ['s', 'd']) { d.getElementById(id).addEventListener('click', (e) => e.preventDefault()); d.getElementById(id).click(); }
+  w.DemoAnalytics.flush(false);
+  assert.deepEqual(events().filter((e) => e.type === 'click').map((e) => ['click', e.target]), [['click', 'star-banner'], ['click', 'directions-tour']]);
+});
+
+test('a started benchmark is recorded once', async () => {
+  let status = 200;
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard', { before: (w) => {
+    const base = w.fetch;
+    w.fetch = (u, init) => {
+      if (typeof u === 'string' && u.split('?')[0] === '/api/benchmark/live/run') {
+        const body = status === 200 ? { ok: true, run_id: 'demo-bench-1' } : { ok: false, error: 'Not available in the demo' };
+        return Promise.resolve({ status, clone: () => ({ json: () => Promise.resolve(body) }) });
+      }
+      return base(u, init);
+    };
+  } });
+  await w.fetch('/api/benchmark/live/run?provider=llama&agent=', { method: 'POST', body: '{}' });
+  await new Promise((r) => setTimeout(r, 10));
+  status = 403;
+  await w.fetch('/api/benchmark/live/run', { method: 'POST', body: '{}' });
+  await new Promise((r) => setTimeout(r, 10));
+  w.DemoAnalytics.flush(false);
+  const got = events().filter((e) => e.type === 'click' || e.type === 'refused').map((e) => [e.type, e.target || e.key]);
+  assert.deepEqual(got, [['click', 'bench-start'], ['refused', 'POST /api/benchmark/live/run']]);
+});
+
+test('tour questions are not counted as visitor questions', async () => {
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard');
+  w.DemoTourAsking = true;
+  await w.fetch('/api/tower/threads/demo-t1/messages', { method: 'POST', body: JSON.stringify({ text: 'What does each machine cost to run?' }) });
+  await new Promise((r) => setTimeout(r, 10));
+  w.DemoAnalytics.flush(false);
+  assert.equal(events().filter((e) => e.type === 'tower').length, 0);
+});
+
+test('opening the Tower drawer is recorded', async () => {
+  const { w, events } = boot('https://demo.llmsysmanager.com/dashboard', {
+    before: (win) => { const o = win.document.createElement('div'); o.id = 'towerOverlay'; win.document.body.appendChild(o); } });
+  const o = w.document.getElementById('towerOverlay');
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  await tick();
+  o.classList.add('open'); await tick();
+  o.classList.add('x'); await tick();
+  o.classList.remove('open'); await tick();
+  o.classList.add('open'); await tick();
+  w.DemoAnalytics.flush(false);
+  assert.equal(events().filter((e) => e.type === 'click' && e.target === 'tower-open').length, 2);
+});

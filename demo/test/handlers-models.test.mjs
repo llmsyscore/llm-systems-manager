@@ -158,3 +158,131 @@ test('LM Studio report cards name a model from the LM Studio list; llama models 
     assert.ok(a.includes('--model') && a.includes('--ctx-size') && a.includes('--n-gpu-layers'));
   }
 });
+
+// A fresh worker per benchmark test; streams hand back their generator, which the test ticks on a fake clock.
+function bench() {
+  const w = load(['demo-fleet.js', 'demo-series.js', 'demo-sse.js', 'demo-router.js', 'demo-state.js', 'handlers/overall.js', 'handlers/models.js']);
+  w.DemoSse.stream = (gen, ms) => ({ gen, ms });
+  const handle = async (method, path, body, now) => {
+    const url = new URL(path, 'http://demo.example');
+    const found = w.DemoRouter.find(method, url);
+    assert.ok(found, `no route for ${method} ${path}`);
+    return found.route.handler({ now, params: found.params, query: url.searchParams, body, fleet: w.DemoFleet });
+  };
+  const post = async (path, body, now) => {
+    const out = await handle('POST', path, body, now);
+    return out instanceof w.Response ? { status: out.status, body: await out.json() } : { status: 200, body: JSON.parse(JSON.stringify(out)) };
+  };
+  const get = async (path, now) => {
+    const out = await handle('GET', path, null, now);
+    return out instanceof w.Response ? out : JSON.parse(JSON.stringify(out));
+  };
+  // Opens the stream at `from` and ticks it every 250 ms up to `to`; returns [ms, event] pairs.
+  const stream = async (from, to, start = from) => {
+    const s = await handle('GET', '/api/benchmark/stream', null, start);
+    assert.equal(s.ms, 250);
+    const out = [];
+    for (let t = from, i = 0; t <= to; t += 250, i++) {
+      const ev = s.gen(t, i);
+      if (ev) { assert.equal(ev.event, undefined); out.push([t, JSON.parse(JSON.stringify(ev.data))]); }
+    }
+    return out;
+  };
+  return { w, post, get, stream };
+}
+const BENCH_MODEL = 'Llama-3.1-8B-Instruct-Q8_0';
+
+test('starting a run returns its id and refuses a second one', async () => {
+  const b = bench();
+  const first = await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL, bench: 'qualitative' }, NOW);
+  assert.deepEqual(first.body, { ok: true, run_id: 'demo-bench-' + NOW });
+  const second = await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW + 2000);
+  assert.deepEqual(second.body, { ok: false, error: 'a benchmark is already running' });
+  const later = await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW + 6000);
+  assert.equal(later.body.run_id, 'demo-bench-' + (NOW + 6000));
+});
+
+test('the stream walks two levels over five seconds and ends with model_done then done', async () => {
+  const b = bench();
+  const id = (await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW)).body.run_id;
+  const ev = await b.stream(NOW, NOW + 6000);
+  assert.ok(ev.every(([, e]) => e.run_id === id && typeof e.type === 'string'));
+  const at = (ms) => ev.filter(([t]) => t === NOW + ms).map(([, e]) => e);
+  assert.deepEqual(at(0).map((e) => e.type), ['model_start']);
+  assert.deepEqual(at(0)[0].levels, [1, 4]);
+  assert.equal(at(0)[0].bench, 'qualitative');
+  assert.deepEqual(at(250).map((e) => [e.type, e.concurrency]), [['level_start', 1]]);
+  assert.deepEqual(at(1000).map((e) => [e.type, e.level, e.done, e.total]), [['progress', 1, 4, 8]]);
+  assert.deepEqual(at(2250).map((e) => [e.type, e.concurrency]), [['level_result', 1]]);
+  assert.ok(at(2250)[0].all.pred_tps > 0 && at(2250)[0].rows.length === 4);
+  assert.deepEqual(at(4750).map((e) => [e.type, e.concurrency]), [['level_result', 4]]);
+  assert.deepEqual(at(5000).map((e) => e.type), ['model_done']);
+  const done = at(5000)[0];
+  assert.equal(done.model_id, BENCH_MODEL);
+  assert.equal(done.ok, true);
+  assert.equal(done.levels.length, 2);
+  assert.equal(done.ts, new Date(NOW + 5000).toISOString());
+  assert.deepEqual(ev.map(([, e]) => e.type).slice(-2), ['model_done', 'done']);
+  assert.equal(ev.at(-1)[1].ok, true);
+  assert.equal(ev.filter(([, e]) => e.type === 'progress').length, 8);
+  assert.equal(ev.filter(([, e]) => e.type === 'level_start').length, 2);
+});
+
+test('reconnect does not restart the run', async () => {
+  const b = bench();
+  await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW);
+  const one = await b.stream(NOW, NOW + 1000);
+  assert.equal(one[0][1].type, 'model_start');
+  const two = await b.stream(NOW + 3000, NOW + 6000);
+  assert.notEqual(two[0][1].type, 'model_start');
+  assert.ok(!two.some(([, e]) => e.type === 'model_start'));
+  assert.deepEqual(two.slice(-2).map(([, e]) => e.type), ['model_done', 'done']);
+  assert.ok(two.at(-2)[0] >= NOW + 5000);
+});
+
+test('late stream replays the end', async () => {
+  const b = bench();
+  await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW);
+  const late = await b.stream(NOW + 6000, NOW + 8000);
+  assert.deepEqual(late.map(([, e]) => e.type), ['model_done', 'done']);
+  assert.deepEqual(await b.stream(NOW + 70000, NOW + 72000), []);
+  assert.deepEqual(await bench().stream(NOW, NOW + 6000), []);
+});
+
+test('a finished run is listed first and can be opened; defaults are unchanged without one', async () => {
+  const b = bench();
+  const before = (await b.get('/api/benchmark/live/runs?agent_id=forge', NOW)).runs;
+  assert.equal(before.length, 6);
+  assert.ok(before.every((r) => r.agent_id === 'forge' && r.ok && r.provider === 'llama'));
+  const model = 'Qwen2.5-14B-Instruct-Q5_K_M';
+  const started = await b.post('/api/benchmark/live/run?agent=forge', { model_id: model }, NOW);
+  assert.equal(started.body.ok, true);
+  await b.stream(NOW, NOW + 6000);
+  const runs = (await b.get('/api/benchmark/live/runs?agent_id=forge', NOW + 7000)).runs;
+  assert.equal(runs.length, 7);
+  assert.match(runs[0].run_id, /^demo-bench-/);
+  assert.deepEqual([runs[0].agent_id, runs[0].model_id, runs[0].ok, runs[0].baseline], ['forge', model, true, false]);
+  assert.equal((await b.get('/api/benchmark/live/runs?agent_id=atlas', NOW + 7000)).runs.length, 6);
+  const one = await b.get('/api/benchmark/live/runs/' + runs[0].run_id, NOW + 7000);
+  assert.equal(one.ok, true);
+  assert.equal(one.meta.run_id, runs[0].run_id);
+  assert.equal(one.run.levels.length, 2);
+});
+
+test('an unknown model is refused', async () => {
+  const b = bench();
+  const out = await b.post('/api/benchmark/live/run', { model_id: 'nope' }, NOW);
+  assert.equal(out.status, 400);
+  assert.deepEqual(out.body, { ok: false, error: 'pick a model' });
+  assert.equal((await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW)).body.ok, true);
+});
+
+test('a visit run reports its own five-second length; sample runs keep theirs', async () => {
+  const b = bench();
+  const id = (await b.post('/api/benchmark/live/run', { model_id: BENCH_MODEL }, NOW)).body.run_id;
+  const ev = await b.stream(NOW, NOW + 6000);
+  assert.equal(ev.find(([, e]) => e.type === 'model_done')[1].elapsed_s, 5);
+  assert.equal((await b.get('/api/benchmark/live/runs/' + id, NOW + 7000)).run.elapsed_s, 5);
+  const seeded = (await b.get('/api/benchmark/live/runs?agent_id=atlas', NOW + 7000)).runs.find((r) => !r.run_id.startsWith('demo-bench-'));
+  assert.equal((await b.get('/api/benchmark/live/runs/' + seeded.run_id, NOW + 7000)).run.elapsed_s, 188);
+});
