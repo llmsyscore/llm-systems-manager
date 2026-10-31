@@ -77,7 +77,7 @@ def _card_matches(card: Path, sel: str) -> bool:
 
 
 _DRM_ROOT = Path("/sys/class/drm")
-_GPU_DEVICE_WARNED = ""
+_GPU_DEVICE_WARNED: "set[str]" = set()
 
 
 def _gpu_device_sel() -> str:
@@ -150,9 +150,8 @@ def _select_nvidia_id(drm_root: Path = _DRM_ROOT) -> "str | None":
 
 
 def _warn_unmatched_device(sel: str) -> None:
-    global _GPU_DEVICE_WARNED
-    level = logging.DEBUG if _GPU_DEVICE_WARNED == sel else logging.WARNING
-    _GPU_DEVICE_WARNED = sel
+    level = logging.DEBUG if sel in _GPU_DEVICE_WARNED else logging.WARNING
+    _GPU_DEVICE_WARNED.add(sel)
     log.log(level, "GPU_DEVICE=%r matches no AMD or NVIDIA card", sel)
 
 

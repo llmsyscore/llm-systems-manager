@@ -98,7 +98,7 @@ def test_gpu_device_matching_no_amd_card_selects_none(sysfs):
 
 
 def test_unmatched_gpu_device_warns_once(monkeypatch, caplog):
-    monkeypatch.setattr(gpu, "_GPU_DEVICE_WARNED", "")
+    monkeypatch.setattr(gpu, "_GPU_DEVICE_WARNED", set())
     with caplog.at_level("DEBUG"):
         gpu._warn_unmatched_device("card7")
         gpu._warn_unmatched_device("card7")
@@ -169,7 +169,7 @@ def test_probe_selector_naming_nvidia_on_mixed_host(sysfs, monkeypatch):
 
 
 def test_probe_selector_matching_nothing_warns(sysfs, monkeypatch, caplog):
-    monkeypatch.setattr(gpu, "_GPU_DEVICE_WARNED", "")
+    monkeypatch.setattr(gpu, "_GPU_DEVICE_WARNED", set())
     gpu._deps.config.GPU_DEVICE = "card9"
     _probe(monkeypatch, None, True, None)
     assert gpu._NVIDIA_PRESENT is False
