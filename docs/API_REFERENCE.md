@@ -202,6 +202,11 @@ Opens an SSE stream reporting build progress and compiler output. The stream clo
 
 ---
 
+### `GET /api/llm/builds`
+Lists the llama.cpp builds installed on the llama agent's host: folder, backend, version and commit, whether each one runs, its note, and which one is active. The list is kept from the last scan; add `?rescan=1` to search again. Nothing on the host is changed.
+
+---
+
 ### `GET /api/llm/cache`
 Lists model files currently held in the local model cache on the GPU host.
 

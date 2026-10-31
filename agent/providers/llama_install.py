@@ -139,7 +139,7 @@ def installed_build_id(bin_path, timeout: int = 30) -> dict:
         out["build"], out["commit"] = legacy.group(1), legacy.group(2)
     else:
         first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        out["text"] = (first[:100] or f"no output, exit {r.returncode}")
+        out["text"] = (first[:200] or f"no output, exit {r.returncode}")
     return out
 
 

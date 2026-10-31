@@ -554,6 +554,16 @@
     .bld-act { margin-top: 10px; }
     .bld-act .btn { background: var(--bg-card-alt); color: var(--fg); border: 1px solid var(--border); }
     @media (max-width: 560px) { .bld-row { flex-direction: column; gap: 0; } .bld-k { flex-basis: auto; } }
+    .lbi-wrap { overflow-x: auto; border: 1px solid var(--bg-card-alt); border-radius: 6px; background: var(--bg-card); }
+    .lbi-table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 0.82em; }
+    .lbi-table th { text-align: left; color: var(--fg-dim); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--bg-card-alt); }
+    .lbi-table td { padding: 6px 10px; border-bottom: 1px solid var(--bg-card-alt); vertical-align: top; }
+    .lbi-table tr:last-child td { border-bottom: 0; }
+    .lbi-table .mono { font-family: var(--font-mono); overflow-wrap: anywhere; }
+    .lbi-table .lbi-ok { color: var(--ok); }
+    .lbi-table .lbi-err { color: var(--crit); }
+    .lbi-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 0.85em; background: var(--accent); color: var(--bg); }
+    .lbi-note { color: var(--fg-dim); margin-top: 2px; font-family: var(--font-sans); overflow-wrap: normal; }
     .dl-log-resize { background: var(--bg-elev); border: 1px solid var(--border-strong); border-top: none; border-radius: 0 0 6px 6px; cursor: ns-resize; height: 10px; display: flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; }
     .dl-log-resize::after { content: '⋯'; color: var(--fg-faint); font-size: 0.7em; letter-spacing: 3px; user-select: none; }
     .log-toolbar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }

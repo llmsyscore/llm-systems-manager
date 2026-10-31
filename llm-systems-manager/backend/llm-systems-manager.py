@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.31-1"
+__version__ = "v2026.10.31-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2337,6 +2337,14 @@ def llm_build():
 @app.route("/api/llm/build/stream")
 def llm_build_stream():
     return proxies.proxy_stream_to_primary("llama", "/llama/build/stream", long_running=True)
+
+
+@app.route("/api/llm/builds")
+def llm_builds():
+    """Installed llama.cpp builds on the selected llama agent (read-only)."""
+    rescan = (flask_request.args.get("rescan") or "").lower() in ("1", "true")
+    return proxies.proxy_to_primary("llama", "GET", "/llama/builds", timeout=90,
+                                    params={"rescan": "true"} if rescan else {})
 
 
 def _note_tool_start(provider: str, tool: str):

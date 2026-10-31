@@ -28,4 +28,5 @@ def _load(name: str, path: Path):
 
 llama_install = _load("llama_install", _LLAMA_INSTALL_PY)
 llama_upgrade = _load("llama_upgrade", _LLAMA_UPGRADE_PY)
+llama_inventory = _load("llama_inventory", _AGENT_ROOT / "providers" / "llama_inventory.py")
 frozen_self_update = _load("frozen_self_update", _FROZEN_SELF_UPDATE_PY)

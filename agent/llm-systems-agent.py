@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.31-1"
+VERSION = "v2026.10.31-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -407,6 +407,8 @@ class AgentConfig:
     LLAMA_BUILD_METHOD: str = ""          # custom_script|source|release_binary|conda|homebrew
     LLAMA_BUILD_DIR: str = ""             # managed install root; blank => ~/.local/share/llama.cpp
     LLAMA_BUILD_OPTS: dict = {}           # YAML-only; per-method knobs
+    LLAMA_BUILD_SEARCH_DIRS: list = []    # extra folders searched for installed builds
+    LLAMA_BUILD_NOTES: dict = {}          # YAML-only; build folder -> note shown in the list
     # /models/sse push-state consumer: auto (router mode only) | on | off.
     LLAMA_SSE_ENABLED: str = "auto"
 
