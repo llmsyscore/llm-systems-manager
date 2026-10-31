@@ -433,6 +433,7 @@ Backend API endpoints consumed:
           <div class="mc-menu-sec">Llama server</div>
           <button onclick="openServerConfig()"><span class="mi">⚙</span>Server config</button>
           <button id="llamaBtnBuild" onclick="startLlamaBuild()" title="Rebuild llama.cpp from source"><span class="mi">↑</span>Update llama.cpp</button>
+          <button id="llamaBtnBuilds" onclick="openLlamaBuilds()"><span class="mi">☰</span>Installed builds</button>
         </div>
       </div>
     </div>
@@ -443,6 +444,16 @@ Backend API endpoints consumed:
       </div>
       <pre id="llamaBuildLog" class="log-box" style="height:360px;"></pre>
       <div id="llamaBuildBanner" class="bld-banner" style="display:none;"></div>
+    </div>
+    <div id="llamaBuildsPanel" style="display:none;margin-bottom:10px;">
+      <div class="llm-toolbar" style="justify-content:space-between;margin-bottom:4px;">
+        <span style="font-size:0.82em;color:var(--fg-dim);">☰ Installed llama.cpp builds <span id="llamaBuildsStatus" style="margin-left:6px;"></span></span>
+        <span>
+          <button class="btn btn-gray-muted-gradient btn-sm" id="llamaBuildsRescan" onclick="loadLlamaBuilds(true)">↻ Rescan</button>
+          <button class="btn btn-gray-muted-gradient btn-sm" onclick="closeLlamaBuildsPanel()">✕ Close</button>
+        </span>
+      </div>
+      <div id="llamaBuildsList" class="lbi-wrap"></div>
     </div>
     <!-- Terminal panel — sits above the server log so the layout is
          buttons → terminal → log when both are open. -->

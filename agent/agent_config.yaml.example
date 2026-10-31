@@ -71,6 +71,10 @@ LLAMA_ENABLED: false
 #   install_in_place: true   #   source/release_binary: swap new binaries+libs onto
 #                            #   dirname(LLAMA_BIN); default on, set false to opt out
 #   backup_retain: 2         #   in-place upgrade: how many .upgrade.bak.* to keep
+# LLAMA_BUILD_SEARCH_DIRS: []  # extra folders searched for installed llama-server builds
+#                              # (LSA_ env: separate entries with |)
+# LLAMA_BUILD_NOTES:           # build folder -> note shown in Installed builds (YAML only)
+#   /opt/llama-rocm/bin: "ROCm source build, vendor patches"
 # LLAMA_SSE_ENABLED:   auto  # auto (router mode only) | on | off — subscribe to llama.cpp /models/sse for push-based model state
 
 # -- vLLM (set VLLM_ENABLED: true on hosts running `vllm serve`) ------------

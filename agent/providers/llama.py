@@ -35,6 +35,7 @@ from collectors.gpu import collect_gpu  # type: ignore
 from . import _shared
 from . import llama_counters
 from . import llama_install
+from . import llama_inventory
 from . import llama_sse
 from . import llama_upgrade
 from . import power_arbiter
@@ -3969,6 +3970,23 @@ def llama_tools_state(authorization: Optional[str] = Header(default=None)) -> di
             "quality_active": bool(_autotune_active and _autotune_quality)}
 
 
+def llama_builds_endpoint(rescan: bool = Query(default=False),
+                          authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Installed llama.cpp builds on this host; scans on first call or ?rescan=1."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _llama_check_enabled()
+    cfg = ctx.config
+    res = None if rescan else llama_inventory.cached()
+    if res is None:
+        res = llama_inventory.scan(cfg, llama_install.installed_build_id,
+                                   str(llama_install._build_root(cfg)), _llama_seen_builds_file())
+    return res
+
+
+def _llama_seen_builds_file() -> Path:
+    return Path(_require_ctx().config.AGENT_INSTALL_DIR) / "data" / "llama-builds-seen.json"
+
+
 _ROUTES: tuple = (
     ("GET",    "/llama/state",                    llama_state_endpoint),
     ("GET",    "/llama/server/status",            llama_server_status_endpoint),
@@ -3994,6 +4012,7 @@ _ROUTES: tuple = (
     ("GET",    "/llama/download/stream",          llama_download_stream),
     ("POST",   "/llama/build",                    llama_build),
     ("GET",    "/llama/build/stream",             llama_build_stream),
+    ("GET",    "/llama/builds",                   llama_builds_endpoint),
     ("GET",    "/llama/cache",                    llama_cache_list),
     ("GET",    "/llama/cache/gguf",               llama_cache_gguf),
     ("POST",   "/llama/cache/prune",              llama_cache_prune),
@@ -4023,4 +4042,7 @@ def register_routes(app) -> None:
 def start_background() -> "Optional[asyncio.Task]":
     """Start the /models/sse listener; the perf controller is the tick-driven arbiter now."""
     _maybe_start_sse_listener()
+    with best_effort("llama: record active build", log=log):
+        if _require_ctx().config.LLAMA_ENABLED:
+            llama_inventory.remember(_require_ctx().config.LLAMA_BIN or "", _llama_seen_builds_file())
     return None

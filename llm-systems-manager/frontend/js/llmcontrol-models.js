@@ -1519,11 +1519,67 @@ function closeLlamaBuildPanel() {
   if (p) p.style.display = 'none';
 }
 
+// #1389: read-only list of the llama.cpp builds found on the agent host.
+function closeLlamaBuildsPanel() {
+  const p = document.getElementById('llamaBuildsPanel');
+  if (p) p.style.display = 'none';
+}
+
+function openLlamaBuilds() {
+  const p = document.getElementById('llamaBuildsPanel');
+  if (p) p.style.display = '';
+  loadLlamaBuilds(false);
+}
+
+function _llamaBuildVersion(b) {
+  const id = b.version || (b.build ? `b${b.build}` : '');
+  const c = b.commit ? String(b.commit).slice(0, 8) : '';
+  return id && c ? `${id} (${c})` : (id || c || '—');
+}
+
+function _renderLlamaBuilds(d) {
+  const list = (d && Array.isArray(d.builds)) ? d.builds : [];
+  if (!list.length) return '<div class="ledger-empty">No llama.cpp builds found on this host.</div>';
+  const rows = list.map(b => {
+    const tag = b.active ? '<span class="lbi-tag">Active</span>' : '';
+    const note = b.note ? `<div class="lbi-note">${_esc(b.note)}</div>` : '';
+    const st = b.ok ? '<span class="lbi-ok">OK</span>'
+      : `<span class="lbi-err">${_esc(b.error || 'does not run')}</span>`;
+    return `<tr><td class="mono">${_esc(b.dir || '')}${tag}${note}</td>`
+      + `<td>${_esc(b.backend || 'Unknown')}</td>`
+      + `<td class="mono">${_esc(_llamaBuildVersion(b))}</td><td>${st}</td></tr>`;
+  }).join('');
+  const more = d.truncated ? '<div class="ledger-empty">More builds were found; only the first 20 are shown.</div>' : '';
+  return '<table class="lbi-table"><thead><tr><th>Folder</th><th>Backend</th><th>Version</th><th>Status</th></tr></thead>'
+    + `<tbody>${rows}</tbody></table>${more}`;
+}
+
+async function loadLlamaBuilds(rescan) {
+  const box  = document.getElementById('llamaBuildsList');
+  const stat = document.getElementById('llamaBuildsStatus');
+  const btn  = document.getElementById('llamaBuildsRescan');
+  if (stat) { stat.textContent = 'scanning…'; stat.style.color = 'var(--fg-dim)'; }
+  if (btn) btn.disabled = true;
+  try {
+    const d = await _jsonOrThrow(await fetch('/api/llm/builds' + (rescan ? '?rescan=1' : '')));
+    if (!d.ok) throw new Error(d.error || 'scan failed');
+    if (box) box.innerHTML = _renderLlamaBuilds(d);
+    if (stat) stat.textContent = d.scanned_at
+      ? `scanned ${new Date(d.scanned_at * 1000).toLocaleTimeString()}` : '';
+  } catch (e) {
+    if (box) box.innerHTML = '';
+    if (stat) { stat.textContent = 'Error: ' + e.message; stat.style.color = 'var(--crit)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // Reset the editor, HF download, cache, and llama build panels to empty state.
 function resetLLMControlPanels() {
   if (typeof EFL !== 'undefined') EFL.markClean();
   if (typeof closeEditor === 'function') closeEditor();
   if (typeof closeLlamaBuildPanel === 'function') closeLlamaBuildPanel();
+  closeLlamaBuildsPanel();
   if (_dlEventSrc) { try { _dlEventSrc.close(); } catch(_){} _dlEventSrc = null; }
   _dlLastRepo  = '';
   _dlLastQuant = '';
