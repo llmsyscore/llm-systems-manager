@@ -776,6 +776,11 @@
   R.route('GET /api/llm/download/stream-info', function () { return { ok: false }; });
   R.route('GET /api/llm/build/stream-info', function () { return { ok: false }; });
   R.route('GET /api/llm/server/log/stream-info', function () { return { ok: false }; });
+  R.route('GET /api/llm/builds', function (ctx) {
+    return { ok: true, scanned_at: sec(ctx), truncated: false, builds: [{
+      path: '/opt/llama.cpp/build/bin/llama-server', dir: '/opt/llama.cpp/build/bin', active: true,
+      backend: 'Vulkan', note: '', version: '0.8.0-dev', build: '1', commit: 'f3586e66', ok: true, error: null }] };
+  });
 
   R.route('GET /api/fleet/:provider/aggregate', function (ctx) {
     var p = ctx.params.provider;

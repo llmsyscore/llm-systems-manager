@@ -133,8 +133,8 @@ def test_waiting_caller_gets_running_scan_result(tmp_path, monkeypatch):
             "r", inv.scan(_cfg(), llama_install.installed_build_id, str(tmp_path))))
         t.start()
         t.join(0.2)
-        monkeypatch.setattr(inv, "_last", sentinel)
-        monkeypatch.setattr(inv, "_gen", inv._gen + 1)
+        monkeypatch.setitem(inv._state, "last", sentinel)
+        monkeypatch.setitem(inv._state, "gen", inv._state["gen"] + 1)
     finally:
         inv._lock.release()
     t.join(5)

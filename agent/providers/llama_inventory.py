@@ -30,8 +30,7 @@ _MARKER_BACKENDS = {"vulkan": "Vulkan", "rocm": "ROCm", "hip": "ROCm", "cuda": "
                     "metal": "Metal", "sycl": "SYCL", "cpu": "CPU"}
 
 _lock = threading.Lock()
-_last: Optional[dict] = None
-_gen = 0
+_state: dict = {"last": None, "gen": 0}
 
 
 def _real(p) -> str:
@@ -162,11 +161,10 @@ def remember(llama_bin: str, seen_file) -> list:
 
 def scan(cfg, probe: Callable, build_root: str, seen_file=None) -> dict:
     """Runs a fresh inventory and caches it; a caller that waited on a running scan gets its result."""
-    global _last, _gen
-    seen_gen = _gen
+    seen_gen = _state["gen"]
     with _lock:
-        if _gen != seen_gen and _last is not None:
-            return _last
+        if _state["gen"] != seen_gen and _state["last"] is not None:
+            return _state["last"]
         llama_bin = (getattr(cfg, "LLAMA_BIN", "") or "").strip()
         seen = remember(llama_bin, seen_file) if seen_file else []
         notes = getattr(cfg, "LLAMA_BUILD_NOTES", {}) or {}
@@ -180,11 +178,11 @@ def scan(cfg, probe: Callable, build_root: str, seen_file=None) -> dict:
         active = _real(llama_bin) if llama_bin else ""
         with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
             rows = list(ex.map(lambda p: describe(p, active, notes, probe), paths))
-        _last = {"ok": True, "scanned_at": int(time.time()), "builds": rows,
-                 "truncated": truncated}
-        _gen += 1
-        return _last
+        _state["last"] = {"ok": True, "scanned_at": int(time.time()), "builds": rows,
+                          "truncated": truncated}
+        _state["gen"] += 1
+        return _state["last"]
 
 
 def cached() -> Optional[dict]:
-    return _last
+    return _state["last"]
