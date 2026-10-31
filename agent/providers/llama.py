@@ -4015,9 +4015,10 @@ def _llama_exec_tokens() -> "list[str]":
 
 def _switch_preflight(target: str) -> "tuple[bool, Optional[str]]":
     """Runs target --version with the service unit's working folder and Environment= variables."""
-    cwd, extra = None, {}
-    with best_effort("switch: read unit run context", log=log):
+    try:
         cwd, extra = llama_inventory.unit_run_context(Path(_llama_svc_file_path()).read_text())
+    except OSError:
+        cwd, extra = None, {}
     if cwd and not os.path.isdir(cwd):
         cwd = None
     try:
