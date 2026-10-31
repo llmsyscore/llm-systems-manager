@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.31-2"
+__version__ = "v2026.10.31-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2347,6 +2347,18 @@ def llm_builds():
                                     params={"rescan": "true"} if rescan else {})
 
 
+@app.route("/api/llm/builds/activate", methods=["POST"])
+def llm_builds_activate():
+    """Make a listed build the active one on the selected llama agent (admin only)."""
+    if auth.effective_role() != "admin":
+        return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
+    target = _request_agent("llama")
+    if target:
+        _bench_watcher.quiet_build_change(target["agent_id"])
+    return proxies.proxy_to_primary("llama", "POST", "/llama/builds/activate", timeout=420,
+                                    json=flask_request.get_json(silent=True) or {})
+
+
 def _note_tool_start(provider: str, tool: str):
     """proxy_to_primary on_target hook: record the run against the agent the
     proxy actually picked, only when the agent accepted it."""
@@ -4148,7 +4160,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "config.gateway": "Turned the inference gateway on/off",
     "config.telemetry": "Changed report settings",
     "config.telemetry-send": "Sent a diagnostic report now",
-    "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config",
+    "config.settings": "Saved manager settings", "config.svcconfig": "Changed the llama-server config", "llama.build-switch": "Switched the active llama.cpp build",
     "config.interval": "Changed the poll interval", "config.layout": "Saved the dashboard layout",
     "llama.load": "Loaded a llama.cpp model", "llama.unload": "Unloaded a llama.cpp model",
     "lms.load": "Loaded an LM Studio model", "lms.unload": "Unloaded an LM Studio model",
@@ -4233,6 +4245,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/admin/backup-now$"),                 "backup.run",         "backup"),
     ("GET",    re.compile(r"^/api/admin/backup-archive/(?P<t>.+)$"),   "backup.download",    "backup"),
     ("POST",   re.compile(r"^/api/llm/server/svcconfig$"),             "config.svcconfig",   "config.server"),
+    ("POST",   re.compile(r"^/api/llm/builds/activate$"),             "llama.build-switch", "config.server"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval",    "config.server"),
     ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
     ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load",         "llama.model"),

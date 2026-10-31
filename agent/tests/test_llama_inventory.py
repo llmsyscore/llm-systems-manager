@@ -163,3 +163,121 @@ def test_remember_drops_missing_and_survives_bad_file(tmp_path):
     a.unlink()
     assert inv.remember("", seen) == []
     assert json.loads(seen.read_text()) == []
+
+
+def _switch_calls(*, preflight=(True, None), apply_ok=(True, True), ready=((True, None), (True, None)),
+                  persist_exc=None):
+    calls = {"apply": [], "persist": [], "tail": 0}
+    applies = iter(apply_ok)
+    readies = iter(ready)
+
+    def apply_exec(tokens):
+        calls["apply"].append(list(tokens))
+        return {"ok": next(applies)}
+
+    def persist(t):
+        calls["persist"].append(t)
+        if persist_exc:
+            raise persist_exc
+        return "cfg.bak"
+
+    def tail():
+        calls["tail"] += 1
+        return ["boom"]
+
+    kw = dict(preflight=lambda _t: preflight, apply_exec=apply_exec,
+              wait_ready=lambda: next(readies), persist=persist, log_tail=tail)
+    return calls, kw
+
+
+def test_switch_success_keeps_flags_and_persists():
+    calls, kw = _switch_calls()
+    res = inv.switch("/new/llama-server", ["/old/llama-server", "--port", "8080"], **kw)
+    assert res["ok"] and res["active"] == "/new/llama-server" and res["previous"] == "/old/llama-server"
+    assert calls["apply"] == [["/new/llama-server", "--port", "8080"]]
+    assert calls["persist"] == ["/new/llama-server"] and res["config_backup"] == "cfg.bak"
+
+
+def test_switch_preflight_failure_changes_nothing():
+    calls, kw = _switch_calls(preflight=(False, "missing lib"))
+    res = inv.switch("/new/llama-server", ["/old/llama-server"], **kw)
+    assert not res["ok"] and res["stage"] == "check" and res["error"] == "missing lib"
+    assert calls["apply"] == [] and calls["persist"] == []
+
+
+def test_switch_not_ready_rolls_back():
+    calls, kw = _switch_calls(ready=((False, "crashed"), (True, None)))
+    res = inv.switch("/new/llama-server", ["/old/llama-server", "-m", "x"], **kw)
+    assert not res["ok"] and res["rolled_back"] and res["restored"] and res["error"] == "crashed"
+    assert calls["apply"] == [["/new/llama-server", "-m", "x"], ["/old/llama-server", "-m", "x"]]
+    assert calls["persist"] == [] and res["log"] == ["boom"]
+
+
+def test_switch_rollback_that_also_fails_is_reported():
+    calls, kw = _switch_calls(ready=((False, "crashed"), (False, "no answer")))
+    res = inv.switch("/new/llama-server", ["/old/llama-server"], **kw)
+    assert res["rolled_back"] and not res["restored"] and res["restore_error"] == "no answer"
+
+
+def test_switch_apply_failure_restores():
+    calls, kw = _switch_calls(apply_ok=(False, True), ready=((True, None),))
+    res = inv.switch("/new/llama-server", ["/old/llama-server"], **kw)
+    assert not res["ok"] and res["restored"] and len(calls["apply"]) == 2
+
+
+def test_switch_persist_failure_is_a_warning():
+    _calls, kw = _switch_calls(persist_exc=OSError("read-only"))
+    res = inv.switch("/new/llama-server", ["/old/llama-server"], **kw)
+    assert res["ok"] and "read-only" in res["warning"]
+
+
+def test_set_yaml_key_replaces_live_line_and_keeps_comments(tmp_path):
+    cfg = tmp_path / "agent_config.yaml"
+    cfg.write_text("# LLAMA_BIN: old-comment\nLLAMA_BIN: /a/llama-server\nOTHER: 1\n")
+    backup = inv.set_yaml_key(cfg, "LLAMA_BIN", "/b/llama-server")
+    assert cfg.read_text() == '# LLAMA_BIN: old-comment\nLLAMA_BIN: "/b/llama-server"\nOTHER: 1\n'
+    assert Path(backup).read_text().startswith("# LLAMA_BIN")
+    cfg2 = tmp_path / "c2.yaml"
+    cfg2.write_text("OTHER: 1\n")
+    inv.set_yaml_key(cfg2, "LLAMA_BIN", "/b/llama-server")
+    assert cfg2.read_text().endswith('LLAMA_BIN: "/b/llama-server"\n')
+
+
+def test_listed_build_matches_last_scan_only(tmp_path, monkeypatch):
+    a = _exe(tmp_path / "root" / "a" / "llama-server")
+    _scan(_cfg(), tmp_path / "root", monkeypatch)
+    assert inv.listed_build(str(a))["path"] == os.path.realpath(a)
+    assert inv.listed_build(str(tmp_path / "other" / "llama-server")) is None
+    inv.forget_cache()
+    assert inv.listed_build(str(a)) is None
+
+
+def test_switch_rollback_still_waits_when_restore_restart_timed_out():
+    calls, kw = _switch_calls(apply_ok=(True, False), ready=((False, "crashed"), (True, None)))
+    res = inv.switch("/new/llama-server", ["/old/llama-server"], **kw)
+    assert res["rolled_back"] and res["restored"] and res["restore_error"] is None
+
+
+def test_build_that_needs_its_library_folder_is_not_ok(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    a = _exe(root / "a" / "llama-server")
+    b = _exe(root / "b" / "llama-server")
+    plain = lambda p: (False, "libllama.so: cannot open") if p == os.path.realpath(b) else (True, None)
+    monkeypatch.setattr(inv.shutil, "which", lambda _n: None)
+    res = inv.scan(_cfg(), llama_install.installed_build_id, str(root), plain_check=plain)
+    rows = {r["path"]: r for r in res["builds"]}
+    assert rows[os.path.realpath(a)]["ok"]
+    rb = rows[os.path.realpath(b)]
+    assert not rb["ok"] and rb["commit"] == "a0f7016d"
+    assert rb["error"].startswith("runs only with its own folder on the library path")
+
+
+def test_unit_run_context_reads_cwd_and_environment():
+    unit = ('[Service]\nUser=llmsys\nWorkingDirectory=/usr/local/llama-server/llama.cpp/\n'
+            'Environment="HSA_ENABLE_SDMA=0" "PATH=/usr/bin:/usr/local/bin"\n'
+            'Environment=FOO=bar\nExecStart=/x/llama-server --port 8080\n')
+    cwd, env = inv.unit_run_context(unit)
+    assert cwd == "/usr/local/llama-server/llama.cpp/"
+    assert env == {"HSA_ENABLE_SDMA": "0", "PATH": "/usr/bin:/usr/local/bin", "FOO": "bar"}
+    assert inv.unit_run_context("WorkingDirectory=~\n") == (None, {})
+    assert inv.unit_run_context("WorkingDirectory=-/opt/x\n")[0] == "/opt/x"

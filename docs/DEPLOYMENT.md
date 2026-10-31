@@ -529,7 +529,7 @@ The agent attempts to configure itself. If your inference servers run on differe
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | auto-detected |
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | auto-detected |
 | `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
-| `LLAMA_BUILD_SEARCH_DIRS` | Extra folders to search for llama.cpp builds shown under ⋯ → Installed builds | none |
+| `LLAMA_BUILD_SEARCH_DIRS` | Extra folders to search for llama.cpp builds shown under ⋯ → Installed builds, where an admin can make one active | none |
 | `LLAMA_BUILD_NOTES` | A note per build folder, shown next to that build in Installed builds (YAML only) | none |
 | `LMS_CMD` | Path to the `lms` CLI | auto-detected (`which lms`) |
 | `LMS_LOAD_TIMEOUT_S` | How long to wait for an LM Studio model load before reporting failure (keep under 200) | `180` |

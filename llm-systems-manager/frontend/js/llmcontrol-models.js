@@ -1523,9 +1523,12 @@ function closeLlamaBuildPanel() {
 function closeLlamaBuildsPanel() {
   const p = document.getElementById('llamaBuildsPanel');
   if (p) p.style.display = 'none';
+  const r = document.getElementById('llamaBuildsResult');
+  if (r) r.style.display = 'none';
 }
 
 function openLlamaBuilds() {
+  if (typeof MC !== 'undefined' && MC.closeMenus) MC.closeMenus();
   const p = document.getElementById('llamaBuildsPanel');
   if (p) p.style.display = '';
   loadLlamaBuilds(false);
@@ -1537,21 +1540,76 @@ function _llamaBuildVersion(b) {
   return id && c ? `${id} (${c})` : (id || c || '—');
 }
 
+let _llamaBuildsList = [];
+
 function _renderLlamaBuilds(d) {
   const list = (d && Array.isArray(d.builds)) ? d.builds : [];
+  _llamaBuildsList = list;
   if (!list.length) return '<div class="ledger-empty">No llama.cpp builds found on this host.</div>';
-  const rows = list.map(b => {
+  const admin = !!(window._me && window._me.admin_access);
+  const rows = list.map((b, i) => {
     const tag = b.active ? '<span class="lbi-tag">Active</span>' : '';
     const note = b.note ? `<div class="lbi-note">${_esc(b.note)}</div>` : '';
     const st = b.ok ? '<span class="lbi-ok">OK</span>'
       : `<span class="lbi-err">${_esc(b.error || 'does not run')}</span>`;
+    const act = admin && !b.active && b.ok
+      ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm lbi-switch" onclick="switchLlamaBuild(${i})">Activate</button>` : '';
     return `<tr><td class="mono">${_esc(b.dir || '')}${tag}${note}</td>`
       + `<td>${_esc(b.backend || 'Unknown')}</td>`
-      + `<td class="mono">${_esc(_llamaBuildVersion(b))}</td><td>${st}</td></tr>`;
+      + `<td class="mono">${_esc(_llamaBuildVersion(b))}</td><td>${st}</td><td>${act}</td></tr>`;
   }).join('');
   const more = d.truncated ? '<div class="ledger-empty">More builds were found; only the first 20 are shown.</div>' : '';
-  return '<table class="lbi-table"><thead><tr><th>Folder</th><th>Backend</th><th>Version</th><th>Status</th></tr></thead>'
+  return '<table class="lbi-table"><thead><tr><th>Folder</th><th>Backend</th><th>Version</th><th>Status</th><th></th></tr></thead>'
     + `<tbody>${rows}</tbody></table>${more}`;
+}
+
+function _llamaSwitchBanner(cls, head, rows) {
+  const box = document.getElementById('llamaBuildsResult');
+  if (!box) return;
+  const body = (rows || []).filter(([, v]) => v).map(([k, v]) =>
+    `<div class="bld-row"><span class="bld-k">${_esc(k)}</span><span class="bld-v">${_esc(String(v))}</span></div>`).join('');
+  box.className = 'bld-banner ' + cls;
+  box.innerHTML = `<div class="bld-head">${_esc(head)}</div>${body}`;
+  box.style.display = '';
+}
+
+async function switchLlamaBuild(i) {
+  const b = _llamaBuildsList[i];
+  if (!b) return;
+  const ok = await _themedConfirm({
+    title:        'Activate this build?',
+    bodyHtml:     `The llama server restarts using <b>${_esc(b.dir || '')}</b>, and any running inference stops. `
+      + 'If this build does not start, the server switches back to the current build automatically.',
+    confirmLabel: 'Activate',
+    cancelLabel:  'Cancel',
+  });
+  if (!ok) return;
+  const stat = document.getElementById('llamaBuildsStatus');
+  document.querySelectorAll('.lbi-switch, #llamaBuildsRescan').forEach(el => { el.disabled = true; });
+  const res = document.getElementById('llamaBuildsResult');
+  if (res) res.style.display = 'none';
+  if (stat) { stat.textContent = 'switching… checking the build, restarting, waiting for the server (up to a few minutes)'; stat.style.color = 'var(--warn)'; }
+  let r;
+  try {
+    const resp = await fetch('/api/llm/builds/activate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: b.path }),
+    });
+    r = await resp.json().catch(() => ({ ok: false, error: `HTTP ${resp.status}` }));
+  } catch (e) {
+    r = { ok: false, error: e.message };
+  }
+  if (r.ok) {
+    _llamaSwitchBanner('ok', '✓ Now active', [['Build', b.dir], ['Previous', r.previous], ['Warning', r.warning]]);
+  } else if (r.rolled_back) {
+    _llamaSwitchBanner('err', r.restored ? '✗ Didn\'t start — switched back to the previous build'
+      : '✗ Didn\'t start, and the previous build did not come back either', [
+      ['Reason', r.error], ['Previous', r.previous], ['Restore', r.restore_error],
+      ['Server log', (r.log || []).join('\n')]]);
+  } else {
+    _llamaSwitchBanner('err', '✗ Not switched', [['Reason', r.error || r.detail]]);
+  }
+  await loadLlamaBuilds(true);
+  if (typeof pollServerState === 'function') pollServerState();
 }
 
 async function loadLlamaBuilds(rescan) {

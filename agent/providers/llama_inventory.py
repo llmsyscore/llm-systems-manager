@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import threading
 import time
@@ -120,7 +121,8 @@ def _note_for(path: str, notes: dict) -> str:
     return ""
 
 
-def describe(path: str, active_real: str, notes: dict, probe: Callable) -> dict:
+def describe(path: str, active_real: str, notes: dict, probe: Callable,
+             plain_check: Optional[Callable] = None) -> dict:
     p = Path(path)
     row = {"path": path, "dir": str(p.parent), "active": path == active_real,
            "backend": detect_backend(p.parent), "note": _note_for(path, notes),
@@ -134,6 +136,11 @@ def describe(path: str, active_real: str, notes: dict, probe: Callable) -> dict:
     if not row["ok"]:
         err = info.get("text") or "no version reported"
         row["error"] = err[len(path) + 2:] if err.startswith(path + ": ") else err
+    elif plain_check is not None:
+        plain_ok, why = plain_check(path)
+        if not plain_ok:
+            row["ok"] = False
+            row["error"] = f"runs only with its own folder on the library path: {why}"
     return row
 
 
@@ -159,7 +166,8 @@ def remember(llama_bin: str, seen_file) -> list:
     return kept
 
 
-def scan(cfg, probe: Callable, build_root: str, seen_file=None) -> dict:
+def scan(cfg, probe: Callable, build_root: str, seen_file=None,
+         plain_check: Optional[Callable] = None) -> dict:
     """Runs a fresh inventory and caches it; a caller that waited on a running scan gets its result."""
     seen_gen = _state["gen"]
     with _lock:
@@ -177,7 +185,7 @@ def scan(cfg, probe: Callable, build_root: str, seen_file=None) -> dict:
         paths, truncated = discover(llama_bin, roots, shutil.which(BIN_NAME))
         active = _real(llama_bin) if llama_bin else ""
         with ThreadPoolExecutor(max_workers=PROBE_WORKERS) as ex:
-            rows = list(ex.map(lambda p: describe(p, active, notes, probe), paths))
+            rows = list(ex.map(lambda p: describe(p, active, notes, probe, plain_check), paths))
         _state["last"] = {"ok": True, "scanned_at": int(time.time()), "builds": rows,
                           "truncated": truncated}
         _state["gen"] += 1
@@ -186,3 +194,86 @@ def scan(cfg, probe: Callable, build_root: str, seen_file=None) -> dict:
 
 def cached() -> Optional[dict]:
     return _state["last"]
+
+
+def unit_run_context(unit_text: str) -> "tuple[Optional[str], dict]":
+    """(WorkingDirectory, Environment= variables) from a systemd unit's [Service] lines."""
+    cwd: Optional[str] = None
+    env: dict = {}
+    for line in unit_text.splitlines():
+        s = line.strip()
+        if s.startswith("WorkingDirectory="):
+            v = s[len("WorkingDirectory="):].strip().lstrip("-")
+            cwd = v if v.startswith("/") else None
+        elif s.startswith("Environment="):
+            with contextlib.suppress(ValueError):
+                for tok in shlex.split(s[len("Environment="):]):
+                    k, sep, v = tok.partition("=")
+                    if sep and k:
+                        env[k] = v
+    return cwd, env
+
+
+def forget_cache() -> None:
+    _state["last"] = None
+
+
+def listed_build(path: str) -> Optional[dict]:
+    """The row for path in the last scan, or None when it was not listed."""
+    rp = _real(path)
+    for row in (_state["last"] or {}).get("builds") or []:
+        if row.get("path") == rp:
+            return row
+    return None
+
+
+def set_yaml_key(path, key: str, value: str) -> str:
+    """Sets a top-level `KEY: "value"` line (replacing the first live one, else appending); returns the backup path."""
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
+    line = f"{key}: {json.dumps(value)}"
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith(f"{key}:"):
+            lines[i] = line
+            break
+    else:
+        lines.append(line)
+    backup = f"{p}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
+    shutil.copy2(p, backup)
+    st = p.stat()
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(tmp, st.st_mode & 0o777)
+    with contextlib.suppress(OSError):
+        os.chown(tmp, st.st_uid, st.st_gid)
+    os.replace(tmp, p)
+    return backup
+
+
+def switch(target: str, exec_tokens: list, *, preflight: Callable, apply_exec: Callable,
+           wait_ready: Callable, persist: Callable, log_tail: Callable) -> dict:
+    """Preflight → point ExecStart at target and restart → wait ready → persist; restores exec_tokens on failure."""
+    ok, why = preflight(target)
+    if not ok:
+        return {"ok": False, "stage": "check", "error": why, "changed": False}
+    res = apply_exec([target, *exec_tokens[1:]])
+    if res.get("ok"):
+        ready, why = wait_ready()
+        if ready:
+            out = {"ok": True, "active": target, "previous": exec_tokens[0]}
+            try:
+                out["config_backup"] = persist(target)
+            except Exception as e:  # noqa: BLE001 — returned as a warning
+                out["warning"] = f"switched, but saving LLAMA_BIN failed: {e}"
+            return out
+    else:
+        why = res.get("error") or "could not update the service"
+    tail = log_tail()
+    back = apply_exec(list(exec_tokens))
+    restored, back_why = wait_ready()
+    if not restored and not back.get("ok"):
+        back_why = back.get("error") or back_why
+    return {"ok": False, "stage": "start", "error": why, "changed": False, "rolled_back": True,
+            "restored": restored, "restore_error": None if restored else back_why,
+            "previous": exec_tokens[0], "log": tail}

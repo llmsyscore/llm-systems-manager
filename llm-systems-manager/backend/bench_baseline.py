@@ -152,6 +152,7 @@ class Watcher:
         self._tls = threading.local()
         self._active: dict[str, dict] = {}      # baseline run_id -> {run_id, started, trigger, build}
         self._pending: dict[str, dict] = {}     # baseline run_id -> {trigger, attempts, retry_at, build_from}
+        self._quiet_until: dict[str, float] = {}  # agent_id -> time before which a build change is not a trigger
         with self._lock:
             init_tables(self._conn())
             self._resume_running()
@@ -372,6 +373,11 @@ class Watcher:
         last = self._last_check(run_id, auto_only=True)
         return _parse_iso(last["ts"]) if last else None
 
+    def quiet_build_change(self, agent_id: str, seconds: float = 1200.0) -> None:
+        """Records the next build changes on agent_id without a re-check (an operator build switch)."""
+        with self._lock:
+            self._quiet_until[agent_id] = self._now() + seconds
+
     def _detect_build_changes(self, cfg: dict, pins: list, now: float) -> None:
         conn = self._conn()
         for aid in sorted({b["agent_id"] for b in pins}):
@@ -386,7 +392,7 @@ class Watcher:
                          " ON CONFLICT(agent_id) DO UPDATE SET llama_build = excluded.llama_build, seen_ts = excluded.seen_ts",
                          (aid, build, now))
             # setdefault keeps an existing pending trigger; queues even for an active baseline.
-            if prev and cfg.get("enabled") and cfg.get("on_build_change"):
+            if prev and cfg.get("enabled") and cfg.get("on_build_change") and now >= self._quiet_until.get(aid, 0.0):
                 for b in pins:
                     if b["agent_id"] == aid:
                         self._pending.setdefault(b["run_id"], {"trigger": "build", "attempts": 0, "retry_at": 0.0, "build_from": prev})
