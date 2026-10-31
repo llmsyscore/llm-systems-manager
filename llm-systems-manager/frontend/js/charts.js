@@ -664,6 +664,7 @@ const ovHeroChart = _mkHeroChart();
 const cpuChart      = mkChart('cpuChart',      'CPU %',       '#e05');
 const ramChart      = mkChart('ramChart',      'RAM %',       '#05e');
 const gpuChart      = mkChart('gpuChart',      'GPU util %',  '#0e5');
+const gpuMemChart   = mkDualChart('gpuMemChart', 'VRAM %',    '#0e5', 'GTT %',       '#e90');
 const netChart      = mkChart('netChart',      'MB/s',        '#e50');
 const llamaSrvChart = mkDualChart('llamaSrvChart', 'Gen t/s',  '#7af', 'Prompt t/s', '#fa7');
 const aioTempChart = mkChart('aioTempChart', 'Liquid °C', '#4dd');
@@ -701,6 +702,14 @@ function _setIscsiSeriesVisible(on) {
   }
   const leg = document.getElementById('diskIscsiLegend');
   if (leg) leg.style.display = on ? '' : 'none';
+}
+
+// Show the GTT line only for hosts that report GTT (AMD).
+function _setGttSeriesVisible(on) {
+  if (gpuMemChart.data.datasets[1].hidden !== !on) {
+    gpuMemChart.data.datasets[1].hidden = !on;
+    gpuMemChart.update('none');
+  }
 }
 
 // Dual-line disk usage chart — root + iscsi target.
@@ -1300,7 +1309,7 @@ function _clearChart(ch) {
 // per-agent backfill never blends onto the previously-selected agent's lines
 // (#121); a no-op at boot when the charts are already empty.
 function _resetMetricCharts() {
-  [cpuChart, ramChart, gpuChart, netChart, llamaSrvChart, aioTempChart,
+  [cpuChart, ramChart, gpuChart, gpuMemChart, netChart, llamaSrvChart, aioTempChart,
    genTokensChart, llamaChart, ioChart, psuPowerChart, diskUsageChart]
     .forEach(_clearChart);
 }
@@ -1348,6 +1357,7 @@ let _histGen = 0, _histLastAgent;
 async function loadHistory() {
   // Generation counter: only the newest in-flight backfill may paint (#267).
   const gen = ++_histGen;
+  let _sawGttHistory = false;
   try {
     // Backfill the (picker-)selected llama agent's host history. No selection
     // (single-agent install) → plain /api/history = the default-agent ring,
@@ -1379,6 +1389,8 @@ async function loadHistory() {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
       pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
+      if (r.gpu_gtt != null) _sawGttHistory = true;
+      pushDual(gpuMemChart, r.ts, r.gpu_vram, r.gpu_gtt);
       pushPoint(netChart,  r.ts, ((r.net_sent || 0) + (r.net_recv || 0)) / B_PER_MIB);
       pushDual(llamaChart, r.ts, r.llama_tps,  r.llama_pps);
       _llamaPeaks.tps.push(_peakSeedTs(r.ts), r.llama_tps);
@@ -1408,6 +1420,7 @@ async function loadHistory() {
     } });
     _setIscsiSeriesVisible(_sawIscsiHistory);
   } catch(e) { console.error('History error:', e); }
+  finally { if (gen === _histGen) _setGttSeriesVisible(_sawGttHistory); }
 }
 
 // Backfill manager + alarm-engine self-monitor charts from the alarm engine
@@ -1670,6 +1683,7 @@ async function fetchMetrics() {
     document.getElementById('gpuFan1').textContent            = g.fan1_rpm                != null ? g.fan1_rpm : '—';
     document.getElementById('gpuVram').textContent            = g.vram_usage_percent      != null ? g.vram_usage_percent.toFixed(1) : '—';
     document.getElementById('gpuVramMb').textContent          = g.vram_used_mb            != null ? '(' + g.vram_used_mb.toLocaleString() + ' MB)' : '';
+    document.getElementById('gpuGttMb').textContent           = g.gtt_used_bytes          != null ? 'GTT ' + Math.round(g.gtt_used_bytes / 1048576).toLocaleString() + (g.gtt_total_bytes ? ' / ' + Math.round(g.gtt_total_bytes / 1048576).toLocaleString() : '') + ' MB' : '';
     document.getElementById('gpuUtil').textContent            = g.gpu_util_percent        != null ? g.gpu_util_percent.toFixed(1) : '—';
     document.getElementById('gpuPower').textContent           = g.power_watts             != null ? g.power_watts.toFixed(0) : '—';
     document.getElementById('gpuPowerCap').textContent        = g.power_cap_watts         != null ? g.power_cap_watts.toFixed(0) : '—';
@@ -1679,6 +1693,8 @@ async function fetchMetrics() {
     document.getElementById('gpuPerfLevel').textContent       = g.performance_level       || '—';
     document.getElementById('gpuPowerProfile').textContent    = g.power_profile            || '—';
     pushPoint(gpuChart, ts, g.gpu_util_percent || 0);
+    pushDual(gpuMemChart, ts, g.vram_usage_percent, g.gtt_usage_percent);
+    if (g.gtt_usage_percent != null) _setGttSeriesVisible(true);
 
     // Network
     const net = m.net || {};
@@ -1913,6 +1929,7 @@ const CHART_METRIC = {
   cpuChart:           { source: 'system',    metric_name: 'cpu_total',            provider: 'llama' },
   ramChart:           { source: 'system',    metric_name: 'ram_percent',          provider: 'llama' },
   gpuChart:           { source: 'system',    metric_name: 'gpu_gpu_util_percent', provider: 'llama' },
+  gpuMemChart:        { source: 'system',    metric_name: 'gpu_vram_usage_percent', provider: 'llama' },
   diskUsageChart:     { source: 'system',    metric_name: 'disk_root_percent',    provider: 'llama' },
   lmsCpuChart:        { source: 'system',    metric_name: 'cpu_total',            provider: 'lms' },
   lmsRamChart:        { source: 'system',    metric_name: 'ram_percent',          provider: 'lms' },
