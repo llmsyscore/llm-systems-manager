@@ -1118,7 +1118,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     <h3 id="gpuCardTitle">GPU</h3>
     <div class="stat-row cols3">
       <div><div class="stat" id="gpuTemp">—</div><div class="sub">°C edge</div></div>
-      <div><div class="stat" id="gpuVram">—</div><div class="sub">VRAM %</div><div class="sub" id="gpuVramMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div></div>
+      <div><div class="stat" id="gpuVram">—</div><div class="sub">VRAM %</div><div class="sub" id="gpuVramMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div><div class="sub" id="gpuGttMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div></div>
       <div><div class="stat" id="gpuUtil">—</div><div class="sub">GPU %</div></div>
     </div>
     <div class="stat-row cols3">
@@ -1141,6 +1141,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
       <div><div class="sub" style="margin-bottom:2px;">Power profile</div><div class="badge" id="gpuPowerProfile">—</div></div>
     </div>
     <div class="chart-wrap"><canvas id="gpuChart" role="img" aria-label="GPU utilization over time"></canvas></div>
+    <div class="sub chart-caption">Memory % — VRAM, and GTT (system memory the GPU uses)</div>
+    <div class="chart-wrap" style="height:140px;"><canvas id="gpuMemChart" role="img" aria-label="GPU VRAM and GTT memory use over time"></canvas></div>
   </div>
 
   <div class="card" data-card="cpu-overall">

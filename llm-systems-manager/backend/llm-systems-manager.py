@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.30-1"
+__version__ = "v2026.10.31-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1188,6 +1188,7 @@ _HISTORY_LEGACY_FIELD_MAP = [
     # block never reaches the companion's live provider payloads.
     ("system",  "gpu_vram_used_bytes",                        "gpu_vram_used"),
     ("system",  "gpu_vram_total_bytes",                       "gpu_vram_total"),
+    ("system",  "gpu_gtt_usage_percent",                      "gpu_gtt"),
     ("system",  "gpu_temperature_c",                          "gpu_temp"),
     ("system",  "gpu_power_watts",                            "gpu_power"),
     ("system",  "net_bytes_sent_per_s",                       "net_sent"),
@@ -1404,7 +1405,7 @@ _FLEET_FIELD_AGG: dict[str, str] = {
     "cpu_total": "mean", "ram_percent": "mean", "ups_percent": "mean",
     "gpu_util": "mean",
     "gpu_temp": "max", "gpu_vram": "max", "aio_temp": "max",
-    "gpu_vram_used": "max", "gpu_vram_total": "max",
+    "gpu_vram_used": "max", "gpu_vram_total": "max", "gpu_gtt": "max",
     "disk_root_pct": "max", "disk_iscsi_pct": "max",
     "gpu_power": "sum", "psu_out": "sum", "psu_in": "sum",
     "net_sent": "sum", "net_recv": "sum", "io_read": "sum", "io_write": "sum",

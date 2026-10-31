@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.28-1"
+VERSION = "v2026.10.31-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -505,6 +505,9 @@ class AgentConfig:
     # How often a collector retries hardware its last probe didn't find.
     COLLECT_REPROBE_INTERVAL_S: float = 900.0
     LIQUIDCTL_BIN: str = ""
+    # GPU to monitor: cardN, PCI address, sysfs path, or NVIDIA index/UUID.
+    # Blank = the card with the most memory.
+    GPU_DEVICE: str = ""
 
     PUSH_HOST_METRICS_ENABLED: bool = True
 

@@ -235,6 +235,7 @@ describe('history-backfill callers route through _historyRows, not raw fetch (#5
     window._histLastAgent = undefined;
     window._selectedAgent = () => null;
     window._resetMetricCharts = vi.fn();
+    window._setGttSeriesVisible = vi.fn();
     window._llamaPeaks = { tps: { reset: vi.fn() }, pps: { reset: vi.fn() } };
     window._historyRows = vi.fn(async () => []);   // empty rows: returns before touching any chart
     window.fetch = vi.fn();

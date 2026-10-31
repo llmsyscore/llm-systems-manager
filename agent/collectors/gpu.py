@@ -1,9 +1,11 @@
 """GPU metrics collector — AMD sysfs first, NVIDIA via nvidia-smi second.
 
 Vendor probes happen on the first ``collect_gpu()``:
-  - ``_GPU_PATH``: first AMD card under ``/sys/class/drm`` (vendor 0x1002)
+  - ``_GPU_PATH``: the AMD card (vendor 0x1002) named by ``GPU_DEVICE``, else
+    the one with the most VRAM
   - ``_HWMON``: the hwmon subdir under ``_GPU_PATH``
-  - ``_NVIDIA_PRESENT``: True iff an NVIDIA card AND ``nvidia-smi`` exist
+  - ``_NVIDIA_PRESENT``: True iff an NVIDIA card AND ``nvidia-smi`` exist (and
+    ``GPU_DEVICE``, when set, names one); ``_NV_ID`` is its ``nvidia-smi -i`` id
 
 A box with neither just returns ``{}`` from ``collect_gpu()``, and re-probes
 on the ``AbsenceLatch`` interval so a driver that comes up after the agent
@@ -44,17 +46,113 @@ _GPU_PATH: Any = _UNPROBED
 _HWMON: Any = _UNPROBED
 
 
-def _find_amd_gpu_path():
+def _amd_cards(drm_root: Path) -> list:
+    cards = []
+    for card in sorted(drm_root.glob("card[0-9]*")):
+        if "-" in card.name:
+            continue
+        with best_effort("gpu: read AMD card vendor id", log=log):
+            if (card / "device" / "vendor").read_text().strip() == "0x1002":
+                cards.append(card)
+    return cards
+
+
+def _card_matches(card: Path, sel: str) -> bool:
+    """True when GPU_DEVICE names this card: cardN, a PCI address, or a sysfs path."""
+    if sel == card.name:
+        return True
     try:
-        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
-            if "-" in card.name:
-                continue
-            with best_effort("gpu: read AMD card vendor id", log=log):
-                if (card / "device" / "vendor").read_text().strip() == "0x1002":
-                    return card / "device"
+        dev = (card / "device").resolve()
+    except OSError:
+        return False
+    if ":" in sel and _pci_tail(dev.name) == _pci_tail(sel):
+        return True
+    if sel.startswith("/"):
+        try:
+            target = Path(sel).resolve()
+        except OSError:
+            return False
+        return target in (dev, card.resolve())
+    return False
+
+
+_DRM_ROOT = Path("/sys/class/drm")
+_GPU_DEVICE_WARNED: "set[str]" = set()
+
+
+def _gpu_device_sel() -> str:
+    return str(getattr(getattr(_deps, "config", None), "GPU_DEVICE", "") or "").strip()
+
+
+def _find_amd_gpu_path(drm_root: Path = _DRM_ROOT):
+    # GPU_DEVICE picks a card; unset picks the AMD card with the most VRAM.
+    sel = _gpu_device_sel()
+    try:
+        cards = _amd_cards(drm_root)
     except Exception as e:
         log.debug("AMD GPU sysfs scan failed: %s", e)
-    return None
+        return None
+    if not cards:
+        return None
+    if sel:
+        return next((c / "device" for c in cards if _card_matches(c, sel)), None)
+    best = max(cards, key=lambda c: _read_int_file(c / "device" / "mem_info_vram_total", -1))
+    return best / "device"
+
+
+def _pci_tail(addr: str) -> str:
+    """'00000000:01:00.0' / '0000:01:00.0' / '01:00.0' → '01:00.0'."""
+    return ":".join(addr.strip().lower().split(":")[-2:])
+
+
+def _sel_pci(sel: str, drm_root: Path = _DRM_ROOT) -> "str | None":
+    """PCI tail named by GPU_DEVICE as a PCI address, cardN or sysfs path."""
+    if sel.startswith("card") or sel.startswith("/"):
+        path = drm_root / sel if sel.startswith("card") else Path(sel)
+        try:
+            dev = path.resolve()
+            if dev.name.startswith("card"):
+                dev = (dev / "device").resolve()
+            return _pci_tail(dev.name)
+        except OSError:
+            return None
+    return _pci_tail(sel) if sel.count(":") >= 1 else None
+
+
+def _select_nvidia_id(drm_root: Path = _DRM_ROOT) -> "str | None":
+    """nvidia-smi -i id of the card to monitor; "" = nvidia-smi default; None = no match."""
+    sel = _gpu_device_sel()
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,pci.bus_id,uuid,memory.total",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
+        ).strip().splitlines()
+    except Exception as e:
+        log.debug("nvidia-smi list: %s", e)
+        return None if sel else ""
+    gpus = []
+    for line in out:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 4:
+            try: mem = float(parts[3])
+            except ValueError: mem = -1.0
+            gpus.append((parts[0], parts[1], parts[2], mem))
+    if not gpus:
+        return None if sel else ""
+    if sel:
+        pci = _sel_pci(sel, drm_root)
+        for idx, bus, uuid, _ in gpus:
+            if sel == idx or sel.lower() == uuid.lower() or (pci and pci == _pci_tail(bus)):
+                return bus
+        return None
+    return max(gpus, key=lambda g: g[3])[1]
+
+
+def _warn_unmatched_device(sel: str) -> None:
+    level = logging.DEBUG if sel in _GPU_DEVICE_WARNED else logging.WARNING
+    _GPU_DEVICE_WARNED.add(sel)
+    log.log(level, "GPU_DEVICE=%r matches no AMD or NVIDIA card", sel)
 
 
 def _hwmon_dir():
@@ -97,6 +195,15 @@ def _gpu_vram():
     if used is None or total is None or total == 0:
         return None, None, None
     return used, total, (used / total) * 100.0
+
+
+def _gpu_gtt():
+    """GTT (host memory the GPU maps) used/total/percent; None where unreadable."""
+    if _GPU_PATH is None: return None, None, None
+    used  = _read_int_file(_GPU_PATH / "mem_info_gtt_used")
+    total = _read_int_file(_GPU_PATH / "mem_info_gtt_total")
+    pct = (used / total) * 100.0 if used is not None and total else None
+    return used, total, pct
 
 
 def _gpu_clocks():
@@ -169,7 +276,12 @@ def _find_nvidia_gpu() -> bool:
 _NVIDIA_PRESENT: Any = _UNPROBED
 _AMD_NAME: Any = _UNPROBED
 _NV_NAME: Any = _UNPROBED
+_NV_ID = ""
 _DRIVER: "str | None" = None
+
+
+def _nv_id_args() -> list:
+    return ["-i", _NV_ID] if _NV_ID else []
 
 
 def _lspci_amd_name() -> "str | None":
@@ -199,7 +311,7 @@ def _nvidia_smi_name() -> "str | None":
         return None
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            ["nvidia-smi", *_nv_id_args(), "--query-gpu=name", "--format=csv,noheader"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
         ).strip().splitlines()
     except Exception as e:
@@ -217,7 +329,7 @@ def _probe_driver() -> "str | None":
         return None
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            ["nvidia-smi", *_nv_id_args(), "--query-gpu=driver_version", "--format=csv,noheader"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
         ).strip().splitlines()
     except Exception as e:
@@ -239,12 +351,18 @@ def _probe_complete() -> bool:
 def _ensure_probed() -> None:
     # Probe sysfs/nvidia-smi on first call, then only on the latch interval
     # while nothing is found, so a late driver is picked up without a restart.
-    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME, _DRIVER
+    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME, _NV_ID, _DRIVER
     if _probe_complete() or not _probe_latch.should_probe():
         return
     _GPU_PATH = _find_amd_gpu_path()
     _HWMON = _hwmon_dir()
-    _NVIDIA_PRESENT = _find_nvidia_gpu()
+    _NVIDIA_PRESENT = False
+    if _GPU_PATH is None and _find_nvidia_gpu():
+        nv_id = _select_nvidia_id()
+        _NVIDIA_PRESENT, _NV_ID = nv_id is not None, nv_id or ""
+    sel = _gpu_device_sel()
+    if sel and _GPU_PATH is None and not _NVIDIA_PRESENT:
+        _warn_unmatched_device(sel)
     _AMD_NAME = _lspci_amd_name() if _GPU_PATH is not None else None
     _NV_NAME = _nvidia_smi_name() if _NVIDIA_PRESENT else None
     _DRIVER = _probe_driver() if _GPU_PATH is not None or _NVIDIA_PRESENT else None
@@ -268,10 +386,10 @@ _NV_QUERY_FIELDS = [
 
 
 def _collect_nvidia_gpu() -> dict:
-    """AMD-key-compatible dict for the first NVIDIA card; AMD-only fields stay None."""
+    """AMD-key-compatible dict for the selected NVIDIA card; AMD-only fields stay None."""
     try:
         out = subprocess.check_output(
-            ["nvidia-smi",
+            ["nvidia-smi", *_nv_id_args(),
              "--query-gpu=" + ",".join(_NV_QUERY_FIELDS),
              "--format=csv,noheader,nounits"],
             text=True, timeout=5, close_fds=True, stderr=subprocess.DEVNULL,
@@ -311,6 +429,9 @@ def _collect_nvidia_gpu() -> dict:
         "vram_used_mb":           int(mem_used_mb) if mem_used_mb is not None else None,
         "vram_total_bytes":       total_bytes,
         "vram_usage_percent":     vram_pct,
+        "gtt_used_bytes":         None,
+        "gtt_total_bytes":        None,
+        "gtt_usage_percent":      None,
         "gpu_util_percent":       util,
         "power_watts":            power_w,
         "power_cap_watts":        power_cap_w,
@@ -331,6 +452,7 @@ def collect_gpu() -> dict:
     _ensure_probed()
     if _GPU_PATH is not None:
         vram_used, vram_total, vram_pct = _gpu_vram()
+        gtt_used, gtt_total, gtt_pct = _gpu_gtt()
         sclk, mclk = _gpu_clocks()
         perf = _gpu_performance_level()
         vram_mb = round(vram_used / 1_048_576) if vram_used is not None else None
@@ -349,6 +471,9 @@ def collect_gpu() -> dict:
             "vram_used_mb":           vram_mb,
             "vram_total_bytes":       vram_total,
             "vram_usage_percent":     vram_pct,
+            "gtt_used_bytes":         gtt_used,
+            "gtt_total_bytes":        gtt_total,
+            "gtt_usage_percent":      gtt_pct,
             "gpu_util_percent":       _read_float_file(_GPU_PATH / "gpu_busy_percent") if _GPU_PATH else None,
             "power_watts":            power_avg / 1_000_000.0 if power_avg is not None else None,
             "power_cap_watts":        power_cap / 1_000_000.0 if power_cap is not None else None,
