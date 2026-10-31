@@ -231,6 +231,16 @@ def test_build_change_ignored_when_disabled(tmp_path):
     assert e.w.snapshot()["baselines"][0]["build_changed"] is True
 
 
+def test_build_change_after_operator_switch_is_quiet(tmp_path):
+    e = Env(tmp_path)
+    e.w.tick(); e.store("run-1", 50.0); e.w.tick()
+    e.w.quiet_build_change(AID)
+    e.build = "b090-old"
+    e.w.tick()
+    assert len(e.started) == 1
+    assert e.w.snapshot()["baselines"][0]["pending"] is None
+
+
 def test_scheduler_off_manual_recheck_still_runs(tmp_path):
     e = Env(tmp_path)
     e.cfg["enabled"] = False

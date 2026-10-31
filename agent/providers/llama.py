@@ -1949,6 +1949,8 @@ def llama_build(body: Optional[dict] = None,
     with _build_lock:
         if _build_running:
             raise HTTPException(status_code=409, detail="A build is already running")
+        if _switch_lock.locked():
+            raise HTTPException(status_code=409, detail="A build switch is running")
         while not _build_queue.empty():
             try: _build_queue.get_nowait()
             except _queue_lib.Empty: break
@@ -2318,6 +2320,8 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
     with _bench_lock:
         if _bench_active or _autotune_active:
             return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+        if _switch_lock.locked():
+            return {"ok": False, "error": "A build switch is running"}
         _bench_active = True
         # Reset the buffer before the lock drops: a stream landing between
         # active=True and start_run would replay the prior run's stale done.
@@ -2679,6 +2683,8 @@ def llama_bench_live_setup(body: dict, authorization: Optional[str] = Header(def
     with _bench_lock:
         if _bench_active or _autotune_active:
             return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+        if _switch_lock.locked():
+            return {"ok": False, "error": "A build switch is running"}
         _bench_active = True
         with _bench_cond:
             _bench_replay.start_run(uuid.uuid4().hex[:12])
@@ -2849,6 +2855,8 @@ def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(defau
     with _bench_lock:
         if _bench_active or _autotune_active:
             return {"ok": False, "error": "Another benchmark or autotune is in progress"}
+        if _switch_lock.locked():
+            return {"ok": False, "error": "A build switch is running"}
         _bench_active = True
         with _bench_cond:
             _bench_replay.start_run(uuid.uuid4().hex[:12])
@@ -3883,6 +3891,8 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
     with _autotune_lock:
         if _autotune_active or _bench_active:
             return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
+        if _switch_lock.locked():
+            return {"ok": False, "error": "A build switch is running"}
         _autotune_active = True
         _autotune_quality = req.get("mode") == "quality"
         _autotune_run_id = uuid.uuid4().hex[:12]
@@ -3979,12 +3989,160 @@ def llama_builds_endpoint(rescan: bool = Query(default=False),
     res = None if rescan else llama_inventory.cached()
     if res is None:
         res = llama_inventory.scan(cfg, llama_install.installed_build_id,
-                                   str(llama_install._build_root(cfg)), _llama_seen_builds_file())
+                                   str(llama_install._build_root(cfg)), _llama_seen_builds_file(),
+                                   plain_check=_switch_preflight)
     return res
 
 
 def _llama_seen_builds_file() -> Path:
     return Path(_require_ctx().config.AGENT_INSTALL_DIR) / "data" / "llama-builds-seen.json"
+
+
+_switch_lock = threading.Lock()
+_SWITCH_READY_TIMEOUT_S = 120
+
+
+def _llama_exec_tokens() -> "list[str]":
+    """ExecStart= of the llama unit as tokens (binary first); raises when missing."""
+    for line in Path(_llama_svc_file_path()).read_text().splitlines():
+        s = line.strip()
+        if s.startswith("ExecStart="):
+            if s.endswith("\\"):
+                raise ValueError("the service's start command spans several lines; switch it by hand")
+            return shlex.split(s[len("ExecStart="):].strip())
+    raise ValueError("ExecStart line not found in the llama-server service file")
+
+
+def _switch_preflight(target: str) -> "tuple[bool, Optional[str]]":
+    """Runs target --version with the service unit's working folder and Environment= variables."""
+    try:
+        cwd, extra = llama_inventory.unit_run_context(Path(_llama_svc_file_path()).read_text())
+    except OSError:
+        cwd, extra = None, {}
+    if cwd and not os.path.isdir(cwd):
+        cwd = None
+    try:
+        r = subprocess.run([target, "--version"], capture_output=True, text=True, cwd=cwd,
+                           env={**os.environ, **extra},
+                           timeout=llama_inventory.PROBE_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, "the version check timed out"
+    except OSError as e:
+        return False, f"could not run it: {e}"
+    if r.returncode != 0:
+        first = next((ln.strip() for ln in ((r.stderr or "") + (r.stdout or "")).splitlines() if ln.strip()), "")
+        if first.startswith(target + ": "):
+            first = first[len(target) + 2:]
+        return False, first[:200] or f"exit {r.returncode}"
+    return True, None
+
+
+def _switch_unit_show() -> dict:
+    out: dict = {}
+    with best_effort("switch: systemctl show", log=log):
+        r = subprocess.run(["systemctl", "show", "-p", "ActiveState,NRestarts",
+                            _require_ctx().config.LLAMA_SYSTEMD_UNIT],
+                           capture_output=True, text=True, timeout=5)
+        for ln in (r.stdout or "").splitlines():
+            k, _, v = ln.partition("=")
+            out[k] = v
+    return out
+
+
+def _switch_wait_ready() -> "tuple[bool, Optional[str]]":
+    """Polls /health until 200; stops early when the unit fails or restarts itself."""
+    url = (_require_ctx().config.LLAMA_API_URL or "http://localhost:8080").rstrip("/")
+    base = _switch_unit_show().get("NRestarts")
+    deadline = time.monotonic() + _SWITCH_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        with best_effort("switch: health probe", log=None):
+            if requests.get(f"{url}/health", timeout=2).status_code == 200:
+                return True, None
+        st = _switch_unit_show()
+        if st.get("ActiveState") == "failed":
+            return False, "the server failed to start"
+        if base is not None and st.get("NRestarts") not in (None, base):
+            return False, "the server crashed on start"
+        time.sleep(2)
+    return False, f"the server did not answer within {_SWITCH_READY_TIMEOUT_S} s"
+
+
+def _switch_apply(tokens: "list[str]") -> dict:
+    res = _shared.svcconfig_apply(
+        _SVCCONFIG_WRAPPER, _llama_svc_file_path(), tokens, sudoers_hint="llm-svcconfig-apply",
+        restart_unit=_require_ctx().config.LLAMA_SYSTEMD_UNIT, restart_timeout=30)
+    reconcile_now()
+    return res
+
+
+def _switch_log_tail() -> "list[str]":
+    lines: "list[str]" = []
+    with best_effort("switch: journal tail", log=log):
+        r = subprocess.run(["journalctl", "-u", _require_ctx().config.LLAMA_SYSTEMD_UNIT, "-n", "12",
+                            "--no-pager", "-o", "cat"], capture_output=True, text=True, timeout=5)
+        lines = [ln[:300] for ln in (r.stdout or "").splitlines()][-12:]
+    log_file = _require_ctx().config.LLAMA_LOG_FILE
+    if not lines and log_file:
+        with best_effort("switch: log file tail", log=log):
+            with open(log_file, "rb") as f:
+                f.seek(max(0, os.path.getsize(log_file) - 16384))
+                lines = [ln[:300] for ln in f.read().decode(errors="replace").splitlines()][-12:]
+    if not lines:
+        unit = _require_ctx().config.LLAMA_SYSTEMD_UNIT
+        lines = [f"the agent cannot read the server log; run: journalctl -u {unit} -n 50"]
+    return lines
+
+
+def _switch_persist(target: str) -> str:
+    cfg = _require_ctx().config
+    path = getattr(cfg, "_loaded_from", None)
+    if not path:
+        raise RuntimeError("no agent_config.yaml is loaded")
+    backup = llama_inventory.set_yaml_key(path, "LLAMA_BIN", target)
+    cfg.LLAMA_BIN = target
+    llama_inventory.remember(target, _llama_seen_builds_file())
+    return backup
+
+
+def llama_builds_activate(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Makes a listed build the one the llama-server service runs; switches back on failure."""
+    ctx = _require_ctx()
+    ctx.check_bearer(authorization); _llama_check_enabled()
+    target = str((body or {}).get("path") or "")
+    if ctx.config.AGENT_OS != "linux" or not Path(_llama_svc_file_path()).is_file():
+        return {"ok": False, "error": "switching needs llama-server running as a systemd service on Linux"}
+    if target and llama_inventory.cached() is None:
+        llama_inventory.scan(ctx.config, llama_install.installed_build_id,
+                             str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
+                             plain_check=_switch_preflight)
+    row = llama_inventory.listed_build(target) if target else None
+    if not row:
+        return {"ok": False, "error": "that build is not in the current list; rescan and try again"}
+    if row.get("active"):
+        return {"ok": False, "error": "that build is already active"}
+    if not row.get("ok"):
+        return {"ok": False, "error": "that build failed its version check"}
+    if not _switch_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="a switch is already running")
+    try:
+        if _bench_active or _autotune_active or _build_running:
+            raise HTTPException(status_code=409, detail="a benchmark, tuning run or update is running")
+        try:
+            tokens = _llama_exec_tokens()
+        except (OSError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
+        current = (ctx.config.LLAMA_BIN or "").strip()
+        if not tokens or not current or os.path.realpath(tokens[0]) != os.path.realpath(current):
+            return {"ok": False, "error": "the service does not run LLAMA_BIN directly; switch it by hand"}
+        log.info("llama build switch: %s -> %s", tokens[0], row["path"])
+        res = llama_inventory.switch(
+            row["path"], tokens, preflight=_switch_preflight, apply_exec=_switch_apply,
+            wait_ready=_switch_wait_ready, persist=_switch_persist, log_tail=_switch_log_tail)
+        llama_inventory.forget_cache()
+        log.info("llama build switch result: ok=%s stage=%s", res.get("ok"), res.get("stage"))
+        return res
+    finally:
+        _switch_lock.release()
 
 
 _ROUTES: tuple = (
@@ -4013,6 +4171,7 @@ _ROUTES: tuple = (
     ("POST",   "/llama/build",                    llama_build),
     ("GET",    "/llama/build/stream",             llama_build_stream),
     ("GET",    "/llama/builds",                   llama_builds_endpoint),
+    ("POST",   "/llama/builds/activate",          llama_builds_activate),
     ("GET",    "/llama/cache",                    llama_cache_list),
     ("GET",    "/llama/cache/gguf",               llama_cache_gguf),
     ("POST",   "/llama/cache/prune",              llama_cache_prune),

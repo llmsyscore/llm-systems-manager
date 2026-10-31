@@ -563,6 +563,7 @@
     .lbi-table .lbi-ok { color: var(--ok); }
     .lbi-table .lbi-err { color: var(--crit); }
     .lbi-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 0.85em; background: var(--accent); color: var(--bg); }
+    #llamaBuildsResult .bld-v { white-space: pre-wrap; }
     .lbi-note { color: var(--fg-dim); margin-top: 2px; font-family: var(--font-sans); overflow-wrap: normal; }
     .dl-log-resize { background: var(--bg-elev); border: 1px solid var(--border-strong); border-top: none; border-radius: 0 0 6px 6px; cursor: ns-resize; height: 10px; display: flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; }
     .dl-log-resize::after { content: '⋯'; color: var(--fg-faint); font-size: 0.7em; letter-spacing: 3px; user-select: none; }

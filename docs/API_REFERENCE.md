@@ -207,6 +207,11 @@ Lists the llama.cpp builds installed on the llama agent's host: folder, backend,
 
 ---
 
+### `POST /api/llm/builds/activate`
+Admin only. Body `{"path": "<llama-server path from the list>"}`. Checks that the build runs, points the llama-server service at it with the same settings, restarts it and waits up to 120 seconds for it to answer, then saves it as `LLAMA_BIN`. If it does not start, the previous build is put back. Refused while a benchmark, tuning run or update is running. Returns `ok`, or `rolled_back` / `restored` with the reason and the last server log lines.
+
+---
+
 ### `GET /api/llm/cache`
 Lists model files currently held in the local model cache on the GPU host.
 
