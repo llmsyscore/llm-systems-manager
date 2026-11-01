@@ -287,9 +287,29 @@
     const rows = infra.map(i => `<dt>${esc(i.label)}</dt><dd title="${esc(i.version || 'version unknown')}">${esc(i.version || '—')}</dd>`).join('');
     return `<span class="microlbl sub">Co-located services</span><dl class="ag-kv">${rows}</dl>`;
   }
+  function gpuLabel(c) {
+    const b = c.vram_bytes;
+    const mem = typeof b === 'number' && b > 0 ? `${(b / 1073741824).toFixed(b >= 10737418240 ? 0 : 1)} GB` : '';
+    return [c.name || `${String(c.vendor || '').toUpperCase()} card`, mem, c.id].filter(Boolean).join(' · ');
+  }
+  // GPU picker (#1387): only for hosts that report more than one card.
+  function gpuHtml(a) {
+    const hb = a.last_heartbeat_data || {};
+    const cards = Array.isArray(hb.gpu_cards) ? hb.gpu_cards : [];
+    if (a.status !== 'approved' || cards.length < 2) return '';
+    const set = hb.gpu_device || '';
+    const mon = cards.find(c => c.monitored);
+    const cur = set ? (mon ? mon.id : set) : '';
+    const opt = (v, label, extra) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}${extra || ''}>${esc(label)}</option>`;
+    const opts = [opt('', 'Automatic (most memory)')].concat(cards.map(c => opt(c.id, gpuLabel(c))));
+    if (set && !mon) opts.push(opt(set, `${set} (not found)`, ' disabled'));
+    const now = mon ? `Monitoring now: ${gpuLabel(mon)}` : 'Monitoring now: no card';
+    return `<span class="microlbl sub">GPU</span><select class="sel full ag-gpu" data-gpu="${esc(a.agent_id)}" aria-label="GPU">${opts.join('')}</select>`
+      + `<div class="ag-gpu-now">${esc(now)}</div>`;
+  }
   function drawerHtml(a) {
     return `<div class="ag-drawer">
-      <div class="g"><span class="microlbl">Roles</span><div class="tg">${rolesHtml(a)}</div></div>
+      <div class="g"><span class="microlbl">Roles</span><div class="tg">${rolesHtml(a)}</div>${gpuHtml(a)}</div>
       <div class="g"><span class="microlbl">Connection</span><dl class="ag-kv">${connectionHtml(a)}</dl></div>
       <div class="g"><span class="microlbl">Shortcuts</span><div class="ag-links">${shortcutsHtml(a)}</div>${infraHtml(a)}</div>
     </div>`;
@@ -473,7 +493,9 @@
     const c = ctx();
     renderHeader(c);
     const host = $('agRoster');
-    if (!openMenu || !(host && host.querySelector('.ag-rw'))) renderRoster(c);
+    const picking = host && document.activeElement && host.contains(document.activeElement)
+      && document.activeElement.tagName === 'SELECT';
+    if (!picking && (!openMenu || !(host && host.querySelector('.ag-rw')))) renderRoster(c);
     renderStamp();
     if (!ticker && typeof setInterval === 'function') ticker = (window.LivePause ? LivePause.every : setInterval)(tick, 5000);
   }
@@ -591,6 +613,12 @@
       ev.preventDefault();
       onAction(el.dataset.act, el);
     });
+    panel.addEventListener('change', ev => {
+      const sel = ev.target.closest('select[data-gpu]');
+      if (!sel) return;
+      sel.blur();
+      call('adminSetGpu', sel.dataset.gpu, sel.value);
+    });
     const q = $('agFilter');
     if (q) q.addEventListener('input', () => { filterQ = q.value; renderRoster(ctx()); });
     document.addEventListener('click', ev => {
@@ -611,7 +639,7 @@
     enrollText, secretChipText, installCommand,
     FRESH_MS, ipOf, infraList, rowState, tlsInfo, showDesc, fmtAgo, clock, fingerprintShort,
     parseFilter, matches, summary, stampState, capsHtml, rolesHtml, connectionHtml, shortcutsHtml,
-    drawerHtml, infraHtml, menuHtml, actionsHtml, rowHtml, render, stamp, init, openIds, refreshNow,
+    drawerHtml, infraHtml, gpuHtml, menuHtml, actionsHtml, rowHtml, render, stamp, init, openIds, refreshNow,
     setFilter: q => { filterQ = q; }, setSort: (key, dir) => { sort = { key, dir }; },
     getSort: () => ({ ...sort }),
   };

@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.31-5"
+__version__ = "v2026.11.01-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4147,6 +4147,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "agent.approve": "Approved an agent", "agent.disable": "Disabled an agent",
     "agent.delete": "Deleted an agent", "agent.restart": "Restarted an agent",
     "agent.self-update": "Pushed the agent update", "agent.config-file": "Edited an agent config file",
+    "agent.gpu-device": "Changed which GPU an agent monitors",
     "agent.role-primary": "Changed the primary provider host",
     "agent.host-role": "Changed the manager host role",
     "agent.global-config": "Changed agent auth settings", "agent.push-ca": "Pushed the CA bundle to agents",
@@ -4228,6 +4229,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart",      "agent.control"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update",  "agent.control"),
     ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file",  "agent.config"),
+    ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/gpu-device$"),   "agent.gpu-device",   "agent.config"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/collection$"),   "agent.collection",   "agent.collection"),
     ("POST",   re.compile(r"^/api/admin/push-ca-to-agents$"),          "agent.push-ca",      "agent.tls"),
     ("POST",   re.compile(r"^/api/admin/service/(?P<t>[^/]+)/restart$"), "service.restart",  "service.restart"),
@@ -9107,6 +9109,35 @@ def agents_config_file(agent_id: str):
         payload = r.json()
     except Exception:
         log.warning("agent config-file PUT: non-JSON upstream response (status %s)", r.status_code)
+        payload = {"ok": r.ok, "raw": "upstream returned a non-JSON body"}
+    return jsonify(payload), r.status_code
+
+
+@app.route("/api/agents/<agent_id>/gpu-device", methods=["POST"])
+def agents_gpu_device(agent_id: str):
+    """Admin-gated proxy to the agent's /agent/gpu-device. Body: {"device": "<PCI address>" or ""}."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    data = agent_registry.load_agents()
+    agent = data["agents"].get(agent_id)
+    if not agent or not agent.get("bind_url") or not agent.get("token"):
+        return jsonify({"ok": False, "error": "unknown agent or missing token"}), 404
+    body = flask_request.get_json(force=True, silent=True)
+    device = body.get("device") if isinstance(body, dict) and isinstance(body.get("device"), str) else ""
+    r, tried, err = agent_registry.agent_request(
+        "POST", agent, "/agent/gpu-device",
+        headers={"Authorization": f"Bearer {agent['token']}"},
+        json={"device": device}, timeout=10,
+    )
+    if r is None:
+        return _err_json("upstream agent request failed", 502, detail=err, tried=tried)
+    if r.status_code == 404:
+        return jsonify({"ok": False, "error": "update this agent to pick its GPU from here"}), 409
+    try:
+        payload = r.json()
+    except Exception:
+        log.warning("agent gpu-device: non-JSON upstream response (status %s)", r.status_code)
         payload = {"ok": r.ok, "raw": "upstream returned a non-JSON body"}
     return jsonify(payload), r.status_code
 

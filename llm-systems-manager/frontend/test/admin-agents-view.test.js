@@ -450,3 +450,58 @@ describe('#793 wiring', () => {
     }
   });
 });
+
+describe('#1387 GPU picker', () => {
+  const cards = [
+    { id: '0000:7c:00.0', vendor: 'amd', name: 'Raphael', vram_bytes: 512 * 2 ** 20, monitored: false },
+    { id: '0000:03:00.0', vendor: 'amd', name: 'Navi 31', vram_bytes: 24 * 2 ** 30, monitored: true },
+  ];
+  const withGpu = (hb, extra = {}) => approved('g1', {
+    last_heartbeat_data: { collection_enabled: true, ...hb }, ...extra });
+  const parse = (html) => {
+    const d = new JSDOM(`<div>${html}</div>`).window.document;
+    return { sel: d.querySelector('select'), now: d.querySelector('.ag-gpu-now') };
+  };
+  test('hidden for one card, no card list, or an agent that is not approved', () => {
+    expect(V.gpuHtml(withGpu({ gpu_cards: [cards[1]] }))).toBe('');
+    expect(V.gpuHtml(withGpu({}))).toBe('');
+    expect(V.gpuHtml(withGpu({ gpu_cards: cards }, { status: 'pending' }))).toBe('');
+  });
+  test('automatic selected when unset; options list every card and the monitored one shows as text', () => {
+    const { sel, now } = parse(V.gpuHtml(withGpu({ gpu_cards: cards, gpu_device: '' })));
+    expect([...sel.options].map(o => o.textContent)).toEqual([
+      'Automatic (most memory)', 'Raphael · 0.5 GB · 0000:7c:00.0', 'Navi 31 · 24 GB · 0000:03:00.0']);
+    expect(sel.value).toBe('');
+    expect(now.textContent).toBe('Monitoring now: Navi 31 · 24 GB · 0000:03:00.0');
+  });
+  test('a saved setting selects the card it matched, whatever form it was written in', () => {
+    const { sel } = parse(V.gpuHtml(withGpu({ gpu_cards: cards, gpu_device: 'card1' })));
+    expect(sel.value).toBe('0000:03:00.0');
+  });
+  test('a setting that matches no card shows as not found', () => {
+    const none = cards.map(c => ({ ...c, monitored: false }));
+    const { sel, now } = parse(V.gpuHtml(withGpu({ gpu_cards: none, gpu_device: 'card9' })));
+    expect(sel.options[sel.selectedIndex].textContent).toBe('card9 (not found)');
+    expect(now.textContent).toBe('Monitoring now: no card');
+  });
+  test('card names are escaped', () => {
+    const bad = [{ ...cards[0], name: '<img src=x onerror=1>' }, cards[1]];
+    const { sel } = parse(V.gpuHtml(withGpu({ gpu_cards: bad })));
+    expect(sel.querySelector('img')).toBeNull();
+    expect(sel.options[1].textContent).toContain('<img src=x onerror=1>');
+  });
+  test('choosing a card in the open drawer calls adminSetGpu', () => {
+    const agents = [withGpu({ gpu_cards: cards, gpu_device: '' })];
+    const win = harness(`
+      _adminProviders = []; _adminPoolProviders = []; _adminGlobal = {};
+      _adminAgentsCache = ${JSON.stringify(agents)};
+      window.adminSetGpu = (aid, v) => { window.__got = [aid, v]; };
+      AgentsView.openIds.add('g1');
+      AgentsView.render();
+    `);
+    const sel = win.document.querySelector('[data-row="g1"] select[data-gpu]');
+    sel.value = '0000:7c:00.0';
+    sel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    expect(win.__got).toEqual(['g1', '0000:7c:00.0']);
+  });
+});

@@ -1591,6 +1591,35 @@ async function adminEditConfig(aid) {
   setTimeout(() => ta.focus(), 0);
 }
 
+// Saves the agent's GPU_DEVICE ("" = automatic) and offers the restart that applies it (#1387).
+async function adminSetGpu(aid, device) {
+  const name = _adminAgentName(aid);
+  let r, d;
+  try {
+    r = await fetch(`/api/agents/${encodeURIComponent(aid)}/gpu-device`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device}),
+    });
+    d = await r.json().catch(() => ({}));
+  } catch (e) {
+    _toastErr(`Could not save the GPU for ${name}: ${e.message}`);
+    adminLoadAgents();
+    return;
+  }
+  if (!r.ok || !d.ok) {
+    const err = d.error || d.detail || `HTTP ${r.status}`;
+    _adminLog(`✗ save ${name} GPU failed — ${err}`, 'err');
+    _toastErr(`Could not save the GPU for ${name}: ${err}`);
+    adminLoadAgents();
+    return;
+  }
+  _adminLog(`✓ ${name} GPU set to ${device || 'automatic'} (backup ${d.backup_path}). Restart to apply.`);
+  _themedToast(`GPU saved for ${name}. It switches after the agent restarts.`);
+  await adminRestart(aid);
+  adminLoadAgents();
+}
+
 // Reusable themed yes/no modal. Resolves true on confirm, false on
 // cancel/Escape/backdrop. bodyHtml is interpolated as innerHTML — callers
 // are responsible for escaping any user-supplied substrings (use adminEsc()).

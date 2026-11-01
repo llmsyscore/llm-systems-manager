@@ -1010,6 +1010,15 @@ Writes a new YAML configuration file to the specified agent.
 
 ---
 
+### `POST /api/agents/<agent_id>/gpu-device`
+Chooses which GPU the agent monitors when its host has more than one. The choice is saved to the agent's config file (a backup is kept) and takes effect after the agent restarts.
+
+**Access:** [Admin]
+
+**Body:** `{"device": "0000:03:00.0"}` — the PCI address of a card from the agent's list, or `""` for automatic (the card with the most memory).
+
+---
+
 ### `GET /api/agents/<agent_id>/log/tail`
 Returns the most recent lines from the specified agent's log.
 
