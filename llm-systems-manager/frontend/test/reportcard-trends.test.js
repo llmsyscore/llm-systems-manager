@@ -89,7 +89,7 @@ describe('report card trends', () => {
   });
 
   it('ignores a trend reply that arrives after the shown card changed', async () => {
-    const { api, charts, pending, reply } = loadModule();
+    const { api, charts, pending } = loadModule();
     api.rcRenderCard(card('m1', 1));
     pending.length = 0;
     api.rcToggleTrends();
