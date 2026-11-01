@@ -50,6 +50,11 @@ const ROWS = [
   { key: 'kernel', label: 'Kernel', get: c => _str(_o(c, 'os').kernel) },
   { key: 'backend', label: 'Backend', get: c => _str(_o(c, 'backend').name) },
   { key: 'build', label: 'Build', get: c => _str(_o(c, 'backend').build) },
+  { key: 'install', label: 'Installed build', get: c => {
+    const i = _o(c, 'backend').install;
+    if (!i || typeof i !== 'object' || !_has(i.name)) return null;
+    return _has(i.backend) ? `${i.name} · ${i.backend}` : String(i.name);
+  } },
   { key: 'server_cmd', label: 'Server command', get: c => _str(_o(c, 'backend').server_cmd),
     norm: v => v.replace(/\s+/g, ' ').trim() },
   { key: 'model_file', label: 'Model file', get: c => _str(_o(c, 'model').file) },

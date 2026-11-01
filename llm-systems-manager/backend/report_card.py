@@ -532,8 +532,10 @@ def ensure_ready(provider: str, agent_id: str, model_key: str,
     return {"status": "needs_download", "model": target, **base}
 
 
-def _agent_json(agent: dict, method: str, path: str, timeout=15, quiet=False, **kw):
-    """Call an agent endpoint with its machine token; None on any failure (logged at debug when quiet)."""
+def _agent_json(agent: dict, method: str, path: str, timeout=15, quiet=False,
+                error_body=False, **kw):
+    """Call an agent endpoint with its machine token; None on any failure (logged at debug when quiet).
+    error_body=True turns a non-2xx answer into {"ok": False, "error": <agent error or detail>}."""
     import agent_registry
     r, _tried, err = agent_registry.agent_request(
         method, agent, path,
@@ -543,6 +545,13 @@ def _agent_json(agent: dict, method: str, path: str, timeout=15, quiet=False, **
         (log.debug if quiet else log.warning)(
             "report card: %s %s failed on agent %s (%s)", method, path,
             (agent.get("agent_id") or "?")[:8], err or getattr(r, "status_code", "?"))
+        if error_body and r is not None:
+            try:
+                body = r.json()
+            except ValueError:
+                body = None
+            why = (body.get("error") or body.get("detail")) if isinstance(body, dict) else None
+            return {"ok": False, "error": str(why or f"{path} answered HTTP {r.status_code}")}
         return None
     try:
         return r.json()
@@ -560,10 +569,12 @@ def _agent_conditions(agent: dict, provider: str, model: str) -> "dict | None":
     return None
 
 
-def _agent_call(agent: dict, method: str, path: str, timeout=15,
+def _agent_call(agent: dict, method: str, path: str, timeout=15, error_body=False,
                 **kw) -> "tuple[bool, str | None]":
     """Agent call as (ok, error). Agents report expected failures as HTTP 200
     with {"ok": false, "error": ...}, so truthiness is not a success test."""
+    if error_body:
+        kw["error_body"] = True
     res = _agent_json(agent, method, path, timeout=timeout, **kw)
     if res is None:
         return False, f"{path} did not respond"
@@ -971,6 +982,42 @@ def configure_queue(fn) -> None:
     _queue_start = fn
 
 
+# Build-switch hooks (#1395): quiet(agent_id), audit(by, agent_id, path, ok, error), actor() -> by.
+_build_quiet = None
+_build_audit = None
+_build_actor = None
+MAX_BUILDS = 8
+
+
+def configure_build_switch(quiet=None, audit=None, actor=None) -> None:
+    global _build_quiet, _build_audit, _build_actor
+    _build_quiet, _build_audit, _build_actor = quiet, audit, actor
+
+
+def _build_name(path: str) -> str:
+    """Folder name of a build: the binary's directory without trailing bin and build segments."""
+    parts = [x for x in str(path).rsplit("/", 1)[0].split("/") if x]
+    while len(parts) > 1 and parts[-1] in ("bin", "build"):
+        parts.pop()
+    return parts[-1] if parts else ""
+
+
+def _quiet(agent_id: str) -> None:
+    if _build_quiet is not None:
+        with best_effort("report card: build quiet window", log=log):
+            _build_quiet(agent_id)
+
+
+def _switch_build(agent: dict, req: dict, path: str) -> "tuple[bool, str | None]":
+    """Activates a listed llama.cpp build on the agent and writes its audit row."""
+    ok, err = _agent_call(agent, "POST", "/llama/builds/activate", timeout=420,
+                          error_body=True, json={"path": path})
+    if _build_audit is not None:
+        with best_effort("report card: build-switch audit", log=log):
+            _build_audit(req.get("by") or {}, req["agent"], path, ok, err)
+    return ok, err
+
+
 def start_card(req: dict) -> "str | None":
     """Starts the runner for a queued job; None when that agent already has a run."""
     job_id = _new_job(req, exclusive=True)
@@ -1020,103 +1067,172 @@ def _run_job(job_id: str, req: dict) -> None:
         agent = _agent_for(req["agent"])
         if not agent:
             raise RuntimeError("agent not found or not approved")
-        provider, mode = req["provider"], req["mode"]
-        check()
-        provisioned = False
-        if mode == "custom":
-            model, is_reference = req["model"], False
-            emit({"phase": "ready", "status": "custom", "model": model})
+        if req.get("builds"):
+            finish(_run_builds(job, req, agent, emit, check))
         else:
-            emit({"phase": "resolving"})
-            ready = ensure_ready(provider, req["agent"], req["model_key"],
-                                 prod_deps(agent))
-            emit({"phase": "ready", "status": ready["status"],
-                  "model": ready.get("model")})
-            check()
-            if ready["status"] == "unavailable":
-                raise RuntimeError(ready.get("error") or "provider unavailable")
-            if ready["status"] == "needs_download":
-                if not req.get("confirm_download"):
-                    raise RuntimeError("reference model is not installed")
-                prov = provision_model(agent, provider, ready["source"], emit,
-                                       should_cancel=cancel.is_set)
-                if prov["status"] == "cancelled":
-                    raise _Cancelled()
-                if prov["status"] != "ready":
-                    raise RuntimeError(prov.get("error") or "provisioning failed")
-                ready = {**ready, "status": "ready", "model": prov["model"]}
-                provisioned = True
-            elif ready["status"] == "needs_confirm" and not req.get("confirm_vllm"):
-                raise RuntimeError(ready.get("error")
-                                   or "vLLM run needs confirmation")
-            elif ready["status"] not in ("ready", "needs_confirm"):
-                raise RuntimeError(ready.get("error")
-                                   or f"model not ready: {ready['status']}")
-            model = ready["model"]
-            is_reference = bool(ready.get("is_reference"))
-        check()
-        base, headers = bench_base_url(provider, agent)
-        sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
-        cond_start = _agent_conditions(agent, provider, model)
-        sampler.start()
-
-        def _progress(ev):
-            # Warmup is discarded from timings; discard its power samples too.
-            if ev.get("phase") == "rep" and ev.get("n") == 1:
-                sampler.reset()
-            check()
-            emit(ev)
-
-        import requests as _requests
-        import agent_registry
-        dialed = agent_registry.agent_http(agent) if provider != "lms" else _requests
-        sess = dialed if isinstance(dialed, _requests.Session) else _requests.Session()
-        try:
-            bench = run_bench(
-                base, model,
-                lambda u, p: _openai_stream_post(u, p, headers, session=sess,
-                                                 **_tls_kwargs(u)),
-                progress_cb=_progress)
-        finally:
-            sess.close()
-            power = sampler.stop()
-            cond_end = None if cancel.is_set() else _agent_conditions(agent, provider, model)
-            # The bench loaded the model; free the host's RAM/VRAM again.
-            if mode == "standard" and provider in ("llama", "lms"):
-                emit({"phase": "unload", "model": model})
-                ok_u, err_u = _agent_call(agent, "POST", f"/{provider}/unload",
-                                          timeout=60, json={"model": model})
-                if not ok_u:
-                    log.warning("report card: unload of %s failed: %s",
-                                model, err_u)
-        agg = aggregate_gpus(power["gpus"])
-        energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
-                                req["price_kwh"])
-        result = dict(bench)
-        result.update({"model": model, **energy, **agg,
-                       "power_source": power["source"]})
-        conditions = merge_conditions(cond_start, cond_end)
-        if conditions is not None:
-            result["conditions"] = conditions
-        card = {"ts": int(_time.time()), "agent_id": req["agent"],
-                "provider": provider, "mode": mode,
-                "preset_version": PRESET_VERSION,
-                "eligible": mode == "standard" and is_reference,
-                "result": result}
-        insert_card(_conn_factory(), card)
-        finish({"event": "done", "card": _public_card(card),
-                "cleanup": {"downloaded": provisioned,
-                            "deletable": provisioned
-                            and provider in ("llama", "lms"),
-                            "model_key": req.get("model_key")}})
+            finish(_run_one(job, req, agent, emit, check))
     except _Cancelled:
         log.info("report card run cancelled")
-        finish({"event": "cancelled"})
+        finish({"event": "cancelled", **_stored_cards(job)})
     except Exception as e:
         log.warning("report card run failed: %s", e)
-        finish({"event": "error", "error": str(e)[:600]})
+        finish({"event": "error", "error": str(e)[:600], **_stored_cards(job)})
     finally:
         job["done"] = True
+
+
+def _run_one(job: dict, req: dict, agent: dict, emit, check,
+             build: "dict | None" = None) -> dict:
+    """One card on the active build: ready, bench, store; returns the terminal done event."""
+    cancel = job["cancel"]
+    provider, mode = req["provider"], req["mode"]
+    check()
+    provisioned = False
+    if mode == "custom":
+        model, is_reference = req["model"], False
+        emit({"phase": "ready", "status": "custom", "model": model})
+    else:
+        emit({"phase": "resolving"})
+        ready = ensure_ready(provider, req["agent"], req["model_key"],
+                             prod_deps(agent))
+        emit({"phase": "ready", "status": ready["status"],
+              "model": ready.get("model")})
+        check()
+        if ready["status"] == "unavailable":
+            raise RuntimeError(ready.get("error") or "provider unavailable")
+        if ready["status"] == "needs_download":
+            if not req.get("confirm_download"):
+                raise RuntimeError("reference model is not installed")
+            prov = provision_model(agent, provider, ready["source"], emit,
+                                   should_cancel=cancel.is_set)
+            if prov["status"] == "cancelled":
+                raise _Cancelled()
+            if prov["status"] != "ready":
+                raise RuntimeError(prov.get("error") or "provisioning failed")
+            ready = {**ready, "status": "ready", "model": prov["model"]}
+            provisioned = True
+        elif ready["status"] == "needs_confirm" and not req.get("confirm_vllm"):
+            raise RuntimeError(ready.get("error")
+                               or "vLLM run needs confirmation")
+        elif ready["status"] not in ("ready", "needs_confirm"):
+            raise RuntimeError(ready.get("error")
+                               or f"model not ready: {ready['status']}")
+        model = ready["model"]
+        is_reference = bool(ready.get("is_reference"))
+    check()
+    base, headers = bench_base_url(provider, agent)
+    sampler = PowerSampler(lambda: _snapshot_power(req["agent"], provider))
+    cond_start = _agent_conditions(agent, provider, model)
+    sampler.start()
+
+    def _progress(ev):
+        # Warmup is discarded from timings; discard its power samples too.
+        if ev.get("phase") == "rep" and ev.get("n") == 1:
+            sampler.reset()
+        check()
+        emit(ev)
+
+    import requests as _requests
+    import agent_registry
+    dialed = agent_registry.agent_http(agent) if provider != "lms" else _requests
+    sess = dialed if isinstance(dialed, _requests.Session) else _requests.Session()
+    try:
+        bench = run_bench(
+            base, model,
+            lambda u, p: _openai_stream_post(u, p, headers, session=sess,
+                                             **_tls_kwargs(u)),
+            progress_cb=_progress)
+    finally:
+        sess.close()
+        power = sampler.stop()
+        cond_end = None if cancel.is_set() else _agent_conditions(agent, provider, model)
+        # The bench loaded the model; free the host's RAM/VRAM again.
+        if mode == "standard" and provider in ("llama", "lms"):
+            emit({"phase": "unload", "model": model})
+            ok_u, err_u = _agent_call(agent, "POST", f"/{provider}/unload",
+                                      timeout=60, json={"model": model})
+            if not ok_u:
+                log.warning("report card: unload of %s failed: %s",
+                            model, err_u)
+    agg = aggregate_gpus(power["gpus"])
+    energy = energy_metrics(power["avg_watts"], bench["gen_tps"],
+                            req["price_kwh"])
+    result = dict(bench)
+    result.update({"model": model, **energy, **agg,
+                   "power_source": power["source"]})
+    conditions = merge_conditions(cond_start, cond_end)
+    if conditions is not None:
+        result["conditions"] = conditions
+    if build:
+        result.update(build)
+    card = {"ts": int(_time.time()), "agent_id": req["agent"],
+            "provider": provider, "mode": mode,
+            "preset_version": PRESET_VERSION,
+            "eligible": mode == "standard" and is_reference,
+            "result": result}
+    insert_card(_conn_factory(), card)
+    return {"event": "done", "card": _public_card(card),
+            "cleanup": {"downloaded": provisioned,
+                        "deletable": provisioned
+                        and provider in ("llama", "lms"),
+                        "model_key": req.get("model_key")}}
+
+
+def _stored_cards(job: dict) -> dict:
+    """{"cards": [...]} with the cards a builds run stored so far; {} for a single-build run."""
+    return {"cards": list(job["cards"])} if job.get("cards") is not None else {}
+
+
+def _read_builds(agent: dict) -> "tuple[list, str | None]":
+    """(rows, active path) from agent GET /llama/builds; active is None when unreadable."""
+    listing = _agent_json(agent, "GET", "/llama/builds", timeout=90)
+    rows = listing.get("builds") if isinstance(listing, dict) else None
+    rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+    return rows, next((r["path"] for r in rows if r.get("active") and r.get("path")), None)
+
+
+def _run_builds(job: dict, req: dict, agent: dict, emit, check) -> dict:
+    """One card per picked llama.cpp build, then back to the build that was active at the start."""
+    aid = req["agent"]
+    cards = job["cards"] = []
+    rows, start = _read_builds(agent)
+    if not start:
+        raise RuntimeError("could not read the installed builds")
+    names = {r.get("path"): r.get("name") for r in rows}
+    current, cleanup, attempted = start, None, False
+    total = len(req["builds"])
+    _quiet(aid)
+    try:
+        for i, path in enumerate(req["builds"]):
+            check()
+            name = names.get(path) or _build_name(path)
+            emit({"phase": "build_start", "build": name, "path": path, "index": i, "total": total})
+            if path != current:
+                _quiet(aid)
+                attempted = True
+                ok, err = _switch_build(agent, req, path)
+                if not ok:
+                    emit({"phase": "build_failed", "build": name, "error": err})
+                    continue
+                current = path
+            done = _run_one(job, req, agent, emit, check,
+                            build={"build_name": name, "build_path": path})
+            cards.append(done["card"])
+            if cleanup is None or done["cleanup"].get("downloaded"):
+                cleanup = done["cleanup"]
+    finally:
+        # Reads the agent's active build and switches back when it differs from the start build.
+        live = _read_builds(agent)[1] if attempted else start
+        if live != start:
+            _quiet(aid)
+            ok, err = _switch_build(agent, req, start)
+            if not ok and live is None and "already active" in (err or ""):
+                ok, err = True, None
+            _quiet(aid)
+            emit({"phase": "switch_back", "ok": ok, **({"error": err} if err else {})})
+    if not cards:
+        raise RuntimeError("none of the picked builds could be benchmarked")
+    return {"event": "done", "card": cards[-1], "cards": list(cards), "cleanup": cleanup}
 
 
 def _tls_kwargs(url: str) -> dict:
@@ -1180,6 +1296,18 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                             "error": f"unknown provider: {provider}"}), 400
         if mode not in MODES:
             return jsonify({"ok": False, "error": f"unknown mode: {mode}"}), 400
+        builds = body.get("builds") or []
+        if not isinstance(builds, list) or not all(isinstance(b, str) and b for b in builds):
+            return jsonify({"ok": False, "error": "builds must be a list of paths"}), 400
+        builds = list(dict.fromkeys(builds))
+        if len(builds) > MAX_BUILDS:
+            return jsonify({"ok": False, "error": f"at most {MAX_BUILDS} builds"}), 400
+        if builds and provider != "llama":
+            return jsonify({"ok": False, "error": "builds needs the llama provider"}), 400
+        if builds:
+            import auth
+            if auth.effective_role() != "admin":
+                return jsonify({"ok": False, "error": "switching builds needs an admin"}), 403
         model = (body.get("model") or "").strip()
         if mode == "custom" and not model:
             return jsonify({"ok": False,
@@ -1226,6 +1354,9 @@ def register_routes(app, ctx=None, db_path: "str | None" = None) -> None:
                "model": model, "model_key": model_key, "price_kwh": price,
                "confirm_vllm": bool(body.get("confirm_vllm")),
                "confirm_download": bool(body.get("confirm_download"))}
+        if builds:
+            req["builds"] = builds
+            req["by"] = _build_actor() if _build_actor else {}
         if _queue_start is not None:
             queued = _queue_start(agent_id, provider, req)
             if queued is not None:

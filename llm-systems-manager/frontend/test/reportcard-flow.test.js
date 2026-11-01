@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import SG from '../js/lib/sseguard.js';
+import BUILDPICK from '../js/lib/buildpick.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const code = readFileSync(resolve(ROOT, 'js/report-card.js'), 'utf8');
@@ -479,5 +480,76 @@ describe('report card behind another tool (#888, #897, #1136)', () => {
     expect(gate.slots[0].queued()).toBe(false);
     expect(document.getElementById('rcNote').textContent).toBe('a benchmark is already in progress');
     expect(document.getElementById('rcRunBtn').disabled).toBe(false);
+  });
+});
+
+describe('Builds row (#1395)', () => {
+  const VK = { path: '/opt/vk/build/bin/llama-server', dir: '/opt/vk/build/bin', name: 'vk', active: true, backend: 'Vulkan', ok: true };
+  const ROCM = { path: '/opt/rocm/build/bin/llama-server', dir: '/opt/rocm/build/bin', name: 'rocm', active: false, backend: 'ROCm', ok: true };
+  const card = (name, gen, ts) => ({ result: { model: 'm', gen_tps: gen, build_name: name, build_path: '/x' },
+    provider: 'llama', ts, mode: 'standard', preset_version: 'preset_v2', eligible: false });
+  function withBuilds() {
+    document.body.insertAdjacentHTML('beforeend', '<div id="rcBuilds"></div><div id="rcBuildCards" style="display:none;"></div>'
+      + '<span id="rcChips"></span><span id="rcModelChip"></span><span id="rcEligChip"></span>');
+    vi.stubGlobal('BUILDPICK', BUILDPICK);
+    BUILDPICK.render(document.getElementById('rcBuilds'), [VK, ROCM], { needsSwitchNote: true, admin: true });
+    const inp = [...document.querySelectorAll('#rcBuilds input')].find(i => i.value === ROCM.path);
+    inp.checked = true; inp.dispatchEvent(new Event('change'));
+  }
+
+  it('the start body carries the picked builds', async () => {
+    const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+    withBuilds();
+    api.rcRun();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/run');
+    expect(JSON.parse(call[1].body).builds).toEqual([VK.path, ROCM.path]);
+  });
+
+  it('no builds field when only the active build is picked', async () => {
+    const { api } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+    vi.stubGlobal('BUILDPICK', BUILDPICK);
+    document.body.insertAdjacentHTML('beforeend', '<div id="rcBuilds"></div>');
+    BUILDPICK.render(document.getElementById('rcBuilds'), [VK, ROCM], { needsSwitchNote: true, admin: true });
+    api.rcRun();
+    await tick();
+    const call = fetch.mock.calls.find(c => c[0] === '/api/reportcard/run');
+    expect('builds' in JSON.parse(call[1].body)).toBe(false);
+  });
+
+  it('build phases become progress lines and every card of the run is listed', async () => {
+    const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+    withBuilds();
+    api.rcRun();
+    await tick(); await tick();
+    const send = (d) => sources[0].onmessage({ data: JSON.stringify(d) });
+    send({ event: 'progress', phase: 'build_start', build: 'vk', path: VK.path, index: 0, total: 2 });
+    send({ event: 'progress', phase: 'build_failed', build: 'rocm', error: 'did not start' });
+    send({ event: 'progress', phase: 'switch_back', ok: true });
+    const a = card('vk', 50, 1), b = card('rocm', 60, 2);
+    send({ event: 'done', card: b, cards: [a, b] });
+    const log = document.getElementById('rcProgress').textContent;
+    expect(log).toContain('Build 1 of 2: vk');
+    expect(log).toContain('rocm could not be used: did not start');
+    expect(log).toContain('Switched back to vk');
+    const chips = [...document.querySelectorAll('#rcBuildCards .bl-chip')];
+    expect(chips.map(c => c.textContent)).toEqual(['vk · 50.0 tok/s', 'rocm · 60.0 tok/s']);
+    expect(document.getElementById('rcBuildCards').style.display).toBe('');
+    expect(document.getElementById('rcModelChip').textContent).toBe('model: m · build: rocm');
+    expect(chips.map(c => c.classList.contains('on'))).toEqual([false, true]);
+    chips[0].click();
+    expect(chips.map(c => c.classList.contains('on'))).toEqual([true, false]);
+    expect(document.getElementById('rcModelChip').textContent).toBe('model: m · build: vk');
+  });
+
+  it('an error terminal still shows the cards stored so far', async () => {
+    const { api, sources } = loadModule({ runResponse: { ok: true, job_id: 'j1' } });
+    withBuilds();
+    api.rcRun();
+    await tick(); await tick();
+    const a = card('vk', 50, 1), b = card('rocm', 60, 2);
+    sources[0].onmessage({ data: JSON.stringify({ event: 'error', error: 'boom', cards: [a, b] }) });
+    expect(document.querySelectorAll('#rcBuildCards .bl-chip').length).toBe(2);
+    expect(document.getElementById('rcNote').textContent).toBe('boom');
   });
 });

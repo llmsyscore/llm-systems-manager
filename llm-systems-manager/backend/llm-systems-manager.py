@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.10.31-4"
+__version__ = "v2026.10.31-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2937,7 +2937,10 @@ def llm_autotune_status():
         if not want_agent:
             provider, _perr = _tool_provider("autotune")
             want_agent = str((_request_agent(provider) or {}).get("agent_id") or "")
-        where, params = "tool = 'autotune' AND ok = 1", []
+        # Skips the rows a build run wrote for builds other than the one active then.
+        where = ("tool = 'autotune' AND ok = 1 AND COALESCE(CASE WHEN json_valid(summary)"
+                 " THEN json_extract(summary, '$.build_active') END, 1) = 1")
+        params = []
         if want_model:
             where += " AND model_id = ?"
             params.append(want_model)
@@ -6664,7 +6667,8 @@ bench_live.register_routes(app, ctx, db_path=str(DB_PATH), proxy=proxies.proxy_t
                            note_tool_start=_note_tool_start, fleet_hosts=_fleet_hosts,
                            run_on_agent=_fleet_run_on_agent, cancel_on_agent=_fleet_cancel_on_agent,
                            llama_build_of=_llama_build_of, valid_provider=lambda p: p in providers.names(),
-                           start_or_queue=_tool_start)
+                           start_or_queue=_tool_start,
+                           quiet_build_change=lambda aid: _bench_watcher.quiet_build_change(aid))
 
 
 # --- Overnight autotune batch (#891): agent callables for autotune_batch.Runner ---
@@ -6857,6 +6861,7 @@ _tool_queue = tool_queue.Queue(_jobs_service, tool_queue.Deps(
     note_start=tool_activity.note_start,
     max_queued=lambda: int(getattr(settings.manager.jobs, "tool_queue_max", 5) or 5),
     card_start=report_card.start_card, card_status=report_card.card_status, card_cancel=report_card.cancel_card,
+    quiet_build_change=lambda aid: _bench_watcher.quiet_build_change(aid),
 ))
 
 
@@ -6876,6 +6881,31 @@ def _reportcard_queue_start(agent_id: str, provider: str, req: dict):
 
 
 report_card.configure_queue(_reportcard_queue_start)
+
+
+def _reportcard_build_actor() -> dict:
+    """Who started a Report Card run over several builds, for its build-switch audit rows."""
+    return {"actor": getattr(_flask_g, "auth_user", None) or "", "role": getattr(_flask_g, "auth_role", None) or "",
+            "ip": flask_request.remote_addr or "", "auth": _audit_auth_kind()}
+
+
+def _reportcard_build_audit(by: dict, agent_id: str, path: str, ok: bool, error) -> None:
+    """One llama.build-switch audit row per Report Card build switch."""
+    action = "llama.build-switch"
+    event = _audit_event_for(action)
+    if event in _AUDIT_CFG["disabled"] or (by.get("auth") == "test" and not _AUDIT_CFG["save_automated"]):
+        return
+    detail = {"agent": _audit_agent_name(agent_id), "path": path}
+    if error:
+        detail["error"] = str(error)[:300]
+    _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), by.get("actor") or "",
+                   by.get("role") or "", by.get("ip") or "", by.get("auth") or "internal", "POST",
+                   "/api/llm/builds/activate", action, None, 200 if ok else 502, "ok" if ok else "error",
+                   json.dumps(detail), event))
+
+
+report_card.configure_build_switch(quiet=lambda aid: _bench_watcher.quiet_build_change(aid),
+                                   audit=_reportcard_build_audit, actor=_reportcard_build_actor)
 
 
 import autotune_batch  # type: ignore[import-not-found]  # sibling; #891

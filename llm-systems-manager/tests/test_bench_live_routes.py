@@ -212,3 +212,74 @@ def test_live_run_goes_through_start_or_queue_when_wired(tmp_path):
     assert r.status_code == 202 and r.get_json()["job_id"] == "j1"
     assert seen == [("llama", "benchmark", "/llama/bench/live/run", "/llama/bench/cancel",
                      {"model_id": "org/m", "bench": "qualitative"})]
+
+
+def _builds_app(tmp_path, quiet=None, fleet=False):
+    from flask import Flask
+    app = Flask(__name__)
+    calls, started = [], []
+
+    def proxy(kind, method, path, **kw):
+        calls.append((kind, method, path, kw.get("json")))
+        return {"ok": True, "proxied": path}
+    extra = {}
+    if fleet:
+        hosts = [{"agent_id": AGENT["agent_id"], "hostname": "alpha", "online": True, "model": "org/m:Q4",
+                  "state": "awake"}]
+        extra = {"fleet_hosts": lambda provider=None: hosts,
+                 "run_on_agent": lambda aid, body, provider="llama": (started.append(body), (True, "run-a"))[-1],
+                 "cancel_on_agent": lambda aid, provider="llama": True}
+    bl.register_routes(app, None, db_path=str(tmp_path / "b.db"), proxy=proxy,
+                       agent_by_token=lambda t: AGENT if t == "tok" else None,
+                       request_agent=lambda p: AGENT, note_tool_start=lambda p, t: None,
+                       quiet_build_change=quiet, **extra)
+    c = app.test_client()
+    c.calls, c.started = calls, started
+    return c
+
+
+def test_live_builds_needs_admin(tmp_path, monkeypatch):
+    import auth
+    c = _builds_app(tmp_path)
+    with monkeypatch.context() as m:
+        m.setattr(auth, "effective_role", lambda: "operator")
+        r = c.post("/api/benchmark/live/run", json={"model_id": "m", "builds": ["/x/llama-server"]})
+        assert r.status_code == 403 and r.get_json()["error"] == "switching builds needs an admin"
+        assert c.calls == []
+        r = c.post("/api/benchmark/live/run", json={"model_id": "m", "builds": []})
+        assert r.status_code == 200 and c.calls[-1][2] == "/llama/bench/live/run"
+        m.setattr(auth, "effective_role", lambda: "admin")
+        r = c.post("/api/benchmark/live/run", json={"model_id": "m", "builds": ["/x/llama-server"]})
+        assert r.status_code == 200
+        assert c.calls[-1][3] == {"model_id": "m", "builds": ["/x/llama-server"]}
+
+
+def test_live_builds_arms_quiet(tmp_path, monkeypatch):
+    import auth
+    seen = []
+    c = _builds_app(tmp_path, quiet=seen.append)
+    with monkeypatch.context() as m:
+        m.setattr(auth, "effective_role", lambda: "admin")
+        c.post("/api/benchmark/live/run", json={"model_id": "m"})
+        assert seen == []
+        c.post("/api/benchmark/live/run", json={"model_id": "m", "builds": ["/x/llama-server"]})
+        assert seen == [AGENT["agent_id"]]
+    h = {"Authorization": "Bearer tok"}
+    c.post("/api/benchmark/live/store", json=_doc("q1"), headers=h)
+    assert seen == [AGENT["agent_id"]]
+    d = _doc("q2"); d.update(build="b2", build_path="/y/llama-server")
+    c.post("/api/benchmark/live/store", json=d, headers=h)
+    assert seen == [AGENT["agent_id"]] * 2
+
+
+def test_fleet_strips_builds(tmp_path):
+    c = _builds_app(tmp_path, fleet=True)
+    r = c.post("/api/benchmark/live/fleet", json={"model_id": "org/m:Q4",
+                                                  "config": {"bench": "qualitative", "builds": ["/x/llama-server"]}})
+    assert r.status_code == 200
+    import time
+    t0 = time.time()
+    while not c.started and time.time() - t0 < 3:
+        time.sleep(0.02)
+    assert c.started and "builds" not in c.started[0]
+    assert c.started[0]["bench"] == "qualitative"

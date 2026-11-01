@@ -74,6 +74,7 @@ def llama(monkeypatch, tmp_path):
     events: list = []
     ledger: list = []
     monkeypatch.setattr(mod, "_bench_put", lambda ev: events.append(ev))
+    mod._orig_bench_tool_path = mod._bench_tool_path
     monkeypatch.setattr(mod, "_bench_tool_path", lambda tool: (str(_fake_tool(tmp_path)), True))
     monkeypatch.setattr(mod, "_bench_get_hf_arg", lambda mid: "org/repo:Q4_K_M")
     monkeypatch.setattr(mod, "_require_ctx", lambda: types.SimpleNamespace(config=types.SimpleNamespace()))
@@ -167,3 +168,137 @@ def test_model_done_carries_conditions(llama, monkeypatch):
     assert cond["captured_start"] and cond["captured_end"] and cond["model"]["id"] == "m1"
     assert kw[-1]["conditions"] is cond
     assert "llama-bench" in cond["backend"]["server_cmd"] and "-hf" in cond["backend"]["server_cmd"]
+
+
+def _builds_env(mod, monkeypatch, tmp_path, names=("b1", "b2")):
+    """Two listed builds; _bench_run_one is replaced by a recorder of (tool path, model)."""
+    rows, paths = [], []
+    for n in names:
+        d = tmp_path / n / "bin"
+        d.mkdir(parents=True)
+        (d / "llama-server").write_text("")
+        (d / "llama-bench").write_text("")
+        p = os.path.realpath(d / "llama-server")
+        paths.append(p)
+        rows.append({"path": p, "ok": True, "name": n})
+    monkeypatch.setitem(mod.llama_inventory._state, "last", {"ok": True, "builds": rows})
+    monkeypatch.setattr(mod, "_perf_job_set", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_require_ctx", lambda: types.SimpleNamespace(
+        config=types.SimpleNamespace(LLAMA_BIN=paths[0])))
+    return paths
+
+
+def test_offline_runs_each_build_in_order(llama, monkeypatch, tmp_path):
+    mod, events, _ = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(mod, "_bench_run_one", lambda mid, tool, sw, env, bin_path=None, store_id=None: calls.append((bin_path, mid)))
+    mod._bench_run_all(["m1", "m2"], "llama-bench", [], builds=paths)
+    assert calls == [(paths[0], "m1"), (paths[0], "m2"), (paths[1], "m1"), (paths[1], "m2")]
+    starts = [e for e in events if e["type"] == "build_start"]
+    assert [(s["build"], s["index"], s["total"]) for s in starts] == [("b1", 0, 2), ("b2", 1, 2)]
+    assert [e for e in events if e["type"] == "done"][-1]["count"] == 4
+
+
+def test_offline_tool_path_only_beside_build(llama, tmp_path):
+    mod, _, _ = llama
+    fn = mod._orig_bench_tool_path
+    d = tmp_path / "x"
+    d.mkdir()
+    (d / "llama-server").write_text("")
+    path, found = fn("llama-bench", str(d / "llama-server"))
+    assert path == str(d / "llama-bench") and found is False
+
+
+def test_offline_no_builds_uses_llama_bin(llama, monkeypatch, tmp_path):
+    mod, events, _ = llama
+    _builds_env(mod, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(mod, "_bench_run_one", lambda *a, **k: calls.append((a, k)))
+    mod._bench_run_all(["m1"], "llama-bench", [])
+    assert len(calls) == 1 and calls[0][1] == {}
+    assert not [e for e in events if e["type"] == "build_start"]
+    assert [e for e in events if e["type"] == "done"][-1]["count"] == 1
+
+
+def test_offline_unlisted_build_400(llama, monkeypatch, tmp_path):
+    mod, _, _ = llama
+    _builds_env(mod, monkeypatch, tmp_path)
+    with pytest.raises(mod.HTTPException) as ei:
+        mod._validate_builds([str(tmp_path / "nope" / "llama-server")])
+    assert ei.value.status_code == 400 and "build not in the list" in ei.value.detail
+    with pytest.raises(mod.HTTPException) as ei:
+        mod._validate_builds("x")
+    assert ei.value.detail == "builds must be a list"
+
+
+def test_validate_builds_dedup_and_cap(llama, monkeypatch, tmp_path):
+    mod, _, _ = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    assert mod._validate_builds([paths[1], paths[0], paths[1]]) == [paths[1], paths[0]]
+    assert mod._validate_builds([]) == []
+    with pytest.raises(mod.HTTPException):
+        mod._validate_builds([paths[0]] * 3 + [f"/x/{i}" for i in range(9)])
+
+
+def test_offline_env_uses_build_dir(llama, monkeypatch, tmp_path):
+    mod, _, _ = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/old")
+    env, cwd = mod._build_env(paths[1])
+    d = os.path.dirname(paths[1])
+    assert env["LD_LIBRARY_PATH"] == f"{d}:/old" and cwd == d
+
+
+def test_offline_model_done_carries_build(llama, monkeypatch, tmp_path):
+    mod, events, _ = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    shutil_src = _fake_tool(tmp_path)
+    monkeypatch.setattr(mod, "_bench_tool_path", lambda tool, bin_path=None: (str(shutil_src), True))
+    seen = {}
+    real_popen = mod.subprocess.Popen
+    def _popen(cmd, **kw):
+        seen.update(kw)
+        return real_popen(cmd, **kw)
+    monkeypatch.setattr(mod.subprocess, "Popen", _popen)
+    mod._bench_run_all(["m1"], "llama-bench", [], builds=[paths[1]])
+    done = [e for e in events if e["type"] == "model_done"][-1]
+    assert done["build"] == "b2" and done["build_path"] == paths[1]
+    assert seen["cwd"] == os.path.dirname(paths[1])
+    assert seen["env"]["LD_LIBRARY_PATH"].startswith(os.path.dirname(paths[1]))
+
+
+def test_offline_cancel_stops_between_builds(llama, monkeypatch, tmp_path):
+    mod, events, _ = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    calls = []
+    def _run(mid, tool, sw, env, bin_path=None, store_id=None):
+        calls.append(bin_path)
+        mod._bench_cancel_event.set()
+    monkeypatch.setattr(mod, "_bench_run_one", _run)
+    mod._bench_run_all(["m1"], "llama-bench", [], builds=paths)
+    assert calls == [paths[0]]
+    assert [e for e in events if e["type"] == "done"][-1]["cancelled"] is True
+
+
+def test_offline_builds_ledger_rows_distinct(llama, monkeypatch, tmp_path):
+    mod, events, ledger = llama
+    paths = _builds_env(mod, monkeypatch, tmp_path)
+    tool = _fake_tool(tmp_path)
+    monkeypatch.setattr(mod, "_bench_tool_path", lambda t, bin_path=None: (str(tool), True))
+    mod._bench_replay.start_run("r1")
+    mod._bench_run_all(["m1"], "llama-bench", [], builds=paths)
+    assert [(a[3], a[4], a[6]["build_name"]) for a in ledger] == [("r1", "m1", "b1"), ("r1-2", "m1", "b2")]
+    done = [e for e in events if e["type"] == "model_done"]
+    assert [(d["run_id"], d["stored_run_id"], d["build"]) for d in done] == [("r1", "r1", "b1"), ("r1", "r1-2", "b2")]
+    starts = [e for e in events if e["type"] == "model_start"]
+    assert [s["build"] for s in starts] == ["b1", "b2"]
+    assert all(e.get("build") for e in events if e["type"] == "result")
+
+
+def test_offline_single_build_ledger_keeps_run_id(llama):
+    mod, events, ledger = llama
+    mod._bench_replay.start_run("r2")
+    mod._bench_run_one("m1", "llama-bench", [], dict(os.environ))
+    assert ledger[-1][3] == "r2" and "build_name" not in ledger[-1][6]
+    assert "stored_run_id" not in [e for e in events if e["type"] == "model_done"][-1]

@@ -110,9 +110,15 @@
       if (r) { r.value = ev.target.value.trim(); syncRow(r); }
     });
   }
+  // Builds row (#1395): each build's own programs run, so no admin gate.
+  function loadBuilds() {
+    const el = $('qgBuilds'); if (!el || !window.BUILDPICK) return;
+    BUILDPICK.load(el, '/api/llm/builds', { needsSwitchNote: false });
+  }
   async function onOpen(modelId, opts) {
     wire();
     if (running()) return;
+    loadBuilds();
     const [models, cfg, pre] = await Promise.all([
       fetch('/api/benchmark/models').then(r => r.json()).catch(() => ({})),
       fetch('/api/llm/config').then(r => r.json()).catch(() => ({})),
@@ -250,6 +256,8 @@
     const ov = overrides();
     if (!Object.keys(ov).length) { notify('Quality guard', 'Switch on at least one key and give it a value that differs from the current one.'); return; }
     const klMax = parseFloat(($('qgKlMax') || {}).value); const body = { model_ids: [mid], objective: 'fit', mode: 'quality', overrides: ov, kl_max: Number.isFinite(klMax) ? klMax : 0.02 };
+    const builds = window.BUILDPICK ? BUILDPICK.payload($('qgBuilds')) : null;
+    if (builds) body.builds = builds;
     if (_starting || running()) return;
     return start(body);
   }
@@ -310,12 +318,15 @@
     const t = msg.type;
     if (t === 'perf_mode') perfNote(msg);
     else if (t === 'line') log(msg.text || '');
+    else if (t === 'build_start') { if (!_neutral && window.BUILDPICK) log(BUILDPICK.eventText(msg)); }
     else if (t === 'candidate_start') { stage(PASS_NAME[msg.value] || ('measuring ' + msg.value)); log('▶ ' + msg.value); }
     else if (t === 'candidate_result') log((msg.ok ? '✓ ' : '✗ ') + msg.value + (msg.kl != null ? ' · KL ' + msg.kl : '') + (msg.error ? ' · ' + msg.error : ''));
     else if (t === 'model_done') {
       if (msg.mode !== 'quality') return;   // an Autotune run on the shared stream is not ours
       _done = msg;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('quality', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', mode: 'quality', llama_build: msg.llama_build || undefined, kl: (msg.guard || {}).kl, kl_max: (msg.guard || {}).kl_max, kl_pass: (msg.guard || {}).pass, changed: (msg.changes || []).map(c => c.key).join(',') }); } catch (_) {} }
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('quality', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.stored_run_id || msg.run_id || '', mode: 'quality', llama_build: msg.llama_build || undefined, build_name: msg.build || undefined, kl: (msg.guard || {}).kl, kl_max: (msg.guard || {}).kl_max, kl_pass: (msg.guard || {}).pass, changed: (msg.changes || []).map(c => c.key).join(',') }); } catch (_) {} }
+      // A run over several builds shows the last build's result; each build gets a log line.
+      if (msg.build) log(`${msg.build}: ${(msg.guard || {}).kl != null ? 'KL ' + msg.guard.kl + ' · ' : ''}${(msg.guard || {}).pass ? 'pass' : 'not passed'}`);
       renderResult(msg);
     } else if (t === 'done') finish(msg);
   }

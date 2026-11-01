@@ -111,6 +111,14 @@ def detect_backend(bin_dir: Path) -> str:
     return hits[0] if hits else "Unknown"
 
 
+def _build_name(bin_path: str) -> str:
+    """Folder name of a build: the binary's directory without trailing bin and build segments."""
+    parts = [x for x in os.path.dirname(_real(bin_path)).split(os.sep) if x]
+    while len(parts) > 1 and parts[-1] in ("bin", "build"):
+        parts.pop()
+    return parts[-1] if parts else ""
+
+
 def _note_for(path: str, notes: dict) -> str:
     """Note whose key is the binary or its folder (paths compared after realpath)."""
     folder = os.path.dirname(path)
@@ -124,7 +132,7 @@ def _note_for(path: str, notes: dict) -> str:
 def describe(path: str, active_real: str, notes: dict, probe: Callable,
              plain_check: Optional[Callable] = None) -> dict:
     p = Path(path)
-    row = {"path": path, "dir": str(p.parent), "active": path == active_real,
+    row = {"path": path, "dir": str(p.parent), "name": _build_name(path), "active": path == active_real,
            "backend": detect_backend(p.parent), "note": _note_for(path, notes),
            "version": None, "build": None, "commit": None, "ok": False, "error": None}
     if not p.exists():

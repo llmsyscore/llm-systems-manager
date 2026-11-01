@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import os
 import sys
 import threading
 import types
@@ -379,3 +380,307 @@ def test_level_with_every_sample_failed_fails_the_run(llama, tmp_path, monkeypat
     assert md["first_error"].startswith("Read timed out")
     assert events[-1]["type"] == "done" and events[-1]["ok"] is False
     assert posted[0][0][5] is False and posted[0][0][6]["failed_samples"] == 2
+
+
+_OK_PAYLOAD = {"summary": [{"category": "overall", "requests": 2, "turns": 2, "failed": 0, "avg_prompt_t_s": 2000.0,
+                            "avg_pred_t_s": 100.0, "avg_latency": 4.0, "draft_n": 0, "accepted": 0, "accept_rate": None}],
+               "results": [{"ok": True, "completion_tokens": 200, "latency_s": 4.0}] * 2}
+
+
+def _builds_env(llama, tmp_path, monkeypatch, start_loaded="org/m:Q4", switch_hook=None, fail=(), fail_back=False):
+    """Live run with builds: switch/load/server stubs that track which build the service runs."""
+    ctx = _Ctx(tmp_path)
+    paths = {n: str(tmp_path / f"llama-{n}" / "build" / "bin" / "llama-server") for n in ("a", "b", "c")}
+    ctx.config.LLAMA_BIN = paths["a"]
+    ctx.config.AGENT_OS = "linux"
+    svc = tmp_path / "llama-server.service"
+    svc.write_text("[Service]\nExecStart=x\n")
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(svc))
+    monkeypatch.setattr(llama, "_validate_builds", lambda raw: list(raw or []))
+    st = {"loaded": start_loaded, "switches": [], "loads": [], "urls": [], "waits": []}
+
+    def server():
+        name = Path(ctx.config.LLAMA_BIN).parents[2].name
+        return {"up": True, "url": f"http://127.0.0.1:9931/{name}", "models": [{"id": "org/m:Q4", "status": "loaded"}],
+                "loaded_id": st["loaded"], "slots_idle": 2, "slots_total": 2, "spec": None}
+
+    def switch(path, wait_s=None):
+        st["switches"].append(path)
+        st["waits"].append(wait_s)
+        if switch_hook:
+            switch_hook(path)
+        if path in fail or (fail_back and path == paths["a"]):
+            return {"ok": False, "stage": "check", "error": "the version check timed out", "changed": False}
+        ctx.config.LLAMA_BIN = path
+        st["loaded"] = None
+        return {"ok": True, "active": path}
+
+    def load(mid, timeout_s=300):
+        st["loads"].append((Path(ctx.config.LLAMA_BIN).parents[2].name, mid))
+        st["loaded"] = mid
+        return True, None
+    monkeypatch.setattr(llama, "_bench_live_server", server)
+    monkeypatch.setattr(llama, "_switch_build", switch)
+    monkeypatch.setattr(llama, "_live_load_and_wait", load)
+    monkeypatch.setattr(llama._bl, "runtime_python", lambda inst, ov: ("/fake/python", "venv"))
+    monkeypatch.setattr(llama._bl, "script_path", lambda inst, root: (Path("/fake/speed_bench.py"), "ok"))
+
+    def fake_level(cmd, env, put, model_id, level, cancel, track, untrack):
+        st["urls"].append(cmd[cmd.index("--url") + 1])
+        out = cmd[cmd.index("--output") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(json.dumps(_OK_PAYLOAD))
+        return 0, False, 7.0
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", fake_level)
+    monkeypatch.setattr(llama, "_live_power_w", lambda: (None, None))
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: None)
+    st["stored"] = []
+    monkeypatch.setattr(llama, "_bench_live_store", lambda doc: st["stored"].append(doc))
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid, bin_path=None: {"model_id": mid, "bin": bin_path})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: (None, None))
+    done = threading.Event()
+    orig = llama._bench_live_run_all
+
+    def wrapped(*a, **k):
+        try:
+            orig(*a, **k)
+        finally:
+            done.set()
+    monkeypatch.setattr(llama, "_bench_live_run_all", wrapped)
+    return ctx, paths, st, done
+
+
+def _run_builds(llama, builds, done):
+    out = llama.llama_bench_live_run({"model_id": "org/m:Q4", "bench": "qualitative", "concurrency": [1],
+                                      "limit": 2, "builds": builds})
+    assert out["ok"] is True
+    assert done.wait(10)
+    return _events(llama)
+
+
+def test_live_builds_switch_each_then_back(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    ev = _run_builds(llama, [p["a"], p["b"], p["c"]], done)
+    assert st["switches"] == [p["b"], p["c"], p["a"]]
+    assert ctx.config.LLAMA_BIN == p["a"]
+    bs = [e for e in ev if e["type"] == "build_start"]
+    assert [(e["build"], e["path"], e["index"], e["total"]) for e in bs] == \
+        [("llama-a", p["a"], 0, 3), ("llama-b", p["b"], 1, 3), ("llama-c", p["c"], 2, 3)]
+    md = [e for e in ev if e["type"] == "model_done"]
+    assert [(e["build"], e["build_path"]) for e in md] == [("llama-a", p["a"]), ("llama-b", p["b"]), ("llama-c", p["c"])]
+    assert all(e["ok"] for e in md)
+    assert [d["build_path"] for d in st["stored"]] == [p["a"], p["b"], p["c"]]
+    base = llama._bench_replay.run_id
+    assert [d["run_id"] for d in st["stored"]] == [base, f"{base}-2", f"{base}-3"]
+    assert [e["run_id"] for e in md] == [base] * 3
+    assert [e["stored_run_id"] for e in md] == [base, f"{base}-2", f"{base}-3"]
+    assert st["waits"] == [None, None, 420.0]
+    assert st["urls"] == ["http://127.0.0.1:9931/llama-a", "http://127.0.0.1:9931/llama-b", "http://127.0.0.1:9931/llama-c"]
+    assert st["loads"] == [("llama-b", "org/m:Q4"), ("llama-c", "org/m:Q4"), ("llama-a", "org/m:Q4")]
+    sb = [e for e in ev if e["type"] == "switch_back"]
+    assert sb == [{"type": "switch_back", "ok": True, "error": None}]
+    assert ev[-1]["type"] == "done" and ev[-1]["ok"] is True and ev[-1]["count"] == 3
+    assert llama._bench_active is False
+
+
+def test_live_failed_switch_continues(llama, tmp_path, monkeypatch):
+    ctx2, p, st, done = _builds_env(llama, tmp_path, monkeypatch, fail=(str(tmp_path / "llama-b" / "build" / "bin" / "llama-server"),))
+    ev = _run_builds(llama, [p["a"], p["b"], p["c"]], done)
+    bf = [e for e in ev if e["type"] == "build_failed"]
+    assert bf == [{"type": "build_failed", "build": "llama-b", "stage": "check", "error": "the version check timed out"}]
+    md = [e for e in ev if e["type"] == "model_done"]
+    assert [e["build_path"] for e in md] == [p["a"], p["c"]]
+    assert st["switches"] == [p["b"], p["c"], p["a"]]
+    assert ctx2.config.LLAMA_BIN == p["a"]
+    assert ev[-1]["type"] == "done" and ev[-1]["ok"] is False and ev[-1]["cancelled"] is False
+
+
+def test_live_cancel_mid_switch_switches_back(llama, tmp_path, monkeypatch):
+    def hook(path):
+        if path.endswith("llama-b/build/bin/llama-server"):
+            assert llama._bench_cancel_impl([])["ok"] is True
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch, switch_hook=hook)
+    ev = _run_builds(llama, [p["a"], p["b"], p["c"]], done)
+    assert st["switches"] == [p["b"], p["a"]]
+    assert ctx.config.LLAMA_BIN == p["a"]
+    md = [e for e in ev if e["type"] == "model_done"]
+    assert [e["build_path"] for e in md] == [p["a"]]
+    assert not any(e["type"] == "build_start" and e["path"] == p["c"] for e in ev)
+    assert [e for e in ev if e["type"] == "switch_back"] == [{"type": "switch_back", "ok": True, "error": None}]
+    assert ev[-1]["type"] == "done" and ev[-1]["cancelled"] is True and ev[-1]["ok"] is False
+    llama._bench_cancel_event.clear()
+
+
+@pytest.mark.parametrize("start_loaded", ["org/m:Q4", None])
+def test_live_reloads_start_model_after_switch_back(llama, tmp_path, monkeypatch, start_loaded):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch, start_loaded=start_loaded)
+    ev = _run_builds(llama, [p["b"]], done)
+    assert st["switches"] == [p["b"], p["a"]]
+    assert not [e for e in ev if e["type"] == "build_start"]
+    if start_loaded:
+        assert st["loads"] == [("llama-b", "org/m:Q4"), ("llama-a", "org/m:Q4")]
+        assert st["loaded"] == "org/m:Q4"
+    else:
+        assert st["loads"] == [("llama-b", "org/m:Q4")]
+    md = next(e for e in ev if e["type"] == "model_done")
+    assert md["build_path"] == p["b"] and md["run_id"] == llama._bench_replay.run_id
+    assert [e["type"] for e in ev][-2:] == ["switch_back", "done"]
+
+
+def test_live_builds_conditions_record_the_build(llama, tmp_path, monkeypatch):
+    seen = []
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid, bin_path=None: seen.append(bin_path) or {"model_id": mid})
+    _run_builds(llama, [p["a"], p["b"]], done)
+    assert seen == [p["a"], p["b"]]
+
+
+def test_live_no_builds_never_switches(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_switch_build", lambda path: pytest.fail("must not switch"))
+    monkeypatch.setattr(llama, "_live_load_and_wait", lambda *a, **k: pytest.fail("must not load"))
+    monkeypatch.setattr(llama, "_validate_builds", lambda raw: pytest.fail("no builds to validate") if raw else [])
+    out = llama.llama_bench_live_run({"model_id": "org/m:Q4", "bench": "qualitative", "concurrency": [1], "limit": 2})
+    assert out["ok"] is True and done.wait(10)
+    ev = _events(llama)
+    assert [e["type"] for e in ev if e["type"] in ("build_start", "build_failed", "switch_back")] == []
+    md = next(e for e in ev if e["type"] == "model_done")
+    assert "build" not in md and "build_path" not in md
+    assert ev[-1]["type"] == "done" and ev[-1]["count"] == 1
+
+
+def test_live_builds_need_linux_service(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    ctx.config.AGENT_OS = "darwin"
+    with pytest.raises(_HTTPException) as ei:
+        llama.llama_bench_live_run({"model_id": "org/m:Q4", "bench": "qualitative", "builds": [p["b"]]})
+    assert ei.value.status_code == 400 and "systemd service on Linux" in ei.value.detail
+
+
+def _activate_env(llama, tmp_path, monkeypatch):
+    ctx = _Ctx(tmp_path)
+    ctx.config.AGENT_OS = "linux"
+    target = str(tmp_path / "llama-b" / "build" / "bin" / "llama-server")
+    svc = tmp_path / "llama-server.service"
+    svc.write_text("[Service]\nExecStart=x\n")
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(svc))
+    monkeypatch.setattr(llama.llama_inventory, "cached", lambda: {"builds": []})
+    monkeypatch.setattr(llama.llama_inventory, "listed_build",
+                        lambda pth: {"path": target, "ok": True, "active": False})
+    return target
+
+
+def test_activate_still_409_when_bench_active(llama, tmp_path, monkeypatch):
+    target = _activate_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_active", True)
+    with pytest.raises(_HTTPException) as ei:
+        llama.llama_builds_activate({"path": target})
+    assert ei.value.status_code == 409 and "benchmark" in ei.value.detail
+    assert not llama._switch_lock.locked()
+    monkeypatch.setattr(llama, "_bench_active", False)
+    assert llama._switch_lock.acquire(blocking=False)
+    try:
+        with pytest.raises(_HTTPException) as ei:
+            llama.llama_builds_activate({"path": target})
+        assert ei.value.status_code == 409 and ei.value.detail == "a switch is already running"
+    finally:
+        llama._switch_lock.release()
+
+
+def test_switch_build_waits_then_gives_up_when_lock_held(llama, tmp_path, monkeypatch):
+    _activate_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_SWITCH_LOCK_WAIT_S", 0.05)
+    assert llama._switch_lock.acquire(blocking=False)
+    try:
+        assert llama._switch_build("/x/llama-server") == {"ok": False, "error": "a switch is already running"}
+    finally:
+        llama._switch_lock.release()
+
+
+def test_switch_build_runs_switch_and_forgets_cache(llama, tmp_path, monkeypatch):
+    target = _activate_env(llama, tmp_path, monkeypatch)
+    ctx = llama._require_ctx()
+    ctx.config.LLAMA_BIN = str(tmp_path / "llama-a" / "build" / "bin" / "llama-server")
+    monkeypatch.setattr(llama, "_bench_active", True)
+    monkeypatch.setattr(llama, "_llama_exec_tokens", lambda: [ctx.config.LLAMA_BIN, "--port", "8080"])
+    seen = {}
+    monkeypatch.setattr(llama.llama_inventory, "switch",
+                        lambda tgt, tokens, **k: seen.update(tgt=tgt, tokens=tokens) or {"ok": True, "active": tgt})
+    forgot = []
+    monkeypatch.setattr(llama.llama_inventory, "forget_cache", lambda: forgot.append(1))
+    assert llama._switch_build(target) == {"ok": True, "active": target}
+    assert seen == {"tgt": target, "tokens": [ctx.config.LLAMA_BIN, "--port", "8080"]} and forgot == [1]
+    assert not llama._switch_lock.locked()
+
+
+def test_live_load_and_wait_polls_until_loaded(llama, tmp_path, monkeypatch):
+    ctx = _Ctx(tmp_path)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama, "reconcile_now", lambda: None)
+    calls = []
+
+    class R:
+        def __init__(self, code=200, body=None):
+            self.status_code, self.ok, self._b, self.text = code, code < 400, body or {}, ""
+        def json(self):
+            return self._b
+    polls = iter([{"data": [{"id": "m", "status": {"value": "loading"}}]},
+                  {"data": [{"id": "m", "status": {"value": "loaded"}}]}])
+    monkeypatch.setattr(llama, "_llama_load_request", lambda api, mid: calls.append(mid) or R())
+    monkeypatch.setattr(llama, "_llama_fetch_model_entries",
+                        lambda: {e["id"]: e for e in next(polls)["data"]})
+    monkeypatch.setattr(llama.time, "sleep", lambda s: None)
+    assert llama._live_load_and_wait("m") == (True, None)
+    assert calls == ["m"]
+    monkeypatch.setattr(llama, "_llama_load_request", lambda api, mid: None)
+    ok, err = llama._live_load_and_wait("m")
+    assert ok is False and "did not unload" in err
+
+
+def test_live_build_label_not_stale_after_switch(llama, tmp_path, monkeypatch):
+    inv = llama.llama_inventory
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch, switch_hook=lambda path: inv.forget_cache())
+    monkeypatch.setattr(llama, "_llama_build_last", "b1000-old")
+    seeded = {"builds": [{"path": os.path.realpath(p[n]), "name": f"llama-{n}", "backend": "ROCm",
+                          "version": v, "build": f"b{v}", "note": "", "ok": True}
+                         for n, v in (("a", "1000"), ("b", "2000"))]}
+    monkeypatch.setitem(inv._state, "last", seeded)
+    monkeypatch.setattr(inv, "forget_cache", lambda: inv._state.update(last=None))
+    scans = []
+    monkeypatch.setattr(inv, "scan", lambda *a, **k: scans.append(1) or inv._state.update(last=seeded) or seeded)
+    monkeypatch.setattr(llama.llama_install, "installed_build_id", lambda *a: None, raising=False)
+    monkeypatch.setattr(llama.llama_install, "_build_root", lambda cfg: tmp_path, raising=False)
+    monkeypatch.setattr(llama, "_conditions_facts",
+                        lambda mid, bin_path=None: {"model_id": mid, "install": llama._build_identity(bin_path)})
+    _run_builds(llama, [p["a"], p["b"]], done)
+    assert [(d["build_path"], d["llama_build"]) for d in st["stored"]] == [(p["a"], "b1000"), (p["b"], "b2000")]
+    assert [d["conditions"]["backend"]["install"]["version"] for d in st["stored"]] == ["1000", "2000"]
+    assert scans
+
+
+def test_live_switch_back_failure_skips_reload(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch, fail_back=True)
+    ev = _run_builds(llama, [p["b"]], done)
+    assert st["switches"] == [p["b"], p["a"]]
+    assert st["loads"] == [("llama-b", "org/m:Q4")]
+    assert [e for e in ev if e["type"] == "switch_back"] == \
+        [{"type": "switch_back", "ok": False, "error": "the version check timed out"}]
+    assert ev[-1]["type"] == "done"
+
+
+def test_live_build_run_error_still_reports_and_switches_back(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("level blew up")
+    monkeypatch.setattr(llama._bl, "run_level_subprocess", boom)
+    ev = _run_builds(llama, [p["a"], p["b"]], done)
+    md = [e for e in ev if e["type"] == "model_done"]
+    assert [(e["build_path"], e["ok"], e["failed_samples"]) for e in md] == [(p["a"], False, 0), (p["b"], False, 0)]
+    assert st["switches"] == [p["b"], p["a"]] and ctx.config.LLAMA_BIN == p["a"]
+    assert ev[-1] == {"type": "done", "ok": False, "cancelled": False, "count": 2, "failed_samples": 0, "first_error": None}

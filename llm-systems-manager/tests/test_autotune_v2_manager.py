@@ -90,6 +90,18 @@ def test_status_keeps_a_regressed_verify_stale(client, monkeypatch):
     assert by["a2"]["stale"] is False
 
 
+def test_status_ignores_other_build_rows_of_a_build_run(client, monkeypatch):
+    conn = manager_mod.get_db()
+    _row(conn, "a1", "org/m:Q4", True, {"llama_build": "b120-ccc", "build_name": "llama-a", "build_active": True},
+         "2026-09-06T00:00:00Z")
+    _row(conn, "a1", "org/m:Q4", True, {"llama_build": "b100-aaa", "build_name": "llama-b", "build_active": False},
+         "2026-09-06T00:00:01Z")
+    conn.commit()
+    monkeypatch.setattr(manager_mod, "_llama_build_of", lambda aid: "b120-ccc")
+    items = client.get("/api/llm/autotune/status").get_json()["items"]
+    assert [(i["llama_build"], i["stale"]) for i in items] == [("b120-ccc", False)]
+
+
 # #917: the route scopes to the host the cards show — explicit agent_id, else the resolved default host.
 def test_status_scopes_to_the_resolved_default_host(client, monkeypatch):
     conn = manager_mod.get_db()

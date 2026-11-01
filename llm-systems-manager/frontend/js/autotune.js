@@ -105,7 +105,7 @@
     ['atProfileBtn', 'atCopyArgsBtn'].forEach(id => { const b = $(id); if (b) b.style.display = U.profile ? '' : 'none'; });
   }
   let _models = [], _pre = null, _sel = new Set(), _runs = [], _facts = {}, _es = null, _attached = false;
-  let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null;
+  let _run = null, _done = {}, _doneModel = null, _meta = {}, _section = {}, _elapsedIv = null, _multiBuild = false;
   let _status = {};        // model_id → /api/llm/autotune/status item
   let _peak = null;        // /api/energy/host-peak payload, or null
   let _slot = null, _busyOn = false, _statusErr = false, _queuedRun = null, _foreign = false;
@@ -622,6 +622,7 @@
     const L = typeof layout !== 'undefined' ? layout : null;
     if (L && L.atObjective) setObjective(L.atObjective); else setObjective(objective());
     if (running()) return;
+    loadBuilds();
     if (opts && opts.retarget) { _sel = new Set(); _pre = null; _done = {}; _doneModel = null; setPane('Plan'); }
     const lms = hosted();
     const [models, pre, runs] = await Promise.all([
@@ -810,7 +811,8 @@
     fillDimDefaults(dims);
     const quiet = pd().quiet && objective() === 'quiet', cap = capValue();
     if (quiet && (cap == null || cap < 20 || cap > 5000)) { _toastErr('Quiet needs a power cap between 20 and 5000 W.'); return; }
-    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}), ...(isVllm() ? { gpu_memory_utilization: Math.round(num('atKvBudget', 90)) / 100 } : {}) };
+    const builds = !hosted() && window.BUILDPICK ? BUILDPICK.payload($('atBuilds')) : null;
+    const body = { model_ids: ids, objective: objective(), budget_min: Math.round(num('atBudgetMin', 120)), dims, ...(quiet ? { power_cap_w: cap } : {}), ...(isVllm() ? { gpu_memory_utilization: Math.round(num('atKvBudget', 90)) / 100 } : {}), ...(builds ? { builds } : {}) };
     return startRun(body, ids);
   }
   async function startRun(body, ids) {
@@ -833,7 +835,7 @@
   }
   // Shows a run this tab started (directly or through the queue) and follows its stream.
   function began(body, ids) {
-    _attached = false; _foreign = false;
+    _attached = false; _foreign = false; _multiBuild = false;
     _done = {}; _doneModel = null; _meta = {}; _section = {};
     clearCond();
     if (!hosted()) fetchMeta(ids);
@@ -902,8 +904,14 @@
       n.style.display = n.textContent ? '' : 'none';
     }
   }
+  // Builds row (#1395): llama hosts only; each build's own programs run, so no admin gate.
+  function loadBuilds() {
+    const el = $('atBuilds'); if (!el || !window.BUILDPICK) return;
+    if (hosted()) { BUILDPICK.render(el, [], {}); return; }
+    BUILDPICK.load(el, tq('/api/llm/builds'), { needsSwitchNote: false, admin: isAdmin() });
+  }
   function attach() {
-    _attached = true; _foreign = false;
+    _attached = true; _foreign = false; _multiBuild = false;
     newRun(null);
     setPane('Run');
     busy(true);
@@ -1146,9 +1154,14 @@
     } else if (t === 'loading_progress' || t === 'sentinel_seen_update' || t === 'plateau_detected' || t === 'bracket_precision_reached'
                || t === 'non_monotonic_detected' || t === 'cycle_detected') {
       if (t !== 'loading_progress') log(`${t.replace(/_/g, ' ')}${msg.reason ? ' · ' + msg.reason : ''}`, 'dim');
+    } else if (t === 'build_start') {
+      _multiBuild = true;
+      if (window.BUILDPICK) log(BUILDPICK.eventText(msg), 'acc');
     } else if (t === 'model_done') {
-      _done[msg.model_id] = msg; _doneModel = _doneModel || msg.model_id;
-      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps, conditions: msg.conditions }); } catch (_) {} }
+      // A run over several builds keeps one result per model and build.
+      const key = _multiBuild && msg.build ? `${msg.model_id} · ${msg.build}` : msg.model_id;
+      _done[key] = msg; _doneModel = _doneModel || key;
+      if (typeof _recordToolRun === 'function') { try { _recordToolRun('autotune', { model_id: msg.model_id, ok: !!msg.ok, run_id: msg.stored_run_id || msg.run_id || '', provider: prov(), agent_id: tagent() || undefined, objective: msg.objective, mode: msg.mode || 'tune', llama_build: msg.llama_build || undefined, build_name: msg.build || undefined, regressed: msg.regressed ?? undefined, ctx_size: (msg.after || {}).ctx, decode_tps: (msg.after || {}).decode_tps, conditions: msg.conditions }); } catch (_) {} }
       log(msg.ok ? `complete · ${(msg.changes || []).length} changes · verify ${(msg.verify || {}).ok ? 'pass' : 'not passed'}` : `stopped · ${msg.stop_reason || 'no result'}`, msg.ok ? 'ok' : 'warn');
     } else if (t === 'done') {
       finish(msg);
@@ -1225,7 +1238,7 @@
   // Done doc → ledger-shaped run for TC.diffRuns.
   function pseudoRun(done) {
     const a = done.after || {}, b = done.before || {};
-    return { tool: 'autotune', model_id: done.model_id, run_id: done.run_id, ts: new Date().toISOString(), ok: !!done.ok,
+    return { tool: 'autotune', model_id: done.model_id, run_id: done.stored_run_id || done.run_id, ts: new Date().toISOString(), ok: !!done.ok,
       summary: { decode_tps: a.decode_tps, prefill_tps: a.prefill_tps, agg_tps: a.agg_tps, ctx_size: a.ctx, free_mb: a.free_mb,
         gain_pct: pct(a.decode_tps, b.decode_tps), objective: done.objective, mode: done.mode || 'tune', llama_build: done.llama_build },
       conditions: done.conditions };
@@ -1245,7 +1258,8 @@
   // Picker options from earlier ledger runs, newest first, without the current run.
   function fillPicker(done, rows) {
     const sel = $('atCompare'); if (!sel) return;
-    const list = (rows || []).filter(r => r && !(done.run_id && r.run_id === done.run_id))
+    const own = done.stored_run_id || done.run_id;
+    const list = (rows || []).filter(r => r && !(own && r.run_id === own))
       .sort((x, y) => (Date.parse(y.ts || '') || 0) - (Date.parse(x.ts || '') || 0));
     if (!list.length) { sel.innerHTML = '<option value="">no earlier runs</option>'; sel.disabled = true; return; }
     const head = v => (v == null || v === '' || !isFinite(v) ? '—' : Number(v).toFixed(1));

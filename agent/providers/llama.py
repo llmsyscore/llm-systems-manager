@@ -1577,6 +1577,51 @@ def _json_or_raw(resp) -> Any:
         return {"raw": resp.text[:500]}
 
 
+def _llama_load_request(api: str, model_id: str):
+    """Unloads every busy model, then POSTs a load of model_id; None when the old instance did not unload."""
+    mr = requests.get(f"{api}/v1/models", timeout=5)
+    for m in mr.json().get("data", []):
+        st = m.get("status", {})
+        if isinstance(st, dict) and st.get("value") in _LLAMA_BUSY_STATUSES:
+            log.info("Unloading %s before loading %s", m["id"], model_id)
+            ur = requests.post(f"{api}/models/unload",
+                               json={"model": m["id"]}, timeout=30)
+            log.info("Unload response: %s %s", ur.status_code, ur.text[:200])
+
+    if not _llama_wait_unloaded(api):
+        return None
+    log.info("Loading model: %s", model_id)
+    lr = requests.post(f"{api}/models/load", json={"model": model_id}, timeout=120)
+    log.info("Load response: %s %s", lr.status_code, lr.text[:200])
+    return lr
+
+
+def _live_load_and_wait(model_id: str, timeout_s: float = 300) -> "tuple[bool, Optional[str]]":
+    """Loads model_id the way the Load button does, then polls /v1/models until it reports loaded."""
+    api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    try:
+        lr = _llama_load_request(api, model_id)
+    except Exception as e:
+        reconcile_now()
+        return False, str(e)
+    if lr is None:
+        reconcile_now()
+        return False, "previous model instance did not unload in time"
+    if not lr.ok:
+        reconcile_now()
+        return False, f"llama-server returned HTTP {lr.status_code}"
+    deadline = time.monotonic() + timeout_s
+    while True:
+        st = (_llama_fetch_model_entries().get(model_id) or {}).get("status")
+        if isinstance(st, dict) and st.get("value") == "loaded":
+            reconcile_now()
+            return True, None
+        if time.monotonic() >= deadline:
+            reconcile_now()
+            return False, f"{model_id} did not load within {int(timeout_s)} s"
+        time.sleep(1)
+
+
 def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     model_id = body.get("model")
@@ -1584,22 +1629,11 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
         raise HTTPException(status_code=400, detail="model required")
     api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
     try:
-        mr = requests.get(f"{api}/v1/models", timeout=5)
-        for m in mr.json().get("data", []):
-            st = m.get("status", {})
-            if isinstance(st, dict) and st.get("value") in _LLAMA_BUSY_STATUSES:
-                log.info("Unloading %s before loading %s", m["id"], model_id)
-                ur = requests.post(f"{api}/models/unload",
-                                   json={"model": m["id"]}, timeout=30)
-                log.info("Unload response: %s %s", ur.status_code, ur.text[:200])
-
-        if not _llama_wait_unloaded(api):
+        lr = _llama_load_request(api, model_id)
+        if lr is None:
             reconcile_now()
             return {"ok": False,
                     "error": "previous model instance did not unload in time"}
-        log.info("Loading model: %s", model_id)
-        lr = requests.post(f"{api}/models/load", json={"model": model_id}, timeout=120)
-        log.info("Load response: %s %s", lr.status_code, lr.text[:200])
 
         if lr.status_code == 404:
             raise HTTPException(status_code=404,
@@ -2125,9 +2159,44 @@ def _bench_parse_row(row: dict, tool: str):
     return (None, None, None)
 
 
-def _bench_tool_path(tool: str) -> "tuple[str, bool]":
-    """Resolve a benchmark tool: prefer the copy beside LLAMA_BIN, else fall back
-    to PATH. Returns (path, found); path is the sibling location when not found."""
+def _validate_builds(raw) -> "list[str]":
+    """Real paths of the picked llama-server builds: deduplicated, at most 8, each listed and runnable."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(p, str) for p in raw):
+        raise HTTPException(status_code=400, detail="builds must be a list")
+    if raw and llama_inventory.cached() is None:
+        ctx = _require_ctx()
+        llama_inventory.scan(ctx.config, llama_install.installed_build_id,
+                             str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
+                             plain_check=_switch_preflight)
+    out: list = []
+    for p in raw:
+        row = llama_inventory.listed_build(p.strip()) if p.strip() else None
+        if not row or not row.get("ok"):
+            raise HTTPException(status_code=400, detail=f"build not in the list or not runnable: {p}")
+        if row["path"] not in out:
+            out.append(row["path"])
+    if len(out) > 8:
+        raise HTTPException(status_code=400, detail="at most 8 builds")
+    return out
+
+
+def _build_env(bin_path: str) -> "tuple[dict, str]":
+    """(environment, working directory) for running a build's tools: its own folder leads the library path."""
+    d = os.path.dirname(bin_path)
+    env = os.environ.copy()
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{d}:{existing}" if existing else d
+    return env, d
+
+
+def _bench_tool_path(tool: str, bin_path: "Optional[str]" = None) -> "tuple[str, bool]":
+    """Resolve a benchmark tool: beside bin_path only when given, else beside LLAMA_BIN
+    with a PATH fallback. Returns (path, found); path is the sibling location when not found."""
+    if bin_path:
+        sibling = Path(bin_path).parent / tool
+        return str(sibling), sibling.exists()
     if not _require_ctx().config.LLAMA_BIN:
         raise RuntimeError("LLAMA_BIN not configured")
     sibling = Path(_require_ctx().config.LLAMA_BIN).parent / tool
@@ -2139,21 +2208,28 @@ def _bench_tool_path(tool: str) -> "tuple[str, bool]":
     return str(sibling), False
 
 
-def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
+def _bench_run_one(model_id: str, tool: str, switches: list, env: dict,
+                   bin_path: "Optional[str]" = None, store_id: "Optional[str]" = None) -> None:
     global _bench_proc, _bench_pgid
+    tag = {"build": llama_inventory._build_name(bin_path), "build_path": bin_path} if bin_path else {}
+    # Each build of a builds run is its own ledger row: the first keeps the run id, later ones get -N.
+    store_id = store_id or _bench_replay.run_id
+    if bin_path:
+        tag["stored_run_id"] = store_id
     try:
-        tool_path, found = _bench_tool_path(tool)
+        tool_path, found = _bench_tool_path(tool, bin_path) if bin_path else _bench_tool_path(tool)
     except Exception as e:
-        _bench_put({"type": "model_done", "model_id": model_id, "ok": False, "error": str(e)})
+        _bench_put({"type": "model_done", "model_id": model_id, "ok": False, "error": str(e), **tag})
         return
     if not found:
+        where = f"beside the build ({tool_path})" if bin_path else f"beside LLAMA_BIN ({tool_path}) or on PATH"
         _bench_put({"type": "model_done", "model_id": model_id, "ok": False,
-                    "error": f"{tool} not found beside LLAMA_BIN ({tool_path}) or on PATH"})
+                    "error": f"{tool} not found {where}", **tag})
         return
     hf_arg = _bench_get_hf_arg(model_id)
     if not hf_arg:
         _bench_put({"type": "model_done", "model_id": model_id, "ok": False,
-                    "error": f"no HF reference found for {model_id}"})
+                    "error": f"no HF reference found for {model_id}", **tag})
         return
     jsonl_flags = ["-o", "jsonl"]
     energy = _bl.PowerIntegrator(_live_power_w)
@@ -2170,14 +2246,17 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
     cmd += ["-hf", hf_arg]
     cmd += jsonl_flags
     _bench_put({"type": "model_start", "model_id": model_id,
-                "cmd": " ".join(str(c) for c in cmd)})
+                "cmd": " ".join(str(c) for c in cmd), **tag})
     cond = None
     with best_effort("bench: conditions start", log=log):
-        cond = run_conditions.start(_conditions_facts(model_id, bench_cmd=cmd), *run_conditions.samples())
+        facts = _conditions_facts(model_id, bench_cmd=cmd, bin_path=bin_path) if bin_path \
+            else _conditions_facts(model_id, bench_cmd=cmd)
+        cond = run_conditions.start(facts, *run_conditions.samples())
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL, text=True, bufsize=1,
         close_fds=True, env=env, start_new_session=True,
+        **({"cwd": os.path.dirname(bin_path)} if bin_path else {}),
     )
     _bench_proc = proc
     try: _bench_pgid = os.getpgid(proc.pid)
@@ -2238,7 +2317,7 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
             tokens_total += (result_row["n_prompt"] + result_row["n_gen"]) * reps
             _bench_put({"type": "result", "model_id": model_id,
                         "gen_tps": gen_tps, "ppt_tps": ppt_tps, "pg_tps": pg_tps,
-                        **result_row})
+                        **result_row, **tag})
 
         proc.wait()
         _bench_proc = None
@@ -2260,20 +2339,21 @@ def _bench_run_one(model_id: str, tool: str, switches: list, env: dict) -> None:
                     "max_pg_tps": mx["pg"], "run_id": _bench_replay.run_id,
                     "energy_wh": wh, "energy_source": src,
                     "wh_per_ktok": wh_per_ktok, "tokens": tokens_total,
-                    "conditions": conditions})
+                    "conditions": conditions, **tag})
         _shared.post_tool_run(
-            _require_ctx(), "benchmark", "llama", _bench_replay.run_id, model_id,
+            _require_ctx(), "benchmark", "llama", store_id, model_id,
             measured, {"gen_tps": mx["gen"], "ppt_tps": mx["ppt"],
                        "pg_tps": mx["pg"], "bench_tool": tool,
                        "wh_per_ktok": wh_per_ktok,
-                       "switches": _shared.switch_map(switches)},
+                       "switches": _shared.switch_map(switches),
+                       **({"build_name": tag["build"]} if bin_path else {})},
             conditions=conditions)
     finally:
         if not stopped:
             energy.stop()
 
 
-def _bench_run_all(model_ids: list, tool: str, switches: list):
+def _bench_run_all(model_ids: list, tool: str, switches: list, builds: "Optional[list]" = None):
     global _bench_active, _bench_proc
     _bench_cancel_event.clear()
     try:
@@ -2284,13 +2364,24 @@ def _bench_run_all(model_ids: list, tool: str, switches: list):
         existing = env.get("LD_LIBRARY_PATH", "")
         if parent:
             env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
-        for mid in model_ids:
+        runs = builds or [None]
+        for bi, bpath in enumerate(runs):
+            if bpath and len(runs) > 1 and not _bench_cancel_event.is_set():
+                _bench_put({"type": "build_start", "build": llama_inventory._build_name(bpath),
+                            "path": bpath, "index": bi, "total": len(runs)})
+            for mid in model_ids:
+                if _bench_cancel_event.is_set():
+                    break
+                if bpath:
+                    sid = _bench_replay.run_id if bi == 0 else f"{_bench_replay.run_id}-{bi + 1}"
+                    _bench_run_one(mid, tool, switches, _build_env(bpath)[0], bin_path=bpath, store_id=sid)
+                else:
+                    _bench_run_one(mid, tool, switches, env)
             if _bench_cancel_event.is_set():
                 break
-            _bench_run_one(mid, tool, switches, env)
         cancelled = _bench_cancel_event.is_set()
         _bench_put({"type": "done", "ok": not cancelled, "cancelled": cancelled,
-                    "count": len(model_ids)})
+                    "count": len(model_ids) * len(runs)})
     except Exception as e:
         log.error("bench run error: %s", e, exc_info=True)
         _bench_put({"type": "done", "ok": False, "error": str(e)})
@@ -2317,6 +2408,7 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
     switches = body.get("switches") or []
     if not isinstance(switches, list):
         raise HTTPException(status_code=400, detail="switches must be a list")
+    builds = _validate_builds(body.get("builds"))
     with _bench_lock:
         if _bench_active or _autotune_active:
             return {"ok": False, "error": "Another benchmark or autotune is in progress"}
@@ -2328,7 +2420,7 @@ def llama_bench_run(body: dict, authorization: Optional[str] = Header(default=No
         with _bench_cond:
             _bench_replay.start_run(uuid.uuid4().hex[:12])
     threading.Thread(target=_bench_run_all,
-                     args=(model_ids, tool, switches), daemon=True).start()
+                     args=(model_ids, tool, switches, builds), daemon=True).start()
     return {"ok": True}
 
 
@@ -2540,7 +2632,30 @@ def _bench_model_path(hf_arg: "Optional[str]") -> "Optional[str]":
     return None
 
 
-def _conditions_facts(model_id: str, bench_cmd: "Optional[list]" = None) -> dict:
+def _build_identity(bin_path: str) -> "Optional[dict]":
+    """Name, path, backend, version, build and note of a llama-server binary; None for an empty path."""
+    if not bin_path:
+        return None
+    row = llama_inventory.listed_build(bin_path)
+    if not row:
+        # Not in the cached list: rescan once and look again.
+        with best_effort("build identity: rescan", log=log):
+            ctx = _require_ctx()
+            llama_inventory.scan(ctx.config, llama_install.installed_build_id,
+                                 str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
+                                 plain_check=_switch_preflight)
+            row = llama_inventory.listed_build(bin_path)
+    if row:
+        return {"name": row.get("name") or llama_inventory._build_name(bin_path), "path": row.get("path"),
+                "backend": row.get("backend"), "version": row.get("version"),
+                "build": row.get("build"), "note": row.get("note") or ""}
+    real = os.path.realpath(bin_path)
+    return {"name": llama_inventory._build_name(real), "path": real,
+            "backend": llama_inventory.detect_backend(Path(os.path.dirname(real))),
+            "version": None, "build": None, "note": ""}
+
+
+def _conditions_facts(model_id: str, bench_cmd: "Optional[list]" = None, bin_path: "Optional[str]" = None) -> dict:
     """Run-conditions facts for a llama.cpp model; None for anything unknown.
     With `bench_cmd` (an offline llama-bench run) the model file and command come from that run, not the server."""
     if bench_cmd:
@@ -2548,8 +2663,11 @@ def _conditions_facts(model_id: str, bench_cmd: "Optional[list]" = None) -> dict
         cmd = [str(c) for c in bench_cmd]
         hf_arg = cmd[cmd.index("-hf") + 1] if "-hf" in cmd and cmd.index("-hf") + 1 < len(cmd) else None
         model_path = _guard("bench model path", lambda: _bench_model_path(hf_arg))
-        return {"gpu_label": label, "driver": driver, "backend": "llama.cpp",
-                "backend_build": _llama_build_last or None, "server_cmd": " ".join(cmd),
+        install = _guard("build identity", lambda: _build_identity(
+            bin_path or getattr(_require_ctx().config, "LLAMA_BIN", "") or ""))
+        return {"gpu_label": label, "driver": driver, "backend": "llama.cpp", "install": install,
+                "backend_build": (install or {}).get("build") or _llama_build_last or None,
+                "server_cmd": " ".join(cmd),
                 "model_id": model_id, "model_path": model_path,
                 "quantization": _quant_from_path(model_path), "context": None, "sampling": None}
     props = _guard("props", lambda: _props_for(model_id), {})
@@ -2565,7 +2683,9 @@ def _conditions_facts(model_id: str, bench_cmd: "Optional[list]" = None) -> dict
         model_path = props.get("model_path") or None
     else:
         model_path = _guard("model path", lambda: _bench_model_path(_bench_get_hf_arg(model_id)))
-    return {"gpu_label": label, "driver": driver, "backend": "llama.cpp",
+    install = _guard("build identity", lambda: _build_identity(
+        bin_path or getattr(_require_ctx().config, "LLAMA_BIN", "") or ""))
+    return {"gpu_label": label, "driver": driver, "backend": "llama.cpp", "install": install,
             "backend_build": props.get("build_info") or _llama_build_last or None,
             "server_cmd": _guard("cmdline", lambda: _llama_server_cmdline(_llama_unit_main_pid())),
             "model_id": model_id, "model_path": model_path,
@@ -2707,7 +2827,7 @@ def _bench_live_store(doc: dict) -> None:
         log.debug("live bench store failed: %s", e)
 
 
-def _bench_live_conditions_facts(provider: str, model_id: str) -> dict:
+def _bench_live_conditions_facts(provider: str, model_id: str, bin_path: "Optional[str]" = None) -> dict:
     """Run-conditions facts from the gatherer of the given provider."""
     if provider == "lms":
         from . import lms_tools
@@ -2715,20 +2835,99 @@ def _bench_live_conditions_facts(provider: str, model_id: str) -> dict:
     if provider == "vllm":
         from . import vllm_tools
         return vllm_tools.conditions_facts(model_id)
-    return _conditions_facts(model_id)
+    return _conditions_facts(model_id, bin_path=bin_path) if bin_path else _conditions_facts(model_id)
 
 
-def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provider: str = "llama") -> None:
+def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provider: str = "llama",
+                        builds: "Optional[list]" = None) -> None:
     global _bench_active, _bench_proc, _bench_pgid
+    results: list = []
+    try:
+        if builds:
+            _bench_live_run_builds(req, server, python, script, builds, results)
+        else:
+            results.append(_bench_live_run_one(req, server, python, script, provider))
+    except Exception as e:
+        log.error("live bench error: %s", e, exc_info=True)
+        results.append({"ok": False, "failed_samples": 0, "first_error": None})
+    finally:
+        cancelled = _bench_cancel_event.is_set()
+        ok = bool(results) and all(r["ok"] for r in results) and not cancelled
+        failed_samples = sum(r["failed_samples"] for r in results)
+        first_error = next((r["first_error"] for r in results if r["first_error"]), None)
+        _bench_put({"type": "done", "ok": ok, "cancelled": cancelled, "count": max(1, len(results)),
+                    "failed_samples": failed_samples, "first_error": first_error})
+        _bench_proc = None
+        _bench_pgid = None
+        with _bench_lock:
+            _bench_active = False
+
+
+def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, builds: list, results: list) -> None:
+    """Runs the cells once per build, switching the service to each; always switches back and reloads the start model."""
+    cfg = _require_ctx().config
+    start = (cfg.LLAMA_BIN or "").strip()
+    start_model = server.get("loaded_id")
+    model_id = req["model_id"]
+    base = _bench_replay.run_id
+    ran = 0
+    try:
+        for bi, bpath in enumerate(builds):
+            if _bench_cancel_event.is_set():
+                break
+            name = llama_inventory._build_name(bpath)
+            if len(builds) > 1:
+                _bench_put({"type": "build_start", "build": name, "path": bpath, "index": bi, "total": len(builds)})
+            if os.path.realpath(bpath) != os.path.realpath(cfg.LLAMA_BIN or ""):
+                res = _switch_build(bpath)
+                if not res.get("ok"):
+                    _bench_put({"type": "build_failed", "build": name, "stage": res.get("stage"), "error": res.get("error")})
+                    results.append({"ok": False, "failed_samples": 0, "first_error": None})
+                    continue
+                if _bench_cancel_event.is_set():
+                    break
+            srv = _bench_live_server()
+            if srv.get("loaded_id") != model_id:
+                loaded, why = _live_load_and_wait(model_id)
+                if not loaded:
+                    _bench_put({"type": "build_failed", "build": name, "stage": "load", "error": why})
+                    results.append({"ok": False, "failed_samples": 0, "first_error": None})
+                    continue
+                srv = _bench_live_server()
+            store_id = base if ran == 0 else f"{base}-{ran + 1}"
+            ran += 1
+            results.append(_bench_live_run_one(req, srv, python, script, "llama", build=bpath, store_id=store_id))
+    finally:
+        ok, err = True, None
+        try:
+            if os.path.realpath(cfg.LLAMA_BIN or "") != os.path.realpath(start):
+                res = _switch_build(start, wait_s=_SWITCH_BACK_WAIT_S)
+                ok, err = bool(res.get("ok")), res.get("error")
+            if ok and start_model and _bench_live_server().get("loaded_id") != start_model:
+                loaded, why = _live_load_and_wait(start_model)
+                if not loaded and ok:
+                    ok, err = False, why
+        except Exception as e:
+            log.error("live bench switch back error: %s", e, exc_info=True)
+            ok, err = False, str(e)
+        _bench_put({"type": "switch_back", "ok": ok, "error": err})
+
+
+def _bench_live_run_one(req: dict, server: dict, python: str, script: str, provider: str = "llama",
+                        build: "Optional[str]" = None, store_id: "Optional[str]" = None) -> dict:
+    """One model run over every cell; emits model_start..model_done and stores it. Returns ok/failed_samples/first_error."""
+    global _bench_proc, _bench_pgid
     cfg = _require_ctx().config
     run_id = _bench_replay.run_id
-    run_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / run_id
+    store_id = store_id or run_id
+    run_dir = _bl.bench_dir(cfg.AGENT_INSTALL_DIR) / "runs" / store_id
     model_id = req["model_id"]
     levels: list = []
     energy = _bl.PowerIntegrator(_live_power_w)
     ok = True
     started = time.time()
     cond = conditions = None
+    build_mark = (_guard("build identity", lambda: _build_identity(build)) or {}).get("build") if build else None
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", HF_HUB_DISABLE_PROGRESS_BARS="1")
@@ -2738,7 +2937,8 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                     "cmd": " ".join(_bl.build_cmd(python, script, server["url"], req, req["concurrency"][0], "<run>/level-N.json"))})
         energy.start()
         with best_effort("live bench: conditions start", log=log):
-            cond = run_conditions.start(_bench_live_conditions_facts(provider, model_id), *run_conditions.samples())
+            cond = run_conditions.start(_bench_live_conditions_facts(provider, model_id, bin_path=build),
+                                        *run_conditions.samples())
 
         def _track(p):
             global _bench_proc, _bench_pgid
@@ -2813,10 +3013,13 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                "llama_build": (_llama_build_last or "") if provider == "llama" else str(server.get("build") or ""),
                "elapsed_s": round(time.time() - started, 1), "baseline_run_id": req.get("baseline_run_id"),
                "conditions": conditions}
+        if build:
+            doc.update(llama_build=build_mark or "", build=llama_inventory._build_name(build), build_path=build,
+                       stored_run_id=store_id)
         _bench_put(doc)
         if levels:
-            _bench_live_store(doc)
-            _shared.post_tool_run(_require_ctx(), "benchmark", provider, run_id, model_id, ok and not cancelled,
+            _bench_live_store(dict(doc, run_id=store_id) if store_id != run_id else doc)
+            _shared.post_tool_run(_require_ctx(), "benchmark", provider, store_id, model_id, ok and not cancelled,
                                   {"bench_tool": "speed-bench", "gen_tps": first.get("pred_tps"),
                                    "ppt_tps": first.get("prompt_tps"), "latency_s": first.get("latency_s"),
                                    "accept_rate": first.get("accept_rate"), "levels": len(levels),
@@ -2826,12 +3029,9 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
                                    "failed_samples": failed_samples, "first_error": first_error,
                                    "switches": _bl.ledger_switches(req, server)},
                                   conditions=doc.get("conditions"))
-        _bench_put({"type": "done", "ok": ok and not cancelled, "cancelled": cancelled, "count": 1,
-                    "failed_samples": failed_samples, "first_error": first_error})
         _bench_proc = None
         _bench_pgid = None
-        with _bench_lock:
-            _bench_active = False
+    return {"ok": ok and not cancelled, "failed_samples": failed_samples, "first_error": first_error}
 
 
 def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -2841,6 +3041,9 @@ def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(defau
         req = _bl.validate_run_request(body or {})
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    builds = _validate_builds((body or {}).get("builds"))
+    if builds and (_require_ctx().config.AGENT_OS != "linux" or not Path(_llama_svc_file_path()).is_file()):
+        raise HTTPException(status_code=400, detail="switching needs llama-server running as a systemd service on Linux")
     # Probe outside the lock: the HTTP calls would hold it for seconds.
     if _bench_active or _autotune_active:
         return {"ok": False, "error": "Another benchmark or autotune is in progress"}
@@ -2861,7 +3064,8 @@ def llama_bench_live_run(body: dict, authorization: Optional[str] = Header(defau
         with _bench_cond:
             _bench_replay.start_run(uuid.uuid4().hex[:12])
     _bench_cancel_event.clear()
-    threading.Thread(target=_bench_live_run_all, args=(req, server, rt["python"], rt["script"]), daemon=True).start()
+    threading.Thread(target=_bench_live_run_all, args=(req, server, rt["python"], rt["script"]),
+                     kwargs={"builds": builds} if builds else {}, daemon=True).start()
     return {"ok": True, "run_id": _bench_replay.run_id}
 
 
@@ -2887,9 +3091,9 @@ def _autotune_kl_text() -> Path:
     return _bench_live_root() / "bench" / "kl_text.txt"
 
 
-def _autotune_perplexity_bin() -> "Optional[Path]":
-    """llama-perplexity beside the configured llama-server binary, else None."""
-    b = _require_ctx().config.LLAMA_BIN
+def _autotune_perplexity_bin(bin_path: "Optional[str]" = None) -> "Optional[Path]":
+    """llama-perplexity beside bin_path (default: the configured llama-server binary), else None."""
+    b = bin_path or _require_ctx().config.LLAMA_BIN
     if not b:
         return None
     p = Path(b).parent / "llama-perplexity"
@@ -3072,15 +3276,16 @@ def _autotune_parse_shutdown_mem(lines: list) -> dict:
 
 
 def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list, env: dict, iter_idx: int,
-                       *, ctx: "Optional[int]" = None, hold=None) -> dict:
+                       *, ctx: "Optional[int]" = None, hold=None, bin_path: "Optional[str]" = None) -> dict:
     """Run llama-server once (-fitt, an explicit ctx with fit off, or neither), wait for
     model-loaded, optionally call hold() while it is up, SIGTERM, parse output."""
     global _autotune_proc, _autotune_pgid
     if _autotune_cancel_event.is_set():
         return {"ok": False, "error": "cancelled"}
-    if not _require_ctx().config.LLAMA_BIN:
+    if not bin_path and not _require_ctx().config.LLAMA_BIN:
         return {"ok": False, "error": "LLAMA_BIN not configured"}
-    bin_path = _require_ctx().config.LLAMA_BIN
+    cwd = os.path.dirname(bin_path) if bin_path else None
+    bin_path = bin_path or _require_ctx().config.LLAMA_BIN
     if not Path(bin_path).exists():
         return {"ok": False, "error": f"llama-server not found at {bin_path}"}
     hf_arg = _bench_get_hf_arg(model_id)
@@ -3100,6 +3305,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
         # llama-server occasionally emits non-UTF-8; errors='replace' keeps the loop alive.
         encoding="utf-8", errors="replace",
         close_fds=True, env=env, start_new_session=True,
+        **({"cwd": cwd} if cwd else {}),
     )
     _autotune_proc = proc
     try: _autotune_pgid = os.getpgid(proc.pid)
@@ -3312,7 +3518,7 @@ def _autotune_run_iter(model_id: str, fitt_mb: "Optional[int]", extra_args: list
 
 def _autotune_converge(model_id: str, target_mb: int, extra_args: list, env: dict,
                        tolerance_mb: int = 50, start_fitt: "Optional[int]" = None,
-                       max_iters: int = 10) -> dict:
+                       max_iters: int = 10, bin_path: "Optional[str]" = None) -> dict:
     """Converge actual_free_mb on target_mb (±tolerance_mb) with -fitt; returns the best sample."""
     TOL = max(1, int(tolerance_mb))
     MAX_ITERS = max(1, int(max_iters))
@@ -3492,7 +3698,8 @@ def _autotune_converge(model_id: str, target_mb: int, extra_args: list, env: dic
         sentinel_attempts = 0
         res = None
         while True:
-            res = _autotune_run_iter(model_id, fitt, extra_args, env, i)
+            res = _autotune_run_iter(model_id, fitt, extra_args, env, i,
+                                   **({"bin_path": bin_path} if bin_path else {}))
             if res.get("facts_lines") and not facts.get("n_layer"):
                 facts = _at.parse_facts(res["facts_lines"])
             if load_s is None and res.get("load_s"):
@@ -3604,19 +3811,21 @@ def _autotune_note_build(build: str) -> None:
 class _AutotuneBackend:
     """Real backend for the stage engine: llama-server loads, the speed-bench stick, llama-perplexity KL."""
 
-    def __init__(self, model_id: str, env: dict, run_id: str):
-        self.model_id, self.env, self.run_id = model_id, env, run_id
+    def __init__(self, model_id: str, env: dict, run_id: str, bin_path: "Optional[str]" = None):
+        self.model_id, self.env, self.run_id, self.bin_path = model_id, env, run_id, bin_path
         self._n = 0
 
     def converge(self, args, target_mb, tolerance_mb, start_fitt, max_iters):
         return _autotune_converge(self.model_id, target_mb, list(args), self.env, tolerance_mb,
-                                  start_fitt=start_fitt, max_iters=max_iters)
+                                  start_fitt=start_fitt, max_iters=max_iters, bin_path=self.bin_path)
 
     def load(self, args, ctx, measure):
         hold = (lambda: _at.repeat_stick(lambda: self._stick(measure))) if measure else None
-        res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold)
+        res = _autotune_run_iter(self.model_id, None, list(args), self.env, 0, ctx=ctx, hold=hold,
+                                **({"bin_path": self.bin_path} if self.bin_path else {}))
         loaded, oom = bool(res.get("model_loaded")), bool(res.get("oom"))
-        if res.get("build"):
+        active = os.path.realpath(_require_ctx().config.LLAMA_BIN or "")
+        if res.get("build") and (not self.bin_path or os.path.realpath(self.bin_path) == active):
             _autotune_note_build(res["build"])
         return {"ok": bool(res.get("ok")) or (loaded and not oom), "build": res.get("build") or None,
                 "oom": oom,
@@ -3687,7 +3896,7 @@ class _AutotuneBackend:
 
     def kl(self, args, write_base):
         """Writes the f16 KL base, or scores the current args against it."""
-        ppl = _autotune_perplexity_bin()
+        ppl = _autotune_perplexity_bin(self.bin_path)
         text = _autotune_kl_text()
         if ppl is None or not text.is_file():
             return {"ok": False, "kl": None, "error": "llama-perplexity or kl_text.txt missing"}
@@ -3702,7 +3911,8 @@ class _AutotuneBackend:
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                     text=True, encoding="utf-8", errors="replace", close_fds=True, env=self.env,
-                                    start_new_session=True)
+                                    start_new_session=True,
+                                    **({"cwd": os.path.dirname(self.bin_path)} if self.bin_path else {}))
         except OSError as e:
             return {"ok": False, "kl": None, "error": str(e)[:200]}
         _autotune_track_aux(proc)
@@ -3737,9 +3947,9 @@ _llama_help_cache: dict[str, set] = {}
 _HELP_MIN_VALUED = 5
 
 
-def _llama_help_valued() -> Optional[set]:
+def _llama_help_valued(bin_path: "Optional[str]" = None) -> Optional[set]:
     """Long llama-server options that take a value, from `--help`; cached per binary path+mtime."""
-    b = _require_ctx().config.LLAMA_BIN or ""
+    b = bin_path or _require_ctx().config.LLAMA_BIN or ""
     if not b:
         return None
     try:
@@ -3754,7 +3964,7 @@ def _llama_help_valued() -> Optional[set]:
         existing = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = f"{parent}:{existing}" if existing else parent
         r = subprocess.run([b, "--help"], capture_output=True, text=True, errors="replace",
-                           timeout=20, env=env)
+                           timeout=20, env=env, **({"cwd": str(Path(b).parent)} if bin_path else {}))
         found = _at.parse_help_valued((r.stdout or "") + (r.stderr or ""))
     except Exception as e:
         log.warning("llama-server --help failed: %s", e)
@@ -3787,41 +3997,57 @@ def _autotune_run_all(req: dict) -> None:
         drafts = []
         with best_effort("autotune: cache gguf list", log=log):
             drafts = _list_cache_ggufs(_hf_cache_root())
-        valued = _llama_help_valued()
-        if valued is None:
-            _autotune_put({"type": "line",
-                           "text": "[autotune] could not read llama-server --help; on/off flags are guessed"})
-        info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
-                "perplexity": _autotune_perplexity_bin() is not None and _autotune_kl_text().is_file(),
-                "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
-                "llama_build": _llama_build_last or ""}
-        for mid in req["model_ids"]:
+        runs = req.get("builds") or [None]
+        for bi, bpath in enumerate(runs):
             if _autotune_cancel_event.is_set():
                 break
-            cp = _llama_read_ini()
-            section = dict(cp[mid]) if cp.has_section(mid) else {}
-            hf_arg = _bench_get_hf_arg(mid) or ""
-            menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
-            menv["valued"] = valued
-            cond = None
-            with best_effort("autotune: conditions start", log=log):
-                cond = run_conditions.start(_conditions_facts(mid), *run_conditions.samples())
-            if isinstance(cond, dict):
-                menv["conditions"] = cond
-                menv["finish_conditions"] = lambda c=cond: run_conditions.finish(c, *run_conditions.samples())
-            if req.get("mode") == "quality":
-                done = _at.run_quality(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
-                                       _autotune_cancel_event.is_set, menv)
-                _shared.post_tool_run(_require_ctx(), "quality", "llama", run_id, mid, done["ok"],
-                                      _at.ledger_summary(done), conditions=done.get("conditions"))
-                continue
-            done = _at.run_model(mid, section, req, _AutotuneBackend(mid, env, run_id), _autotune_put,
-                                 _autotune_cancel_event.is_set, menv)
-            _shared.post_tool_run(_require_ctx(), "autotune", "llama", run_id, mid, done["ok"],
-                                  _at.ledger_summary(done), conditions=done.get("conditions"))
+            if bpath and len(runs) > 1:
+                _autotune_put({"type": "build_start", "build": llama_inventory._build_name(bpath),
+                               "path": bpath, "index": bi, "total": len(runs)})
+            benv = _build_env(bpath)[0] if bpath else env
+            if bpath:
+                benv["FORCE_COLOR"] = "0"
+                benv["PYTHONUNBUFFERED"] = "1"
+            valued = _llama_help_valued(bpath) if bpath else _llama_help_valued()
+            if valued is None:
+                _autotune_put({"type": "line",
+                               "text": "[autotune] could not read llama-server --help; on/off flags are guessed"})
+            info = {"run_id": run_id, "runtime": bool(rt["python"] and rt["script"]),
+                    "perplexity": _autotune_perplexity_bin(bpath) is not None and _autotune_kl_text().is_file(),
+                    "drafts": drafts, "cores": _at.physical_cores(_read_cpuinfo(), os.cpu_count() or 1),
+                    "llama_build": "" if bpath else (_llama_build_last or "")}
+            # Each build is its own ledger row: the first keeps the run id, later ones get -N.
+            sid = run_id if bi == 0 else f"{run_id}-{bi + 1}"
+            tag = {"build": llama_inventory._build_name(bpath), "build_path": bpath, "stored_run_id": sid} if bpath else {}
+            put = (lambda ev, t=tag: _autotune_put(dict(ev, **t))) if bpath else _autotune_put
+            for mid in req["model_ids"]:
+                if _autotune_cancel_event.is_set():
+                    break
+                cp = _llama_read_ini()
+                section = dict(cp[mid]) if cp.has_section(mid) else {}
+                hf_arg = _bench_get_hf_arg(mid) or ""
+                menv = dict(info, target_repo=hf_arg.split(":")[0], target_size=int(sizes.get(mid) or 0))
+                menv["valued"] = valued
+                cond = None
+                with best_effort("autotune: conditions start", log=log):
+                    cond = run_conditions.start(_conditions_facts(mid, bin_path=bpath), *run_conditions.samples())
+                if isinstance(cond, dict):
+                    menv["conditions"] = cond
+                    menv["finish_conditions"] = lambda c=cond: run_conditions.finish(c, *run_conditions.samples())
+                extra = {"build_name": tag["build"], "build_active": os.path.realpath(bpath) == os.path.realpath(
+                    _require_ctx().config.LLAMA_BIN or "")} if bpath else {}
+                backend = _AutotuneBackend(mid, benv, run_id, bpath)
+                if req.get("mode") == "quality":
+                    done = _at.run_quality(mid, section, req, backend, put, _autotune_cancel_event.is_set, menv)
+                    _shared.post_tool_run(_require_ctx(), "quality", "llama", sid, mid, done["ok"],
+                                          {**_at.ledger_summary(done), **extra}, conditions=done.get("conditions"))
+                    continue
+                done = _at.run_model(mid, section, req, backend, put, _autotune_cancel_event.is_set, menv)
+                _shared.post_tool_run(_require_ctx(), "autotune", "llama", sid, mid, done["ok"],
+                                      {**_at.ledger_summary(done), **extra}, conditions=done.get("conditions"))
         cancelled = _autotune_cancel_event.is_set()
         _autotune_put({"type": "done", "ok": not cancelled, "cancelled": cancelled,
-                       "count": len(req["model_ids"])})
+                       "count": len(req["model_ids"]) * len(runs)})
     except Exception as e:
         log.error("autotune run error: %s", e, exc_info=True)
         _autotune_put({"type": "done", "ok": False, "error": str(e)})
@@ -3881,7 +4107,17 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
         req = _at.validate_request(body or {}, cache_root=cache_root, v1_args=_autotune_build_optional_args)
     except (ValueError, TypeError, AttributeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if req.get("mode") == "quality":
+    builds = _validate_builds(body.get("builds"))
+    if builds:
+        req["builds"] = builds
+    if req.get("mode") == "quality" and builds:
+        for bp in builds:
+            if _autotune_perplexity_bin(bp) is None:
+                raise HTTPException(status_code=400,
+                                    detail=f"llama-perplexity missing in {llama_inventory._build_name(bp)}")
+        if not _autotune_kl_text().is_file():
+            return {"ok": False, "error": "the KL reference text is missing from the agent's bench directory."}
+    elif req.get("mode") == "quality":
         pdet = _autotune_perplexity_status()
         if not pdet["ok"]:
             return {"ok": False, "error": pdet["hint"]}
@@ -4000,6 +4236,8 @@ def _llama_seen_builds_file() -> Path:
 
 _switch_lock = threading.Lock()
 _SWITCH_READY_TIMEOUT_S = 120
+_SWITCH_LOCK_WAIT_S = 5.0
+_SWITCH_BACK_WAIT_S = 420.0
 
 
 def _llama_exec_tokens() -> "list[str]":
@@ -4127,20 +4365,35 @@ def llama_builds_activate(body: dict, authorization: Optional[str] = Header(defa
     try:
         if _bench_active or _autotune_active or _build_running:
             raise HTTPException(status_code=409, detail="a benchmark, tuning run or update is running")
-        try:
-            tokens = _llama_exec_tokens()
-        except (OSError, ValueError) as e:
-            return {"ok": False, "error": str(e)}
-        current = (ctx.config.LLAMA_BIN or "").strip()
-        if not tokens or not current or os.path.realpath(tokens[0]) != os.path.realpath(current):
-            return {"ok": False, "error": "the service does not run LLAMA_BIN directly; switch it by hand"}
-        log.info("llama build switch: %s -> %s", tokens[0], row["path"])
-        res = llama_inventory.switch(
-            row["path"], tokens, preflight=_switch_preflight, apply_exec=_switch_apply,
-            wait_ready=_switch_wait_ready, persist=_switch_persist, log_tail=_switch_log_tail)
-        llama_inventory.forget_cache()
-        log.info("llama build switch result: ok=%s stage=%s", res.get("ok"), res.get("stage"))
-        return res
+        return _switch_build_locked(row["path"])
+    finally:
+        _switch_lock.release()
+
+
+def _switch_build_locked(target: str) -> dict:
+    """Points the llama-server service at target and restarts it; the caller holds _switch_lock."""
+    try:
+        tokens = _llama_exec_tokens()
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+    current = (_require_ctx().config.LLAMA_BIN or "").strip()
+    if not tokens or not current or os.path.realpath(tokens[0]) != os.path.realpath(current):
+        return {"ok": False, "error": "the service does not run LLAMA_BIN directly; switch it by hand"}
+    log.info("llama build switch: %s -> %s", tokens[0], target)
+    res = llama_inventory.switch(
+        target, tokens, preflight=_switch_preflight, apply_exec=_switch_apply,
+        wait_ready=_switch_wait_ready, persist=_switch_persist, log_tail=_switch_log_tail)
+    llama_inventory.forget_cache()
+    log.info("llama build switch result: ok=%s stage=%s", res.get("ok"), res.get("stage"))
+    return res
+
+
+def _switch_build(path: str, wait_s: "Optional[float]" = None) -> dict:
+    """Switches the service to path, waiting up to wait_s (default _SWITCH_LOCK_WAIT_S) for a running switch to finish."""
+    if not _switch_lock.acquire(timeout=_SWITCH_LOCK_WAIT_S if wait_s is None else wait_s):
+        return {"ok": False, "error": "a switch is already running"}
+    try:
+        return _switch_build_locked(path)
     finally:
         _switch_lock.release()
 

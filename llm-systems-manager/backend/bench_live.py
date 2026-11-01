@@ -153,7 +153,8 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                     cancel_on_agent: Optional[Callable] = None,
                     llama_build_of: Optional[Callable[[str], str]] = None,
                     valid_provider: Optional[Callable[[str], bool]] = None,
-                    start_or_queue: Optional[Callable] = None) -> None:
+                    start_or_queue: Optional[Callable] = None,
+                    quiet_build_change: Optional[Callable[[str], None]] = None) -> None:
     """fleet_hosts(provider|None), run_on_agent(agent_id, body, provider), cancel_on_agent(agent_id, provider),
     start_or_queue(provider, tool, path, cancel, body) → Flask response (#897)."""
     from flask import jsonify, request as flask_request
@@ -273,7 +274,7 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
             want = list(loaded)
         if not isinstance(want, list) or not want or any(a not in loaded for a in want):
             return jsonify({"ok": False, "error": "no host has this model loaded" if not loaded else "unknown or unloaded host"}), 400
-        cfg = {k: v for k, v in cfg.items() if k not in ("model_id", "provider")}
+        cfg = {k: v for k, v in cfg.items() if k not in ("model_id", "provider", "builds")}
         job = {"job_id": uuid.uuid4().hex[:12], "model_id": model_id, "ts": datetime.now(timezone.utc).isoformat(),
                "config": cfg, "done": False, "cancelled": False, "provider": provider,
                "hosts": [_host_row(a, loaded[a]["hostname"]) for a in want]}
@@ -376,6 +377,13 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
         if err:
             return jsonify({"ok": False, "error": err}), 400
         body.pop("provider", None)
+        if body.get("builds"):
+            import auth
+            if auth.effective_role() != "admin":
+                return jsonify({"ok": False, "error": "switching builds needs an admin"}), 403
+            aid = (request_agent(provider) or {}).get("agent_id")
+            if aid and quiet_build_change:
+                quiet_build_change(aid)
         if start_or_queue is not None:
             return start_or_queue(provider, "benchmark", f"/{provider}/bench/live/run", f"/{provider}/bench/cancel", body)
         return proxy(provider, "POST", f"/{provider}/bench/live/run", json=body, timeout=15,
@@ -429,6 +437,9 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
                 "(SELECT id FROM bench_live_runs WHERE model_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?)",
                 (model_id, agent_id, model_id, agent_id, KEEP_PER_MODEL))
             conn.commit()
+        # A doc from a run over several builds re-arms the build-change quiet window.
+        if doc.get("build_path") and quiet_build_change:
+            quiet_build_change(agent_id)
         return jsonify({"ok": True, "stored": bool(cur.rowcount)})
 
     @app.route("/api/benchmark/live/runs")

@@ -290,7 +290,7 @@ def start(facts: dict, gpu_sample: "dict | None" = None, sys_sample: "dict | Non
     gpu_count = len(gpus) if isinstance(gpus, list) and gpus else (1 if label else None)
     ident = file_identity(facts.get("model_path")) or dir_identity(facts.get("model_path")) or {
         "file": None, "size_bytes": None, "hash": None, "shards": None}
-    return {
+    out = {
         "schema": SCHEMA,
         "captured_start": (now or _utc_now)(),
         "hardware": {"gpu": label, "gpu_count": gpu_count,
@@ -303,6 +303,9 @@ def start(facts: dict, gpu_sample: "dict | None" = None, sys_sample: "dict | Non
         "sampling": facts.get("sampling"),
         "snapshot": {"start": snapshot_from(gpu_sample, sys_sample)},
     }
+    if facts.get("install"):
+        out["backend"]["install"] = facts["install"]
+    return out
 
 
 def finish(cond: dict, gpu_sample: "dict | None" = None, sys_sample: "dict | None" = None,

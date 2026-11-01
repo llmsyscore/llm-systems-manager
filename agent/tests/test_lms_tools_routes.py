@@ -496,3 +496,9 @@ def test_lms_stick_with_failed_samples_is_not_a_measurement(env, monkeypatch, tm
     st = be._stick("qwen3.5-9b@q6_k", {"concurrency": 1, "limit": 4})
     assert st["ok"] is False and st["decode_tps"] == 20.0 and st["failed"] == 1
     assert "1 sample" in st["error"] and "Read timed out" in st["error"]
+
+
+def test_bench_run_builds_needs_llama(env):
+    with pytest.raises(_HTTPException) as ei:
+        env.tools.lms_bench_live_run({"model_id": "qwen3.5-9b@q6_k", "builds": ["/x/llama-server"]})
+    assert ei.value.status_code == 400 and ei.value.detail == "builds needs the llama provider"

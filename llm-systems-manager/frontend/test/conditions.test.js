@@ -38,3 +38,14 @@ describe('COND.html', () => {
     expect(h).toMatch(/<td class="wrap">a &lt;b&gt;/); expect(COND.html(null)).toBe('');
   });
 });
+describe('COND install row', () => {
+  it('renders the installed build and flags a change', () => {
+    const B = JSON.parse(JSON.stringify(A));
+    B.backend.install = { name: 'rocm-build', backend: 'ROCm' };
+    const r = Object.fromEntries(COND.rows(B).map(x => [x.label, x.value]));
+    expect(r['Installed build']).toBe('rocm-build \u00b7 ROCm');
+    const C = JSON.parse(JSON.stringify(B)); C.backend.install = { name: 'vk-build', backend: 'Vulkan' };
+    const d = Object.fromEntries(COND.diff(B, C).map(x => [x.label, x]));
+    expect(d['Installed build'].changed).toBe(true);
+  });
+});

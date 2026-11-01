@@ -515,3 +515,10 @@ def test_live_preflight_reports_the_kind_of_run_holding_the_slot(mods, ctx, monk
     monkeypatch.setattr(llama, "_bench_active", False)
     monkeypatch.setattr(llama, "_autotune_active", True)
     assert tools.vllm_bench_live_preflight()["busy_kind"] == "autotune"
+
+
+def test_run_builds_needs_llama(mods, ctx):
+    tools = mods[2]
+    with pytest.raises(Exception) as ei:
+        tools.vllm_bench_live_run({"model_id": "Qwen/Qwen3-0.6B", "builds": ["/x/llama-server"]})
+    assert ei.value.status_code == 400 and ei.value.detail == "builds needs the llama provider"

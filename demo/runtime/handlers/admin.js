@@ -303,15 +303,20 @@
   // ---- tools: ledger, tickets, OpenClaw ----
   function toolRows(s) {
     var a = F.byId('atlas'), f = F.byId('forge');
+    // Conditions naming the installed build a canned benchmark ran on.
+    function cond(name, backend) {
+      return { schema: 1, backend: { name: 'llama.cpp', build: 'b6870',
+        install: { name: name, path: '/opt/' + name + '/build/bin/llama-server', backend: backend, version: 'b6870', note: '' } } };
+    }
     return [
-      { tool: 'benchmark', model_id: a.models[0], agent_id: 'atlas', provider: 'llama', ok: true, ts: s - 9 * HOUR, run_id: 'demo-run-b2', conditions: null,
-        summary: { gen_tps: 68.4, ppt_tps: 1540, pg_tps: 61.2, latency_s: 1.9, bench_tool: 'llama-bench' } },
+      { tool: 'benchmark', model_id: a.models[0], agent_id: 'atlas', provider: 'llama', ok: true, ts: s - 9 * HOUR, run_id: 'demo-run-b2', conditions: cond('llama-rocm', 'ROCm'),
+        summary: { gen_tps: 68.4, ppt_tps: 1540, pg_tps: 61.2, latency_s: 1.9, bench_tool: 'llama-bench', build_name: 'llama-rocm' } },
       { tool: 'autotune', model_id: a.models[0], agent_id: 'atlas', provider: 'llama', ok: true, ts: s - 2 * DAY, run_id: 'demo-run-a1', conditions: null,
         summary: { decode_tps: 71.9, prefill_tps: 1710, ctx_size: 16384, gain_pct: 12, objective: 'speed', mode: 'quick' } },
       { tool: 'reportcard', model_id: f.models[0], agent_id: 'forge', provider: 'llama', ok: true, ts: s - 5 * HOUR, run_id: 'demo-run-r1', conditions: null,
         summary: { gen_tps: 41.7, ppt_tps: 980, ttft_ms: 310, mode: 'standard' } },
-      { tool: 'benchmark', model_id: a.models[0], agent_id: 'atlas', provider: 'llama', ok: true, ts: s - 3 * DAY, run_id: 'demo-run-b1', conditions: null,
-        summary: { gen_tps: 66.1, ppt_tps: 1490, pg_tps: 59.8, latency_s: 2.0, bench_tool: 'llama-bench' } }
+      { tool: 'benchmark', model_id: a.models[0], agent_id: 'atlas', provider: 'llama', ok: true, ts: s - 3 * DAY, run_id: 'demo-run-b1', conditions: cond('llama.cpp', 'Vulkan'),
+        summary: { gen_tps: 66.1, ppt_tps: 1490, pg_tps: 59.8, latency_s: 2.0, bench_tool: 'llama-bench', build_name: 'llama.cpp' } }
     ];
   }
   R.route('GET /api/tools/runs', function (ctx) {

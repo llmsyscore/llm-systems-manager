@@ -138,7 +138,47 @@ function rcLoadAgents() {
     }
     rcLoadLatest();
     rcRefreshModelOptions();
+    rcLoadBuilds();
   }).catch(() => {});
+}
+
+// Builds row (#1395): the picked llama host's builds; non-active ones for admins only.
+function rcLoadBuilds() {
+  const el = _rcEl('rcBuilds');
+  if (!el || typeof BUILDPICK === 'undefined') return;
+  const agent = _rcEl('rcAgent')?.value || '';
+  if ((_rcEl('rcProvider')?.value || 'llama') !== 'llama' || !agent) { BUILDPICK.render(el, [], {}); return; }
+  const admin = !!(typeof window !== 'undefined' && window._me && window._me.admin_access);
+  BUILDPICK.load(el, '/api/llm/builds?agent=' + encodeURIComponent(agent), {needsSwitchNote: true, admin});
+}
+
+// One chip per card of a run over several builds; a click shows that build's card.
+function rcRenderBuildCards(cards) {
+  const host = _rcEl('rcBuildCards');
+  if (!host) return;
+  host.replaceChildren();
+  const list = Array.isArray(cards) ? cards.filter(c => c && c.result) : [];
+  host.style.display = list.length > 1 ? '' : 'none';
+  if (list.length < 2) return;
+  list.forEach(c => {
+    const chip = document.createElement('span');
+    const gen = Number(c.result.gen_tps);
+    chip.className = 'bl-chip' + (c === _rcLastCard ? ' on' : '');
+    chip.textContent = `${c.result.build_name || 'build'} \u00b7 ${Number.isFinite(gen) ? gen.toFixed(1) : '\u2014'} tok/s`;
+    chip.addEventListener('click', () => {
+      rcRenderCard(c);
+      host.querySelectorAll('.bl-chip').forEach(x => x.classList.toggle('on', x === chip));
+    });
+    host.appendChild(chip);
+  });
+}
+
+// Shows the last stored card of a builds run and lists the others.
+function _rcShowCards(cards) {
+  const list = Array.isArray(cards) ? cards.filter(c => c && c.result) : [];
+  if (!list.length) return;
+  rcRenderCard(list[list.length - 1]);
+  rcRenderBuildCards(list);
 }
 
 function rcLoadPreset() {
@@ -209,6 +249,8 @@ function rcRun(confirm) {
   if (mode === 'custom') body.model = (_rcEl('rcCustomModel')?.value || '').trim();
   if (confirm === 'vllm') body.confirm_vllm = true;
   if (confirm === 'download') body.confirm_download = true;
+  const builds = provider === 'llama' && typeof BUILDPICK !== 'undefined' ? BUILDPICK.payload(_rcEl('rcBuilds')) : null;
+  if (builds) body.builds = builds;
 
   const slot = _rcQueue();
   if (slot && slot.queued()) { _rcNote('A run is already queued. Drop it first.', true); return; }
@@ -236,6 +278,7 @@ function _rcResetView() {
     if (c) c.style.display = 'none';
   });
   rcCleanupKeep();
+  rcRenderBuildCards(null);
 }
 
 // The queued job started: follow the runner it launched as this tab's own run.
@@ -362,6 +405,8 @@ function rcStream(jobId) {
         text = `Benchmarking — repetition ${d.n} of ${d.of}`;
       } else if (d.phase === 'download_progress') {
         text = 'Downloading — ' + (d.text || '');
+      } else if (d.phase === 'build_start' || d.phase === 'build_failed' || d.phase === 'switch_back') {
+        text = (typeof BUILDPICK !== 'undefined' && BUILDPICK.eventText(d, BUILDPICK.activeName(_rcEl('rcBuilds')))) || d.phase;
       } else if (d.phase === 'ready') {
         text = d.status === 'ready' ? `Model ready — ${d.model || ''}`
                                     : `Model check: ${d.status}`;
@@ -377,6 +422,7 @@ function rcStream(jobId) {
       _rcNote(d.error, true);
       _rcBusy(false);
       rcStopStream();
+      _rcShowCards(d.cards);
     }
     if (d.event === 'cancelled') {
       _rcLog('cancelled');
@@ -384,13 +430,15 @@ function rcStream(jobId) {
       _rcNote('Run cancelled.');
       _rcBusy(false);
       rcStopStream();
+      _rcShowCards(d.cards);
     }
     if (d.event === 'done') {
       _rcLog('done');
       _rcStatus('');
       _rcBusy(false);
       rcStopStream();
-      rcRenderCard(d.card);
+      if (Array.isArray(d.cards) && d.cards.length > 1) _rcShowCards(d.cards);
+      else rcRenderCard(d.card);
       rcShowCleanup(d.cleanup);
     }
     },
@@ -468,7 +516,8 @@ function rcRenderCard(card) {
   _rcFillCompare(card);
   const model = _rcEl('rcModelChip');
   if (model) {
-    model.textContent = 'model: ' + ((card.result || {}).model || 'unknown');
+    const bn = (card.result || {}).build_name;
+    model.textContent = 'model: ' + ((card.result || {}).model || 'unknown') + (bn ? ' \u00b7 build: ' + bn : '');
     model.style.display = '';
   }
   const chips = _rcEl('rcChips');
@@ -490,7 +539,8 @@ function _rcSetCompareOptions(sel, cards) {
   if (!cards.length) { opt('', 'no earlier runs'); sel.disabled = true; return; }
   sel.disabled = false;
   opt('', 'none');
-  cards.forEach(c => opt(String(c.ts), `${RC.fmtDate(c.ts)} \u00b7 ${RC.fmt((c.result || {}).gen_tps, 1)} tok/s`));
+  cards.forEach(c => opt(String(c.ts), `${RC.fmtDate(c.ts)} \u00b7 ${RC.fmt((c.result || {}).gen_tps, 1)} tok/s`
+    + ((c.result || {}).build_name ? ` \u00b7 ${c.result.build_name}` : '')));
 }
 
 function _rcFillCompare(card) {
@@ -532,6 +582,7 @@ function rcLoadLatest() {
   if (_rcPrefModel) url += `&model=${encodeURIComponent(_rcPrefModel)}`;
   fetch(url)
     .then(r => r.json()).then(d => {
+      rcRenderBuildCards(null);
       if (d.card) { rcRenderCard(d.card); return; }
       // No history for this picker selection — clear any stale card.
       _rcLastCard = null;
@@ -614,6 +665,7 @@ function rcOnProviderChange() {
 function rcOnAgentChange() {
   rcLoadLatest();
   rcRefreshModelOptions();
+  rcLoadBuilds();
 }
 
 // Options track the pickers only while the custom field is on screen.

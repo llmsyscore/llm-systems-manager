@@ -181,3 +181,49 @@ describe('Offline bench conditions + comparison (#1302)', () => {
     expect(srcFile('index.html')).toMatch(/id="benchResultRows"[^>]*><\/div>\s*<div id="benchCond"><\/div><div id="benchCompare" class="bench-compare"><\/div>/);
   });
 });
+
+describe('Offline bench Builds row (#1395)', () => {
+  const VK = { path: '/opt/vk/build/bin/llama-server', dir: '/opt/vk/build/bin', name: 'vk', active: true, backend: 'Vulkan', ok: true };
+  const ROCM = { path: '/opt/rocm/build/bin/llama-server', dir: '/opt/rocm/build/bin', name: 'rocm', active: false, backend: 'ROCm', ok: true };
+  function bootBuilds(pick) {
+    const win = runHarness({
+      sources: [STUBS, srcFile('js/lib/sseguard.js'), srcFile('js/lib/modelcards.js'), srcFile('js/lib/conditions.js'),
+                srcFile('js/lib/toolcards.js'), srcFile('js/lib/buildpick.js'), srcFile('js/bench-autotune.js')],
+      bodyHtml: BODY + '<div class="bp-row" id="benchBuilds"></div>',
+      bootstrap: `switchBenchTab('llama-bench'); BUILDPICK.render(document.getElementById('benchBuilds'), ${JSON.stringify([VK, ROCM])}, {});`,
+    });
+    if (pick) {
+      const inp = [...win.document.querySelectorAll('#benchBuilds input')].find(i => i.value === ROCM.path);
+      inp.checked = true; inp.dispatchEvent(new win.Event('change'));
+    }
+    return win;
+  }
+  const runBody = (win) => JSON.parse(win.__fetches.find(([u]) => u === '/api/benchmark/run')[1].body);
+
+  it('the start body carries the picked builds, none for the active build only', async () => {
+    let win = bootBuilds(false);
+    await win.runBenchmark(); await flush();
+    expect('builds' in runBody(win)).toBe(false);
+    win = bootBuilds(true);
+    await win.runBenchmark(); await flush();
+    expect(runBody(win).builds).toEqual([VK.path, ROCM.path]);
+  });
+
+  it('logs each build and labels one result row per model and build', async () => {
+    const win = bootBuilds(true);
+    await win.runBenchmark(); await flush();
+    const es = win.__streams[win.__streams.length - 1];
+    es.readyState = 1;
+    const send = (msg) => es.onmessage({ data: JSON.stringify(msg), lastEventId: 'run1:7' });
+    send({ type: 'build_start', build: 'vk', path: VK.path, index: 0, total: 2 });
+    send(done({ build: 'vk', build_path: VK.path, run_id: 'run1', stored_run_id: 'run1' }));
+    send({ type: 'build_start', build: 'rocm', path: ROCM.path, index: 1, total: 2 });
+    send(done({ build: 'rocm', build_path: ROCM.path, max_gen_tps: 60, run_id: 'run1', stored_run_id: 'run1-2' }));
+    expect(win.document.getElementById('benchLog').textContent).toContain('Build 2 of 2: rocm');
+    const builds = [...win.document.querySelectorAll('#benchResultRows .bench-result-build')].map(e => e.textContent);
+    expect(builds).toEqual(['vk', 'rocm']);
+    const posts = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body));
+    expect(posts.map(p => p.build_name)).toEqual(['vk', 'rocm']);
+    expect(posts.map(p => p.run_id)).toEqual(['run1', 'run1-2']);
+  });
+});

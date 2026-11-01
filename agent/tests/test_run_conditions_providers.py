@@ -66,7 +66,7 @@ def test_llama_facts_from_props_and_cmdline(llama, monkeypatch, tmp_path):
     monkeypatch.setattr(llama, "_gpu_label", lambda: ("7900 XTX", "amdgpu 6.12.0"), raising=False)
     monkeypatch.setitem(llama._llama_loaded, "last", "org/m")
     facts = llama._conditions_facts("org/m")
-    assert set(facts) == {"gpu_label", "driver", "backend", "backend_build", "server_cmd", "model_id",
+    assert set(facts) == {"gpu_label", "driver", "backend", "backend_build", "install", "server_cmd", "model_id",
                           "model_path", "quantization", "context", "sampling"}
     assert facts["gpu_label"] == "7900 XTX" and facts["driver"] == "amdgpu 6.12.0" and facts["model_id"] == "org/m"
     assert facts["backend"] == "llama.cpp" and facts["backend_build"] == "b1234-abc"
