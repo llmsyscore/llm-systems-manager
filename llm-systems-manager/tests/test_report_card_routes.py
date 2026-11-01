@@ -1018,7 +1018,7 @@ def test_reportcard_switch_back_unreadable_treats_already_active_as_ok(client, b
     builds_env["lost"].add(BB)
     builds_env["fail"].add(BC)
     r = _run(client, builds=[BB])
-    events = _drain(client, r.get_json()["job_id"])
+    _drain(client, r.get_json()["job_id"])
     assert _activations(builds_env) == [BB, BA]
     builds_env["calls"].clear()
     builds_env["active"], builds_env["reads"] = BA, 0
