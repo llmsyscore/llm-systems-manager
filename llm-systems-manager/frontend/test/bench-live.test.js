@@ -389,6 +389,17 @@ describe('BL presets and mode', () => {
     expect(btn.dataset.level).toBe(bad);
     expect([...d.querySelectorAll('#blTable tbody tr')].map(tr => tr.children[1].textContent)).toEqual([bad, bad]);
   });
+  it('the runs dropdown names each run\'s build (#1397)', async () => {
+    const win = boot('window.__runsList = ' + JSON.stringify([
+      { run_id: 'm1', ts: '2026-09-05T22:14:00Z', gen_tps: 103.2, config: { bench: 'qualitative' }, build_name: 'rocm', llama_build: 'b7000' },
+      { run_id: 'm2', ts: '2026-09-05T22:10:00Z', gen_tps: 99, config: { bench: 'qualitative' }, build_name: '', llama_build: 'b6990' },
+      { run_id: 'm3', ts: '2026-09-05T22:00:00Z', gen_tps: 98, config: { bench: 'qualitative' }, build_name: '', llama_build: '' }]) + '; BL.onOpen("org/m:Q4");');
+    await flush();
+    const t = [...win.document.getElementById('blBaseline').options].slice(1).map(o => o.textContent);
+    expect(t[0]).toContain('qualitative · rocm · 103.2 t/s');
+    expect(t[1]).toContain('qualitative · b6990 · 99 t/s');
+    expect(t[2]).toContain('qualitative · 98 t/s');
+  });
   it('run posts the validated body and lists the baseline', async () => {
     const win = boot('BL.onOpen("org/m:Q4");');
     await flush();

@@ -9,10 +9,10 @@ let _benchSwitches      = [];   // current editable switch list
 let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
 let _benchRawRows       = [];   // all result rows for axis re-render: {model_id, ts, seq, gen_tps, ppt_tps, n_prompt, n_gen, n_depth, n_batch, n_ubatch, avg_ts}
 let _benchAxisTouched   = false; // true once the user picks an axis; until then dropdowns honor the computed default (n_depth / avg_ts)
-let _benchCond          = {};   // model_id → run conditions from its model_done
-let _benchCur           = {};   // model_id → finished run in ledger shape, for the compare picker
-let _benchCmpRows       = {};   // model_id → {key, rows} earlier ledger runs for the picker
-let _benchCondModel     = null; // model_id shown in #benchCond / #benchCompare
+let _benchCond          = {};   // model_id (or model_id + build) → run conditions from its model_done
+let _benchCur           = {};   // model_id (or model_id + build) → finished run in ledger shape, for the compare picker
+let _benchCmpRows       = {};   // model_id (or model_id + build) → {key, rows} earlier ledger runs for the picker
+let _benchCondModel     = null; // key shown in #benchCond / #benchCompare
 let _benchMultiBuild    = false; // true once the run reports a build_start (several builds)
 
 const BENCH_SERIES_COLORS = [
@@ -630,6 +630,11 @@ function _benchSwitchMap(list) {
   return out;
 }
 
+// State key of a model's run, per build when the run covered several builds.
+function _benchCondKey(modelId, build) {
+  return build ? modelId + '\n' + build : modelId;
+}
+
 // Ledger-shaped run of a model's finished run, else of its stored result.
 function _benchCurrentRun(modelId) {
   if (_benchCur[modelId]) return _benchCur[modelId];
@@ -656,9 +661,11 @@ function _benchClearCond() {
 }
 
 // Fills the picker from this agent's earlier ledger runs, newest first, leaving out the current run.
-function _benchFillPicker(sel, rows, cur) {
+// With a build, only that build's runs are listed.
+function _benchFillPicker(sel, rows, cur, build) {
   const own = cur.run_id ? (rows || []).find(r => r && r.run_id === cur.run_id) : null;
-  const list = (rows || []).filter(r => r && !(cur.run_id && r.run_id === cur.run_id) && (!own || r.agent_id === own.agent_id))
+  const list = (rows || []).filter(r => r && !(cur.run_id && r.run_id === cur.run_id) && (!own || r.agent_id === own.agent_id)
+                                      && (!build || (r.summary || {}).build_name === build))
     .sort((a, b) => (Date.parse(b.ts || '') || 0) - (Date.parse(a.ts || '') || 0));
   if (!list.length) { sel.innerHTML = '<option value="">no earlier runs</option>'; sel.disabled = true; return; }
   const head = v => (v == null || v === '' || !isFinite(v) ? '—' : Number(v).toFixed(1));
@@ -668,32 +675,34 @@ function _benchFillPicker(sel, rows, cur) {
 }
 
 // Conditions block into #benchCond and the "Compare with…" picker into #benchCompare.
-function _benchRenderCond(modelId) {
+function _benchRenderCond(modelId, build) {
   const condEl = document.getElementById('benchCond'), cmpEl = document.getElementById('benchCompare');
   if (!condEl || !cmpEl) return;
-  const cur = _benchCurrentRun(modelId);
-  _benchCondModel = cur ? modelId : null;
-  condEl.innerHTML = cur && window.COND ? COND.html(cur.conditions) : '';
+  const ck = _benchCondKey(modelId, build), cur = _benchCurrentRun(ck);
+  _benchCondModel = cur ? ck : null;
+  document.querySelectorAll('#benchResultRows .bench-result-row').forEach(r => r.classList.toggle('cond-shown', !!cur && r.dataset.condKey === ck));
+  const head = cur && build ? `<div class="bench-cond-build">Showing build ${_hEsc(build)} · click a build's result to switch</div>` : '';
+  condEl.innerHTML = cur && window.COND ? head + COND.html(cur.conditions) : '';
   if (!cur) { cmpEl.innerHTML = ''; return; }
   cmpEl.innerHTML = '<div class="bench-cmp-pick"><label for="benchCompareSel">Compare with…</label>'
     + '<select id="benchCompareSel" class="bl-sel" disabled><option value="">none</option></select></div><div class="bench-cmp-host"></div>';
   const sel = cmpEl.querySelector('select');
-  sel.addEventListener('change', () => _benchCompareChange(modelId, sel.value));
-  const key = cur.run_id || cur.ts, cached = _benchCmpRows[modelId];
-  if (cached && cached.key === key) { _benchFillPicker(sel, cached.rows, cur); return; }
+  sel.addEventListener('change', () => _benchCompareChange(ck, sel.value));
+  const key = cur.run_id || cur.ts, cached = _benchCmpRows[ck];
+  if (cached && cached.key === key) { _benchFillPicker(sel, cached.rows, cur, build); return; }
   const q = '/api/tools/runs?tool=benchmark&model_id=' + encodeURIComponent(modelId);
   fetch(q).then(r => r.json()).then(d => {
     const rows = (d && Array.isArray(d.runs)) ? d.runs : [];
-    _benchCmpRows[modelId] = {key, rows};
-    if (sel.isConnected) _benchFillPicker(sel, rows, cur);
+    _benchCmpRows[ck] = {key, rows};
+    if (sel.isConnected) _benchFillPicker(sel, rows, cur, build);
   }).catch(() => {});
 }
 
 // Renders the picked ledger run against the current one into #benchCompare.
-function _benchCompareChange(modelId, runKey) {
+function _benchCompareChange(ck, runKey) {
   const host = document.querySelector('#benchCompare .bench-cmp-host');
   if (!host) return;
-  const cached = _benchCmpRows[modelId], cur = _benchCurrentRun(modelId);
+  const cached = _benchCmpRows[ck], cur = _benchCurrentRun(ck);
   const row = runKey && cached ? cached.rows.find(r => String(r.run_id || r.ts || '') === runKey) : null;
   host.innerHTML = row && cur && window.TC && typeof TC.diffRuns === 'function'
     ? TC.diffHtml(TC.diffRuns(row, cur), Date.now()) : '';
@@ -1158,12 +1167,13 @@ function _benchOpenStream(tool) {
                         energy_source: msg.energy_source || null };
       // A build of a run over several builds is stored under its own id.
       const runId = msg.stored_run_id || msg.run_id || _runIdOf(e);
-      _benchCond[msg.model_id] = msg.conditions;
-      _benchCur[msg.model_id] = {tool: 'benchmark', model_id: msg.model_id, run_id: runId, ts: new Date().toISOString(), ok: true,
+      const build = _benchMultiBuild ? msg.build : null, ck = _benchCondKey(msg.model_id, build);
+      _benchCond[ck] = msg.conditions;
+      _benchCur[ck] = {tool: 'benchmark', model_id: msg.model_id, run_id: runId, ts: new Date().toISOString(), ok: true,
                                  summary: {gen_tps: mx.gen, ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
                                            switches: _benchSwitchMap(_benchSwitches)},
                                  conditions: msg.conditions};
-      _benchAddModelResultRow(msg.model_id, tool, mx, energy, _benchMultiBuild ? msg.build : null, msg.conditions);
+      _benchAddModelResultRow(msg.model_id, tool, mx, energy, build, msg.conditions);
       document.getElementById('benchResults').classList.add('shown');
       _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
                                    ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
@@ -1172,7 +1182,7 @@ function _benchOpenStream(tool) {
                                    conditions: msg.conditions,
                                    build_name: msg.build || undefined,
                                    ok: mx.gen != null || mx.ppt != null || mx.pg != null});
-      _benchRenderCond(msg.model_id);
+      _benchRenderCond(msg.model_id, build);
       if (energy.wh_per_ktok != null) {
         _benchLogAppend(`<span class="bench-log-text">energy ${(energy.energy_wh ?? 0).toFixed(2)} Wh · ${energy.wh_per_ktok.toFixed(2)} Wh / 1k tokens (${_hEsc(energy.energy_source || '—')})</span>`);
       } else if ('wh_per_ktok' in msg) {
@@ -1357,6 +1367,12 @@ function _benchAddModelResultRow(modelId, tool, maxes, energy, buildName, cond) 
 
   row.appendChild(head);
   row.appendChild(grid);
+  // A build's row shows that build's conditions and compare picker.
+  row.dataset.condKey = _benchCondKey(modelId, buildName);
+  if (buildName) {
+    row.classList.add('bench-result-pick');
+    row.addEventListener('click', e => { if (!e.target.closest('button')) _benchRenderCond(modelId, buildName); });
+  }
 
   // Comparison bar: generation t/s relative to the fastest model in this run.
   if (maxGen != null) {
@@ -1428,8 +1444,9 @@ function clearStoredBenchmark(model_id, rowEl) {
   fetch('/api/benchmark/results/' + encodeURIComponent(model_id), {method:'DELETE'})
     .then(r => r.json()).then(() => {
       delete _benchData[model_id];
-      delete _benchCond[model_id]; delete _benchCur[model_id]; delete _benchCmpRows[model_id];
-      if (_benchCondModel === model_id) {
+      const own = k => k === model_id || k.startsWith(model_id + '\n');
+      [_benchCond, _benchCur, _benchCmpRows].forEach(m => Object.keys(m).filter(own).forEach(k => delete m[k]));
+      if (_benchCondModel != null && own(_benchCondModel)) {
         ['benchCond', 'benchCompare'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
         _benchCondModel = null;
       }

@@ -40,6 +40,8 @@ def init_table(conn) -> None:
         conn.execute("ALTER TABLE bench_live_runs ADD COLUMN provider TEXT NOT NULL DEFAULT 'llama'")
     if "gen_spread_json" not in cols:
         conn.execute("ALTER TABLE bench_live_runs ADD COLUMN gen_spread_json TEXT")
+    if "build_name" not in cols:
+        conn.execute("ALTER TABLE bench_live_runs ADD COLUMN build_name TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -59,6 +61,7 @@ def _row(r) -> dict:
         out["gen_spread"] = json.loads(r[15]) if r[15] else None
     except ValueError:
         out["gen_spread"] = None
+    out["build_name"] = r[16] or ""
     return out
 
 
@@ -72,7 +75,7 @@ def gen_spread_of(doc: dict) -> Optional[dict]:
 
 
 _COLS = ("id, run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps, latency_s, accept_rate, wh_per_ktok, "
-         "config_json, llama_build, provider, gen_spread_json")
+         "config_json, llama_build, provider, gen_spread_json, build_name")
 BENCH_PROVIDERS = ("llama", "lms", "vllm")
 
 
@@ -82,7 +85,7 @@ def read_run(conn, run_id: str) -> "Optional[tuple[dict, dict]]":
     if not r:
         return None
     try:
-        doc = json.loads(r[16])
+        doc = json.loads(r[-1])
     except ValueError:
         doc = {}
     return _row(r), doc
@@ -421,17 +424,18 @@ def register_routes(app, ctx, *, db_path: str, proxy: Callable, agent_by_token: 
             except Exception:
                 build = ""
         spread = gen_spread_of(doc)
+        build_name = str(doc.get("build") or "").strip()[:64]
         with lock:
             conn = conn_factory()
             cur = conn.execute(
                 "INSERT OR IGNORE INTO bench_live_runs (run_id, model_id, agent_id, ts, ok, baseline, gen_tps, ppt_tps,"
                 " latency_s, accept_rate, wh_per_ktok, config_json, result_json, llama_build, provider,"
-                " gen_spread_json) VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?)",
+                " gen_spread_json, build_name) VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, model_id, agent_id, ts, 1 if doc.get("ok", True) else 0,
                  _finite(first.get("pred_tps")), _finite(first.get("prompt_tps")), _finite(first.get("latency_s")),
                  _finite(first.get("accept_rate")), _finite(doc.get("wh_per_ktok")),
                  json.dumps(doc.get("config") or {}), json.dumps(doc), build, provider,
-                 json.dumps(spread) if spread is not None else None))
+                 json.dumps(spread) if spread is not None else None, build_name))
             conn.execute(
                 "DELETE FROM bench_live_runs WHERE model_id = ? AND agent_id = ? AND baseline = 0 AND id NOT IN "
                 "(SELECT id FROM bench_live_runs WHERE model_id = ? AND agent_id = ? ORDER BY id DESC LIMIT ?)",

@@ -338,6 +338,8 @@ Lists stored runs for the selected agent (newest first, baselines always include
 
 `gen_spread` — the run's decode-speed spread `{n, min, p25, p50, p75, max}`, or null for runs stored before it was recorded.
 
+`build_name` — the name of the llama.cpp build the run used, for runs over several builds; empty otherwise.
+
 ---
 
 ### `DELETE /api/benchmark/live/runs`
