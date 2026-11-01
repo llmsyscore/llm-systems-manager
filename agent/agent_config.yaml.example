@@ -197,6 +197,7 @@ COLLECT_REPROBE_INTERVAL_S: 900
 # Which GPU to monitor when the host has more than one: a card name (card1),
 # a PCI address (0000:03:00.0) or a sysfs path; NVIDIA cards also take the
 # nvidia-smi index or UUID. Blank = the card with the most memory (AMD first).
+# Admin → Agents also offers a GPU dropdown in the agent's row (GPU collection on).
 # GPU_DEVICE: ""
 
 # -- macOS powermetrics (Apple Silicon thermal / power / GPU residency) ----

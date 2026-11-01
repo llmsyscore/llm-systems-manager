@@ -6,6 +6,7 @@ Vendor probes happen on the first ``collect_gpu()``:
   - ``_HWMON``: the hwmon subdir under ``_GPU_PATH``
   - ``_NVIDIA_PRESENT``: True iff an NVIDIA card AND ``nvidia-smi`` exist (and
     ``GPU_DEVICE``, when set, names one); ``_NV_ID`` is its ``nvidia-smi -i`` id
+  - ``_CARDS``: every AMD and NVIDIA card found, for the Admin GPU picker
 
 A box with neither just returns ``{}`` from ``collect_gpu()``, and re-probes
 on the ``AbsenceLatch`` interval so a driver that comes up after the agent
@@ -29,7 +30,7 @@ from ._shared import AbsenceLatch, collect_enabled, latch_level_for
 
 log = logging.getLogger("llm-systems-agent.collectors.gpu")
 
-__all__ = ["set_deps", "collect_gpu"]
+__all__ = ["set_deps", "collect_gpu", "gpu_cards"]
 
 _deps = SimpleNamespace()
 
@@ -119,30 +120,36 @@ def _sel_pci(sel: str, drm_root: Path = _DRM_ROOT) -> "str | None":
     return _pci_tail(sel) if sel.count(":") >= 1 else None
 
 
-def _select_nvidia_id(drm_root: Path = _DRM_ROOT) -> "str | None":
-    """nvidia-smi -i id of the card to monitor; "" = nvidia-smi default; None = no match."""
-    sel = _gpu_device_sel()
+def _nvidia_gpus() -> list:
+    """(index, pci.bus_id, uuid, memory MiB, name) per nvidia-smi card; [] on failure."""
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=index,pci.bus_id,uuid,memory.total",
+            ["nvidia-smi", "--query-gpu=index,pci.bus_id,uuid,memory.total,name",
              "--format=csv,noheader,nounits"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
         ).strip().splitlines()
     except Exception as e:
         log.debug("nvidia-smi list: %s", e)
-        return None if sel else ""
+        return []
     gpus = []
     for line in out:
         parts = [p.strip() for p in line.split(",")]
         if len(parts) >= 4:
             try: mem = float(parts[3])
             except ValueError: mem = -1.0
-            gpus.append((parts[0], parts[1], parts[2], mem))
+            gpus.append((parts[0], parts[1], parts[2], mem, ", ".join(parts[4:])))
+    return gpus
+
+
+def _select_nvidia_id(drm_root: Path = _DRM_ROOT) -> "str | None":
+    """nvidia-smi -i id of the card to monitor; "" = nvidia-smi default; None = no match."""
+    sel = _gpu_device_sel()
+    gpus = _nvidia_gpus()
     if not gpus:
         return None if sel else ""
     if sel:
         pci = _sel_pci(sel, drm_root)
-        for idx, bus, uuid, _ in gpus:
+        for idx, bus, uuid, *_ in gpus:
             if sel == idx or sel.lower() == uuid.lower() or (pci and pci == _pci_tail(bus)):
                 return bus
         return None
@@ -287,10 +294,18 @@ def _nv_id_args() -> list:
 def _lspci_amd_name() -> "str | None":
     if _GPU_PATH is None:
         return None
+    try:
+        slot = _GPU_PATH.resolve().name
+    except OSError as e:
+        log.debug("lspci amd name: %s", e)
+        return None
+    return _lspci_name(slot)
+
+
+def _lspci_name(slot: str) -> "str | None":
     if shutil.which("lspci") is None:
         return None
     try:
-        slot = _GPU_PATH.resolve().name
         out = subprocess.check_output(
             ["lspci", "-s", slot, "-vmm"],
             text=True, timeout=3, stderr=subprocess.DEVNULL, close_fds=True,
@@ -338,6 +353,50 @@ def _probe_driver() -> "str | None":
     return "nvidia " + out[0].strip() if out and out[0].strip() else None
 
 
+def _pci_id(addr: str) -> str:
+    """'00000000:01:00.0' → '0000:01:00.0' (sysfs form)."""
+    dom, _, rest = addr.strip().lower().partition(":")
+    return f"{dom[-4:]}:{rest}" if rest else dom
+
+
+def _list_cards(drm_root: Path = _DRM_ROOT) -> list:
+    """Every AMD card in sysfs and NVIDIA card in nvidia-smi: id (PCI address), vendor, name, VRAM."""
+    cards = []
+    with best_effort("gpu: list AMD cards", log=log):
+        for card in _amd_cards(drm_root):
+            try:
+                slot = (card / "device").resolve().name
+            except OSError:
+                continue
+            cards.append({"id": _pci_id(slot), "vendor": "amd", "name": _lspci_name(slot),
+                          "vram_bytes": _read_int_file(card / "device" / "mem_info_vram_total")})
+    with best_effort("gpu: list NVIDIA cards", log=log):
+        for _idx, bus, _uuid, mem, name in (_nvidia_gpus() if shutil.which("nvidia-smi") else []):
+            cards.append({"id": _pci_id(bus), "vendor": "nvidia", "name": name or None,
+                          "vram_bytes": round(mem * 1_048_576) if mem >= 0 else None})
+    return cards
+
+
+def _monitored_pci() -> "str | None":
+    if _GPU_PATH not in (None, _UNPROBED):
+        try:
+            return _pci_tail(_GPU_PATH.resolve().name)
+        except OSError:
+            return None
+    if _NVIDIA_PRESENT is True and _NV_ID:
+        return _pci_tail(_NV_ID)
+    return None
+
+
+def gpu_cards() -> list:
+    """Cards found at the last probe, the monitored one flagged; [] before the first probe."""
+    if _CARDS is _UNPROBED:
+        return []
+    cur = _monitored_pci()
+    return [{**c, "monitored": cur is not None and _pci_tail(c["id"]) == cur} for c in _CARDS]
+
+
+_CARDS: Any = _UNPROBED
 _probe_latch = AbsenceLatch("GPU (COLLECT_GPU_ENABLED is on)", logger=log)
 
 
@@ -351,7 +410,7 @@ def _probe_complete() -> bool:
 def _ensure_probed() -> None:
     # Probe sysfs/nvidia-smi on first call, then only on the latch interval
     # while nothing is found, so a late driver is picked up without a restart.
-    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME, _NV_ID, _DRIVER
+    global _GPU_PATH, _HWMON, _NVIDIA_PRESENT, _AMD_NAME, _NV_NAME, _NV_ID, _DRIVER, _CARDS
     if _probe_complete() or not _probe_latch.should_probe():
         return
     _GPU_PATH = _find_amd_gpu_path()
@@ -366,6 +425,7 @@ def _ensure_probed() -> None:
     _AMD_NAME = _lspci_amd_name() if _GPU_PATH is not None else None
     _NV_NAME = _nvidia_smi_name() if _NVIDIA_PRESENT else None
     _DRIVER = _probe_driver() if _GPU_PATH is not None or _NVIDIA_PRESENT else None
+    _CARDS = _list_cards()
     _probe_latch.record(
         _probe_complete(),
         " (AMD card found, hwmon sensors missing)" if _GPU_PATH is not None else "",

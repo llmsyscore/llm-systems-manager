@@ -67,7 +67,7 @@ def test_read_only_routes_are_the_relaxed_ones(decorator):
 
 @pytest.mark.parametrize("decorator", [
     '@app.post("/agent/restart")', '@app.post("/agent/self-update")', '@app.post("/config/reload")',
-    '@app.post("/agent/collection")', '@app.put("/agent/config-file")',
+    '@app.post("/agent/collection")', '@app.put("/agent/config-file")', '@app.post("/agent/gpu-device")',
 ])
 def test_routes_that_change_the_agent_always_check_the_token(decorator):
     body = _route_body(decorator)

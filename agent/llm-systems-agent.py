@@ -57,7 +57,7 @@ from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_sample_block  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
-from providers import residency, power_arbiter, power_readback, run_conditions  # type: ignore
+from providers import residency, power_arbiter, power_readback, run_conditions, llama_inventory  # type: ignore
 from agent_context import AgentContext  # type: ignore
 try:
     from _utils import atomic_write_text  # type: ignore
@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.10.31-5"
+VERSION = "v2026.11.01-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -2629,6 +2629,8 @@ def heartbeat_loop() -> None:
                 "tls_serves_role": _SERVED_ROLE,
                 "csr_pem": _tls_csr_pem(),
                 "providers": _provider_specs(),
+                "gpu_cards": collectors.gpu.gpu_cards(),
+                "gpu_device": CONFIG.GPU_DEVICE,
             }
             # Wall clock stamped last, right before the POST (#1091).
             body["ts"] = _now_iso()
@@ -3354,7 +3356,7 @@ def _public_endpoint_map() -> dict[str, list[str]]:
     return {
         "agent": ["/health", "/identify", "/status", "/config", "/config/reload",
                   "/agent/restart", "/agent/collection", "/agent/self-update",
-                  "/metrics"],
+                  "/agent/gpu-device", "/metrics"],
         "lms": [
             "/lms/server/status", "/lms/server/start", "/lms/server/stop",
             "/lms/server/restart", "/lms/server/log",
@@ -3624,6 +3626,24 @@ async def agent_config_file_put(
         "size": new_st.st_size,
         "note": "Restart the agent for changes to take effect.",
     }
+
+
+@app.post("/agent/gpu-device")
+def agent_gpu_device(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Saves GPU_DEVICE ("" = automatic, else a listed card's PCI address); applies on restart."""
+    _check_bearer(authorization)
+    device = str((body or {}).get("device") or "").strip()
+    if device and device not in {c["id"] for c in collectors.gpu.gpu_cards()}:
+        raise HTTPException(status_code=400, detail="that card is not in this agent's GPU list")
+    path = getattr(CONFIG, "_loaded_from", None)
+    if not path:
+        raise HTTPException(status_code=409, detail="no config file is currently loaded")
+    try:
+        backup = llama_inventory.set_yaml_key(path, "GPU_DEVICE", device)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"write failed: {e}")
+    logger.warning("GPU_DEVICE=%r saved via /agent/gpu-device (backup=%s); applies on restart", device, backup)
+    return {"ok": True, "device": device, "backup_path": backup}
 
 
 @app.post("/agent/restart")

@@ -579,6 +579,24 @@ def _hb_role_fields(body: dict) -> dict:
     return {"tls_cert_has_role": flag("tls_cert_has_role"), "tls_serves_role": flag("tls_serves_role")}
 
 
+def _hb_gpu_fields(body: dict) -> dict:
+    """The agent's GPU card list and GPU_DEVICE setting from a heartbeat, type-checked and capped."""
+    def text(v, n):
+        return v[:n] if isinstance(v, str) else None
+    cards = []
+    raw = body.get("gpu_cards")
+    for c in (raw if isinstance(raw, list) else [])[:16]:
+        if not isinstance(c, dict) or not text(c.get("id"), 64):
+            continue
+        vram = c.get("vram_bytes")
+        cards.append({
+            "id": text(c.get("id"), 64), "vendor": text(c.get("vendor"), 16), "name": text(c.get("name"), 120),
+            "vram_bytes": vram if isinstance(vram, int) and not isinstance(vram, bool) else None,
+            "monitored": c.get("monitored") is True,
+        })
+    return {"gpu_cards": cards, "gpu_device": text(body.get("gpu_device"), 256)}
+
+
 def role_warnings(agents: list) -> "list[str]":
     """System Health lines for live agents whose certificate role is overdue."""
     out = []
@@ -2020,6 +2038,7 @@ def _agents_heartbeat():
                 # admin tab's bidirectional-TLS indicator.
                 "control_channel_tls": bool(body.get("control_channel_tls")),
                 **_hb_role_fields(body),
+                **_hb_gpu_fields(body),
             }
             # Refresh the version from each heartbeat so the admin tab
             # reflects post-self-update reality without waiting for the

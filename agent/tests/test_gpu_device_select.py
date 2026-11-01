@@ -153,6 +153,7 @@ def _probe(monkeypatch, amd, nv_present, nv_id):
     monkeypatch.setattr(gpu, "_lspci_amd_name", lambda: None)
     monkeypatch.setattr(gpu, "_nvidia_smi_name", lambda: "RTX")
     monkeypatch.setattr(gpu, "_probe_driver", lambda: None)
+    monkeypatch.setattr(gpu, "_list_cards", lambda: [])
     monkeypatch.setattr(gpu._probe_latch, "should_probe", lambda: True)
     gpu._ensure_probed()
 
@@ -209,3 +210,50 @@ def test_unreadable_gtt_used_keeps_total_and_no_percent(sysfs, monkeypatch):
                 mem_info_gtt_used="garbage", mem_info_gtt_total="4294967296")
     monkeypatch.setattr(gpu, "_GPU_PATH", dev)
     assert gpu._gpu_gtt() == (None, 4 << 30, None)
+
+
+# #1387: the card list the Admin GPU picker shows.
+def test_list_cards_reports_amd_and_nvidia_cards(sysfs, monkeypatch):
+    _card(sysfs, "card0", "0000:7c:00.0", vram_total=512 << 20)
+    _card(sysfs, "card1", "0000:03:00.0", vram_total=24 << 30)
+    monkeypatch.setattr(gpu, "_lspci_name", lambda slot: f"AMD {slot}")
+    monkeypatch.setattr(gpu.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(gpu, "_nvidia_gpus", lambda: [("0", "00000000:01:00.0", "GPU-a", 8192.0, "RTX, Ti")])
+    assert gpu._list_cards(sysfs / "drm") == [
+        {"id": "0000:7c:00.0", "vendor": "amd", "name": "AMD 0000:7c:00.0", "vram_bytes": 512 << 20},
+        {"id": "0000:03:00.0", "vendor": "amd", "name": "AMD 0000:03:00.0", "vram_bytes": 24 << 30},
+        {"id": "0000:01:00.0", "vendor": "nvidia", "name": "RTX, Ti", "vram_bytes": 8192 << 20},
+    ]
+
+
+def test_nvidia_gpus_keeps_commas_in_names(monkeypatch):
+    _nv_out = "0, 00000000:01:00.0, GPU-a, 8192, NVIDIA RTX, Pro\n"
+    monkeypatch.setattr(gpu.subprocess, "check_output", lambda cmd, **kw: _nv_out)
+    assert gpu._nvidia_gpus() == [("0", "00000000:01:00.0", "GPU-a", 8192.0, "NVIDIA RTX, Pro")]
+
+
+def test_gpu_cards_empty_before_first_probe(monkeypatch):
+    monkeypatch.setattr(gpu, "_CARDS", gpu._UNPROBED)
+    assert gpu.gpu_cards() == []
+
+
+def test_gpu_cards_flags_the_monitored_amd_card(sysfs, monkeypatch):
+    dev = _card(sysfs, "card1", "0000:03:00.0")
+    monkeypatch.setattr(gpu, "_GPU_PATH", dev)
+    monkeypatch.setattr(gpu, "_CARDS", [{"id": "0000:7c:00.0"}, {"id": "0000:03:00.0"}])
+    assert [c["monitored"] for c in gpu.gpu_cards()] == [False, True]
+
+
+def test_gpu_cards_flags_the_monitored_nvidia_card(monkeypatch):
+    monkeypatch.setattr(gpu, "_GPU_PATH", None)
+    monkeypatch.setattr(gpu, "_NVIDIA_PRESENT", True)
+    monkeypatch.setattr(gpu, "_NV_ID", "00000000:02:00.0")
+    monkeypatch.setattr(gpu, "_CARDS", [{"id": "0000:01:00.0"}, {"id": "0000:02:00.0"}])
+    assert [c["monitored"] for c in gpu.gpu_cards()] == [False, True]
+
+
+def test_gpu_cards_none_monitored_when_nothing_matched(monkeypatch):
+    monkeypatch.setattr(gpu, "_GPU_PATH", None)
+    monkeypatch.setattr(gpu, "_NVIDIA_PRESENT", False)
+    monkeypatch.setattr(gpu, "_CARDS", [{"id": "0000:01:00.0"}, {"id": "0000:02:00.0"}])
+    assert [c["monitored"] for c in gpu.gpu_cards()] == [False, False]
