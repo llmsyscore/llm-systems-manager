@@ -529,6 +529,7 @@ function rcRenderCard(card) {
       : 'Non-reference \u00b7 local only';
     elig.style.display = '';
   }
+  if (_rcTrendsOpen()) rcLoadTrends();
 }
 
 // Compare picker: earlier cards of the same model, newest first.
@@ -590,6 +591,8 @@ function rcLoadLatest() {
       _rcEl('rcCompareHost')?.replaceChildren();
       const actions = _rcEl('rcActions');
       if (actions) actions.style.display = 'none';
+      if (_rcTrendsOpen()) _rcNote('No report cards for this agent yet.');
+      _rcClearTrends();
     })
     .catch(() => {});
 }
@@ -615,15 +618,29 @@ function rcToggleTrends() {
   if (!showing) rcLoadTrends();
 }
 
+function _rcTrendsOpen() {
+  const wrap = _rcEl('rcTrends');
+  return !!wrap && wrap.style.display !== 'none';
+}
+
+function _rcClearTrends() {
+  if (_rcTrendChart) _rcTrendChart.destroy();
+  _rcTrendChart = null;
+}
+
 function rcLoadTrends() {
+  const card = _rcLastCard;
   const agent = _rcEl('rcAgent')?.value || '';
   const provider = _rcEl('rcProvider')?.value || 'llama';
-  const model = _rcLastCard?.result?.model || '';
+  const model = card?.result?.model || '';
   if (!agent || !model) { _rcNote('Run a card first to see its trend.'); return; }
   fetch(`/api/reportcard/history?agent=${encodeURIComponent(agent)}`
         + `&provider=${encodeURIComponent(provider)}`
         + `&model=${encodeURIComponent(model)}`)
-    .then(r => r.json()).then(d => rcDrawTrends(RC.trendSeries(d.cards || [])))
+    .then(r => r.json()).then(d => {
+      if (_rcLastCard !== card || !_rcTrendsOpen()) return;
+      rcDrawTrends(RC.trendSeries(d.cards || []));
+    })
     .catch(() => {});
 }
 
