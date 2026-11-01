@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -684,3 +685,27 @@ def test_live_build_run_error_still_reports_and_switches_back(llama, tmp_path, m
     assert [(e["build_path"], e["ok"], e["failed_samples"]) for e in md] == [(p["a"], False, 0), (p["b"], False, 0)]
     assert st["switches"] == [p["b"], p["a"]] and ctx.config.LLAMA_BIN == p["a"]
     assert ev[-1] == {"type": "done", "ok": False, "cancelled": False, "count": 2, "failed_samples": 0, "first_error": None}
+
+
+def test_setup_rebuilds_missing_venv_with_clear(llama, tmp_path, monkeypatch):
+    ctx = _Ctx(tmp_path)
+    monkeypatch.setattr(llama, "_require_ctx", lambda: ctx)
+    monkeypatch.setattr(llama._bl, "script_path", lambda inst, root: (Path("/fake/speed_bench.py"), "ok"))
+    monkeypatch.setattr(llama._bl, "runtime_python", lambda inst, ov: (None, "missing"))
+    monkeypatch.setattr(llama._bl, "venv_python", lambda frozen=False: "/fake/python3")
+    cmds = []
+
+    class _Proc:
+        def __init__(self, cmd, **k):
+            cmds.append(cmd)
+            self.pid, self.returncode = 0, 1
+            self.stdout = io.StringIO("")
+
+        def wait(self):
+            return 1
+    monkeypatch.setattr(llama.subprocess, "Popen", _Proc)
+    monkeypatch.setattr(llama.os, "getpgid", lambda pid: 0)
+    llama._bench_replay.start_run("venvclear")
+    llama._bench_live_setup_job([])
+    venv = str(llama._bl.bench_dir(str(tmp_path)) / "venv")
+    assert cmds == [["/fake/python3", "-m", "venv", venv, "--clear"]]

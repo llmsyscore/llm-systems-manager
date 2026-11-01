@@ -258,3 +258,11 @@ def test_level_summary_spread_absent_without_results(bl):
     out = bl.level_summary({"summary": [{"category": "overall", "requests": 0}], "results": []}, wall_s=0.0)
     assert out["all"]["samples"] == {"pred_tps": [], "prompt_tps": []}
     assert out["all"]["spread"] == {"pred_tps": None, "prompt_tps": None, "latency_s": None}
+
+
+def test_runtime_missing_when_venv_python_link_is_broken(bl, tmp_path):
+    inst = tmp_path / "inst"
+    py = bl.bench_dir(str(inst)) / "venv" / "bin" / "python"
+    py.parent.mkdir(parents=True)
+    py.symlink_to(tmp_path / "gone" / "python3.13")
+    assert bl.runtime_python(str(inst), "") == (None, "missing")

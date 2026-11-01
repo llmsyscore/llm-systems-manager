@@ -2749,7 +2749,8 @@ def _bench_live_setup_job(benches: list) -> None:
         py, src = _bl.runtime_python(cfg.AGENT_INSTALL_DIR, getattr(cfg, "SPEED_BENCH_PYTHON", "") or "")
         steps: list = []
         if py is None:
-            steps.append(("venv", [_bl.venv_python(frozen=bool(getattr(sys, "frozen", False))), "-m", "venv", str(root / "venv")]))
+            # --clear empties an existing venv folder before creating it.
+            steps.append(("venv", [_bl.venv_python(frozen=bool(getattr(sys, "frozen", False))), "-m", "venv", str(root / "venv"), "--clear"]))
             py = str(root / "venv" / "bin" / "python")
         req = _bench_live_root() / "bench" / "requirements-bench.txt"
         pkgs = ["-r", str(req)] if req.is_file() else list(_bl.REQUIREMENTS)
