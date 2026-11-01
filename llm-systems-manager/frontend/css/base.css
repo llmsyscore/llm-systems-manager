@@ -854,6 +854,9 @@
       border-radius:10px; padding:15px 18px;
     }
     .bench-result-placeholder { border-left-color:var(--border); border-style:dashed; background:transparent; }
+    .bench-result-pick { cursor:pointer; }
+    .bench-result-pick.cond-shown { border-color:var(--accent); border-left-color:var(--accent); }
+    .bench-cond-build { font-size:12px; color:var(--fg-muted); margin:4px 0; }
     .bench-result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px; }
     .bench-result-model { font-size:0.82em; font-family: var(--font-mono); color:var(--fg); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .bench-result-build { font-size:0.74em; font-family: var(--font-mono); color:var(--fg-muted); padding:0 6px; border:1px solid var(--border-soft); border-radius:4px; white-space:nowrap; }

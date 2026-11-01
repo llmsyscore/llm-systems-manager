@@ -226,4 +226,37 @@ describe('Offline bench Builds row (#1395)', () => {
     expect(posts.map(p => p.build_name)).toEqual(['vk', 'rocm']);
     expect(posts.map(p => p.run_id)).toEqual(['run1', 'run1-2']);
   });
+
+  it('keeps conditions and the compare picker per build; clicking a row shows that build (#1398)', async () => {
+    const win = bootBuilds(true);
+    win.__runsReply = [
+      { tool: 'benchmark', model_id: 'org/m', agent_id: 'a1', run_id: 'run1', ts: '2026-10-18T10:00:00Z', ok: true, summary: { gen_tps: 50, build_name: 'vk' } },
+      { tool: 'benchmark', model_id: 'org/m', agent_id: 'a1', run_id: 'old-vk', ts: '2026-10-17T10:00:00Z', ok: true, summary: { gen_tps: 49, build_name: 'vk' } },
+      { tool: 'benchmark', model_id: 'org/m', agent_id: 'a1', run_id: 'old-rocm', ts: '2026-10-17T09:00:00Z', ok: true, summary: { gen_tps: 58, build_name: 'rocm' } },
+    ];
+    await win.runBenchmark(); await flush();
+    const es = win.__streams[win.__streams.length - 1];
+    es.readyState = 1;
+    const send = (msg) => es.onmessage({ data: JSON.stringify(msg), lastEventId: 'run1:7' });
+    send({ type: 'build_start', build: 'vk', path: VK.path, index: 0, total: 2 });
+    send(done({ build: 'vk', build_path: VK.path, run_id: 'run1', stored_run_id: 'run1', conditions: COND_A }));
+    send({ type: 'build_start', build: 'rocm', path: ROCM.path, index: 1, total: 2 });
+    send(done({ build: 'rocm', build_path: ROCM.path, run_id: 'run1', stored_run_id: 'run1-2', conditions: COND_B }));
+    for (let i = 0; i < 3; i++) await flush();
+    const d = win.document;
+    const shown = () => [...d.querySelectorAll('#benchResultRows .bench-result-row.cond-shown .bench-result-build')].map(e => e.textContent);
+    const opts = () => [...d.querySelectorAll('#benchCompare select.bl-sel option')].map(o => o.value);
+    expect(shown()).toEqual(['rocm']);
+    expect(d.getElementById('benchCond').textContent).toContain('b2');
+    expect(opts()).toEqual(['', 'old-rocm']);
+    d.querySelectorAll('#benchResultRows .bench-result-row')[0].click();
+    for (let i = 0; i < 3; i++) await flush();
+    expect(shown()).toEqual(['vk']);
+    expect(d.getElementById('benchCond').textContent).toContain('b1');
+    expect(d.querySelector('#benchCond .bench-cond-build').textContent).toContain('Showing build vk');
+    expect(opts()).toEqual(['', 'old-vk']);
+    win.clearStoredBenchmark('org/m', null);
+    for (let i = 0; i < 3; i++) await flush();
+    expect(win.eval('Object.keys(_benchCur).length + Object.keys(_benchCond).length + Object.keys(_benchCmpRows).length')).toBe(0);
+  });
 });

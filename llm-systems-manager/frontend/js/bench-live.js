@@ -257,7 +257,7 @@
     const sel = $('blBaseline');
     const pinned = _runs.find(r => r.baseline);
     sel.innerHTML = `<option value=""${pinned ? '' : ' selected'}>none</option>`
-      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(fmtTs(r.ts))} · ${esc((r.config || {}).bench || '')} · ${fmt(r.gen_tps)} t/s${rng(r.gen_spread) ? ` (${esc(rng(r.gen_spread))})` : ''}${r.baseline ? ' · baseline' : ''}</option>`).join('');
+      + _runs.map(r => `<option value="${esc(r.run_id)}"${pinned && pinned.run_id === r.run_id ? ' selected' : ''}>${esc(fmtTs(r.ts))} · ${esc((r.config || {}).bench || '')}${r.build_name || r.llama_build ? ` · ${esc(r.build_name || r.llama_build)}` : ''} · ${fmt(r.gen_tps)} t/s${rng(r.gen_spread) ? ` (${esc(rng(r.gen_spread))})` : ''}${r.baseline ? ' · baseline' : ''}</option>`).join('');
     if (_runs.length && _runs[0].gen_tps) _lastTps = _runs[0].gen_tps;
     updateEstimate();
   }

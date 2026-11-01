@@ -178,6 +178,17 @@ def test_store_records_llama_build_from_doc_or_manager_fallback(tmp_path):
     assert stored == [("r1", "b6990-agent"), ("r2", "b7000-mgr")]
 
 
+def test_runs_list_carries_the_build_name_of_a_multi_build_run(app, tmp_path):
+    """#1397: a run over several builds keeps its build name; a plain run has none."""
+    h = {"Authorization": "Bearer tok"}
+    app.post("/api/benchmark/live/store", json={**_doc("r1"), "build": "cuda", "build_path": "/b/cuda/llama-server"}, headers=h)
+    app.post("/api/benchmark/live/store", json=_doc("r2"), headers=h)
+    runs = {r["run_id"]: r["build_name"] for r in app.get("/api/benchmark/live/runs?model_id=org/m:Q4").get_json()["runs"]}
+    assert runs == {"r1": "cuda", "r2": ""}
+    meta, doc = bl.read_run(sqlite3.connect(tmp_path / "t.db"), "r1")
+    assert meta["build_name"] == "cuda" and doc["run_id"] == "r1"
+
+
 def test_latest_is_newest_ok_run_per_model_for_the_selected_agent(app):
     h = {"Authorization": "Bearer tok"}
     app.post("/api/benchmark/live/store", json=_doc("r1", model="org/a", pred=50.0), headers=h)
