@@ -2273,6 +2273,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <label for="rcAgent">Host</label>
           <select id="rcAgent" onchange="rcOnAgentChange()"></select>
         </div>
+        <div class="rc-field bp-row" id="rcBuilds" style="display:none;"></div>
         <div class="rc-field">
           <label for="rcMode">Run</label>
           <select id="rcMode" onchange="rcOnModeChange()">
@@ -2344,6 +2345,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 
       <div class="rc-progress" id="rcProgress" style="display:none;"></div>
 
+      <div class="bl-chips rc-build-cards" id="rcBuildCards" style="display:none;"></div>
       <div id="rcCardHost"></div>
 
       <div class="rc-actions" id="rcActions" style="display:none;">
@@ -2425,6 +2427,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <button class="bench-add-btn" onclick="addBenchSwitch()">+ Add custom switch</button>
             </div>
           </div>
+          <div class="bp-row" id="benchBuilds" style="display:none;"></div>
         </div>
         <div class="modal-group" id="benchChartGroup">
           <div class="modal-group-h">Chart</div>
@@ -2509,6 +2512,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
               <div class="bl-row"><label for="blExtra">Request extras</label></div>
               <textarea id="blExtra" class="bl-ta">{"temperature": 0}</textarea>
             </div></div>
+            <div class="bl-grp bp-row" id="blBuilds" style="display:none;"></div>
             <div class="bl-grp"><div class="bl-grp-h">Compare</div><div class="bl-grp-b">
               <div class="bl-row"><label for="blBaseline">Baseline</label><select id="blBaseline" class="bl-sel"><option value="">none</option></select></div>
               <div class="bl-hint">Any past live run for this model can be a baseline.</div>
@@ -2702,6 +2706,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
             </div>
           </div>
         </div>
+        <div class="at-grp bp-row" id="atBuilds" style="display:none;"></div>
         <div class="at-grp">
           <div class="at-grp-h">Budget</div>
           <div class="at-grp-b">
@@ -2808,6 +2813,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <div id="qgRows"></div>
           <div class="at-grp-b"><div class="at-hint">Switch on the keys to test, then pick a value. A value that matches the model's current one is not sent.</div></div>
         </div>
+        <div class="at-grp bp-row" id="qgBuilds" style="display:none;"></div>
         <div class="at-grp">
           <div class="at-grp-h">Guard</div>
           <div class="at-grp-b"><div class="at-frow"><label>Pass when KL ≤</label><input class="at-in xs" id="qgKlMax" type="number" min="0" step="0.005" value="0.02"></div>
@@ -2848,6 +2854,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/thresholds.js"></script>
 <script src="/static/js/lib/spread.js"></script>
 <script src="/static/js/lib/conditions.js"></script>
+<script src="/static/js/lib/buildpick.js"></script>
 <script src="/static/js/lib/reportcard.js"></script>
 <script src="/static/js/lib/toolcards.js"></script>
 <script src="/static/js/lib/sseguard.js"></script>

@@ -291,6 +291,8 @@ def lms_bench_live_run(body: dict, authorization: Optional[str] = Header(default
         req = _bl.validate_run_request(body or {})
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if (body or {}).get("builds"):
+        raise HTTPException(status_code=400, detail="builds needs the llama provider")
     if _ll._bench_active or _ll._autotune_active:
         return {"ok": False, "error": "Another benchmark or autotune is in progress"}
     server = _bench_server()

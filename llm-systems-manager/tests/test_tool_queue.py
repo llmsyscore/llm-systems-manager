@@ -61,7 +61,7 @@ class FakeAgent:
         return _Resp(body)
 
 
-def _env(agent, clock=None, held=None, holder=None, max_queued=5):
+def _env(agent, clock=None, held=None, holder=None, max_queued=5, quiet=None):
     clock = clock or Clock()
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     jobs.init_table(conn)
@@ -71,7 +71,7 @@ def _env(agent, clock=None, held=None, holder=None, max_queued=5):
                    held_agents=lambda: set(held or ()), holder_tool=lambda aid: (holder or {}).get(aid),
                    hostname=lambda aid: AGENTS.get(aid, {}).get("hostname", ""),
                    note_start=lambda aid, p, t: agent.calls.append(("note", aid, p, t)),
-                   max_queued=lambda: max_queued, sleep=lambda s: None, now=clock)
+                   max_queued=lambda: max_queued, sleep=lambda s: None, now=clock, quiet_build_change=quiet)
     q = tq.Queue(svc, deps)
     return q, svc, clock
 
@@ -398,6 +398,26 @@ def test_pre_step_posts_once_across_refusals():
     assert posts == ["/llama/server/stop", "/llama/bench/run", "/llama/bench/run", "/llama/bench/run"]
     done = svc.get(row["id"])
     assert done["status"] == "done" and done["state"]["run_id"] == "r1"
+
+
+def test_queued_live_run_with_builds_arms_quiet_at_dispatch():
+    clock = Clock()
+    agent = FakeAgent(states=[IDLE, BUSY, IDLE], clock=clock)
+    held, armed = {A1}, []
+    q, svc, _ = _env(agent, clock=clock, held=held, quiet=lambda aid: armed.append((aid, clock.t)))
+    live = dict(_spec(body={"model_id": "org/m", "builds": ["/x/llama-server"]}), path="/llama/bench/live/run")
+    plain = dict(_spec(body={"model_id": "org/m"}), path="/llama/bench/live/run")
+    offline = _spec(body={"model_ids": ["org/m"], "builds": ["/x/llama-server"]})
+    rows = [svc.submit(tq.KIND, s, user="alice") for s in (live, plain, offline)]
+    svc.tick()
+    assert armed == [] and svc.get(rows[0]["id"])["status"] == "queued"
+    held.clear()
+    clock.t += 5000
+    t0 = clock.t
+    svc.tick()
+    assert len(armed) == 1 and armed[0][0] == A1 and armed[0][1] >= t0
+    assert svc.get(rows[0]["id"])["status"] == "done"
+    assert len([c for c in agent.calls if c[0] == "POST"]) == 3
 
 
 def test_max_run_ignores_malformed_budget_fields():

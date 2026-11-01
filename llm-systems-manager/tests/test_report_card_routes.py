@@ -846,3 +846,229 @@ def test_cancelled_job_skips_the_end_conditions_call(client, monkeypatch):
     job = client.post("/api/reportcard/run", json=_RUN_BODY).get_json()["job_id"]
     _drain(client, job)
     assert calls.count("/llama/run-conditions") == 1
+
+
+# ── #1395: Report Card on several llama.cpp builds ─────────────────────
+
+BA, BB, BC = "/o/llama-a/build/bin/llama-server", "/o/llama-b/bin/llama-server", "/o/llama-c/llama-server"
+_LISTING = {"ok": True, "builds": [
+    {"path": BA, "name": "llama-a", "active": True, "ok": True},
+    {"path": BB, "name": "llama-b", "active": False, "ok": True},
+    {"path": BC, "name": "llama-c", "active": False, "ok": True}]}
+
+
+@pytest.fixture
+def builds_env(client, monkeypatch):
+    import auth
+    env = {"calls": [], "quiet": [], "audit": [], "fail": set(), "lost": set(), "listing": _LISTING,
+           "active": BA, "reads": 0, "read_ok": None}
+
+    def call(agent, method, path, timeout=15, **kw):
+        env["calls"].append((method, path, (kw.get("json") or {}).get("path"), timeout))
+        if path != "/llama/builds/activate":
+            return True, None
+        p = kw["json"]["path"]
+        if p in env["fail"]:
+            return False, "that build failed its version check"
+        if p == env["active"]:
+            return False, "that build is already active"
+        env["active"] = p
+        if p in env["lost"]:
+            return False, "/llama/builds/activate did not respond"
+        return True, None
+
+    def jget(agent, method, path, timeout=15, **kw):
+        if path != "/llama/builds" or env["listing"] is None:
+            return None
+        env["reads"] += 1
+        if env["read_ok"] is not None and env["reads"] > env["read_ok"]:
+            return None
+        return {**env["listing"], "builds": [{**r, "active": r["path"] == env["active"]}
+                                             for r in env["listing"]["builds"]]}
+    monkeypatch.setattr(rc, "_agent_call", call)
+    monkeypatch.setattr(rc, "_agent_json", jget)
+    monkeypatch.setattr(auth, "effective_role", lambda: "admin")
+    rc.configure_build_switch(quiet=env["quiet"].append,
+                              audit=lambda by, aid, p, ok, err: env["audit"].append((by, aid, p, ok)),
+                              actor=lambda: {"actor": "ops"})
+    yield env
+    rc.configure_build_switch(None, None, None)
+
+
+def _activations(env):
+    return [p for m, path, p, _t in env["calls"] if path == "/llama/builds/activate"]
+
+
+def _run(client, **extra):
+    body = {"agent": "a" * 32, "provider": "llama", "mode": "standard", "model_key": "small", **extra}
+    return client.post("/api/reportcard/run", json=body)
+
+
+def test_reportcard_builds_loop_switches_and_back(client, builds_env):
+    r = _run(client, builds=[BA, BB, BB, BC])
+    assert r.status_code == 200, r.get_json()
+    events = _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BB, BC, BA]
+    assert all(t == 420 for _m, path, _p, t in builds_env["calls"] if path == "/llama/builds/activate")
+    done = [e for e in events if e.get("event") == "done"][0]
+    assert [c["result"]["build_name"] for c in done["cards"]] == ["llama-a", "llama-b", "llama-c"]
+    assert [c["result"]["build_path"] for c in done["cards"]] == [BA, BB, BC]
+    assert done["card"] == done["cards"][-1]
+    back = [e for e in events if e.get("phase") == "switch_back"]
+    assert len(back) == 1 and back[0]["ok"] is True
+    assert len(builds_env["quiet"]) >= 4 and set(builds_env["quiet"]) == {"a" * 32}
+    assert [(a[2], a[3]) for a in builds_env["audit"]] == [(BB, True), (BC, True), (BA, True)]
+    assert builds_env["audit"][0][0] == {"actor": "ops"}
+
+
+def test_reportcard_failed_switch_continues(client, builds_env):
+    builds_env["fail"].add(BB)
+    r = _run(client, builds=[BB, BC])
+    events = _drain(client, r.get_json()["job_id"])
+    failed = [e for e in events if e.get("phase") == "build_failed"]
+    assert failed and failed[0]["build"] == "llama-b" and "version check" in failed[0]["error"]
+    done = [e for e in events if e.get("event") == "done"][0]
+    assert [c["result"]["build_name"] for c in done["cards"]] == ["llama-c"]
+    assert _activations(builds_env) == [BB, BC, BA]
+
+
+def test_reportcard_switch_back_on_error(client, builds_env, monkeypatch):
+    n = {"i": 0}
+
+    def bench(*a, **k):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise RuntimeError("bench blew up")
+        return {"ttft_s": 0.5, "prefill_tps": 1000.0, "gen_tps": 40.0, "reps": []}
+    monkeypatch.setattr(rc, "run_bench", bench)
+    r = _run(client, builds=[BB, BC])
+    events = _drain(client, r.get_json()["job_id"])
+    assert events[-1]["event"] == "error" and "bench blew up" in events[-1]["error"]
+    assert _activations(builds_env) == [BB, BC, BA]
+    assert [e["ok"] for e in events if e.get("phase") == "switch_back"] == [True]
+
+
+def test_reportcard_cancel_between_builds_switches_back(client, builds_env, monkeypatch):
+    def bench(*a, **k):
+        rc.cancel_card(next(iter(rc._JOBS)))
+        return {"ttft_s": 0.5, "prefill_tps": 1000.0, "gen_tps": 40.0, "reps": []}
+    monkeypatch.setattr(rc, "run_bench", bench)
+    r = _run(client, builds=[BB, BC])
+    events = _drain(client, r.get_json()["job_id"])
+    assert events[-1]["event"] == "cancelled"
+    assert _activations(builds_env) == [BB, BA]
+
+
+def test_reportcard_unreadable_builds_errors_before_switching(client, builds_env):
+    builds_env["listing"] = None
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert events[-1] == {"event": "error", "error": "could not read the installed builds", "cards": []}
+    assert _activations(builds_env) == []
+
+
+def test_reportcard_builds_non_llama_400(client, builds_env):
+    r = _run(client, provider="vllm", builds=[BB])
+    assert r.status_code == 400 and r.get_json()["error"] == "builds needs the llama provider"
+
+
+def test_reportcard_builds_needs_admin(client, builds_env, monkeypatch):
+    import auth
+    monkeypatch.setattr(auth, "effective_role", lambda: "operator")
+    r = _run(client, builds=[BB])
+    assert r.status_code == 403 and r.get_json()["error"] == "switching builds needs an admin"
+    assert rc._JOBS == {}
+
+
+def test_reportcard_no_builds_unchanged(client, builds_env):
+    seen = []
+    rc.configure_queue(lambda aid, prov, req: seen.append(dict(req)))
+    for extra in ({}, {"builds": []}):
+        r = _run(client, **extra)
+        events = _drain(client, r.get_json()["job_id"])
+        done = [e for e in events if e.get("event") == "done"][0]
+        assert set(done) == {"event", "card", "cleanup"}
+        assert "build_name" not in done["card"]["result"]
+        assert not any(e.get("phase") in ("switch_back", "build_failed") for e in events)
+    assert all("builds" not in q and "by" not in q for q in seen)
+    assert not any(path.startswith("/llama/builds") for _m, path, _p, _t in builds_env["calls"])
+    assert builds_env["quiet"] == [] and builds_env["audit"] == []
+
+
+def test_reportcard_switch_back_when_activate_timed_out_but_switched(client, builds_env):
+    builds_env["lost"].add(BB)
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert [e["build"] for e in events if e.get("phase") == "build_failed"] == ["llama-b"]
+    assert _activations(builds_env) == [BB, BA] and builds_env["active"] == BA
+    assert [e["ok"] for e in events if e.get("phase") == "switch_back"] == [True]
+    assert events[-1]["event"] == "error" and events[-1]["cards"] == []
+
+
+def test_reportcard_no_switch_back_when_failed_switch_left_start_active(client, builds_env):
+    builds_env["fail"].add(BB)
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BB]
+    assert not any(e.get("phase") == "switch_back" for e in events)
+
+
+def test_reportcard_switch_back_unreadable_treats_already_active_as_ok(client, builds_env):
+    builds_env["read_ok"] = 1
+    builds_env["lost"].add(BB)
+    builds_env["fail"].add(BC)
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BB, BA]
+    builds_env["calls"].clear()
+    builds_env["active"], builds_env["reads"] = BA, 0
+    builds_env["lost"].clear()
+    r = _run(client, builds=[BC])
+    events = _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BC, BA]
+    assert [(e["ok"], e.get("error")) for e in events if e.get("phase") == "switch_back"] == [(True, None)]
+
+
+def test_reportcard_error_and_cancel_carry_stored_cards(client, builds_env, monkeypatch):
+    n = {"i": 0}
+
+    def bench(*a, **k):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise RuntimeError("bench blew up")
+        return {"ttft_s": 0.5, "prefill_tps": 1000.0, "gen_tps": 40.0, "reps": []}
+    monkeypatch.setattr(rc, "run_bench", bench)
+    events = _drain(client, _run(client, builds=[BB, BC]).get_json()["job_id"])
+    assert events[-1]["event"] == "error"
+    assert [c["result"]["build_name"] for c in events[-1]["cards"]] == ["llama-b"]
+
+    def cancelling(*a, **k):
+        rc.cancel_card(next(j for j, v in rc._JOBS.items() if not v["done"]))
+        return {"ttft_s": 0.5, "prefill_tps": 1000.0, "gen_tps": 40.0, "reps": []}
+    monkeypatch.setattr(rc, "run_bench", cancelling)
+    builds_env["active"] = BA
+    events = _drain(client, _run(client, builds=[BB, BC]).get_json()["job_id"])
+    assert events[-1]["event"] == "cancelled"
+    assert [c["result"]["build_path"] for c in events[-1]["cards"]] == [BB]
+
+
+def test_reportcard_emits_build_start_per_build(client, builds_env):
+    events = _drain(client, _run(client, builds=[BA, BC]).get_json()["job_id"])
+    starts = [{k: e[k] for k in ("build", "path", "index", "total")} for e in events if e.get("phase") == "build_start"]
+    assert starts == [{"build": "llama-a", "path": BA, "index": 0, "total": 2},
+                      {"build": "llama-c", "path": BC, "index": 1, "total": 2}]
+
+
+def test_agent_call_error_body_surfaces_agent_detail(monkeypatch):
+    import agent_registry
+
+    class R:
+        ok, status_code = False, 409
+
+        def json(self):
+            return {"detail": "a switch is already running"}
+    monkeypatch.setattr(agent_registry, "agent_request", lambda *a, **k: (R(), [], None))
+    assert rc._agent_call({"token": "t"}, "POST", "/llama/builds/activate") == \
+        (False, "/llama/builds/activate did not respond")
+    assert rc._agent_call({"token": "t"}, "POST", "/llama/builds/activate", error_body=True) == \
+        (False, "a switch is already running")

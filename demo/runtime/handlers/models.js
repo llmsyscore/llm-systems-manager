@@ -359,6 +359,11 @@
     return { n: n, min: round(v * 0.86, 1), p25: round(v * 0.94, 1), p50: round(v, 1), p75: round(v * 1.05, 1), max: round(v * 1.13, 1) };
   }
   function whPerKtok(m, gen) { return round(m.powerW.load * 0.75 * 1000 / (gen * 3600), 2); }
+  // Run conditions naming the installed build a canned result ran on.
+  function demoConditions() {
+    return { schema: 1, backend: { name: 'llama.cpp', build: BUILD,
+      install: { name: 'llama.cpp', path: '/opt/llama.cpp/build/bin/llama-server', backend: 'Vulkan', version: BUILD, note: '' } } };
+  }
 
   // One stored live run: k=0 newest, k=2 oldest; the oldest run of the first model is the pinned baseline.
   function liveRun(m, mi, k, ctx) {
@@ -397,7 +402,7 @@
       };
     });
     return { bench: 'qualitative', config: row.config, ts: row.ts, elapsed_s: 188, wh_per_ktok: row.wh_per_ktok,
-      llama_build: row.llama_build, levels: levels };
+      llama_build: row.llama_build, conditions: demoConditions(), levels: levels };
   }
 
   R.route('GET /api/benchmark/live/latest', function (ctx) {
@@ -567,7 +572,8 @@
         model: model, gpu_config: HW[m.id].gpuLabel, provider: prov, gen_tps: gen, prefill_tps: round(c.prefill * f, 0), ttft_s: c.ttft,
         vram_used_mb: c.vramMb, vram_total_mb: HW[m.id].vramMb, avg_watts: watts, power_source: c.src, tokens_per_joule: round(gen / watts, 3),
         usd_per_mtok: round(watts * 1e6 / gen / 3.6e6 * 0.15, 3),
-        spread: { gen_tps: spread(gen, 10), prefill_tps: spread(c.prefill * f, 10) }
+        spread: { gen_tps: spread(gen, 10), prefill_tps: spread(c.prefill * f, 10) },
+        build_name: prov === 'llama' ? 'llama.cpp' : undefined, conditions: prov === 'llama' ? demoConditions() : undefined
       }
     };
   }

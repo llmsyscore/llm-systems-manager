@@ -426,6 +426,8 @@ def vllm_bench_live_run(body: dict, authorization: Optional[str] = Header(defaul
         req = _bl.validate_run_request(body or {})
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if (body or {}).get("builds"):
+        raise HTTPException(status_code=400, detail="builds needs the llama provider")
     if _busy():
         return {"ok": False, "error": "Another benchmark or autotune is in progress"}
     server = _bench_server()

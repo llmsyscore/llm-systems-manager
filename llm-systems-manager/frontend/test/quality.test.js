@@ -26,6 +26,7 @@ const STUBS = `
     const body = u.startsWith('/api/benchmark/models') ? { models: ['org/m:Q4', 'org/big:Q4'] }
       : (u === '/api/llm/config' && (!opts || !opts.method)) ? window.__cfg
       : u.startsWith('/api/llm/autotune/preflight') ? (window.__pre || { ok: true, busy: false, perplexity: true, perplexity_detail: { present: true, kl_text: true, runnable: true, rc: 0, hint: null } })
+      : (u.startsWith('/api/llm/builds') && window.__builds) ? { ok: true, builds: window.__builds }
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
       : (u === '/api/llm/autotune/run' && opts && opts.method === 'POST') ? (window.__runAnswer || window.__runReply || { ok: true, run_id: 'q1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__configWriteReply || { ok: true })
@@ -552,5 +553,50 @@ describe('Quality guard on the server queue (#897)', () => {
     await win.toolsPollActivity(); await flush(); await flush();
     expect(win.QG.running()).toBe(true);
     expect(win.document.getElementById('qgCancelBtn').style.display).toBe('');
+  });
+});
+
+describe('Quality guard Builds row (#1395)', () => {
+  const VK = { path: '/opt/vk/build/bin/llama-server', dir: '/opt/vk/build/bin', name: 'vk', active: true, backend: 'Vulkan', ok: true };
+  const ROCM = { path: '/opt/rocm/build/bin/llama-server', dir: '/opt/rocm/build/bin', name: 'rocm', active: false, backend: 'ROCm', ok: true };
+  async function openedBuilds() {
+    const win = runHarness({ sources: [STUBS, srcFile('js/lib/buildpick.js'), srcFile('js/quality.js')], bodyHtml: BODY,
+      bootstrap: `window._me = { admin_access: false }; window.__builds = ${JSON.stringify([VK, ROCM])};` });
+    await win.QG.onOpen('org/m:Q4', { overrides: { 'cache-type-k': 'q4_0' } });
+    await flush(); await flush();
+    return win;
+  }
+  const runBody = (win) => JSON.parse(win.__fetches.find(([u, o]) => u === '/api/llm/autotune/run' && o && o.method === 'POST')[1].body);
+
+  it('a non-admin sees the row, and the start body carries the picked builds', async () => {
+    const win = await openedBuilds();
+    const el = win.document.getElementById('qgBuilds');
+    expect(el.style.display).toBe('');
+    const inp = [...el.querySelectorAll('input')].find(i => i.value === ROCM.path);
+    inp.checked = true; inp.dispatchEvent(new win.Event('change'));
+    expect(el.querySelector('.bp-note').textContent).toBe('');
+    await win.QG.run();
+    await flush();
+    expect(runBody(win).builds).toEqual([VK.path, ROCM.path]);
+  });
+
+  it('no builds field with the active build only', async () => {
+    const win = await openedBuilds();
+    await win.QG.run();
+    await flush();
+    expect('builds' in runBody(win)).toBe(false);
+  });
+
+  it('logs each build and records each build under its stored id', async () => {
+    const win = await openedBuilds();
+    await win.QG.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', mode: 'quality', ...m });
+    ev({ type: 'build_start', build: 'rocm', path: ROCM.path, index: 1, total: 2 });
+    ev({ type: 'model_done', ok: true, run_id: 'q1', stored_run_id: 'q1-2', build: 'rocm', guard: { kl: 0.01, kl_max: 0.02, pass: true }, changes: [] });
+    expect(win.document.getElementById('qgLog').textContent).toContain('Build 2 of 2: rocm');
+    const post = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body)).pop();
+    expect(post.run_id).toBe('q1-2');
+    expect(post.build_name).toBe('rocm');
   });
 });

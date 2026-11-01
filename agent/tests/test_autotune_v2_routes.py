@@ -989,3 +989,142 @@ def test_stick_with_failed_samples_is_not_a_measurement(llama, tmp_path, monkeyp
     st = be._stick({"concurrency": 1, "limit": 4})
     assert st["ok"] is False and st["decode_tps"] == 40.0 and st["failed"] == 1
     assert "1 sample" in st["error"] and "Read timed out" in st["error"]
+
+
+def _two_builds(llama, tmp_path, monkeypatch, ppl=(True, True)):
+    rows, paths = [], []
+    for i, has_ppl in enumerate(ppl):
+        d = tmp_path / f"b{i}" / "bin"
+        d.mkdir(parents=True)
+        (d / "llama-server").write_text("")
+        if has_ppl:
+            _write_fake_ppl(d / "llama-perplexity")
+        p = os.path.realpath(d / "llama-server")
+        paths.append(p)
+        rows.append({"path": p, "ok": True, "name": f"b{i}"})
+    monkeypatch.setitem(llama.llama_inventory._state, "last", {"ok": True, "builds": rows})
+    return paths
+
+
+def _stub_run_all(llama, monkeypatch):
+    monkeypatch.setattr(llama, "_perf_job_set", lambda phase, put, holder="": None)
+    monkeypatch.setattr(llama, "_bench_live_runtime",
+                        lambda: {"python": "", "script": "", "source": "", "script_status": "ok", "commit": ""})
+    monkeypatch.setattr(llama, "_list_cache_ggufs", lambda root: [])
+    monkeypatch.setattr(llama, "_llama_read_ini", lambda: llama.configparser.ConfigParser())
+    monkeypatch.setattr(llama, "_bench_get_hf_arg", lambda mid: "o/r:Q4")
+    monkeypatch.setattr(llama, "_conditions_facts", lambda mid, **kw: {"model_id": mid})
+    monkeypatch.setattr(llama.run_conditions, "samples", lambda: (None, None))
+    llama._autotune_cancel_event.clear()
+
+
+def test_autotune_spawns_each_build(llama, tmp_path, monkeypatch):
+    paths = _two_builds(llama, tmp_path, monkeypatch)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=paths[0])
+    _stub_run_all(llama, monkeypatch)
+    monkeypatch.setattr(llama, "_llama_help_valued", lambda bin_path=None: set())
+    events, posted, spawned = [], [], []
+    monkeypatch.setattr(llama, "_autotune_put", events.append)
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append((a[5], a[6])))
+    monkeypatch.setattr(llama._at, "spawn_cmd", lambda b, *a, **k: spawned.append(b) or [b])
+    popen_kw = []
+
+    def _popen(cmd, **kw):
+        popen_kw.append(kw)
+        raise OSError("stop")
+    monkeypatch.setattr(llama.subprocess, "Popen", _popen)
+
+    def _run_model(mid, section, req, backend, put, cancelled, env, **kw):
+        with contextlib.suppress(OSError):
+            llama._autotune_run_iter(mid, 0, [], backend.env, 0, bin_path=backend.bin_path)
+        doc = {"type": "model_done", "model_id": mid, "ok": True}
+        put(doc)
+        return doc
+    monkeypatch.setattr(llama._at, "run_model", _run_model)
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit", "builds": paths})
+    assert spawned == paths
+    assert [os.path.dirname(p) for p in paths] == [k["cwd"] for k in popen_kw]
+    assert [k["env"]["LD_LIBRARY_PATH"].split(":")[0] for k in popen_kw] == [os.path.dirname(p) for p in paths]
+    assert [(e["index"], e["total"]) for e in events if e["type"] == "build_start"] == [(0, 2), (1, 2)]
+    dones = [e for e in events if e["type"] == "model_done"]
+    assert [(d["build"], d["build_path"]) for d in dones] == [("b0", paths[0]), ("b1", paths[1])]
+    assert [(p[0], p[1]["build_name"], p[1]["build_active"]) for p in posted] == \
+        [(True, "b0", True), (True, "b1", False)]
+
+
+def test_autotune_help_cache_per_build(llama, tmp_path, monkeypatch):
+    a = _fake_llama_bin(tmp_path / "a")
+    b = _fake_llama_bin(tmp_path / "b", text=_HELP_FIXTURE.replace("--reasoning", "--reasoning-x"))
+    _wire(llama, tmp_path, monkeypatch, llama_bin=str(a))
+    llama._llama_help_cache.clear()
+    first = llama._llama_help_valued()
+    other = llama._llama_help_valued(str(b))
+    assert "reasoning" in first and "reasoning" not in other and "reasoning-x" in other
+    assert llama._llama_help_valued(str(b)) == other and llama._llama_help_valued() == first
+
+
+def test_quality_refuses_build_without_perplexity(llama, tmp_path, monkeypatch):
+    paths = _two_builds(llama, tmp_path, monkeypatch, ppl=(True, False))
+    _wire(llama, tmp_path, monkeypatch, llama_bin=paths[0])
+    monkeypatch.setattr(llama, "_autotune_kl_text", lambda: tmp_path / "kl.txt")
+    (tmp_path / "kl.txt").write_text("x")
+    started = []
+    monkeypatch.setattr(llama.threading, "Thread",
+                        lambda target, args=(), daemon=None: types.SimpleNamespace(start=lambda: started.append(args)))
+    with pytest.raises(llama.HTTPException) as ei:
+        llama.llama_autotune_run({"model_ids": ["org/m:Q4"], "objective": "fit", "mode": "quality",
+                                  "overrides": {"cache-type-k": "q4_0"}, "builds": paths})
+    assert ei.value.status_code == 400 and ei.value.detail == "llama-perplexity missing in b1"
+    assert not started
+
+
+def test_autotune_no_builds_unchanged(llama, tmp_path, monkeypatch):
+    _wire(llama, tmp_path, monkeypatch)
+    _stub_run_all(llama, monkeypatch)
+    monkeypatch.setattr(llama, "_llama_help_valued", lambda bin_path=None: set())
+    events, posted = [], []
+    monkeypatch.setattr(llama, "_autotune_put", events.append)
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append(a[6]))
+    monkeypatch.setattr(llama._at, "run_model", lambda mid, s, r, b, put, c, env, **kw:
+                        put({"type": "model_done", "model_id": mid}) or {"ok": True})
+    llama._autotune_run_all({"model_ids": ["org/m:Q4"], "objective": "fit"})
+    assert not [e for e in events if e["type"] == "build_start"]
+    assert all("build" not in e and "build_path" not in e for e in events)
+    assert "build_name" not in posted[0]
+
+
+def test_autotune_builds_keep_global_build(llama, tmp_path, monkeypatch):
+    paths = _two_builds(llama, tmp_path, monkeypatch)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=paths[0])
+    monkeypatch.setattr(llama, "_llama_build_last", "b1-active")
+    monkeypatch.setattr(llama, "_autotune_run_iter",
+                        lambda *a, **k: {"ok": True, "model_loaded": True, "build": "b9-other"})
+    llama._AutotuneBackend("org/m:Q4", {}, "r1", paths[1]).load([], 4096, None)
+    assert llama._llama_build_last == "b1-active"
+    llama._AutotuneBackend("org/m:Q4", {}, "r1", paths[0]).load([], 4096, None)
+    assert llama._llama_build_last == "b9-other"
+
+
+@pytest.mark.parametrize("mode,tool", [("tune", "autotune"), ("quality", "quality")])
+def test_autotune_builds_ledger_rows_distinct(llama, tmp_path, monkeypatch, mode, tool):
+    paths = _two_builds(llama, tmp_path, monkeypatch)
+    _wire(llama, tmp_path, monkeypatch, llama_bin=paths[0])
+    _stub_run_all(llama, monkeypatch)
+    monkeypatch.setattr(llama, "_llama_help_valued", lambda bin_path=None: set())
+    monkeypatch.setattr(llama, "_autotune_run_id", "r1")
+    events, posted = [], []
+    monkeypatch.setattr(llama, "_autotune_put", events.append)
+    monkeypatch.setattr(llama._shared, "post_tool_run", lambda *a, **k: posted.append((a[1], a[3], a[6].get("build_name"))))
+
+    def _run(mid, section, req, backend, put, cancelled, env, **kw):
+        put({"type": "model_done", "model_id": mid, "run_id": "r1"})
+        return {"ok": True}
+    monkeypatch.setattr(llama._at, "run_model", _run)
+    monkeypatch.setattr(llama._at, "run_quality", _run)
+    body = {"model_ids": ["org/m:Q4"], "objective": "fit", "builds": paths}
+    if mode == "quality":
+        body["mode"] = "quality"
+    llama._autotune_run_all(body)
+    assert posted == [(tool, "r1", "b0"), (tool, "r1-2", "b1")]
+    dones = [e for e in events if e["type"] == "model_done"]
+    assert [(d["run_id"], d["stored_run_id"]) for d in dones] == [("r1", "r1"), ("r1", "r1-2")]

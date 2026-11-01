@@ -778,8 +778,10 @@
   R.route('GET /api/llm/server/log/stream-info', function () { return { ok: false }; });
   R.route('GET /api/llm/builds', function (ctx) {
     return { ok: true, scanned_at: sec(ctx), truncated: false, builds: [{
-      path: '/opt/llama.cpp/build/bin/llama-server', dir: '/opt/llama.cpp/build/bin', active: true,
-      backend: 'Vulkan', note: '', version: '0.8.0-dev', build: '1', commit: 'f3586e66', ok: true, error: null }] };
+      path: '/opt/llama.cpp/build/bin/llama-server', dir: '/opt/llama.cpp/build/bin', name: 'llama.cpp', active: true,
+      backend: 'Vulkan', note: '', version: '0.8.0-dev', build: '1', commit: 'f3586e66', ok: true, error: null }, {
+      path: '/opt/llama-rocm/build/bin/llama-server', dir: '/opt/llama-rocm/build/bin', name: 'llama-rocm', active: false,
+      backend: 'ROCm', note: 'source build', version: '0.8.0-dev', build: '1', commit: 'f3586e66', ok: true, error: null }] };
   });
 
   R.route('GET /api/fleet/:provider/aggregate', function (ctx) {

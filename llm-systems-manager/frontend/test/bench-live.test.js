@@ -66,6 +66,7 @@ const STUBS = `
       ? ((window.__stored || {})[url.split('/').pop()] || { ok: true, run: window.__baseDoc || null })
       : url.indexOf('/api/benchmark/live/runs') === 0
       ? { ok: true, runs: window.__runsList || [{ run_id: 'b1', ts: '2026-09-05T22:14:00Z', baseline: true, gen_tps: 103.2, config: { bench: 'qualitative' } }] }
+      : (url.indexOf('/api/llm/builds') === 0 && window.__builds) ? { ok: true, builds: window.__builds }
       : (url === '/api/benchmark/live/run' && window.__runReply) ? window.__runReply
       : (url.indexOf('/api/benchmark/run?') === 0 && window.__vllmRunReply) ? window.__vllmRunReply
       : { ok: true, run_id: window.__runId || 'r1' };
@@ -1598,5 +1599,67 @@ describe('BL conditions + baseline comparison (#1302)', () => {
     const html = srcFile('index.html');
     expect(html).toMatch(/class="bl-card bl-collapsed" id="blCompareCard"/);
     expect(html).toMatch(/id="blCompareCard"[^>]*>\s*<div class="bl-card-h tog" onclick="this\.parentElement\.classList\.toggle\('bl-collapsed'\)"><h3>Compare with baseline<\/h3>/);
+  });
+});
+
+describe('Builds row (#1395)', () => {
+  const VK = { path: '/opt/vk/build/bin/llama-server', dir: '/opt/vk/build/bin', name: 'vk', active: true, backend: 'Vulkan', ok: true };
+  const ROCM = { path: '/opt/rocm/build/bin/llama-server', dir: '/opt/rocm/build/bin', name: 'rocm', active: false, backend: 'ROCm', ok: true };
+  const bootBuilds = (bootstrap) => runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/buildpick.js'), srcFile('js/bench-live.js')],
+    bodyHtml: BODY + '<div class="bp-row" id="blBuilds"></div>', bootstrap });
+  const pickRocm = (win) => { const inp = [...win.document.querySelectorAll('#blBuilds input')].find(i => i.value === ROCM.path);
+    inp.checked = true; inp.dispatchEvent(new win.Event('change')); };
+
+  it('an admin run body includes the picked builds and the switch note shows', async () => {
+    const win = bootBuilds(`window._me = { admin_access: true }; window.__builds = ${JSON.stringify([VK, ROCM])}; BL.onOpen("org/m:Q4");`);
+    await flush(); await flush();
+    expect(win.document.getElementById('blBuilds').style.display).toBe('');
+    pickRocm(win);
+    expect(win.document.querySelector('#blBuilds .bp-note').textContent).toBe('The server switches to each picked build and back to vk when the run ends.');
+    win.BL.run();
+    await flush();
+    const call = win.__fetches.find(([u]) => u === '/api/benchmark/live/run');
+    expect(JSON.parse(call[1].body).builds).toEqual([VK.path, ROCM.path]);
+  });
+
+  it('a non-admin sees no Builds row and sends no builds', async () => {
+    const win = bootBuilds(`window._me = { admin_access: false }; window.__builds = ${JSON.stringify([VK, ROCM])}; BL.onOpen("org/m:Q4");`);
+    await flush(); await flush();
+    expect(win.document.getElementById('blBuilds').style.display).toBe('none');
+    win.BL.run();
+    await flush();
+    const call = win.__fetches.find(([u]) => u === '/api/benchmark/live/run');
+    expect('builds' in JSON.parse(call[1].body)).toBe(false);
+  });
+
+  it('fleet mode hides the row and leaves builds out of the job config', async () => {
+    const win = bootBuilds(`window._me = { admin_access: true }; window.__builds = ${JSON.stringify([VK, ROCM])}; BL.onOpen("org/m:Q4");`);
+    await flush(); await flush();
+    pickRocm(win);
+    win.BL.toggleFleet();
+    await flush();
+    expect(win.document.getElementById('blBuilds').style.display).toBe('none');
+    expect('builds' in win.BL._config()).toBe(false);
+  });
+
+  it('build events become progress lines and the stored run id is what attaches', async () => {
+    const win = bootBuilds(`window._me = { admin_access: true }; window.__runId = "s1"; window.__builds = ${JSON.stringify([VK, ROCM])}; BL.onOpen("org/m:Q4");`);
+    await flush(); await flush();
+    pickRocm(win);
+    win.BL.run();
+    await flush();
+    win.__sse.onEvent({ type: 'build_start', run_id: 's1', build: 'rocm', path: ROCM.path, index: 1, total: 2 });
+    win.__sse.onEvent({ type: 'build_failed', run_id: 's1', build: 'rocm', stage: 'load', error: 'out of memory' });
+    win.__sse.onEvent({ type: 'model_done', run_id: 's1', stored_run_id: 's1-b0', build: 'vk', ok: true, levels: [], elapsed_s: 5 });
+    win.__sse.onEvent({ type: 'switch_back', run_id: 's1', ok: true });
+    win.__sse.onEvent({ type: 'done', run_id: 's1', ok: true });
+    await flush();
+    const text = win.document.getElementById('blLog').textContent;
+    expect(text).toContain('Build 2 of 2: rocm');
+    expect(text).toContain('rocm could not be used: out of memory');
+    expect(text).toContain('Switched back to vk');
+    win.fetch = vi.fn(async () => ({ json: async () => ({ ok: true, attached: 'created', card: {} }) }));
+    await win.BL.addToReportCard();
+    expect(JSON.parse(win.fetch.mock.calls[0][1].body)).toEqual({ run_id: 's1-b0' });
   });
 });

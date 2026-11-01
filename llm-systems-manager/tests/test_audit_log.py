@@ -580,3 +580,15 @@ def test_jobs_audit_rows_match_on_the_detail_job_id(monkeypatch):
     assert [r["ts"] for r in rows] == ["2026-09-23T20:02:00+00:00", "2026-09-23T20:00:00+00:00"]
     assert rows[0]["detail"] == {"job_id": "j1"} and rows[0]["action"] == "jobs.cancel"
     assert manager_mod._jobs_audit_rows("nope") == []
+
+
+def test_reportcard_build_switch_writes_the_activate_route_row(monkeypatch):
+    import report_card
+    conn = _mem_db(); monkeypatch.setattr(manager_mod, "get_audit_db", lambda: conn)
+    assert report_card._build_audit is manager_mod._reportcard_build_audit
+    manager_mod._reportcard_build_audit({"actor": "ops", "role": "admin", "ip": "192.0.2.9", "auth": "session"},
+                                        "deadbeef", "/o/llama-b/bin/llama-server", False, "version check failed")
+    row = conn.execute("SELECT * FROM audit_log").fetchone()
+    assert (row["action"], row["event"], row["actor"], row["path"], row["outcome"]) == \
+        ("llama.build-switch", "config.server", "ops", "/api/llm/builds/activate", "error")
+    assert json.loads(row["detail"])["path"] == "/o/llama-b/bin/llama-server"

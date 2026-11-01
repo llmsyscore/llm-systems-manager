@@ -13,6 +13,7 @@ let _benchCond          = {};   // model_id → run conditions from its model_do
 let _benchCur           = {};   // model_id → finished run in ledger shape, for the compare picker
 let _benchCmpRows       = {};   // model_id → {key, rows} earlier ledger runs for the picker
 let _benchCondModel     = null; // model_id shown in #benchCond / #benchCompare
+let _benchMultiBuild    = false; // true once the run reports a build_start (several builds)
 
 const BENCH_SERIES_COLORS = [
   {gen: '#5a8fc2', ppt: '#c28a3a', pg: '#5ac27a'},   // steel blue / warm amber / mint
@@ -541,6 +542,9 @@ async function openBench(modelId) {
     models = r.models || [];
   } catch (e) { console.warn('benchmark/models failed', e); }
 
+  // Builds row (#1395): each build's own llama-bench runs, so no admin gate.
+  if (window.BUILDPICK) BUILDPICK.load(document.getElementById('benchBuilds'), '/api/llm/builds', {needsSwitchNote: false});
+
   const panel = document.getElementById('benchModelPanel');
   const prevChecked = new Set(
     [...panel.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value));
@@ -974,12 +978,18 @@ async function runBenchmark() {
   const tool     = 'llama-bench';
   const switches = _benchSwitches.filter(s => (s.flag || '').trim());
   if (!modelIds.length) { _toastErr('Select at least one model.'); return; }
+  const builds = window.BUILDPICK ? BUILDPICK.payload(document.getElementById('benchBuilds')) : null;
 
-  return _benchRunNow({ modelIds, tool, switches });
+  return _benchRunNow({ modelIds, tool, switches, builds });
+}
+
+// Chart/result key of a per-model event: the model, plus its build in a run over several builds.
+function _benchKey(msg) {
+  return _benchMultiBuild && msg.build ? `${msg.model_id} · ${msg.build}` : msg.model_id;
 }
 
 async function _benchRunNow(sel) {
-  const { modelIds, tool, switches } = sel;
+  const { modelIds, tool, switches, builds } = sel;
   const slot = _benchQueue();
 
   // Guard re-entry and disable the run button.
@@ -1065,13 +1075,14 @@ async function _benchRunNow(sel) {
   }
   _benchModelDatasets = {};
   _benchRawRows = [];
+  _benchMultiBuild = false;
   _benchSetChartIdle(false);
 
   // Start benchmark on backend, which will respond with a stream of events for logs and results
   fetch('/api/benchmark/run', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({model_ids: modelIds, tool, switches})
+    body: JSON.stringify({model_ids: modelIds, tool, switches, ...(builds ? {builds} : {})})
   }).then(r => r.json()).then(d => {
     if (d.ok && d.queued) {
       _benchRunEnable();
@@ -1121,8 +1132,12 @@ function _benchOpenStream(tool) {
       _benchPerfNote(null);
     },
     onEvent: (msg, e) => {
-    if (msg.type === 'model_start') {
-      _benchAddModelDatasets(msg.model_id);
+    if (msg.type === 'build_start' || msg.type === 'build_failed' || msg.type === 'switch_back') {
+      if (msg.type === 'build_start') _benchMultiBuild = true;
+      const text = window.BUILDPICK ? BUILDPICK.eventText(msg, BUILDPICK.activeName(document.getElementById('benchBuilds'))) : null;
+      if (text) _benchLogAppend(`<div class="bench-log-sep">══ ${_hEsc(text)} ══</div>`);
+    } else if (msg.type === 'model_start') {
+      _benchAddModelDatasets(_benchKey(msg));
       _benchLogAppend(`<div class="bench-log-sep">── ${_hEsc(msg.model_id)} ──</div>`);
       if (msg.cmd) _benchLogAppend(`<span class="bench-log-cmd">$ ${_hEsc(msg.cmd)}</span>`);
       _benchStatus(`running: ${msg.model_id.split('/').pop()}`);
@@ -1131,29 +1146,31 @@ function _benchOpenStream(tool) {
       if (html) _benchLogAppend(html);
     } else if (msg.type === 'result') {
       if (msg.model_id && (msg.gen_tps != null || msg.ppt_tps != null || msg.pg_tps != null)) {
-        _benchPushPoint(msg);
+        _benchPushPoint(_benchKey(msg) === msg.model_id ? msg : {...msg, model_id: _benchKey(msg)});
       }
     } else if (msg.type === 'model_done') {
       // The agent sends its own maxes from v2026.08.31-1 on; matching them
       // keeps this row identical to the one the agent records (#772).
       const mx = msg.max_gen_tps === undefined
-        ? _benchMaxes(msg.model_id)
+        ? _benchMaxes(_benchKey(msg))
         : { gen: msg.max_gen_tps, ppt: msg.max_ppt_tps, pg: msg.max_pg_tps };
       const energy = { wh_per_ktok: msg.wh_per_ktok ?? null, energy_wh: msg.energy_wh ?? null,
                         energy_source: msg.energy_source || null };
-      const runId = msg.run_id || _runIdOf(e);
+      // A build of a run over several builds is stored under its own id.
+      const runId = msg.stored_run_id || msg.run_id || _runIdOf(e);
       _benchCond[msg.model_id] = msg.conditions;
       _benchCur[msg.model_id] = {tool: 'benchmark', model_id: msg.model_id, run_id: runId, ts: new Date().toISOString(), ok: true,
                                  summary: {gen_tps: mx.gen, ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
                                            switches: _benchSwitchMap(_benchSwitches)},
                                  conditions: msg.conditions};
-      _benchAddModelResultRow(msg.model_id, tool, mx, energy);
+      _benchAddModelResultRow(msg.model_id, tool, mx, energy, _benchMultiBuild ? msg.build : null, msg.conditions);
       document.getElementById('benchResults').classList.add('shown');
       _recordToolRun('benchmark', {model_id: msg.model_id, gen_tps: mx.gen,
                                    ppt_tps: mx.ppt, pg_tps: mx.pg, bench_tool: tool,
                                    run_id: runId,
                                    wh_per_ktok: energy.wh_per_ktok,
                                    conditions: msg.conditions,
+                                   build_name: msg.build || undefined,
                                    ok: mx.gen != null || mx.ppt != null || mx.pg != null});
       _benchRenderCond(msg.model_id);
       if (energy.wh_per_ktok != null) {
@@ -1191,7 +1208,7 @@ function _benchAttach() {
     _benchChart.data.labels = [];
     _benchChart.update('none');
   }
-  _benchModelDatasets = {}; _benchRawRows = [];
+  _benchModelDatasets = {}; _benchRawRows = []; _benchMultiBuild = false;
   _benchSetChartIdle(false);
   _benchSetState('running');
   _benchOpenStream('llama-bench');
@@ -1251,7 +1268,7 @@ function _benchRenderPlaceholder() {
 }
 
 // After a model finishes benchmarking, add a result row to the UI showing the best t/s for prompt, gen, and combined tests, and buttons to save or clear the benchmark data
-function _benchAddModelResultRow(modelId, tool, maxes, energy) {
+function _benchAddModelResultRow(modelId, tool, maxes, energy, buildName, cond) {
   const { ppt: maxPpt, gen: maxGen, pg: maxPg } = maxes || _benchMaxes(modelId);
   const en = energy || {};
 
@@ -1273,13 +1290,15 @@ function _benchAddModelResultRow(modelId, tool, maxes, energy) {
     .trim();
   nameEl.textContent = cleanModelId || modelId;
   nameEl.title = modelId;     // keep the full string discoverable on hover
+  const buildEl = buildName ? document.createElement('span') : null;
+  if (buildEl) { buildEl.className = 'bench-result-build'; buildEl.textContent = buildName; }
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'btn btn-zinc-muted-gradient';
   saveBtn.textContent = '💾 Save';
   saveBtn.style.fontSize = '0.78em';
   saveBtn.addEventListener('click', () => {
-    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn, en.wh_per_ktok != null ? en : null);
+    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn, en.wh_per_ktok != null ? en : null, buildName ? cond : null);
   });
 
   const clearBtn = document.createElement('button');
@@ -1305,6 +1324,7 @@ function _benchAddModelResultRow(modelId, tool, maxes, energy) {
   actions.appendChild(clearBtn);
 
   head.appendChild(nameEl);
+  if (buildEl) head.appendChild(buildEl);
   head.appendChild(actions);
 
   const grid = document.createElement('div');
@@ -1383,10 +1403,12 @@ function _benchSetChartIdle(idle) {
 }
 
 // Save benchmark results for a model to the backend, then update local state and UI. Called when user clicks "Save" on a model's benchmark result row.
-function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra) {
+function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra, cond) {
   if (!model_id) return;
   const body = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches};
-  if (_benchCond[model_id]) extra = {...(extra && typeof extra === 'object' ? extra : {}), conditions: _benchCond[model_id]};
+  // A row from a run over several builds saves its own build's conditions.
+  const c = cond || _benchCond[model_id];
+  if (c) extra = {...(extra && typeof extra === 'object' ? extra : {}), conditions: c};
   if (extra && typeof extra === 'object') body.extra_json = extra;
   fetch('/api/benchmark/store', {
     method: 'POST',

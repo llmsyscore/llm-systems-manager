@@ -67,6 +67,8 @@ class Deps:
     card_start: Optional[Callable[[dict], Optional[str]]] = None
     card_status: Optional[Callable[[str], Optional[dict]]] = None
     card_cancel: Optional[Callable[[str], None]] = None
+    # Arms the build-change quiet window for an agent when a live bench over several builds is posted.
+    quiet_build_change: Optional[Callable[[str], None]] = None
 
 
 def model_of(body: dict) -> str:
@@ -152,6 +154,9 @@ class Queue:
                 state["pre_done"] = True
                 self.s.set_state(job.id, state)
                 self._nap(job)
+            if (self.d.quiet_build_change and spec["path"].endswith("/bench/live/run")
+                    and (spec.get("body") or {}).get("builds")):
+                self.d.quiet_build_change(aid)
             resp = self.d.agent_call("POST", agent, spec["path"], json=spec["body"], timeout=20)
             if resp is None:
                 return jobs.fail("agent unreachable")

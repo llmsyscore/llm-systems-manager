@@ -36,7 +36,7 @@
     accept:  { label: 'draft accept %', all: 'accept_rate', row: 'accept_rate', pct: true },
   };
   const SERIES = ['#4ea1ff', '#ff8a3d', '#3ad17f', '#b88aff'];
-  let _metric = 'decode', _matrixRun = false, _chartType = null;
+  let _metric = 'decode', _matrixRun = false, _chartType = null, _multiBuild = false;
   const _baseOpenDet = new Set();  // run ids with an expanded config-detail row
   const FLEET_POLL_MS = 3000;
 
@@ -181,6 +181,8 @@
              osl: parseInt($('blOsl').value, 10) || 1024, limit: parseInt($('blLimit').value, 10) || 8,
              concurrency: sweepLevels(), timeout_s: parseInt($('blTimeout').value, 10) || 600,
              extra_inputs: extra, baseline_run_id: $('blBaseline').value || null };
+    const builds = !fleetOn() && window.BUILDPICK ? BUILDPICK.payload($('blBuilds')) : null;
+    if (builds) c.builds = builds;
     if (matrixOn()) { const m = matrixConfig(); return { ...c, bench: m.benches[0], osl: m.osls[0], matrix: m }; }
     return c;
   }
@@ -277,6 +279,7 @@
     if (wantFleet && !fleetOn() && !running()) toggleFleet();
     // Any other open drops a stored run that is still loading.
     if (opts && opts.run) showStoredRun(opts.run); else _storedReq++;
+    if (!running()) loadBuilds();
     try { _pre = await fetch(tq('/api/benchmark/live/preflight')).then(r => r.json()); } catch (_) { _pre = { server: { up: false }, runtime: {} }; }
     // Reopened without a model: the host's loaded model replaces a stale earlier target (#1126).
     const loaded = ((_pre && _pre.server) || {}).loaded_id;
@@ -595,7 +598,24 @@
       _fleetHosts = [];
       const hint = $('blFleetHint'); if (hint) hint.textContent = '';
     }
+    syncBuildsRow();
     updateEstimate();
+  }
+  // Builds row (#1395): llama hosts only, hidden in fleet mode; non-active builds for admins only.
+  function loadBuilds() {
+    const el = $('blBuilds'); if (!el || !window.BUILDPICK) return Promise.resolve();
+    if (prov() !== 'llama') { BUILDPICK.render(el, [], {}); return Promise.resolve(); }
+    const admin = !!(window._me && window._me.admin_access);
+    return BUILDPICK.load(el, tq('/api/llm/builds'), { needsSwitchNote: true, admin }).then(syncBuildsRow);
+  }
+  function syncBuildsRow() {
+    const el = $('blBuilds'); if (!el || !el._bp) return;
+    el.style.display = fleetOn() ? 'none' : '';
+  }
+  function buildLine(msg) {
+    const text = window.BUILDPICK ? BUILDPICK.eventText(msg, BUILDPICK.activeName($('blBuilds'))) : null;
+    if (!text) return;
+    log(text, msg.type === 'build_start' ? '' : (msg.type === 'switch_back' && msg.ok ? 'ok' : 'warn'));
   }
   function renderFleet() {
     const card = $('blFleetCard'); if (!card) return;
@@ -857,7 +877,7 @@
   }
   // Clears the run panes; the stream that follows replays the run from its first event.
   function resetRunView() {
-    _levels = []; _lastDoc = null; _baseline = null; _baselineFor = null; _activeLevel = null; _cell = null; _curLevel = null; _curCell = null; _sweepLevels = []; _matrixRun = false;
+    _levels = []; _lastDoc = null; _baseline = null; _baselineFor = null; _activeLevel = null; _cell = null; _curLevel = null; _curCell = null; _sweepLevels = []; _matrixRun = false; _multiBuild = false;
     const lg = $('blLog'); if (lg) lg.innerHTML = '';
     setProgress(0, 0); $('blStrip').textContent = '';
     redraw();
@@ -907,7 +927,7 @@
       _lastCfg = c;
       busy(true); _levels = []; _lastDoc = null; _activeLevel = null; _cell = null; _fleetJob = null; _fleetSel = null; renderFleet(); $('blLog').innerHTML = ''; $('blStrip').textContent = ''; setProgress(0, 0);
       syncAttachBtn(); syncPinBtn();
-      _baseline = null; _baselineFor = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; startElapsed();
+      _baseline = null; _baselineFor = null; _sweepLevels = (c.concurrency || []).slice(); _curLevel = null; _multiBuild = false; startElapsed();
       if (c.baseline_run_id) await loadBaselineDoc(c.baseline_run_id);
       redraw(); setStatus('starting…', 'running');
     } else $('blRunBtn').disabled = true;
@@ -949,6 +969,9 @@
           log(`level ${msg.concurrency} started${tag}`); redraw(); }
         else if (msg.type === 'progress') { const pct = msg.total ? Math.round(msg.done / msg.total * 100) : 0; $('blProgress').querySelector('i').style.width = pct + '%'; _curLevel = msg.level; setStrip(msg.done, msg.total); }
         else if (msg.type === 'line') { log(msg.text || '', 'dim'); }
+        else if (msg.type === 'build_start' || msg.type === 'build_failed' || msg.type === 'switch_back') {
+          if (msg.type === 'build_start') _multiBuild = true;
+          buildLine(msg); }
         else if (msg.type === 'level_result') { _levels.push(msg); _lastTps = _levels[0].all.pred_tps || _lastTps;
           const nf = Number(msg.all.failed) || 0;
           log(`level ${msg.concurrency} done · decode ${fmt(msg.all.pred_tps)} t/s · aggregate ${fmt(msg.all.agg_pred_tps)} t/s${nf ? ` · ${failedText(nf)}` : ''}`, nf ? 'warn' : 'ok');
@@ -960,9 +983,11 @@
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }
           leaveAttached(); stopElapsed();
           setStatus(msg.ok ? 'runtime ready' : 'setup failed', msg.ok ? 'ok' : 'err'); busy(false); }
-        else if (msg.type === 'model_done') { _lastDoc = msg.ts ? msg : { ...msg, ts: new Date().toISOString() };
+        else if (msg.type === 'model_done') { const doc = msg.ts ? msg : { ...msg, ts: new Date().toISOString() };
+          // A run over several builds stores each build's doc under its own id.
+          _lastDoc = msg.stored_run_id ? { ...doc, run_id: msg.stored_run_id } : doc;
           if (msg.baseline_run_id && !_baseline) loadBaselineDoc(msg.baseline_run_id);
-          $('blStrip').textContent = doneStrip(msg);
+          $('blStrip').textContent = (_multiBuild && msg.build ? msg.build + ' · ' : '') + doneStrip(msg);
           if (_lastCfg && _lastCfg.matrix && msg.config && !msg.config.matrix) log('agent ignored the matrix — upgrade the agent to v2026.09.08-8 or newer', 'warn'); }
         else if (msg.type === 'done') {
           if (_es) { try { _es.close(); } catch (_) {} _es = null; }

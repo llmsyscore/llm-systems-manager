@@ -45,6 +45,7 @@ const STUBS = `
       : u.startsWith('/api/llama-state') ? { state: window.__llamaState || 'stopped' }
       : u.startsWith('/api/llm/config') && !(opts && opts.method) ? { __DEFAULTS__: {}, 'org/m:Q4': { 'ctx-size': '32768', threads: '32', temperature: '0.8' } }
       : u.startsWith('/api/llm/model-meta') ? { repo: 'org/m', base_model: 'org/base', suggestions: [{ key: 'temperature', value: 0.7, source: 'sidecar' }, { key: 'top-p', value: 0.8, source: 'model_card' }, { key: 'min-p', value: 0, source: 'base_model' }] }
+      : (u.startsWith('/api/llm/builds') && window.__builds) ? { ok: true, builds: window.__builds }
       : u.startsWith('/api/llm/autotune/run') ? (window.__runAnswer || window.__runReply || { ok: true, run_id: 'r1' })
       : (u === '/api/llm/config' && opts && opts.method === 'POST') ? (window.__failConfig ? { ok: false, error: 'boom' } : { ok: true })
       : u.startsWith('/api/energy/host-peak') ? (window.__peak || { ok: true, peak_w: 312.4, hours: 21, peak_active_w: 300.2, active_hours: 12 })
@@ -1498,5 +1499,74 @@ describe('AT conditions card + comparison (#1302)', () => {
   it('hides the diff Clear button in the comparison host', () => {
     expect(srcFile('css/autotune.css')).toMatch(/\.at-compare \[data-diff="clear"\]\s*\{\s*display:\s*none/);
     expect(srcFile('index.html')).toMatch(/id="atCondCard"[\s\S]{0,600}class="[^"]*at-compare[^"]*" id="atCompareHost"/);
+  });
+});
+
+describe('Builds row (#1395)', () => {
+  const VK = { path: '/opt/vk/build/bin/llama-server', dir: '/opt/vk/build/bin', name: 'vk', active: true, backend: 'Vulkan', ok: true };
+  const ROCM = { path: '/opt/rocm/build/bin/llama-server', dir: '/opt/rocm/build/bin', name: 'rocm', active: false, backend: 'ROCm', ok: true };
+  async function openedBuilds(admin) {
+    const win = runHarness({ sources: [LAYOUT, STUBS, srcFile('js/lib/spread.js'), srcFile('js/lib/buildpick.js'), srcFile('js/autotune.js')], bodyHtml: BODY,
+      bootstrap: `window._me = { admin_access: ${admin} }; window.__builds = ${JSON.stringify([VK, ROCM])};` });
+    win.AT.onOpen('org/m:Q4');
+    for (let i = 0; i < 6; i++) await flush();
+    return win;
+  }
+  const pickRocm = (win) => { const inp = [...win.document.querySelectorAll('#atBuilds input')].find(i => i.value === ROCM.path);
+    inp.checked = true; inp.dispatchEvent(new win.Event('change')); };
+
+  it('shows the row to a non-admin, with no switch note, and the run body carries builds', async () => {
+    const win = await openedBuilds(false);
+    expect(win.document.getElementById('atBuilds').style.display).toBe('');
+    pickRocm(win);
+    expect(win.document.querySelector('#atBuilds .bp-note').textContent).toBe('');
+    await win.AT.run();
+    await flush();
+    const body = JSON.parse(win.__fetches.find(f => f[0] === '/api/llm/autotune/run')[1].body);
+    expect(body.builds).toEqual([VK.path, ROCM.path]);
+  });
+
+  it('no builds field with the active build only', async () => {
+    const win = await openedBuilds(true);
+    await win.AT.run();
+    await flush();
+    const body = JSON.parse(win.__fetches.find(f => f[0] === '/api/llm/autotune/run')[1].body);
+    expect('builds' in body).toBe(false);
+  });
+
+  it('logs each build and keeps one result per model and build', async () => {
+    const win = await openedBuilds(true);
+    pickRocm(win);
+    await win.AT.run();
+    await flush();
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'build_start', build: 'vk', path: VK.path, index: 0, total: 2 });
+    ev({ type: 'model_done', ok: true, build: 'vk', build_path: VK.path, objective: 'balanced', changes: [], stages: [] });
+    ev({ type: 'build_start', build: 'rocm', path: ROCM.path, index: 1, total: 2 });
+    ev({ type: 'model_done', ok: true, run_id: 'r1', stored_run_id: 'r1-2', build: 'rocm', build_path: ROCM.path, objective: 'balanced', changes: [], stages: [] });
+    ev({ type: 'done', ok: true });
+    await flush();
+    expect(win.document.getElementById('atLog').textContent).toContain('Build 2 of 2: rocm');
+    const chips = [...win.document.querySelectorAll('#atDoneModels .bl-chip')].map(c => c.textContent);
+    expect(chips).toEqual(['org/m:Q4 · vk', 'org/m:Q4 · rocm']);
+    const posts = win.__fetches.filter(([u, o]) => u === '/api/tools/runs' && o && o.method === 'POST').map(([, o]) => JSON.parse(o.body));
+    expect(posts.map(p => [p.run_id, p.build_name])).toEqual([['', 'vk'], ['r1-2', 'rocm']]);
+  });
+
+  it('escapes a build name in the result chips and the log', async () => {
+    const win = await openedBuilds(true);
+    pickRocm(win);
+    await win.AT.run();
+    await flush();
+    const bad = '<img src=x onerror=1>';
+    const ev = (m) => win.__sse.onEvent({ model_id: 'org/m:Q4', ...m }, {});
+    ev({ type: 'build_start', build: bad, path: ROCM.path, index: 0, total: 2 });
+    ev({ type: 'model_done', ok: true, build: bad, objective: 'balanced', changes: [], stages: [] });
+    ev({ type: 'model_done', ok: true, build: 'vk', objective: 'balanced', changes: [], stages: [] });
+    ev({ type: 'done', ok: true });
+    await flush();
+    const d = win.document;
+    expect(d.querySelectorAll('#atDoneModels img, #atLog img').length).toBe(0);
+    expect(d.getElementById('atDoneModels').textContent).toContain(bad);
   });
 });
