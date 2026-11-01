@@ -614,7 +614,7 @@ def test_alert_rows_carry_closed_and_acknowledged_times_in_local_time(monkeypatc
            "a2,RAM high,warning,closed,box,full,2026-09-12T12:00:00+00:00,,2026-09-12T13:00:00+00:00\n")
     deps = _ae_deps(monkeypatch, [row] * 1000, csv)
     hist = deps["alarm_history"]("90d", "rule", 10)
-    assert hist["total"] == 1 and hist["timezone"] == "EDT" and hist["by"][0]["key"] == "RAM high"
+    assert hist["total"] == 1 and hist["timezone"] == time.strftime("%Z") and hist["by"][0]["key"] == "RAM high"
 
 
 # ── #957: agent connect failures never show the agent URL ────────────
