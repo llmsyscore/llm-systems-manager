@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.02-1"
+__version__ = "v2026.11.02-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2793,6 +2793,11 @@ def tool_runs_record():
                 "UPDATE tool_runs SET conditions = ? "
                 "WHERE tool = ? AND run_id = ? AND model_id = ? AND conditions IS NULL",
                 (cond_json, tool, run_id, model_id))
+        if isinstance(build_active, bool) and run_id:
+            conn.execute(
+                "UPDATE tool_runs SET build_active = ? "
+                "WHERE tool = ? AND run_id = ? AND model_id = ? AND build_active IS NULL",
+                (int(build_active), tool, run_id, model_id))
         conn.execute(
             "DELETE FROM tool_runs WHERE tool = ? AND id NOT IN "
             "(SELECT id FROM tool_runs WHERE tool = ? ORDER BY id DESC LIMIT ?)",
