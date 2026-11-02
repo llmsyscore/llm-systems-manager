@@ -47,6 +47,7 @@ const STUBS = `
     if (u.indexOf('/api/tools/runs?tool=') === 0 && window.__runsReply === null) return Promise.reject(new Error('down'));
     const body =
       u.indexOf('/api/tools/runs?tool=') === 0 ? { runs: window.__runsReply }
+      : (u.indexOf('/api/benchmark/results') === 0 && window.__results) ? { results: window.__results }
       : u.indexOf('/api/benchmark/models') === 0 ? { models: ['org/m'] }
       : u.indexOf('/api/llama-state') === 0 ? { state: 'unknown' }
       : { ok: true };
@@ -258,5 +259,75 @@ describe('Offline bench Builds row (#1395)', () => {
     win.clearStoredBenchmark('org/m', null);
     for (let i = 0; i < 3; i++) await flush();
     expect(win.eval('Object.keys(_benchCur).length + Object.keys(_benchCond).length + Object.keys(_benchCmpRows).length')).toBe(0);
+  });
+});
+
+describe('Offline bench saved results per build (#1407)', () => {
+  const SAVED = [
+    { model_id: 'org/m', build_name: '', avg_gen_tps: 40, avg_ppt_tps: 800, avg_pg_tps: 200, bench_tool: 'llama-bench', switches: [], ts: '2026-10-16T10:00:00Z', extra_json: { conditions: COND_A } },
+    { model_id: 'org/m', build_name: 'vk', avg_gen_tps: 50, avg_ppt_tps: 900, avg_pg_tps: 300, bench_tool: 'llama-bench', switches: [], ts: '2026-10-17T10:00:00Z', extra_json: { wh_per_ktok: 1.2, conditions: COND_A } },
+    { model_id: 'org/m', build_name: 'rocm', avg_gen_tps: 60, avg_ppt_tps: 950, avg_pg_tps: 320, bench_tool: 'llama-bench', switches: [], ts: '2026-10-18T10:00:00Z', extra_json: { conditions: COND_B } },
+  ];
+  async function reopened() {
+    const win = boot();
+    win.__results = SAVED;
+    await win.loadBenchmarkData();
+    await win.openBench('org/m');
+    for (let i = 0; i < 3; i++) await flush();
+    return win;
+  }
+  const builds = (d, sel) => [...d.querySelectorAll(`#benchResultRows ${sel || '.bench-result-row'} .bench-result-build`)].map(e => e.textContent);
+
+  it('reopening rebuilds one saved row per build, newest first, and shows its conditions', async () => {
+    const win = await reopened();
+    const d = win.document;
+    expect(win.eval('_benchData["org/m"].build_name')).toBe('rocm');   // the model card shows the newest save
+    expect(builds(d, '.bench-result-saved')).toEqual(['rocm', 'vk']);
+    expect(d.querySelector('#benchResultRows .bench-result-row button').textContent).toBe('✓ Saved');
+    expect(builds(d, '.cond-shown')).toEqual(['rocm']);
+    expect(d.getElementById('benchCond').textContent).toContain('b2');
+    d.querySelectorAll('#benchResultRows .bench-result-row')[1].click();
+    for (let i = 0; i < 3; i++) await flush();
+    expect(builds(d, '.cond-shown')).toEqual(['vk']);
+    expect(d.getElementById('benchCond').textContent).toContain('b1');
+  });
+
+  it('a build row saves and clears that build only', async () => {
+    const win = await reopened();
+    const d = win.document;
+    const vk = d.querySelectorAll('#benchResultRows .bench-result-row')[1];
+    expect(vk.querySelector('button').disabled).toBe(true);   // a saved row can't be re-saved
+    win.saveBenchmark('org/m', 50, 900, 300, 'llama-bench', null, null, COND_A, 'vk');
+    await flush();
+    const store = win.__fetches.filter(([u]) => u === '/api/benchmark/store').pop();
+    expect(JSON.parse(store[1].body).build_name).toBe('vk');
+    await flush();
+    vk.querySelectorAll('button')[1].click();
+    for (let i = 0; i < 4; i++) await flush();
+    const del = win.__fetches.find(([u, o]) => o && o.method === 'DELETE');
+    expect(del[0]).toBe('/api/benchmark/results/org%2Fm?build=vk');
+    expect(win.eval('_benchSaved["org/m"].map(r => r.build_name)')).toEqual(['rocm', '']);
+    expect(builds(d)).toEqual(['rocm']);
+  });
+
+  it('reopening during a run leaves the live rows alone', async () => {
+    const { win, send } = await started();
+    win.__results = SAVED;
+    await win.loadBenchmarkData();
+    send(done({ build: 'vk', build_path: '/b/vk', run_id: 'run1', stored_run_id: 'run1' }));
+    for (let i = 0; i < 3; i++) await flush();
+    await win.openBench('org/m');
+    for (let i = 0; i < 3; i++) await flush();
+    expect(win.document.querySelectorAll('#benchResultRows .bench-result-saved').length).toBe(0);
+    expect(win.document.querySelectorAll('#benchResultRows .bench-result-row').length).toBe(1);
+  });
+
+  it('a plain row clear drops every saved result of the model', async () => {
+    const win = await reopened();
+    win.clearStoredBenchmark('org/m', null);
+    for (let i = 0; i < 3; i++) await flush();
+    const del = win.__fetches.find(([u, o]) => o && o.method === 'DELETE');
+    expect(del[0]).toBe('/api/benchmark/results/org%2Fm');
+    expect(win.eval('"org/m" in _benchSaved || "org/m" in _benchData')).toBe(false);
   });
 });

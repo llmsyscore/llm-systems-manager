@@ -3,7 +3,8 @@
 // ===========================================================================
 let _benchEventSrc      = null;
 let _benchChart         = null;
-let _benchData          = {};   // model_id → stored results (DB)
+let _benchData          = {};   // model_id → newest stored result (DB)
+let _benchSaved         = {};   // model_id → stored results, one per build, newest first
 let _liveBenchData      = {};   // model_id → newest live-bench run (#893)
 let _benchSwitches      = [];   // current editable switch list
 let _benchModelDatasets = {};   // model_id → base index of its [ppt, gen, pg] dataset triple
@@ -505,8 +506,12 @@ const BENCH_DEFAULTS = {
 async function loadBenchmarkData() {
   try {
     const d = await fetch('/api/benchmark/results').then(r => r.json());
-    _benchData = {};
-    (d.results || []).forEach(r => { _benchData[r.model_id] = r; });
+    _benchData = {}; _benchSaved = {};
+    (d.results || []).forEach(r => { (_benchSaved[r.model_id] = _benchSaved[r.model_id] || []).push(r); });
+    Object.keys(_benchSaved).forEach(m => {
+      _benchSaved[m].sort((a, b) => (Date.parse(b.ts || '') || 0) - (Date.parse(a.ts || '') || 0));
+      _benchData[m] = _benchSaved[m][0];
+    });
   } catch (e) {
     // Keep the previously loaded data — blanking it would wipe every badge.
     console.warn('loadBenchmarkData failed:', e);
@@ -570,8 +575,9 @@ async function openBench(modelId) {
 
   _benchQueue();
   if (modelId && !_benchEventSrc && !Object.keys(_benchCur).length
-      && ((_benchData[modelId] || {}).extra_json || {}).conditions) _benchRenderCond(modelId);
-  if (!fresh) { if (_benchSlot) _benchSlot.sync(); return; }
+      && !_benchStoredList(modelId).some(r => r.build_name)
+      && ((_benchStored(modelId, '') || {}).extra_json || {}).conditions) _benchRenderCond(modelId);
+  if (!fresh) { if (_benchSlot) _benchSlot.sync(); _benchShowSaved(modelId); return; }
 
   // First open: reset UI state — clear data BEFORE switchBenchTab so its axis
   // update sees a clean slate and honors the default axes (n_depth / avg_ts).
@@ -590,6 +596,33 @@ async function openBench(modelId) {
   _benchSetState('idle');
   _benchRunEnable();
   _benchSetChartIdle(true);
+  _benchShowSaved(modelId);
+}
+
+// Stored results of a model, newest first; a stored result's build, '' for none.
+function _benchStoredList(modelId) {
+  return _benchSaved[modelId] || (_benchData[modelId] ? [_benchData[modelId]] : []);
+}
+function _benchStored(modelId, build) {
+  return _benchStoredList(modelId).find(r => (r.build_name || '') === (build || '')) || null;
+}
+
+// Saved per-build results of a model as result rows, when no run is on screen (#1407).
+function _benchShowSaved(modelId) {
+  const rowsEl = document.getElementById('benchResultRows');
+  if (!modelId || !rowsEl || _benchEventSrc || Object.keys(_benchCur).length) return;
+  if (rowsEl.querySelector('.bench-result-row:not(.bench-result-placeholder):not(.bench-result-saved)')) return;
+  const saved = _benchStoredList(modelId).filter(r => r.build_name);
+  rowsEl.querySelectorAll('.bench-result-saved').forEach(r => r.remove());
+  if (!saved.length) { if (!rowsEl.children.length) _benchRenderPlaceholder(); return; }
+  rowsEl.innerHTML = '';
+  saved.forEach(r => {
+    const x = r.extra_json || {};
+    _benchAddModelResultRow(modelId, r.bench_tool, {gen: r.avg_gen_tps, ppt: r.avg_ppt_tps, pg: r.avg_pg_tps},
+                            x, r.build_name, x.conditions || null, true);
+  });
+  document.getElementById('benchResults').classList.add('shown');
+  _benchRenderCond(modelId, saved[0].build_name);
 }
 
 // Toggle dropdown panels in benchmark overlay (model select, switch edit, etc.)
@@ -636,9 +669,10 @@ function _benchCondKey(modelId, build) {
 }
 
 // Ledger-shaped run of a model's finished run, else of its stored result.
-function _benchCurrentRun(modelId) {
-  if (_benchCur[modelId]) return _benchCur[modelId];
-  const s = _benchData[modelId];
+function _benchCurrentRun(key) {
+  if (_benchCur[key]) return _benchCur[key];
+  const [modelId, build] = String(key).split('\n');
+  const s = _benchStored(modelId, build);
   if (!s) return null;
   return {tool: 'benchmark', model_id: modelId, ts: s.ts || new Date().toISOString(), ok: true,
           summary: {gen_tps: s.avg_gen_tps, ppt_tps: s.avg_ppt_tps, pg_tps: s.avg_pg_tps, bench_tool: s.bench_tool,
@@ -1278,14 +1312,14 @@ function _benchRenderPlaceholder() {
 }
 
 // After a model finishes benchmarking, add a result row to the UI showing the best t/s for prompt, gen, and combined tests, and buttons to save or clear the benchmark data
-function _benchAddModelResultRow(modelId, tool, maxes, energy, buildName, cond) {
+function _benchAddModelResultRow(modelId, tool, maxes, energy, buildName, cond, saved) {
   const { ppt: maxPpt, gen: maxGen, pg: maxPg } = maxes || _benchMaxes(modelId);
   const en = energy || {};
 
   const rows = document.getElementById('benchResultRows');
 
   const row = document.createElement('div');
-  row.className = 'bench-result-row';
+  row.className = 'bench-result-row' + (saved ? ' bench-result-saved' : '');
 
   const head = document.createElement('div');
   head.className = 'bench-result-head';
@@ -1305,27 +1339,28 @@ function _benchAddModelResultRow(modelId, tool, maxes, energy, buildName, cond) 
 
   const saveBtn = document.createElement('button');
   saveBtn.className = 'btn btn-zinc-muted-gradient';
-  saveBtn.textContent = '💾 Save';
+  saveBtn.textContent = saved ? '✓ Saved' : '💾 Save';
+  saveBtn.disabled = !!saved;
   saveBtn.style.fontSize = '0.78em';
   saveBtn.addEventListener('click', () => {
-    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn, en.wh_per_ktok != null ? en : null, buildName ? cond : null);
+    saveBenchmark(modelId, maxGen, maxPpt, maxPg, tool, saveBtn, en.wh_per_ktok != null ? en : null, buildName ? cond : null, buildName);
   });
 
   const clearBtn = document.createElement('button');
   clearBtn.className = 'btn btn-red-muted-gradient';
   clearBtn.textContent = '✕';
   clearBtn.style.fontSize = '0.78em';
-  clearBtn.title = 'Clear stored benchmark for this model';
+  clearBtn.title = buildName ? 'Clear stored benchmark for this build' : 'Clear stored benchmark for this model';
   clearBtn.addEventListener('click', async () => {
     const ok = await _themedConfirm({
-      title:        `Clear stored benchmark for ${adminEsc(modelId)}?`,
-      bodyHtml:     'The saved tps values will be removed for this model.',
+      title:        `Clear stored benchmark for ${adminEsc(modelId)}${buildName ? ' · ' + adminEsc(buildName) : ''}?`,
+      bodyHtml:     buildName ? 'The saved tps values will be removed for this build.' : 'The saved tps values will be removed for this model.',
       confirmLabel: 'Clear',
       cancelLabel:  'Cancel',
       danger:       true,
     });
     if (!ok) return;
-    clearStoredBenchmark(modelId, clearBtn.closest('.bench-result-row'));
+    clearStoredBenchmark(modelId, clearBtn.closest('.bench-result-row'), buildName);
   });
 
   const actions = document.createElement('div');
@@ -1419,9 +1454,10 @@ function _benchSetChartIdle(idle) {
 }
 
 // Save benchmark results for a model to the backend, then update local state and UI. Called when user clicks "Save" on a model's benchmark result row.
-function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra, cond) {
+function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, saveBtn, extra, cond, build) {
   if (!model_id) return;
-  const body = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches};
+  const build_name = build || '';
+  const body = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, switches: _benchSwitches, build_name};
   // A row from a run over several builds saves its own build's conditions.
   const c = cond || _benchCond[model_id];
   if (c) extra = {...(extra && typeof extra === 'object' ? extra : {}), conditions: c};
@@ -1432,19 +1468,25 @@ function saveBenchmark(model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, tool, sav
     body: JSON.stringify(body)
   }).then(r => r.json()).then(d => {
     if (!d.ok) { _toastErr(d.error || 'Save failed'); return; }
-    _benchData[model_id] = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool,
-                            switches: _benchSwitches, ts: new Date().toISOString(), extra_json: extra || null};
+    const entry = {model_id, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool: tool, build_name,
+                   switches: _benchSwitches, ts: new Date().toISOString(), extra_json: extra || null};
+    _benchSaved[model_id] = [entry, ..._benchStoredList(model_id).filter(r => (r.build_name || '') !== build_name)];
+    _benchData[model_id] = entry;
     if (saveBtn) saveBtn.textContent = '✓ Saved';
     if (typeof renderModelCards === 'function') renderModelCards();
   }).catch(e => _toastErr('Save failed: ' + e));
 }
 
 // Clear stored benchmark data for a model on the backend, then update local state and UI. Called when user clicks "✕" on a model's benchmark result row.
-function clearStoredBenchmark(model_id, rowEl) {
-  fetch('/api/benchmark/results/' + encodeURIComponent(model_id), {method:'DELETE'})
+function clearStoredBenchmark(model_id, rowEl, build) {
+  const q = build ? '?build=' + encodeURIComponent(build) : '';
+  fetch('/api/benchmark/results/' + encodeURIComponent(model_id) + q, {method:'DELETE'})
     .then(r => r.json()).then(() => {
-      delete _benchData[model_id];
-      const own = k => k === model_id || k.startsWith(model_id + '\n');
+      // A build's ✕ drops that build only; otherwise every saved result of the model.
+      const left = build ? _benchStoredList(model_id).filter(r => r.build_name !== build) : [];
+      if (left.length) { _benchSaved[model_id] = left; _benchData[model_id] = left[0]; }
+      else { delete _benchSaved[model_id]; delete _benchData[model_id]; }
+      const own = build ? (k => k === model_id + '\n' + build) : (k => k === model_id || k.startsWith(model_id + '\n'));
       [_benchCond, _benchCur, _benchCmpRows].forEach(m => Object.keys(m).filter(own).forEach(k => delete m[k]));
       if (_benchCondModel != null && own(_benchCondModel)) {
         ['benchCond', 'benchCompare'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });

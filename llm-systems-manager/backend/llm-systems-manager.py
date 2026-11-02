@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.01-3"
+__version__ = "v2026.11.01-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -369,12 +369,42 @@ def init_db():
                 DROP TABLE _model_benchmarks_old2;
             """)
             log.info("model_benchmarks migrated to per-provider schema (model_id, agent_id, provider)")
+        # Per-build keyspace (#1407): one saved result per build; old rows get build ''.
+        cols3 = [r[1] for r in conn.execute("PRAGMA table_info(model_benchmarks)").fetchall()]
+        if "build_name" not in cols3:
+            conn.executescript("""
+                ALTER TABLE model_benchmarks RENAME TO _model_benchmarks_old3;
+                CREATE TABLE model_benchmarks (
+                    id          INTEGER PRIMARY KEY,
+                    model_id    TEXT NOT NULL,
+                    agent_id    TEXT NOT NULL DEFAULT '',
+                    provider    TEXT NOT NULL DEFAULT 'llama',
+                    build_name  TEXT NOT NULL DEFAULT '',
+                    avg_gen_tps REAL,
+                    avg_ppt_tps REAL,
+                    avg_pg_tps  REAL,
+                    bench_tool  TEXT,
+                    switches    TEXT,
+                    ts          TEXT,
+                    extra_json  TEXT,
+                    UNIQUE(model_id, agent_id, provider, build_name)
+                );
+                INSERT INTO model_benchmarks
+                    (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                     bench_tool, switches, ts, extra_json)
+                    SELECT model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps,
+                           bench_tool, switches, ts, extra_json
+                    FROM _model_benchmarks_old3;
+                DROP TABLE _model_benchmarks_old3;
+            """)
+            log.info("model_benchmarks migrated to per-build schema (model_id, agent_id, provider, build_name)")
     conn.execute("""
             CREATE TABLE IF NOT EXISTS model_benchmarks (
                 id          INTEGER PRIMARY KEY,
                 model_id    TEXT NOT NULL,
                 agent_id    TEXT NOT NULL DEFAULT '',
                 provider    TEXT NOT NULL DEFAULT 'llama',
+                build_name  TEXT NOT NULL DEFAULT '',
                 avg_gen_tps REAL,
                 avg_ppt_tps REAL,
                 avg_pg_tps  REAL,
@@ -382,7 +412,7 @@ def init_db():
                 switches    TEXT,
                 ts          TEXT,
                 extra_json  TEXT,
-                UNIQUE(model_id, agent_id, provider)
+                UNIQUE(model_id, agent_id, provider, build_name)
             )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bench_model ON model_benchmarks(model_id, agent_id)")
@@ -2567,19 +2597,19 @@ def benchmark_results():
         agent_id = (agent or {}).get("agent_id") or ""
         conn = get_db()
         # The selected agent's rows plus legacy ('') rows; agent-specific wins
-        # per model (ORDER puts agent rows first, the dedup below keeps them).
+        # per model and build (ORDER puts agent rows first, the dedup below keeps them).
         rows = conn.execute(
-            "SELECT model_id, avg_gen_tps, avg_ppt_tps, bench_tool, switches, ts, agent_id, avg_pg_tps, extra_json "
-            "FROM model_benchmarks WHERE provider = ? AND (agent_id = ? OR agent_id = '') "
+            "SELECT model_id, avg_gen_tps, avg_ppt_tps, bench_tool, switches, ts, agent_id, avg_pg_tps, extra_json, "
+            "build_name FROM model_benchmarks WHERE provider = ? AND (agent_id = ? OR agent_id = '') "
             "ORDER BY (agent_id = '') ASC",
             (provider, agent_id),
         ).fetchall()
         seen = set()
         out = []
         for r in rows:
-            if r[0] in seen:
+            if (r[0], r[9]) in seen:
                 continue
-            seen.add(r[0])
+            seen.add((r[0], r[9]))
             try: switches = json.loads(r[4]) if r[4] else []
             except Exception: switches = []
             try: extra = json.loads(r[8]) if r[8] else None
@@ -2594,6 +2624,7 @@ def benchmark_results():
                 "ts":          r[5],
                 "agent_id":    r[6],
                 "extra_json":  extra,
+                "build_name":  r[9] or "",
             })
         return jsonify({"results": out})
     except Exception as e:
@@ -2610,6 +2641,7 @@ def benchmark_store():
         avg_pg_tps  = _finite_or_none(data.get("avg_pg_tps"))
         bench_tool  = data.get("bench_tool") or ""
         switches    = data.get("switches") or []
+        build_name  = str(data.get("build_name") or "").strip()[:64]
         if not model_id:
             return jsonify({"ok": False, "error": "model_id required"}), 400
         provider, perr = _bench_provider(data.get("provider"))
@@ -2626,9 +2658,9 @@ def benchmark_store():
         conn = get_db()
         conn.execute(
             "INSERT INTO model_benchmarks "
-            "(model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts, extra_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(model_id, agent_id, provider) DO UPDATE SET "
+            "(model_id, agent_id, provider, build_name, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool, switches, ts, extra_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(model_id, agent_id, provider, build_name) DO UPDATE SET "
             "  avg_gen_tps=excluded.avg_gen_tps,"
             "  avg_ppt_tps=excluded.avg_ppt_tps,"
             "  avg_pg_tps=excluded.avg_pg_tps,"
@@ -2636,7 +2668,7 @@ def benchmark_store():
             "  switches=excluded.switches,"
             "  ts=excluded.ts,"
             "  extra_json=excluded.extra_json",
-            (model_id, agent_id, provider, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
+            (model_id, agent_id, provider, build_name, avg_gen_tps, avg_ppt_tps, avg_pg_tps, bench_tool,
              json.dumps(switches), ts,
              json.dumps(extra) if isinstance(extra, dict) else None)
         )
@@ -2655,10 +2687,13 @@ def benchmark_delete(model_id):
         agent = _request_agent(provider)
         agent_id = (agent or {}).get("agent_id") or ""
         conn = get_db()
-        # Remove what this agent's view shows: its own row + any legacy ('') row.
+        # Remove what this agent's view shows: its own rows + any legacy ('') rows;
+        # ?build= limits it to one build's saved result.
+        build = flask_request.args.get("build")
+        scope = " AND build_name=?" if build is not None else ""
         conn.execute(
-            "DELETE FROM model_benchmarks WHERE model_id=? AND provider=? AND (agent_id=? OR agent_id='')",
-            (model_id, provider, agent_id),
+            "DELETE FROM model_benchmarks WHERE model_id=? AND provider=? AND (agent_id=? OR agent_id='')" + scope,
+            (model_id, provider, agent_id) + ((build.strip()[:64],) if build is not None else ()),
         )
         conn.commit()
         return jsonify({"ok": True})

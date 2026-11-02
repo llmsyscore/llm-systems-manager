@@ -348,6 +348,7 @@ function _llamaDescriptor(modelId, statusLookup) {
     { l: 'Prompt', v: Number(b.avg_ppt_tps ?? 0).toFixed(0), unit: 't/s' },
     { l: 'Gen',    v: Number(b.avg_gen_tps ?? 0).toFixed(1), unit: 't/s' },
     ...(b.avg_pg_tps != null ? [{ l: 'Pg', v: Number(b.avg_pg_tps).toFixed(0), unit: 't/s' }] : []),
+    ...(b.build_name ? [{ l: 'Build', v: b.build_name }] : []),
   ] : [];
 
   let primary = null;
@@ -397,7 +398,7 @@ function _llamaDescriptor(modelId, statusLookup) {
     id: modelId, actAttr: 'data-act', renameAct: 'rename',
     name: aliasOrShort(modelId), repo: modelId,
     pill, specs, stats, benchAge, fresh: _llamaFresh(modelId, cfg), tune, live,
-    benchTitle: 'Offline benchmark (llama-bench) — not live throughput' + (b && b.bench_tool ? ' · tool: ' + b.bench_tool : '') + (benchAge ? ' · last run ' + benchAge : ''),
+    benchTitle: 'Offline benchmark (llama-bench) — not live throughput' + (b && b.bench_tool ? ' · tool: ' + b.bench_tool : '') + (b && b.build_name ? ' · build: ' + b.build_name : '') + (benchAge ? ' · last run ' + benchAge : ''),
     extraJson: b && b.extra_json,
     cfgClick: 'edit',
     benchClick: 'bench', liveClick: 'benchlive',
