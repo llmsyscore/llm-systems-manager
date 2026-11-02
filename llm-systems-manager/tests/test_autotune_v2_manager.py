@@ -121,6 +121,18 @@ def test_record_stores_build_active_as_a_column(client, monkeypatch):
     assert client.get("/api/llm/autotune/status").get_json()["items"] == []
 
 
+# #1410: the dashboard's record of a run lands first without the flag; the agent's later record fills it.
+def test_later_record_fills_a_missing_build_active(client, monkeypatch):
+    monkeypatch.setattr(manager_mod, "_llama_build_of", lambda aid: "b120-ccc")
+    base = {"tool": "autotune", "model_id": "org/m:Q4", "llama_build": "b100-aaa"}
+    assert client.post("/api/tools/runs", json={**base, "run_id": "r1-2"}).get_json()["ok"]
+    assert client.post("/api/tools/runs", json={**base, "run_id": "r1-2", "build_active": False}).get_json()["ok"]
+    assert client.post("/api/tools/runs", json={**base, "run_id": "r1-2", "build_active": True}).get_json()["ok"]
+    conn = manager_mod.get_db()
+    assert tuple(conn.execute("SELECT COUNT(*), MAX(build_active) FROM tool_runs").fetchone()) == (1, 0)
+    assert client.get("/api/llm/autotune/status").get_json()["items"] == []
+
+
 def test_build_active_column_backfills_from_the_summary(tmp_path, monkeypatch):
     import sqlite3
     conn = sqlite3.connect(str(tmp_path / "m.db"))
