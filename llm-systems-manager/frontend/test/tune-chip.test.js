@@ -80,6 +80,16 @@ describe('tune chip descriptor', () => {
       title: 'Autotuned (2026-09-02) · llama.cpp build unknown — re-verify to confirm' });
     expect((d.menu || []).some(i => i && i.act === 'reverify')).toBe(true);
   });
+  it('names the build of the saved offline result on the card (#1407)', async () => {
+    const win = boot({ ok: true, items: [] });
+    win._benchData['org/m:Q4'] = { avg_gen_tps: 60, avg_ppt_tps: 950, build_name: 'rocm', ts: '2026-10-18T10:00:00Z' };
+    let d = win._llamaDescriptor('org/m:Q4', {});
+    expect(d.stats.find(s => s.l === 'Build')).toEqual({ l: 'Build', v: 'rocm' });
+    expect(d.benchTitle).toContain('build: rocm');
+    win._benchData['org/m:Q4'] = { avg_gen_tps: 60, avg_ppt_tps: 950, build_name: '' };
+    d = win._llamaDescriptor('org/m:Q4', {});
+    expect(d.stats.some(s => s.l === 'Build')).toBe(false);
+  });
   it('offers Re-verify tune in the menu for a stale row', async () => {
     const win = boot({ ok: true, items: [{ agent_id: 'a1', model_id: 'org/m:Q4', llama_build: 'b100', current_build: 'b120', stale: true, ts: '2026-09-02T00:00:00Z', summary: {} }] });
     await win._loadTuneStatus(true); await flush();

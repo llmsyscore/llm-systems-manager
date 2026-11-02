@@ -25,7 +25,7 @@ ENERGY_KEY = ("hour_ts", "agent_id")
 AUDIT_SAME = ("ts", "actor", "action", "target")
 # Legacy tables merged into the split files by natural key; anything else stays in the aside file.
 LEGACY_MERGE = (
-    ("model_benchmarks", "manager", ("model_id", "agent_id", "provider")),
+    ("model_benchmarks", "manager", ("model_id", "agent_id", "provider", "build_name")),
     ("tool_runs", "manager", ("tool", "model_id", "agent_id", "provider", "ts")),
     ("report_cards", "manager", ("ts", "agent_id", "provider", "mode")),
     ("audit_log", "audit", AUDIT_SAME),

@@ -266,19 +266,19 @@ Opens an SSE stream reporting live benchmark progress (current context size bein
 ---
 
 ### `GET /api/benchmark/results`
-Returns all saved benchmark results for all models.
+Returns all saved benchmark results for all models: one entry per model and build. `build_name` names the llama.cpp build of a run over several builds; empty otherwise.
 
 ---
 
 ### `POST /api/benchmark/store`
 Saves a benchmark result to persistent storage.
 
-**Body:** A benchmark result object as returned by the benchmark stream.
+**Body:** A benchmark result object as returned by the benchmark stream. `build_name` (optional) saves it as that build's result; a later save for the same model and build replaces it.
 
 ---
 
 ### `DELETE /api/benchmark/results/<model_id>`
-Deletes all saved benchmark results for the specified model.
+Deletes all saved benchmark results for the specified model. `?build=<name>` deletes only that build's result.
 
 ---
 

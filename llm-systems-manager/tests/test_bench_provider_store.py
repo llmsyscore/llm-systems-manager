@@ -219,3 +219,46 @@ def test_vllm_bench_run_proxies_to_vllm(monkeypatch):
     r = _client().post("/api/vllm/bench/run", json={"switches": []})
     assert r.status_code == 200
     assert calls == {"kind": "vllm", "method": "POST", "path": "/vllm/bench/run"}
+
+
+def test_saved_results_keep_one_entry_per_build(monkeypatch):
+    """#1407: a build's save keeps its own row; a plain save and other builds stay."""
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    c = _client()
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "avg_gen_tps": 40.0})
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "avg_gen_tps": 50.0, "build_name": "vk"})
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "avg_gen_tps": 60.0, "build_name": "rocm"})
+    c.post("/api/benchmark/store", json={"model_id": "org/m", "avg_gen_tps": 61.0, "build_name": "rocm"})
+    items = c.get("/api/benchmark/results").get_json()["results"]
+    assert sorted((i["build_name"], i["avg_gen_tps"]) for i in items) == [("", 40.0), ("rocm", 61.0), ("vk", 50.0)]
+    c.delete("/api/benchmark/results/org/m?build=rocm")
+    left = sorted(i["build_name"] for i in c.get("/api/benchmark/results").get_json()["results"])
+    assert left == ["", "vk"]
+    c.delete("/api/benchmark/results/org/m")
+    assert c.get("/api/benchmark/results").get_json()["results"] == []
+
+
+def test_build_migration_keeps_existing_rows_as_plain(monkeypatch):
+    """#1407: rows saved before the per-build key come back with build ''."""
+    conn = _mem_db()
+    conn.execute("INSERT INTO model_benchmarks (model_id, agent_id, avg_gen_tps) VALUES ('old/m', '', 7.5)")
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    manager_mod.init_db()  # idempotent
+    assert conn.execute("SELECT provider, build_name, avg_gen_tps FROM model_benchmarks").fetchall() == [("llama", "", 7.5)]
+    ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='model_benchmarks'").fetchone()[0]
+    assert "UNIQUE(model_id, agent_id, provider, build_name)" in ddl
+
+
+def test_results_dedup_per_build_prefers_the_agent_row(monkeypatch):
+    """#1407: an agent row beats a legacy '' row for the same build; other builds still list."""
+    conn = _mem_db()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    monkeypatch.setattr(manager_mod, "_request_agent", lambda p: {"agent_id": "a1"})
+    conn.executemany("INSERT INTO model_benchmarks (model_id, agent_id, provider, build_name, avg_gen_tps) VALUES (?,?,?,?,?)",
+                     [("org/m", "", "llama", "vk", 1.0), ("org/m", "a1", "llama", "vk", 2.0), ("org/m", "", "llama", "rocm", 3.0)])
+    items = _client().get("/api/benchmark/results").get_json()["results"]
+    assert sorted((i["build_name"], i["avg_gen_tps"]) for i in items) == [("rocm", 3.0), ("vk", 2.0)]
