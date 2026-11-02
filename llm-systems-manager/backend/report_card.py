@@ -1008,10 +1008,10 @@ def _quiet(agent_id: str) -> None:
             _build_quiet(agent_id)
 
 
-def _switch_build(agent: dict, req: dict, path: str) -> "tuple[bool, str | None]":
-    """Activates a listed llama.cpp build on the agent and writes its audit row."""
+def _switch_build(agent: dict, req: dict, path: str, start: str) -> "tuple[bool, str | None]":
+    """Activates a listed llama.cpp build on the agent, naming the run's start build, and writes its audit row."""
     ok, err = _agent_call(agent, "POST", "/llama/builds/activate", timeout=420,
-                          error_body=True, json={"path": path})
+                          error_body=True, json={"path": path, "return_to": start})
     if _build_audit is not None:
         with best_effort("report card: build-switch audit", log=log):
             _build_audit(req.get("by") or {}, req["agent"], path, ok, err)
@@ -1191,6 +1191,44 @@ def _read_builds(agent: dict) -> "tuple[list, str | None]":
     return rows, next((r["path"] for r in rows if r.get("active") and r.get("path")), None)
 
 
+_AWAIT_BUILD_POLLS = 36
+_AWAIT_BUILD_STEP_S = 5.0
+
+
+def _await_build(agent: dict, start: str, ok: bool, err: "str | None") -> "tuple[bool, str | None]":
+    """Polls the agent's active build while its own switch back runs; (True, None) once it is start."""
+    for _ in range(_AWAIT_BUILD_POLLS):
+        _time.sleep(_AWAIT_BUILD_STEP_S)
+        if _read_builds(agent)[1] == start:
+            return True, None
+    return ok, err
+
+
+# Last recovery call per agent (monotonic s); one call per agent per window.
+_RETURN_CALLS: dict = {}
+_RETURN_WINDOW_S = 600.0
+
+
+def maybe_return_build(agent_id: str) -> None:
+    """Asks the agent to switch back a Report Card run that no job here runs any more; rate-limited per agent."""
+    if agent_busy(agent_id):
+        return
+    now = _time.monotonic()
+    if now - _RETURN_CALLS.get(agent_id, -_RETURN_WINDOW_S) < _RETURN_WINDOW_S:
+        return
+    _RETURN_CALLS[agent_id] = now
+    agent = _agent_for(agent_id)
+    if not agent:
+        return
+    _quiet(agent_id)
+
+    def call():
+        ok, err = _agent_call(agent, "POST", "/llama/builds/return", timeout=15, json={"owner": "reportcard"})
+        if not ok:
+            log.info("report card: build return on %s not started: %s", agent_id[:8], err)
+    _threading.Thread(target=call, name=f"reportcard-return-{agent_id[:8]}", daemon=True).start()
+
+
 def _run_builds(job: dict, req: dict, agent: dict, emit, check) -> dict:
     """One card per picked llama.cpp build, then back to the build that was active at the start."""
     aid = req["agent"]
@@ -1210,7 +1248,7 @@ def _run_builds(job: dict, req: dict, agent: dict, emit, check) -> dict:
             if path != current:
                 _quiet(aid)
                 attempted = True
-                ok, err = _switch_build(agent, req, path)
+                ok, err = _switch_build(agent, req, path, start)
                 if not ok:
                     emit({"phase": "build_failed", "build": name, "error": err})
                     continue
@@ -1225,9 +1263,11 @@ def _run_builds(job: dict, req: dict, agent: dict, emit, check) -> dict:
         live = _read_builds(agent)[1] if attempted else start
         if live != start:
             _quiet(aid)
-            ok, err = _switch_build(agent, req, start)
+            ok, err = _switch_build(agent, req, start, start)
             if not ok and live is None and "already active" in (err or ""):
                 ok, err = True, None
+            if not ok and "already running" in (err or ""):
+                ok, err = _await_build(agent, start, ok, err)
             _quiet(aid)
             emit({"phase": "switch_back", "ok": ok, **({"error": err} if err else {})})
     if not cards:

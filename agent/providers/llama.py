@@ -529,6 +529,8 @@ def collect_llama_for_metrics() -> dict[str, Any]:
 
     if _llama_build_last:
         llama["build"] = _llama_build_last
+    if _build_return:
+        llama["build_run"] = _build_return.get("owner") or "live"
 
     # /metrics + /slots reset llama-server's sleep timer; skip while sleeping.
     if model_api_sleeping or llama.get("is_sleeping") is True:
@@ -2880,6 +2882,7 @@ def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, bu
             if len(builds) > 1:
                 _bench_put({"type": "build_start", "build": name, "path": bpath, "index": bi, "total": len(builds)})
             if os.path.realpath(bpath) != os.path.realpath(cfg.LLAMA_BIN or ""):
+                _build_return_note(start, start_model, "live")
                 res = _switch_build(bpath)
                 if not res.get("ok"):
                     _bench_put({"type": "build_failed", "build": name, "stage": res.get("stage"), "error": res.get("error")})
@@ -2911,6 +2914,7 @@ def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, bu
         except Exception as e:
             log.error("live bench switch back error: %s", e, exc_info=True)
             ok, err = False, str(e)
+        _build_return_clear()
         _bench_put({"type": "switch_back", "ok": ok, "error": err})
 
 
@@ -4239,6 +4243,76 @@ _switch_lock = threading.Lock()
 _SWITCH_READY_TIMEOUT_S = 120
 _SWITCH_LOCK_WAIT_S = 5.0
 _SWITCH_BACK_WAIT_S = 420.0
+# Build a multi-build run started on (#1400): {"path", "model", "owner": "live"|"reportcard"}; mirrors the file.
+_build_return: "Optional[dict]" = None
+
+
+def _build_return_file() -> Path:
+    return Path(_require_ctx().config.AGENT_INSTALL_DIR) / "data" / "llama-build-return.json"
+
+
+def _build_return_load() -> "Optional[dict]":
+    """Reads the return note left on disk into _build_return; None when absent or unreadable."""
+    global _build_return
+    try:
+        doc = json.loads(_build_return_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        doc = None
+    _build_return = doc if isinstance(doc, dict) and doc.get("path") else None
+    return _build_return
+
+
+def _build_return_note(path: str, model: "Optional[str]", owner: str) -> None:
+    """Saves the build to return to; keeps an existing note so the first start build wins."""
+    global _build_return
+    if _build_return or not path:
+        return
+    doc = {"path": path, "model": model or None, "owner": owner}
+    with best_effort("build return: write note", log=log):
+        f = _build_return_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        os.replace(tmp, f)
+    _build_return = doc
+
+
+def _build_return_clear() -> None:
+    global _build_return
+    _build_return = None
+    with best_effort("build return: drop note", log=log):
+        _build_return_file().unlink(missing_ok=True)
+
+
+def _build_return_recover() -> None:
+    """Switches the service back to the noted start build and reloads its model, then drops the note."""
+    note = _build_return
+    if not note:
+        return
+    target = str(note.get("path") or "")
+    try:
+        if os.path.realpath(_require_ctx().config.LLAMA_BIN or "") == os.path.realpath(target):
+            return
+        if not os.path.isfile(target):
+            log.warning("build return: start build %s is gone; leaving the service as is", target)
+            return
+        log.info("build return: an unfinished %s run left the service on another build; switching back to %s",
+                 note.get("owner"), target)
+        res = _switch_build(target, wait_s=_SWITCH_BACK_WAIT_S)
+        if not res.get("ok"):
+            log.warning("build return: switch back failed: %s", res.get("error"))
+            return
+        _build_return_clear()
+        model = note.get("model")
+        if model:
+            loaded, why = _live_load_and_wait(model)
+            if not loaded:
+                log.warning("build return: reload of %s failed: %s", model, why)
+    except Exception as e:
+        log.error("build return error: %s", e, exc_info=True)
+    finally:
+        if _build_return is note:
+            _build_return_clear()
 
 
 def _llama_exec_tokens() -> "list[str]":
@@ -4366,9 +4440,29 @@ def llama_builds_activate(body: dict, authorization: Optional[str] = Header(defa
     try:
         if _bench_active or _autotune_active or _build_running:
             raise HTTPException(status_code=409, detail="a benchmark, tuning run or update is running")
-        return _switch_build_locked(row["path"])
+        # A Report Card run names its start build; a switch without one is the operator's own pick.
+        back_to = str((body or {}).get("return_to") or "")
+        if back_to:
+            _build_return_note(back_to, None, "reportcard")
+        res = _switch_build_locked(row["path"])
+        if res.get("ok") and (not back_to or not _build_return
+                              or os.path.realpath(row["path"]) == os.path.realpath(_build_return["path"])):
+            _build_return_clear()
+        return res
     finally:
         _switch_lock.release()
+
+
+def llama_builds_return(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Starts the switch back of a Report Card run the manager no longer runs; started=False when nothing to do."""
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    owner = str((body or {}).get("owner") or "reportcard")
+    if not _build_return or _build_return.get("owner") != owner:
+        return {"ok": True, "started": False}
+    if _bench_active or _autotune_active or _build_running or _switch_lock.locked():
+        return {"ok": True, "started": False, "error": "a benchmark, tuning run, update or switch is running"}
+    threading.Thread(target=_build_return_recover, name="llama-build-return", daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 def _switch_build_locked(target: str) -> dict:
@@ -4426,6 +4520,7 @@ _ROUTES: tuple = (
     ("GET",    "/llama/build/stream",             llama_build_stream),
     ("GET",    "/llama/builds",                   llama_builds_endpoint),
     ("POST",   "/llama/builds/activate",          llama_builds_activate),
+    ("POST",   "/llama/builds/return",            llama_builds_return),
     ("GET",    "/llama/cache",                    llama_cache_list),
     ("GET",    "/llama/cache/gguf",               llama_cache_gguf),
     ("POST",   "/llama/cache/prune",              llama_cache_prune),
@@ -4458,4 +4553,7 @@ def start_background() -> "Optional[asyncio.Task]":
     with best_effort("llama: record active build", log=log):
         if _require_ctx().config.LLAMA_ENABLED:
             llama_inventory.remember(_require_ctx().config.LLAMA_BIN or "", _llama_seen_builds_file())
+    with best_effort("llama: build return on start", log=log):
+        if _require_ctx().config.LLAMA_ENABLED and _build_return_load():
+            threading.Thread(target=_build_return_recover, name="llama-build-return", daemon=True).start()
     return None

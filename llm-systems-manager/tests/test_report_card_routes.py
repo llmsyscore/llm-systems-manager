@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import types
 
 import pytest
 
@@ -861,13 +862,18 @@ _LISTING = {"ok": True, "builds": [
 def builds_env(client, monkeypatch):
     import auth
     env = {"calls": [], "quiet": [], "audit": [], "fail": set(), "lost": set(), "listing": _LISTING,
-           "active": BA, "reads": 0, "read_ok": None}
+           "active": BA, "reads": 0, "read_ok": None, "return_to": [], "busy": set()}
 
     def call(agent, method, path, timeout=15, **kw):
         env["calls"].append((method, path, (kw.get("json") or {}).get("path"), timeout))
         if path != "/llama/builds/activate":
             return True, None
         p = kw["json"]["path"]
+        env["return_to"].append(kw["json"].get("return_to"))
+        if p in env["busy"]:
+            env["busy"].discard(p)
+            env["active"] = p
+            return False, "a switch is already running"
         if p in env["fail"]:
             return False, "that build failed its version check"
         if p == env["active"]:
@@ -1027,6 +1033,71 @@ def test_reportcard_switch_back_unreadable_treats_already_active_as_ok(client, b
     events = _drain(client, r.get_json()["job_id"])
     assert _activations(builds_env) == [BC, BA]
     assert [(e["ok"], e.get("error")) for e in events if e.get("phase") == "switch_back"] == [(True, None)]
+
+
+# #1400: every switch names the start build so the agent can return to it after a restart.
+def test_reportcard_switches_name_the_start_build(client, builds_env):
+    r = _run(client, builds=[BB, BC])
+    _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BB, BC, BA]
+    assert builds_env["return_to"] == [BA, BA, BA]
+
+
+def test_reportcard_switch_back_waits_out_the_agents_own_return(client, builds_env, monkeypatch):
+    monkeypatch.setattr(rc, "_AWAIT_BUILD_STEP_S", 0)
+    builds_env["busy"].add(BA)
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert _activations(builds_env) == [BB, BA]
+    assert [(e["ok"], e.get("error")) for e in events if e.get("phase") == "switch_back"] == [(True, None)]
+
+
+def test_reportcard_switch_back_still_fails_when_start_never_returns(client, builds_env, monkeypatch):
+    monkeypatch.setattr(rc, "_AWAIT_BUILD_STEP_S", 0)
+    monkeypatch.setattr(rc, "_AWAIT_BUILD_POLLS", 2)
+    builds_env["busy"].add(BA)
+    orig, n = rc._read_builds, {"i": 0}
+
+    def stuck(agent):
+        n["i"] += 1
+        rows, active = orig(agent)
+        return rows, active if n["i"] == 1 else BB
+    monkeypatch.setattr(rc, "_read_builds", stuck)
+    r = _run(client, builds=[BB])
+    events = _drain(client, r.get_json()["job_id"])
+    assert [(e["ok"], e.get("error")) for e in events if e.get("phase") == "switch_back"] == \
+        [(False, "a switch is already running")]
+
+
+def test_maybe_return_build_calls_an_idle_agent_once_per_window(builds_env, monkeypatch):
+    aid = "r" * 32
+    monkeypatch.setattr(rc, "_RETURN_CALLS", {})
+    monkeypatch.setattr(rc, "_agent_for", lambda a: {"agent_id": a})
+    calls = []
+    monkeypatch.setattr(rc, "_agent_call", lambda agent, m, path, timeout=15, **kw: calls.append((path, kw.get("json"))) or (True, None))
+    started = []
+    monkeypatch.setattr(rc._threading, "Thread", lambda target, **k: types.SimpleNamespace(start=lambda: (started.append(1), target())))
+    monkeypatch.setattr(rc, "agent_busy", lambda a: True)
+    rc.maybe_return_build(aid)
+    assert calls == [] and builds_env["quiet"] == []
+    monkeypatch.setattr(rc, "agent_busy", lambda a: False)
+    rc.maybe_return_build(aid)
+    rc.maybe_return_build(aid)
+    assert calls == [("/llama/builds/return", {"owner": "reportcard"})]
+    assert builds_env["quiet"] == [aid]
+
+
+def test_build_run_sample_keeps_rechecks_quiet_and_returns_orphans(monkeypatch):
+    import manager_mod
+    quiet, returned = [], []
+    monkeypatch.setattr(manager_mod._bench_watcher, "quiet_build_change", quiet.append)
+    monkeypatch.setattr(rc, "maybe_return_build", returned.append)
+    for sample in ({}, {"llama": None}, {"llama": {"build": "b1"}}, "x"):
+        manager_mod._note_build_run("a1", sample)
+    assert quiet == [] and returned == []
+    manager_mod._note_build_run("a1", {"llama": {"build_run": "live"}})
+    manager_mod._note_build_run("a2", {"llama": {"build_run": "reportcard"}})
+    assert quiet == ["a1", "a2"] and returned == ["a2"]
 
 
 def test_reportcard_error_and_cancel_carry_stored_cards(client, builds_env, monkeypatch):

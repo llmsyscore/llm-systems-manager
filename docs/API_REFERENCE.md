@@ -320,9 +320,7 @@ Starts a live run on the selected agent. Progress streams over `/api/benchmark/s
 
 **Body:** `{"model_id": "...", "bench": "qualitative", "concurrency": [1, 2, 4], "osl": 256, "limit": 20, "timeout_s": 600, "baseline_run_id": "...", "builds": ["<llama-server path>", ...]}` (fields beyond `model_id` are optional).
 
-`builds` (llama.cpp only, admin only — a non-admin gets 403 `switching builds needs an admin`): the server switches to each listed build, loads the model and runs the same settings, then switches back to the build that was active at the start, also after a failure or a cancel. Stream events: `build_start` `{build, path, index, total}`, `build_failed` `{build, stage, error}` when a build cannot be used (the run goes on with the next one), and `switch_back` `{ok, error}` at the end. Each `model_done` carries `build`, `build_path` and `stored_run_id`, the id that build's result is stored under. Autopilot (fleet) jobs ignore `builds`.
-
-If the agent or manager restarts during a Live bench or Report Card run over several builds, the server stays on the build it was on; switch it back from Installed builds.
+`builds` (llama.cpp only, admin only — a non-admin gets 403 `switching builds needs an admin`): the server switches to each listed build, loads the model and runs the same settings, then switches back to the build that was active at the start, also after a failure or a cancel. Stream events: `build_start` `{build, path, index, total}`, `build_failed` `{build, stage, error}` when a build cannot be used (the run goes on with the next one), and `switch_back` `{ok, error}` at the end. Each `model_done` carries `build`, `build_path` and `stored_run_id`, the id that build's result is stored under. Autopilot (fleet) jobs ignore `builds`. If the agent restarts in the middle of the run, it switches the server back to the starting build and reloads the starting model when it comes back up.
 
 ---
 
@@ -678,7 +676,7 @@ Starts a report card run. In standard mode, first checks whether the reference m
 
 **Body:** `{"agent": "<agent_id>", "provider": "llama"|"lms"|"vllm", "mode": "standard"|"custom", "model": "<model_id>" (custom mode), "model_key": "<reference key>" (standard mode), "price_kwh": <number> (optional), "confirm_vllm": <bool>, "confirm_download": <bool>, "builds": ["<llama-server path>", ...] (optional)}`
 
-`builds` (llama provider only, admin only — a non-admin gets 403 `switching builds needs an admin`; up to 8): the server switches to each listed build, runs the card and stores one card per build, then switches back to the build that was active at the start. The stream's `progress` events add the phases `build_start` `{build, path, index, total}`, `build_failed` `{build, error}` and `switch_back` `{ok, error}`. The final `done` carries `cards` (one per build) and `card` (the last one); `error` and `cancelled` carry the `cards` stored so far. Each card's result names its build in `build_name` and `build_path`.
+`builds` (llama provider only, admin only — a non-admin gets 403 `switching builds needs an admin`; up to 8): the server switches to each listed build, runs the card and stores one card per build, then switches back to the build that was active at the start. The stream's `progress` events add the phases `build_start` `{build, path, index, total}`, `build_failed` `{build, error}` and `switch_back` `{ok, error}`. The final `done` carries `cards` (one per build) and `card` (the last one); `error` and `cancelled` carry the `cards` stored so far. Each card's result names its build in `build_name` and `build_path`. If the agent or the manager restarts in the middle of the run, the server is switched back to the starting build once both are up again.
 
 **Response:** `{"ok": true, "job_id": "<id>"}` once the job is started, or `{"ok": true, "status": "needs_confirm"|"needs_download", ...}` when a precheck blocks the run.
 

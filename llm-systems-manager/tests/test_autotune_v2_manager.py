@@ -47,9 +47,10 @@ def client(monkeypatch):
 
 
 def _row(conn, agent, model, ok, summary, ts):
-    conn.execute("INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts, run_id) "
-                 "VALUES ('autotune', ?, ?, 'llama', ?, ?, ?, ?)",
-                 (model, agent, 1 if ok else 0, json.dumps(summary), ts, ts))
+    ba = summary.get("build_active")
+    conn.execute("INSERT INTO tool_runs (tool, model_id, agent_id, provider, ok, summary, ts, run_id, build_active) "
+                 "VALUES ('autotune', ?, ?, 'llama', ?, ?, ?, ?, ?)",
+                 (model, agent, 1 if ok else 0, json.dumps(summary), ts, ts, None if ba is None else int(ba)))
 
 
 def test_quality_is_an_accepted_ledger_tool():
@@ -100,6 +101,41 @@ def test_status_ignores_other_build_rows_of_a_build_run(client, monkeypatch):
     monkeypatch.setattr(manager_mod, "_llama_build_of", lambda aid: "b120-ccc")
     items = client.get("/api/llm/autotune/status").get_json()["items"]
     assert [(i["llama_build"], i["stale"]) for i in items] == [("b120-ccc", False)]
+
+
+# #1399: the recording route copies build_active into its own column; the status route filters on it.
+def test_record_stores_build_active_as_a_column(client, monkeypatch):
+    monkeypatch.setattr(manager_mod, "_llama_build_of", lambda aid: "b120-ccc")
+    for rid, active in (("r1", True), ("r1-2", False), ("r0", None)):
+        body = {"tool": "autotune", "model_id": "org/m:Q4", "run_id": rid, "llama_build": "b120-ccc"}
+        if active is not None:
+            body["build_active"] = active
+        assert client.post("/api/tools/runs", json=body).get_json()["ok"]
+    conn = manager_mod.get_db()
+    got = dict(conn.execute("SELECT run_id, build_active FROM tool_runs").fetchall())
+    assert got == {"r1": 1, "r1-2": 0, "r0": None}
+    # A row whose summary says active but whose column says not is skipped: the route reads the column only.
+    conn.execute("UPDATE tool_runs SET build_active = 0 WHERE run_id = 'r1'")
+    conn.execute("UPDATE tool_runs SET build_active = 0 WHERE run_id = 'r0'")
+    conn.commit()
+    assert client.get("/api/llm/autotune/status").get_json()["items"] == []
+
+
+def test_build_active_column_backfills_from_the_summary(tmp_path, monkeypatch):
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "m.db"))
+    conn.execute("CREATE TABLE tool_runs (id INTEGER PRIMARY KEY, tool TEXT NOT NULL, model_id TEXT NOT NULL,"
+                 " agent_id TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT 'llama',"
+                 " ok INTEGER NOT NULL DEFAULT 1, summary TEXT, ts TEXT NOT NULL, run_id TEXT, conditions TEXT)")
+    for rid, summary in (("a", '{"build_active": true}'), ("b", '{"build_active": false}'),
+                         ("c", '{"x": 1}'), ("d", "not json"), ("e", None)):
+        conn.execute("INSERT INTO tool_runs (tool, model_id, summary, ts, run_id) VALUES ('autotune', 'm', ?, 't', ?)",
+                     (summary, rid))
+    conn.commit()
+    monkeypatch.setattr(manager_mod, "get_db", lambda: conn)
+    manager_mod.init_db()
+    got = dict(conn.execute("SELECT run_id, build_active FROM tool_runs").fetchall())
+    assert got == {"a": 1, "b": 0, "c": None, "d": None, "e": None}
 
 
 # #917: the route scopes to the host the cards show — explicit agent_id, else the resolved default host.
