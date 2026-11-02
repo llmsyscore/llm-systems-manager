@@ -179,7 +179,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.01-4"
+__version__ = "v2026.11.02-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -431,7 +431,8 @@ def init_db():
                 summary  TEXT,
                 ts       TEXT NOT NULL,
                 run_id   TEXT,
-                conditions TEXT
+                conditions TEXT,
+                build_active INTEGER
             )
         """)
     tr_cols = [r[1] for r in conn.execute("PRAGMA table_info(tool_runs)").fetchall()]
@@ -439,6 +440,11 @@ def init_db():
         conn.execute("ALTER TABLE tool_runs ADD COLUMN run_id TEXT")
     if "conditions" not in tr_cols:
         conn.execute("ALTER TABLE tool_runs ADD COLUMN conditions TEXT")
+    if "build_active" not in tr_cols:
+        # NULL = no build pick; 0/1 = whether the run's build was the active one, copied once from the summary.
+        conn.execute("ALTER TABLE tool_runs ADD COLUMN build_active INTEGER")
+        conn.execute("UPDATE tool_runs SET build_active = json_extract(summary, '$.build_active')"
+                     " WHERE json_valid(summary) AND json_type(summary, '$.build_active') IN ('true', 'false')")
     # Partial index: identified runs collapse across writers and replays,
     # rows with no run id keep appending as before (#772).
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_runs_run "
@@ -2768,12 +2774,14 @@ def tool_runs_record():
         conn = get_db()
         # OR IGNORE + the partial unique index collapses the agent's row and
         # every watching dashboard's row for the same run into one.
+        build_active = data.get("build_active")
         conn.execute(
             "INSERT OR IGNORE INTO tool_runs "
-            "(tool, model_id, agent_id, provider, ok, summary, ts, run_id, conditions) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(tool, model_id, agent_id, provider, ok, summary, ts, run_id, conditions, build_active) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tool, model_id, agent_id, provider,
-             1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id, cond_json))
+             1 if data.get("ok", True) else 0, json.dumps(summary), ts, run_id, cond_json,
+             int(build_active) if isinstance(build_active, bool) else None))
         if switches and run_id:
             # A collapsed duplicate still backfills switches the first writer lacked.
             conn.execute(
@@ -2973,8 +2981,7 @@ def llm_autotune_status():
             provider, _perr = _tool_provider("autotune")
             want_agent = str((_request_agent(provider) or {}).get("agent_id") or "")
         # Skips the rows a build run wrote for builds other than the one active then.
-        where = ("tool = 'autotune' AND ok = 1 AND COALESCE(CASE WHEN json_valid(summary)"
-                 " THEN json_extract(summary, '$.build_active') END, 1) = 1")
+        where = "tool = 'autotune' AND ok = 1 AND COALESCE(build_active, 1) = 1"
         params = []
         if want_model:
             where += " AND model_id = ?"
@@ -3239,6 +3246,19 @@ def _refuse_unadvertised_provider(agent: dict, provider: str):
                     "error": f"agent does not advertise the {cap_key} capability"}), 403
 
 
+def _note_build_run(aid: str, sample: dict) -> None:
+    """Keeps the build-change re-check quiet while a llama sample flags a multi-build run, and
+    asks the agent to switch back a Report Card run no job here runs any more (#1400)."""
+    llama = sample.get("llama") if isinstance(sample, dict) else None
+    owner = llama.get("build_run") if isinstance(llama, dict) else None
+    if not owner:
+        return
+    with best_effort("build run sample"):
+        _bench_watcher.quiet_build_change(aid)
+        if owner == "reportcard":
+            report_card.maybe_return_build(aid)
+
+
 @app.route("/api/remote/host-metrics", methods=["POST"])
 def receive_remote_host_metrics():
     tok = agent_registry.bearer_from_request()
@@ -3255,6 +3275,7 @@ def receive_remote_host_metrics():
     # PR2: every approved llama-capable agent pushes; STORE partitions them.
     aid = agent["agent_id"]
     provider_state.STORE.put("llama", aid, data)
+    _note_build_run(aid, data)
     if provider_state.STORE.mark_online("llama", aid):
         log.info(f"llama agent online [agent {aid[:8]}@{agent.get('hostname','?')}]")
     if aid == _primary_llama_agent_id():
@@ -3290,6 +3311,8 @@ def receive_provider_state():
     _AGENT_PUSH_RATE.add(1)
     aid = agent["agent_id"]
     provider_state.STORE.put(provider, aid, sample)
+    if provider == "llama":
+        _note_build_run(aid, sample)
     if provider_state.STORE.mark_online(provider, aid):
         log.info(f"{provider} agent online "
                  f"[agent {aid[:8]}@{agent.get('hostname','?')}]")

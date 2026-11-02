@@ -709,3 +709,113 @@ def test_setup_rebuilds_missing_venv_with_clear(llama, tmp_path, monkeypatch):
     llama._bench_live_setup_job([])
     venv = str(llama._bl.bench_dir(str(tmp_path)) / "venv")
     assert cmds == [["/fake/python3", "-m", "venv", venv, "--clear"]]
+
+
+# #1400: a multi-build run leaves a return note while away from its start build; the agent switches back on start.
+def test_live_builds_note_the_start_build_until_back(llama, tmp_path, monkeypatch):
+    monkeypatch.setattr(llama, "_build_return", None)
+    seen = []
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch,
+                                   switch_hook=lambda path: seen.append((path, dict(llama._build_return or {}),
+                                                                         llama._build_return_file().is_file())))
+    _run_builds(llama, [p["b"], p["c"]], done)
+    note = {"path": p["a"], "model": "org/m:Q4", "owner": "live"}
+    assert seen == [(p["b"], note, True), (p["c"], note, True), (p["a"], note, True)]
+    assert llama._build_return is None and not llama._build_return_file().is_file()
+
+
+def test_live_builds_on_the_start_build_leave_no_note(llama, tmp_path, monkeypatch):
+    monkeypatch.setattr(llama, "_build_return", None)
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    _run_builds(llama, [p["a"]], done)
+    assert st["switches"] == [] and not llama._build_return_file().is_file()
+
+
+def _note_on_disk(llama, path, model, owner="live"):
+    f = llama._build_return_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"path": path, "model": model, "owner": owner}))
+
+
+def test_start_switches_back_and_reloads_the_start_model(llama, tmp_path, monkeypatch):
+    monkeypatch.setattr(llama, "_build_return", None)
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    Path(p["a"]).parent.mkdir(parents=True)
+    Path(p["a"]).write_text("")
+    ctx.config.LLAMA_BIN = p["b"]
+    _note_on_disk(llama, p["a"], "org/m:Q4")
+    monkeypatch.setattr(llama, "_maybe_start_sse_listener", lambda: None)
+    monkeypatch.setattr(llama.llama_inventory, "remember", lambda *a: [])
+    ran = threading.Event()
+    orig = llama._build_return_recover
+    monkeypatch.setattr(llama, "_build_return_recover", lambda: (orig(), ran.set()))
+    llama.start_background()
+    assert ran.wait(5)
+    assert st["switches"] == [p["a"]] and st["waits"] == [420.0]
+    assert st["loads"] == [("llama-a", "org/m:Q4")]
+    assert llama._build_return is None and not llama._build_return_file().is_file()
+
+
+@pytest.mark.parametrize("case", ["already_back", "gone", "switch_fails"])
+def test_start_return_drops_the_note_without_reload(llama, tmp_path, monkeypatch, case):
+    monkeypatch.setattr(llama, "_build_return", None)
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch, fail_back=case == "switch_fails")
+    if case != "gone":
+        Path(p["a"]).parent.mkdir(parents=True)
+        Path(p["a"]).write_text("")
+    ctx.config.LLAMA_BIN = p["a"] if case == "already_back" else p["b"]
+    _note_on_disk(llama, p["a"], "org/m:Q4")
+    assert llama._build_return_load()["path"] == p["a"]
+    llama._build_return_recover()
+    assert st["switches"] == ([p["a"]] if case == "switch_fails" else [])
+    assert st["loads"] == []
+    assert llama._build_return is None and not llama._build_return_file().is_file()
+
+
+def test_activate_with_return_to_keeps_the_note_until_back(llama, tmp_path, monkeypatch):
+    target = _activate_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_build_return", None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    start = str(tmp_path / "llama-a" / "build" / "bin" / "llama-server")
+    rows = {"path": target}
+    monkeypatch.setattr(llama.llama_inventory, "listed_build",
+                        lambda pth: {"path": rows["path"], "ok": True, "active": False})
+    monkeypatch.setattr(llama, "_switch_build_locked", lambda pth: {"ok": True, "active": pth})
+    assert llama.llama_builds_activate({"path": target, "return_to": start})["ok"]
+    assert llama._build_return == {"path": start, "model": None, "owner": "reportcard"}
+    rows["path"] = start
+    assert llama.llama_builds_activate({"path": start, "return_to": start})["ok"]
+    assert llama._build_return is None and not llama._build_return_file().is_file()
+    # An operator's own switch drops a note a run left behind.
+    rows["path"] = target
+    llama._build_return_note(start, None, "reportcard")
+    assert llama.llama_builds_activate({"path": target})["ok"]
+    assert llama._build_return is None
+
+
+def test_activate_failed_switch_keeps_the_note(llama, tmp_path, monkeypatch):
+    target = _activate_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_build_return", None)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    monkeypatch.setattr(llama, "_switch_build_locked", lambda pth: {"ok": False, "error": "nope"})
+    llama._build_return_note("/start/llama-server", None, "reportcard")
+    assert llama.llama_builds_activate({"path": target})["ok"] is False
+    assert llama._build_return["path"] == "/start/llama-server"
+
+
+def test_return_route_starts_only_for_an_idle_report_card_note(llama, tmp_path, monkeypatch):
+    _activate_env(llama, tmp_path, monkeypatch)
+    monkeypatch.setattr(llama, "_bench_active", False)
+    ran = threading.Event()
+    monkeypatch.setattr(llama, "_build_return_recover", ran.set)
+    monkeypatch.setattr(llama, "_build_return", None)
+    assert llama.llama_builds_return({"owner": "reportcard"}) == {"ok": True, "started": False}
+    monkeypatch.setattr(llama, "_build_return", {"path": "/a", "model": None, "owner": "live"})
+    assert llama.llama_builds_return({"owner": "reportcard"}) == {"ok": True, "started": False}
+    monkeypatch.setattr(llama, "_build_return", {"path": "/a", "model": None, "owner": "reportcard"})
+    monkeypatch.setattr(llama, "_bench_active", True)
+    assert llama.llama_builds_return({"owner": "reportcard"})["started"] is False
+    monkeypatch.setattr(llama, "_bench_active", False)
+    assert llama.llama_builds_return({"owner": "reportcard"}) == {"ok": True, "started": True}
+    assert ran.wait(5)
+    assert ("POST", "/llama/builds/return", llama.llama_builds_return) in llama._ROUTES
