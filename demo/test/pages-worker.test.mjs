@@ -120,6 +120,14 @@ test('the old demo addresses redirect to the demo domain with the path and query
   const asset = await run(new Request('https://demo.llmsyscore.com/x.js', { headers: { 'Sec-Fetch-Mode': 'no-cors' } }), html);
   assert.equal(asset.res.status, 301);
   assert.equal(asset.posts.length, 0, 'only page navigations are reported');
+  for (const path of ['/.env', '/wp-login.php', '/config.json']) {
+    const other = await run(new Request(`https://demo.llmsyscore.com${path}`, { headers: { 'Sec-Fetch-Mode': 'navigate' } }), html);
+    assert.equal(other.res.status, 301, path);
+    assert.equal(other.posts.length, 0, `${path} is not a demo page`);
+  }
+  for (const path of ['/', '/phone.html']) {
+    assert.equal((await run(new Request(`https://demo.llmsyscore.com${path}`), html)).posts.length, 1, path);
+  }
 });
 
 test('preview pages.dev responses are noindex and the demo domain is not', async () => {
