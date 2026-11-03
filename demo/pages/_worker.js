@@ -7,6 +7,8 @@ const TAG_COOKIE = 'lsm_device';
 // Old demo addresses, sent to the demo's own domain with the path and query.
 const MOVED = ['llmsyscore-demo.pages.dev', 'demo.llmsyscore.com'];
 const HOME = 'demo.llmsysmanager.com';
+// Demo page paths; a redirect from an old address is reported only for these.
+const PAGES = new Set(['/', '/index.html', '/dashboard', '/dashboard/', '/dashboard.html', '/phone', '/phone.html']);
 const CF = { country: 'country', region: 'region', city: 'city', timezone: 'timezone', asn: 'asn', as_org: 'asOrganization',
   colo: 'colo', bot_category: 'verifiedBotCategory' };
 
@@ -22,10 +24,10 @@ export default {
   },
 };
 
-// A 301 to the same page on the demo's domain; a page navigation is reported with status 301.
+// A 301 to the same page on the demo's domain; a navigation to a demo page is reported with status 301.
 export function moved(req, url, env, ctx, own = false) {
   const res = Response.redirect(`https://${HOME}${url.pathname}${url.search}`, 301), mode = req.headers.get('Sec-Fetch-Mode');
-  if ((env.WRITES || env.STORE) && (!mode || mode === 'navigate')) ctx.waitUntil(sendLanding(env, report(hex16(), req, res, own)));
+  if ((env.WRITES || env.STORE) && (!mode || mode === 'navigate') && PAGES.has(url.pathname)) ctx.waitUntil(sendLanding(env, report(hex16(), req, res, own)));
   return res;
 }
 
