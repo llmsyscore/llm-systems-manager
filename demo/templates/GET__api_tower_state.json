@@ -1,9 +1,0 @@
-{
-  "key": "GET /api/tower/state",
-  "status": 200,
-  "body": {
-    "admin": true,
-    "enabled": false,
-    "ok": true
-  }
-}

@@ -1,8 +1,0 @@
-{
-  "key": "GET /api/llm/autotune/status",
-  "status": 200,
-  "body": {
-    "items": [],
-    "ok": true
-  }
-}
