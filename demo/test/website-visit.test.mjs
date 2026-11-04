@@ -33,15 +33,63 @@ function open({ url = 'https://llmsyscore.com/', referrer, store = {}, clock, lo
   const sent = [];
   w.navigator.sendBeacon = (u, b) => { sent.push(JSON.parse(b)); return true; };
   if (clock) w.Date.now = () => clock.now;
-  let state = 'visible';
+  let state = w.__hidden ? 'hidden' : 'visible';
   Object.defineProperty(w.document, 'visibilityState', { get: () => state });
   w.eval(SRC);
+  const load = sent.splice(0);
   w.document.addEventListener('click', (e) => e.preventDefault());
   const hide = () => { state = 'hidden'; w.document.dispatchEvent(new w.Event('visibilitychange')); };
   const show = () => { state = 'visible'; w.document.dispatchEvent(new w.Event('visibilitychange')); };
   const click = (id) => w.document.getElementById(id).dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-  return { w, sent, hide, show, click };
+  return { w, sent, load, hide, show, click };
 }
+
+test('one send on load: s=1, ms 0, no clicks, same visit and page as the leave send', () => {
+  const clock = { now: 1000 };
+  const p = open({ clock, referrer: 'https://news.example/x' });
+  assert.equal(p.load.length, 1);
+  const l = p.load[0];
+  assert.equal(l.s, 1);
+  assert.equal(l.ms, 0);
+  assert.equal(l.scroll, 0);
+  assert.deepEqual(l.clicks, []);
+  assert.equal(l.n, 1);
+  assert.equal(l.referrer, 'https://news.example/x');
+  clock.now += 2000;
+  p.hide();
+  assert.equal(p.sent[0].s, 2);
+  assert.equal(p.sent[0].visit, l.visit);
+  assert.equal(p.sent[0].page, l.page);
+});
+
+test('load in a hidden tab: load send ms 0, leave send carries only visible time', () => {
+  const clock = { now: 1000 };
+  const p = open({ clock, before: (w) => { w.__hidden = true; } });
+  assert.equal(p.load[0].ms, 0);
+  clock.now += 2000;
+  p.show();
+  clock.now += 7000;
+  p.hide();
+  assert.equal(p.sent.length, 1);
+  assert.equal(p.sent[0].ms, 7000);
+});
+
+test('prerendered page sends its load summary only when shown', () => {
+  const p = open({ before: (w) => Object.defineProperty(w.document, 'prerendering', { value: true, configurable: true }) });
+  assert.equal(p.load.length, 0);
+  p.w.document.dispatchEvent(new p.w.Event('prerenderingchange'));
+  assert.equal(p.sent.length, 1);
+  assert.equal(p.sent[0].s, 1);
+});
+
+test('leaving within 5 s of the load send still sends the visible time', () => {
+  const clock = { now: 1000 };
+  const p = open({ clock });
+  clock.now += 1500;
+  p.hide();
+  assert.equal(p.sent.length, 1);
+  assert.equal(p.sent[0].ms, 1500);
+});
 
 test('first page carries referrer and campaign, n=1', () => {
   const p = open({ url: 'https://llmsyscore.com/?ref=hn&utm_source=s&utm_medium=m&utm_campaign=c', referrer: 'https://news.example/x' });
@@ -140,13 +188,13 @@ test('no resend when nothing changed, resend after a new click', () => {
   assert.equal(p.sent[1].clicks.length, 1);
 });
 
-test('each send of a page is numbered from 1, skipped sends take no number', () => {
+test('each send of a page is numbered after the load send, skipped sends take no number', () => {
   const p = open();
   p.hide();
   p.hide();
   p.click('gh');
   p.hide();
-  assert.deepEqual(p.sent.map((b) => b.s), [1, 2]);
+  assert.deepEqual(p.sent.map((b) => b.s), [2, 3]);
   assert.ok(p.sent.every((b) => b.page === p.sent[0].page));
 });
 
