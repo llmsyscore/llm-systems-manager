@@ -1,4 +1,4 @@
-/* Page visit summary: time on page, scroll depth, clicks and tour video plays, sent when the page is left */
+/* Page visit summary: time on page, scroll depth, clicks and tour video plays, sent once on load and again when the page is left */
 (function () {
   var URL_ = self.SITE_ANALYTICS_URL || "https://edge.llmsysmanager.com/v1/site";
   var SITE_HOSTS = ["llmsyscore.com", "www.llmsyscore.com"];
@@ -126,9 +126,9 @@
     try { var t = localStorage.getItem("lsmPref"); return /^[0-9a-f]{64}$/.test(t) ? t : null; } catch (e) { return null; }
   }
 
-  function summary() {
+  function summary(load) {
     tick();
-    sampleScroll();
+    if (!load) sampleScroll();
     var body = {
       v: 1, visit: visit, page: page, n: n,
       path: clip(location.pathname, 200),
@@ -151,12 +151,13 @@
     return JSON.stringify(body);
   }
 
-  // Sends when anything but the visible time changed, or the visible time grew by MIN_MS since the last send; each send is numbered.
-  function send() {
-    var body = summary(), o = JSON.parse(body), t = o.ms;
+  // The load send (ms 0) and the first leave send always go out; later ones only when anything but the visible time
+  // changed, or the visible time grew by MIN_MS since the last send. Each send is numbered.
+  function send(load) {
+    var body = summary(load), o = JSON.parse(body), t = load ? 0 : o.ms;
     o.ms = 0;
     var sig = JSON.stringify(o);
-    if (sig === lastSig && t - lastMs < MIN_MS) return;
+    if (sends > 1 && sig === lastSig && t - lastMs < MIN_MS) return;
     lastSig = sig;
     lastMs = t;
     o.ms = t;
@@ -186,4 +187,6 @@
     send();
     shownAt = null;
   });
+  if (document.prerendering) document.addEventListener("prerenderingchange", function () { send(true); }, { once: true });
+  else send(true);
 })();
