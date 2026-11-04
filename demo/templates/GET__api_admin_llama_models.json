@@ -1,9 +1,0 @@
-{
-  "key": "GET /api/admin/llama-models",
-  "status": 200,
-  "body": {
-    "errors": [],
-    "models": [],
-    "ok": true
-  }
-}

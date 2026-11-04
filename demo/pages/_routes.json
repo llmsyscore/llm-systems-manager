@@ -1,5 +1,0 @@
-{
-  "version": 1,
-  "include": ["/*"],
-  "exclude": ["/demo/*", "/static/*", "/alarm/*", "/demo-sw.js", "/favicon.ico", "/404.html", "/robots.txt", "/sitemap.xml"]
-}

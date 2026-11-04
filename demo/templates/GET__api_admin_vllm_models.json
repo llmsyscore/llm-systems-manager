@@ -1,9 +1,0 @@
-{
-  "key": "GET /api/admin/vllm-models",
-  "status": 200,
-  "body": {
-    "errors": [],
-    "models": [],
-    "ok": true
-  }
-}
