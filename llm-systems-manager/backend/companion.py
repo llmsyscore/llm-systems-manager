@@ -94,12 +94,21 @@ def _run(cmd: "list[str]", cwd: "str | None" = None) -> Optional[str]:
         return None
 
 
-_installed: dict = {"cache": None, "at": 0.0}
+_installed: dict = {"cache": None, "at": 0.0, "stamp": None}
 _installed_lock = threading.Lock()
-# git checkouts re-describe after this long; packaged sources cache forever.
+# git checkouts re-describe after this long; packaged sources re-read when RELEASE changes.
 _INSTALLED_GIT_TTL_S = 60.0
 # an unidentified install (source=None) re-probes after this long.
 _INSTALLED_UNKNOWN_TTL_S = 300.0
+
+
+def _release_stamp() -> "Optional[tuple]":
+    """(mtime_ns, size) of the RELEASE file, or None when it is missing."""
+    try:
+        st = (_repo_root() / _RELEASE_FILE).stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
 
 
 def _installed_fresh(cached: "Optional[dict]") -> bool:
@@ -110,12 +119,12 @@ def _installed_fresh(cached: "Optional[dict]") -> bool:
         return time.monotonic() - _installed["at"] < _INSTALLED_GIT_TTL_S
     if cached["source"] is None:
         return time.monotonic() - _installed["at"] < _INSTALLED_UNKNOWN_TTL_S
-    return True
+    return _installed.get("stamp") == _release_stamp()
 
 
 def _installed_release() -> dict:
-    """How this install identifies itself. Cached for the process lifetime,
-    except the git source, which re-describes after _INSTALLED_GIT_TTL_S.
+    """How this install identifies itself. A packaged answer is cached until
+    the RELEASE file changes; the git source re-describes after _INSTALLED_GIT_TTL_S.
 
     {tag, describe, ahead, source}. `source` is how it was determined:
       release-file  a packaged build (tarball / brew / deb / rpm / image) —
@@ -134,14 +143,17 @@ def _installed_release() -> dict:
         cached = _installed["cache"]
         if _installed_fresh(cached):
             return cached
+        stamp = _release_stamp()
         out = _probe_install()
         # A git answer only refreshes from git; a failed probe keeps the last
         # good one. A source=None cache never counts as a good answer.
         if (cached is not None and cached["source"] is not None
-                and out["source"] != "git"):
+                and (out["source"] is None
+                     or (cached["source"] == "git" and out["source"] != "git"))):
             out = cached
         _installed["cache"] = out
         _installed["at"] = time.monotonic()
+        _installed["stamp"] = stamp
         return out
     finally:
         _installed_lock.release()

@@ -77,6 +77,48 @@ def test_heartbeat_carries_component_versions_and_install_release(cfg):
     assert "release" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
 
 
+def _fake_pkg_db(monkeypatch, out="0 3.0.0\n", rc=0):
+    calls = []
+    monkeypatch.setattr(telemetry.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    def run(cmd, **kw):
+        if cmd[0] in ("dpkg-query", "rpm"):
+            calls.append(cmd[0])
+            return SimpleNamespace(returncode=rc, stdout=out)
+        return SimpleNamespace(returncode=1, stdout="")
+    monkeypatch.setattr(telemetry.subprocess, "run", run)
+    return calls
+
+
+def test_package_installs_report_the_package_version(cfg, monkeypatch):
+    """#1415: a deb/rpm install says which package the database holds, next to the release file's tag."""
+    calls = _fake_pkg_db(monkeypatch)
+    telemetry.configure(settings=telemetry._settings, data_dir=cfg, version="v1",
+                        root=BACKEND.parent.parent, release_fn=lambda: "v3.0.0")
+    for event in ("install", "update", "heartbeat"):
+        assert telemetry.build_payload(event, data_dir=cfg, version="v1", channel="deb")["package_version"] == "3.0.0"
+    assert telemetry.build_payload("install", data_dir=cfg, version="v1", channel="rpm")["package_version"] == "3.0.0"
+    assert calls[-1] == "rpm"
+
+
+def test_package_version_absent_off_package_installs_and_on_failure(cfg, monkeypatch):
+    calls = _fake_pkg_db(monkeypatch)
+    for ch in ("script", "brew", "docker"):
+        assert "package_version" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel=ch)
+    assert calls == []
+    assert "package_version" not in telemetry.build_payload("checkin", data_dir=cfg, version="v1", channel="deb")
+    _fake_pkg_db(monkeypatch, out="", rc=1)
+    assert "package_version" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
+    _fake_pkg_db(monkeypatch, out="0 3.0\x01\n")
+    assert "package_version" not in telemetry.build_payload("install", data_dir=cfg, version="v1", channel="deb")
+
+
+def test_rpm_upgrade_with_two_package_headers_reports_the_newest(cfg, monkeypatch):
+    """During an rpm upgrade's %post both headers are installed; the newest install wins."""
+    _fake_pkg_db(monkeypatch, out="1730000000 3.0.0\n1730900000 3.3.0\n")
+    assert telemetry.build_payload("update", data_dir=cfg, version="v1", channel="rpm")["package_version"] == "3.3.0"
+
+
 def test_frames_are_relative_and_message_free(cfg):
     root = BACKEND.parent.parent
     try:

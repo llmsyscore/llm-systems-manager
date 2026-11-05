@@ -246,8 +246,8 @@ def _detect_channel(root: Path) -> str:
 
 # ── payloads ─────────────────────────────────────────────────────────────────
 
-_KEYS = ("schema", "event", "install_id", "installed_at", "sent_at", "version", "release", "manager_version",
-         "alarm_engine_version", "agent_versions", "channel", "mode", "source", "features",
+_KEYS = ("schema", "event", "install_id", "installed_at", "sent_at", "version", "release", "package_version",
+         "manager_version", "alarm_engine_version", "agent_versions", "channel", "mode", "source", "features",
          "os", "os_version", "arch", "cpu_model", "ram_gb", "gpu_vendor", "gpu_count", "provider",
          "outcome", "agent_count", "provider_mix", "uptime_days", "component", "exc_type", "frames",
          "crash_hash", "uptime_s")
@@ -282,6 +282,30 @@ def _call_str(fn) -> Optional[str]:
 SOURCES = ("release", "git", "local")
 
 
+# One "<install time> <version>" line per installed package header.
+_PKG_QUERY = {"deb": ["dpkg-query", "-W", "-f=0 ${Version}\n", "llm-systems-manager"],
+              "rpm": ["rpm", "-q", "--qf", "%{INSTALLTIME} %{VERSION}\n", "llm-systems-manager"]}
+
+
+def _package_version(channel: str) -> Optional[str]:
+    """The newest installed llm-systems-manager package version on a deb/rpm install, else None."""
+    cmd = _PKG_QUERY.get(channel)
+    if not cmd or not shutil.which(cmd[0]):
+        return None
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    rows = []
+    for line in (r.stdout or "").splitlines():
+        at, _, v = line.strip().partition(" ")
+        if at.isdigit() and v and not any(ord(c) < 32 or ord(c) == 127 for c in v):
+            rows.append((int(at), v))
+    return max(rows)[1][:128] if rows else None
+
+
 def source_of_install(source: Optional[str]) -> Optional[str]:
     """Maps companion._installed_release()["source"] to release | git, else None."""
     if source in ("release-file", "dpkg", "rpm"):
@@ -304,6 +328,7 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
         p.update(host_facts())
         p["outcome"] = (outcome or "ok")[:128]
         p["release"] = _call_str(_release_fn)
+        p["package_version"] = _package_version(channel)
         p["source"] = source if source in SOURCES else None
     elif event == "heartbeat":
         p.update(host_facts())
@@ -311,6 +336,7 @@ def build_payload(event: str, *, data_dir: Path, version: str, channel: str, mod
         p["provider_mix"] = _mix_text(_provider_mix_fn()) if _provider_mix_fn else None
         p["uptime_days"] = int((time.time() - _started_at) // 86400)
         p["release"] = _call_str(_release_fn)
+        p["package_version"] = _package_version(channel)
         p["manager_version"] = _call_str(_manager_version_fn)
         p["alarm_engine_version"] = _call_str(_ae_version_fn)
         try:

@@ -631,6 +631,8 @@ _DEFERRED_UNITS=()
 _MANAGER_RESTARTED=0
 VERIFY_FAILURES=0
 NEED_DAEMON_RELOAD=0
+# 1 when manager/AE code was left as it was; the end-of-run marker step then skips.
+MARKER_HOLD=0
 
 # True when $1's component update failed (unit must not be [re]started).
 _unit_failed() {
@@ -733,6 +735,21 @@ if (( ! DRY_RUN )) && ( $HAVE_MANAGER || $HAVE_AE || $HAVE_AGENT ); then
   fi
 fi
 
+# restamp_release_marker — writes $LLMSYS_INSTALL_DIR/RELEASE from the staged
+# source, owned by the run-as user.
+restamp_release_marker() {
+  stamp_release_marker "$REPO_SRC" "$LLMSYS_INSTALL_DIR"
+  if [[ -f "$LLMSYS_INSTALL_DIR/RELEASE" ]]; then
+    $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/RELEASE" \
+      || warn "could not chown $LLMSYS_INSTALL_DIR/RELEASE to $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP"
+  fi
+}
+
+# _hold_marker KEY — marks the release marker as not to be re-stamped when KEY is manager or alarm-engine.
+_hold_marker() {
+  case "$1" in manager|alarm-engine) MARKER_HOLD=1 ;; esac
+}
+
 update_component() {
   local label="$1" src_subdir="$2" dest_subdir="$3" unit="$4" component_key="$5"
   # reqs_rel="" (passed explicitly) means "this component is a file-sync
@@ -742,12 +759,12 @@ update_component() {
   # of "requirements.txt" is the historical behavior for AE.
   local reqs_rel="${6-requirements.txt}"
   if ! component_wanted "$component_key"; then
-    log "skipping $label per --only filter"; return 0
+    _hold_marker "$component_key"; log "skipping $label per --only filter"; return 0
   fi
   banner "Component: $label"
   local src="$REPO_SRC/$src_subdir" dest="$LLMSYS_INSTALL_DIR/$dest_subdir"
   if [[ ! -d "$src" ]]; then
-    warn "upstream tree missing at $src — skipping $label"; return 0
+    _hold_marker "$component_key"; warn "upstream tree missing at $src — skipping $label"; return 0
   fi
   # Compute changeset
   local changed; changed="$(files_changed "$src" "$dest" 2>/dev/null || true)"
@@ -757,7 +774,7 @@ update_component() {
     log "files that would change ($label):"
     printf '%s\n' "$changed" | sed 's/^/    /'
     if ! prompt_yn "Apply $label code update?" "y"; then
-      warn "skipped $label per operator choice"; return 0
+      _hold_marker "$component_key"; warn "skipped $label per operator choice"; return 0
     fi
     if (( DRY_RUN )); then
       echo "  [dry-run] would sync $src → $dest"
@@ -776,6 +793,8 @@ update_component() {
       fi
       UPDATED_COMPONENTS+=("$label")
       [[ -n "$unit" ]] && RESTART_UNITS+=("$unit")
+      # Marker follows the code at once, before the venv rebuild.
+      case "$component_key" in manager|alarm-engine) restamp_release_marker ;; esac
     fi
   fi
   # Venv refresh (manager and alarm-engine both have per-component venvs).
@@ -881,16 +900,15 @@ elif component_wanted "installer"; then
 fi
 
 # ── Release marker ─────────────────────────────────────────────────────────
-# Re-stamps $LLMSYS_INSTALL_DIR/RELEASE from the staged source on every run.
+# Re-stamps $LLMSYS_INSTALL_DIR/RELEASE from the staged source unless a
+# manager or alarm-engine update was skipped or failed.
 if $HAVE_MANAGER || $HAVE_AE; then
   if (( DRY_RUN )); then
     echo "  [dry-run] would re-stamp $LLMSYS_INSTALL_DIR/RELEASE"
+  elif (( MARKER_HOLD || VERIFY_FAILURES )) || (( ${#FAILED_UNITS[@]} )); then
+    warn "release marker left as it was: a manager or alarm-engine update was skipped or failed"
   else
-    stamp_release_marker "$REPO_SRC" "$LLMSYS_INSTALL_DIR"
-    if [[ -f "$LLMSYS_INSTALL_DIR/RELEASE" ]]; then
-      $SUDO chown "$LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP" "$LLMSYS_INSTALL_DIR/RELEASE" \
-        || warn "could not chown $LLMSYS_INSTALL_DIR/RELEASE to $LLMSYS_RUN_USER:$LLMSYS_RUN_GROUP"
-    fi
+    restamp_release_marker
   fi
 fi
 
