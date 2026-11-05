@@ -7,6 +7,7 @@ data/ directory is never touched.
 """
 from __future__ import annotations
 
+import os
 import sys
 import base64
 import json
@@ -1469,7 +1470,7 @@ class TestInstalledReleaseCache:
     def test_git_source_recomputes_after_ttl(self, tmp_path, monkeypatch):
         monkeypatch.setattr(companion, "_repo_root",
                             lambda: self._git_root(tmp_path))
-        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
         describes = iter(["v1.1.1-18-gabc1234", "v1.2.0"])
         monkeypatch.setattr(companion, "_run",
                             lambda cmd, cwd=None: next(describes))
@@ -1484,7 +1485,7 @@ class TestInstalledReleaseCache:
                                                      monkeypatch):
         monkeypatch.setattr(companion, "_repo_root",
                             lambda: self._git_root(tmp_path))
-        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
         describes = iter(["v1.2.0", None, "v1.2.1"])
         monkeypatch.setattr(
             companion, "_run",
@@ -1503,7 +1504,7 @@ class TestInstalledReleaseCache:
         """#609: a failed first probe (source=None) must not cache forever —
         a later successful probe fills in the real identity."""
         monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
-        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
         monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
         assert companion._installed_release()["source"] is None
         (tmp_path / "RELEASE").write_text("v1.2.0\n", encoding="utf-8")
@@ -1513,17 +1514,45 @@ class TestInstalledReleaseCache:
         got = companion._installed_release()
         assert (got["tag"], got["source"]) == ("v1.2.0", "release-file")
 
-    def test_release_file_source_caches_for_process_lifetime(self, tmp_path,
-                                                             monkeypatch):
+    def test_release_file_source_caches_while_unchanged(self, tmp_path,
+                                                        monkeypatch):
         (tmp_path / "RELEASE").write_text("v1.2.0\n", encoding="utf-8")
         monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
-        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0})
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
         first = companion._installed_release()
         assert (first["tag"], first["source"]) == ("v1.2.0", "release-file")
-        # Even far past the git TTL, a packaged source never recomputes.
+        # Far past the git TTL, an unchanged RELEASE is not probed again.
         companion._installed["at"] -= companion._INSTALLED_GIT_TTL_S * 100
-        (tmp_path / "RELEASE").write_text("v9.9.9\n", encoding="utf-8")
+        monkeypatch.setattr(companion, "_probe_install",
+                            lambda: pytest.fail("re-probed an unchanged RELEASE"))
         assert companion._installed_release()["tag"] == "v1.2.0"
+
+    def test_release_file_rewritten_after_start_is_read_again(self, tmp_path,
+                                                              monkeypatch):
+        """#1415: an updater that stamps RELEASE after the new code started
+        must not leave the process reporting the old release."""
+        rel = tmp_path / "RELEASE"
+        rel.write_text("v3.0.0\n", encoding="utf-8")
+        os.utime(rel, ns=(1_000_000_000, 1_000_000_000))
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
+        assert companion._installed_release()["tag"] == "v3.0.0"
+        rel.write_text("v3.3.0\n", encoding="utf-8")
+        os.utime(rel, ns=(2_000_000_000, 2_000_000_000))
+        got = companion._installed_release()
+        assert (got["tag"], got["source"]) == ("v3.3.0", "release-file")
+
+    def test_release_file_removed_keeps_last_good_answer(self, tmp_path,
+                                                         monkeypatch):
+        rel = tmp_path / "RELEASE"
+        rel.write_text("v3.3.0\n", encoding="utf-8")
+        monkeypatch.setattr(companion, "_repo_root", lambda: tmp_path)
+        monkeypatch.setattr(companion, "_installed", {"cache": None, "at": 0.0, "stamp": None})
+        monkeypatch.setattr(companion, "_run", lambda *a, **k: None)
+        assert companion._installed_release()["tag"] == "v3.3.0"
+        rel.unlink()
+        got = companion._installed_release()
+        assert (got["tag"], got["source"]) == ("v3.3.0", "release-file")
 
 
 # ── #717: release check negative cache ─────────────────────────────────
