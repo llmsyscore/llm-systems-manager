@@ -59,7 +59,7 @@ llm-systems-admin-password reset
 ```
 </details>
 
-**Add more machines.** Run the same install command on each machine you want to watch and pick **mode 5 (agent)**, or copy the ready-made command from **Admin → Agents → Manage ▾ → Enrollment**. Then approve the machine in **Admin → Agents**. Homebrew and a standalone agent binary are also available: see [Installing agents](docs/DEPLOYMENT.md#installing-agents-on-remote-computers).
+**Add more machines.** Run the same install command on each machine you want to watch and pick **mode 5 (agent)**, or copy the ready-made command from **Admin → Agents → Manage ▾ → Enrollment**. Then approve the machine in **Admin → Agents**. Homebrew and a standalone agent binary are also available: see [Installing agents](docs/DEPLOYMENT.md#installing-agents-on-remote-computers). Already run a `llama-server` from a distro package or your own build? See [Using a llama-server you installed yourself](docs/DEPLOYMENT.md#using-a-llama-server-you-installed-yourself).
 
 **First sign-in.** Open `http://<this-host>:5000/` and sign in with the admin login the installer showed you.
 

@@ -532,6 +532,8 @@ The agent attempts to configure itself. If your inference servers run on differe
 | `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | found by the installer |
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | found by the installer |
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | found by the installer |
+| `LLAMA_SYSTEMD_UNIT` | The `llama-server` service name | `llama_server.service`; the installer sets the one it finds |
+| `HF_CLI_PATH` | Path to the `hf` download tool, for one installed in a virtual environment | blank: `hf` on the path, else `~/.local/bin/hf`, else the built-in tool |
 | `LLAMA_CACHE_DIR` | llama.cpp's own model cache folder; blank reads it from the service, else uses `~/.cache/llama.cpp` | blank |
 | `LLAMA_MODELS_DIR` | Folder `llama-server` serves with `--models-dir`; blank reads it from the running server | blank |
 | `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
@@ -963,6 +965,27 @@ When something is missing, LLM Control shows a message with a link to this page:
 If the agent found your settings (port, service name, folders) but they are not saved yet, press **Save** on the LLM Control page and the agent writes them to its config.
 
 The agent never edits a service file that came from a package. It adds a small extra settings file under `/etc/systemd/system/<unit>.d/` instead.
+
+To set up multi-model mode by hand, start `llama-server` with `--models-preset <presets file>`, add `--metrics` so the dashboard can show usage stats, and set `LLAMA_CONFIG_INI` in the agent config to the same presets file. When you deploy a model from the dashboard, the agent adds a section for it to that file and restarts `llama-server`.
+
+### Where the dashboard finds models
+
+LLM Control lists the models it finds in three places:
+
+- **Downloads from the dashboard.** These go into the Hugging Face cache of the agent's user (`~/.cache/huggingface/hub` in that user's home). Run `llama-server` as the same user, with its normal home folder, so both use the same cache.
+- **llama.cpp's own cache**, where `llama-server -hf` puts the models it fetches (`~/.cache/llama.cpp`, or the folder in the service's `LLAMA_CACHE` setting). Set `LLAMA_CACHE_DIR` if it is somewhere else.
+- **The `--models-dir` folder**, if the server uses one. Set `LLAMA_MODELS_DIR` if the agent does not find it.
+
+A listed model can be deployed from the dashboard once the server runs as a service in multi-model mode with a presets file the agent can write.
+
+### Settings to check
+
+The install script finds these for you. Check them after a .deb or .rpm install, or when the server is not running during the install. Change them in **Admin → Agents → ⋯ → Edit agent config…**:
+
+- `LLAMA_API_URL`: the server's address, for example `http://localhost:9931` when it does not use port 8080.
+- `LLAMA_SYSTEMD_UNIT`: the service name, for example `llama-server.service`.
+- `LLAMA_CONFIG_INI`: the presets file.
+- `HF_CLI_PATH`: the `hf` download tool, when it is installed in a virtual environment. Leave it blank to use `hf` on the path, or the built-in tool.
 
 **Updating llama.cpp** from the dashboard only works for a llama-server the agent installed (or one in a folder the agent user can write). When the server came from a package (`apt`, `dnf`) or Homebrew, or sits in a folder owned by root, **Update llama.cpp** refuses and tells you how to update it instead; nothing is changed.
 
