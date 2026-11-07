@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/llmsyscore/llm-systems-manager/security/advisories/new
     about: Please report security problems privately, not as a public issue.
   - name: Troubleshooting guide
-    url: https://github.com/llmsyscore/llm-systems-manager#troubleshooting-and-uninstall
+    url: https://github.com/llmsyscore/llm-systems-manager/blob/main/docs/DEPLOYMENT.md#troubleshooting
     about: Answers to common problems with the dashboard, install and agents.
