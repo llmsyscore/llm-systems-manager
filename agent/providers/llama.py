@@ -2042,14 +2042,16 @@ def llama_mode_post(body: dict, authorization: Optional[str] = Header(default=No
     try:
         existing = _read_presets(presets)
     except (configparser.Error, UnicodeDecodeError) as e:
-        return refuse("presets-unreadable", f"The models file cannot be read: {e}")
+        log.warning("llama mode switch: presets unreadable: %s", e)
+        return refuse("presets-unreadable", f"The models file cannot be read ({type(e).__name__}); see the agent log.")
     created = section["name"] if section and not existing.has_section(section["name"]) else ""
     try:
         _write_preset_section(presets, section, existing)
         if add_only and (not os.path.exists(presets) or os.path.getsize(presets) == 0):
             Path(presets).write_text(_PRESETS_HEADER)
     except OSError as e:
-        return refuse("presets-not-writable", f"The agent cannot write the models file: {e}")
+        log.warning("llama mode switch: presets not writable: %s", e)
+        return refuse("presets-not-writable", f"The agent cannot write the models file ({type(e).__name__}); see the agent log.")
     try:
         res = _shared.svcconfig_apply(_SVCCONFIG_WRAPPER, block["unit_path"], tokens, "llm-svcconfig-apply",
                                       restart_unit=unit, restart_timeout=60, unit=unit)
