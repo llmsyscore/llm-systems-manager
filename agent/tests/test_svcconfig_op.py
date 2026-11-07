@@ -60,3 +60,10 @@ def test_svcconfig_apply_without_unit_keeps_legacy_payload(fake):
 def test_wrapper_version(fake, tmp_path):
     assert _shared.wrapper_version(str(fake[0])) == 3
     assert _shared.wrapper_version(str(tmp_path / "missing")) == 0
+
+
+def test_err_kind_gives_fixed_wording():
+    assert _shared.err_kind(PermissionError("x")) == "permission denied"
+    assert _shared.err_kind(FileNotFoundError("x")) == "file not found"
+    assert _shared.err_kind(OSError("x")) == "I/O error"
+    assert _shared.err_kind(RuntimeError("secret path")) == "error"

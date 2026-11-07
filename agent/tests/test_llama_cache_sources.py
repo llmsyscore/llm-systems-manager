@@ -269,7 +269,7 @@ def test_models_endpoint_unreachable_still_carries_mode(env, monkeypatch):
     monkeypatch.setattr(llama, "cached_models", lambda block=None: [{"model_id": "a/b:Q4"}])
     out = llama.llama_models_endpoint()
     body = json.loads(out.body)
-    assert out.status_code == 503 and "not answering (OSError)" in body["detail"]
+    assert out.status_code == 503 and "not answering (I/O error)" in body["detail"]
     assert body["extra"]["mode"]["unit"] == "u.service" and body["extra"]["cached"][0]["model_id"] == "a/b:Q4"
 
 

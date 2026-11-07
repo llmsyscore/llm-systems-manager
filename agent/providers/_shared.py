@@ -240,6 +240,17 @@ def wrapper_version(wrapper: str) -> int:
     return 0
 
 
+_ERR_KINDS = ((PermissionError, "permission denied"), (FileNotFoundError, "file not found"),
+              (IsADirectoryError, "path is a folder"), (subprocess.TimeoutExpired, "timed out"),
+              (TimeoutError, "timed out"), (ConnectionError, "connection refused"),
+              (UnicodeDecodeError, "not valid text"), (OSError, "I/O error"), (ValueError, "bad value"))
+
+
+def err_kind(e: BaseException) -> str:
+    """Short fixed wording for an exception, safe to send to a client (no exception text)."""
+    return next((k for t, k in _ERR_KINDS if isinstance(e, t)), "error")
+
+
 def _run_wrapper(wrapper: str, payload: bytes, timeout: int,
                  sudoers_hint: str = "the wrapper") -> "dict[str, Any]":
     """Run the wrapper through sudo with payload on stdin."""
@@ -251,7 +262,8 @@ def _run_wrapper(wrapper: str, payload: bytes, timeout: int,
                     "error": r.stderr.decode().strip()
                              or f"svcconfig apply failed — check sudoers for {sudoers_hint}"}
     except Exception as e:
-        return {"ok": False, "error": f"Write failed: {e}"}
+        log.warning("svcconfig wrapper run failed: %s", e)
+        return {"ok": False, "error": f"Write failed: {err_kind(e)}; see the agent log"}
     return {"ok": True, "error": None}
 
 
@@ -291,7 +303,8 @@ def svcconfig_apply(wrapper: str, svc_file_path: str, tokens: "list[str]",
             subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", restart_unit],
                            timeout=restart_timeout, check=True, capture_output=True)
         except Exception as e:
-            return {"ok": False, "error": f"restart failed: {e}"}
+            log.warning("svcconfig restart failed: %s", e)
+            return {"ok": False, "error": f"restart failed: {err_kind(e)}; see the agent log"}
     return {"ok": True}
 
 

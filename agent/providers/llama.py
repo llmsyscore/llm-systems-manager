@@ -2043,7 +2043,7 @@ def llama_mode_post(body: dict, authorization: Optional[str] = Header(default=No
         existing = _read_presets(presets)
     except (configparser.Error, UnicodeDecodeError) as e:
         log.warning("llama mode switch: presets unreadable: %s", e)
-        return refuse("presets-unreadable", f"The models file cannot be read ({type(e).__name__}); see the agent log.")
+        return refuse("presets-unreadable", f"The models file cannot be read ({_shared.err_kind(e)}); see the agent log.")
     created = section["name"] if section and not existing.has_section(section["name"]) else ""
     try:
         _write_preset_section(presets, section, existing)
@@ -2051,7 +2051,7 @@ def llama_mode_post(body: dict, authorization: Optional[str] = Header(default=No
             Path(presets).write_text(_PRESETS_HEADER)
     except OSError as e:
         log.warning("llama mode switch: presets not writable: %s", e)
-        return refuse("presets-not-writable", f"The agent cannot write the models file ({type(e).__name__}); see the agent log.")
+        return refuse("presets-not-writable", f"The agent cannot write the models file ({_shared.err_kind(e)}); see the agent log.")
     try:
         res = _shared.svcconfig_apply(_SVCCONFIG_WRAPPER, block["unit_path"], tokens, "llm-svcconfig-apply",
                                       restart_unit=unit, restart_timeout=60, unit=unit)
@@ -2103,7 +2103,7 @@ def llama_settings_save(body: Optional[dict] = None, authorization: Optional[str
         llama_inventory.set_yaml_keys(path, values)
     except OSError as e:
         log.warning("llama settings save: %s", e)
-        return _json_reply(500, {"error": f"could not write the agent config ({type(e).__name__})"})
+        return _json_reply(500, {"error": f"could not write the agent config ({_shared.err_kind(e)})"})
     for k, v in values.items():
         setattr(cfg, k, v)
     _detected.clear()
@@ -2462,7 +2462,7 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
         listing = resp.json()
     except Exception as e:
         log.debug("llama models: server unreachable: %s", e)
-        return _json_reply(503, {"detail": f"llama-server is not answering ({type(e).__name__})",
+        return _json_reply(503, {"detail": f"llama-server is not answering ({_shared.err_kind(e)})",
                                  "extra": _models_extra(_presets_section_ids())})
     listing = _drop_ghost_presets(listing)
     if isinstance(listing, dict):
