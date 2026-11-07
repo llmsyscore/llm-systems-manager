@@ -88,8 +88,11 @@ BODY = {"binary": "/usr/bin/llama-server", "args": [{"flag": "--port", "value": 
 def test_post_refuses_on_baked_unit_mismatch(ctx, tmp_path, monkeypatch):
     wf = _wrapper_file(tmp_path, "/etc/systemd/system/old-llama.service")
     monkeypatch.setattr(llama, "_SVCCONFIG_WRAPPER", str(wf))
-    monkeypatch.setattr(llama.subprocess, "run",
-                        lambda *a, **k: pytest.fail("wrapper must not be invoked on mismatch"))
+    def _run(cmd, *a, **k):
+        if cmd[:1] == ["systemctl"]:
+            raise FileNotFoundError("systemctl")
+        pytest.fail("wrapper must not be invoked on mismatch")
+    monkeypatch.setattr(llama.subprocess, "run", _run)
     r = llama.llama_svcconfig_post(dict(BODY))
     assert r["ok"] is False
     assert "baked for" in r["error"] and "new-llama.service" in r["error"]
@@ -99,8 +102,12 @@ def test_post_proceeds_when_baked_unit_matches(ctx, tmp_path, monkeypatch):
     wf = _wrapper_file(tmp_path, "/etc/systemd/system/new-llama.service")
     monkeypatch.setattr(llama, "_SVCCONFIG_WRAPPER", str(wf))
     calls = []
-    monkeypatch.setattr(llama.subprocess, "run",
-                        lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=0, stderr=b""))
+    def _run(cmd, *a, **k):
+        if cmd[:1] == ["systemctl"]:
+            raise FileNotFoundError("systemctl")
+        calls.append((cmd,))
+        return SimpleNamespace(returncode=0, stderr=b"")
+    monkeypatch.setattr(llama.subprocess, "run", _run)
     r = llama.llama_svcconfig_post(dict(BODY))
     assert r == {"ok": True}
     assert len(calls) == 1
@@ -108,8 +115,11 @@ def test_post_proceeds_when_baked_unit_matches(ctx, tmp_path, monkeypatch):
 
 def test_post_fails_safe_when_wrapper_missing(ctx, tmp_path, monkeypatch):
     monkeypatch.setattr(llama, "_SVCCONFIG_WRAPPER", str(tmp_path / "nonexistent"))
-    monkeypatch.setattr(llama.subprocess, "run",
-                        lambda *a, **k: SimpleNamespace(returncode=1, stderr=b"sudo: a password is required"))
+    def _run(cmd, *a, **k):
+        if cmd[:1] == ["systemctl"]:
+            raise FileNotFoundError("systemctl")
+        return SimpleNamespace(returncode=1, stderr=b"sudo: a password is required")
+    monkeypatch.setattr(llama.subprocess, "run", _run)
     r = llama.llama_svcconfig_post(dict(BODY))
     assert r["ok"] is False
 

@@ -24,3 +24,21 @@ Description: Enrollment secret:
  Value new agents must send to register, shown on the manager's Admin
  page under Agents → Manage → Enrollment. Leave blank if the manager
  does not require one.
+
+Template: llm-systems-agent/llama-api-url
+Type: string
+Description: llama-server address:
+ Full URL, with port, of the llama-server on this computer,
+ e.g. http://127.0.0.1:9931. Leave blank if there is none.
+
+Template: llm-systems-agent/llama-presets-file
+Type: string
+Description: llama-server presets file:
+ The INI file llama-server loads with --models-preset. The dashboard
+ adds downloaded models here. Leave blank if the server runs one
+ fixed model.
+
+Template: llm-systems-agent/llama-unit
+Type: string
+Description: llama-server service name:
+ The systemd unit that runs llama-server, e.g. llama-server.service.

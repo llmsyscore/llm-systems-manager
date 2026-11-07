@@ -55,7 +55,7 @@ import telemetry_report  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
 from providers.lms import lms_sample_block  # type: ignore
-from providers.llama import collect_llama_for_metrics, llama_api_port, llama_get_state  # type: ignore
+from providers.llama import collect_llama_for_metrics, llama_api_port, llama_auto_enable_tick, llama_get_state, llama_mode_block  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
 from providers import residency, power_arbiter, power_readback, run_conditions, llama_inventory  # type: ignore
 from agent_context import AgentContext  # type: ignore
@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.11.02-1"
+VERSION = "v2026.11.07-1"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -136,10 +136,7 @@ def _detect_default_lms_cmd() -> str:
 
 
 def _detect_default_hf_cmd() -> str:
-    found = shutil.which("hf")
-    if found:
-        return found
-    return os.path.expanduser("~/.local/bin/hf")
+    return shutil.which("hf") or ""
 
 
 def _default_log_file(install_dir: str) -> str:
@@ -228,6 +225,21 @@ def _env_override_value(key: str, cur: Any, raw: str, ref: Any = None) -> Any:
     return raw
 
 
+def _probe_llama_detector(cfg: "AgentConfig") -> str:
+    """One-line summary of a llama-server the installer's detector finds (running or stopped unit), else ''."""
+    try:
+        from providers import llama as _llama
+        det = _llama._detect_module().detect(cfg_port=_llama.llama_api_port(cfg.LLAMA_API_URL),
+                                             cfg_unit=(cfg.LLAMA_SYSTEMD_UNIT or "").strip())
+    except Exception as e:  # noqa: BLE001 — detection is advisory
+        print(f"      detector unavailable: {e}")
+        return ""
+    if not getattr(det, "found", False):
+        return ""
+    state = "running" if getattr(det, "running", True) else "stopped"
+    return f"unit {det.unit or 'none'}, port {det.port or '?'}, {state}"
+
+
 def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     """Probe the host for known LLM subsystems and set cfg flags + AGENT_ROLE.
 
@@ -238,16 +250,20 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
 
     found = {"llama": False, "lms": False, "vllm": False, "openclaw": False}
 
+    cfg._auto_role = True
     llama_http_ok, llama_http_msg = _probe_http(f"{cfg.LLAMA_API_URL}/v1/models")
     llama_log_exists = os.path.isfile(cfg.LLAMA_LOG_FILE)
     llama_unit_ok, llama_unit_state = _probe_systemd_unit(cfg.LLAMA_SYSTEMD_UNIT)
-    if llama_http_ok or llama_log_exists or llama_unit_ok:
+    llama_det = _probe_llama_detector(cfg)
+    if llama_http_ok or llama_log_exists or llama_unit_ok or llama_det:
         found["llama"] = True
         cfg.LLAMA_ENABLED = True
         print("  ✓ llama.cpp detected")
         print(f"      API   {cfg.LLAMA_API_URL:<32} {('reachable — ' + llama_http_msg) if llama_http_ok else 'unreachable'}")
         print(f"      log   {cfg.LLAMA_LOG_FILE:<32} {'exists' if llama_log_exists else 'missing'}")
         print(f"      unit  {cfg.LLAMA_SYSTEMD_UNIT:<32} {('present — ' + llama_unit_state) if llama_unit_ok else 'not installed'}")
+        if llama_det:
+            print(f"      found {llama_det}")
     else:
         print("  ✗ llama.cpp not detected")
         print(f"      tried API={cfg.LLAMA_API_URL} log={cfg.LLAMA_LOG_FILE} unit={cfg.LLAMA_SYSTEMD_UNIT}")
@@ -403,6 +419,8 @@ class AgentConfig:
     LLAMA_CONFIG_INI: str = ""
     LLAMA_LOG_FILE: str = ""
     LLAMA_SYSTEMD_UNIT: str = "llama_server.service"
+    LLAMA_CACHE_DIR: str = ""
+    LLAMA_MODELS_DIR: str = ""
     LLAMA_API_URL: str = "http://localhost:8080"
     LLAMA_BUILD_METHOD: str = ""          # custom_script|source|release_binary|conda|homebrew
     LLAMA_BUILD_DIR: str = ""             # managed install root; blank => ~/.local/share/llama.cpp
@@ -3175,6 +3193,10 @@ def _probe_and_reconcile() -> dict[str, Any]:
         rich = collect_llama_for_metrics()
         if not rich:
             rich = {"state": llama_get_state(), "port": llama_api_port(CONFIG.LLAMA_API_URL)}
+        try:
+            rich["mode"] = llama_mode_block()
+        except Exception as e:
+            logger.debug("llama mode block failed: %s", e)
         sample["llama"] = rich
     if CONFIG.VLLM_ENABLED:
         v = collect_vllm_for_metrics()
@@ -3186,6 +3208,10 @@ def _probe_and_reconcile() -> dict[str, Any]:
 def _collector_tick() -> None:
     """One collector pass. Residency + power reconcile always run; only publishing is gated."""
     _collector_wake.clear()
+    try:
+        llama_auto_enable_tick()
+    except Exception as e:  # noqa: BLE001 — advisory probe
+        logger.debug("llama auto-enable: %s", e)
     if not CONFIG.COLLECTION_ENABLED or not _is_approved():
         _probe_and_reconcile()
         return
@@ -4826,4 +4852,14 @@ if __name__ == "__main__":
     if "--version" in sys.argv[1:]:
         print(VERSION)
         raise SystemExit(0)
+    # Runs the bundled Hugging Face CLI in-process: `--hf-cli <hf args>`.
+    if len(sys.argv) > 1 and sys.argv[1] == "--hf-cli":
+        sys.argv = ["hf"] + sys.argv[2:]
+        try:
+            from huggingface_hub.cli.hf import main as _hf_main
+        except ImportError:
+            print("Hugging Face download tool not installed; re-run the agent installer "
+                  "or set HF_CLI_PATH in agent_config.yaml", file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(_hf_main())
     main()

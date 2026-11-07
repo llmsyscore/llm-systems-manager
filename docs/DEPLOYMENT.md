@@ -199,6 +199,8 @@ sudo apt install ./llm-systems-agent_<version>_amd64.deb        # or _arm64
 sudo dnf install ./llm-systems-agent-<version>-1.x86_64.rpm     # or .aarch64
 ```
 
+The .deb and .rpm agent packages include the Hugging Face download tool, so there is nothing extra to install.
+
 The deb prompts (debconf) for the manager URL; the rpm takes defaults — set `MANAGER_URL` in `/opt/llm-systems-agent/agent_config.yaml` and restart if left blank. The binary is installed owned by `llmsys` so manager-driven self-update (**Admin → Agents → Update**) keeps working; after a self-update the on-disk binary is newer than the package until the next `apt`/`dnf` upgrade re-syncs it. Provider toggles (llama.cpp/LM Studio/vLLM control, sudo wrappers) are what the script installer automates — enable them in `agent_config.yaml` per its inline docs.
 
 Packages are built by `tools/packaging/build-packages.sh` and `tools/packaging/build-agent-package.sh` (fpm) — see those scripts for the build-from-source path.
@@ -368,6 +370,8 @@ Then install the systemd unit from the extracted `llm-systems-agent-binary.servi
 
 Provider flags (`LLAMA_ENABLED`, `LMS_ENABLED`, sudo wrappers for service control, udev rules for liquidctl) are what the full installer automates; every option is documented inline in `agent_config.yaml.example`, so set them in your copied `agent_config.yaml` as needed.
 
+A tarball install has no root helper and no sudo rules, so the dashboard can list and download models for a llama-server on that computer but cannot start, stop or change its service. Use the `.deb`/`.rpm` package or the install script when you need that.
+
 On macOS, download the `-macos-arm64.tar.gz` tarball instead; it bundles the same binary + `agent_config.yaml.example` plus the `com.llm-systems-agent-binary.plist.tmpl` launchd unit. Clear the quarantine attribute first (`xattr -d com.apple.quarantine llm-systems-agent`), then use the extracted plist template (substitute `${AGENT_USER}`, `${AGENT_USER_HOME}`, `${AGENT_INSTALL_DIR}`) as the launchd unit. Linux binaries need glibc 2.35+ (Ubuntu 22.04 / Debian 12 or newer).
 
 ### Updating agents from the dashboard
@@ -525,9 +529,11 @@ The agent attempts to configure itself. If your inference servers run on differe
 |---|---|---|
 | `LLAMA_API_URL` | Your `llama-server` HTTP endpoint (llama.cpp has announced the default port moves to `:9931`) | `http://localhost:8080` |
 | `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1235` |
-| `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | auto-detected |
-| `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | auto-detected |
-| `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | auto-detected |
+| `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | found by the installer |
+| `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | found by the installer |
+| `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | found by the installer |
+| `LLAMA_CACHE_DIR` | llama.cpp's own model cache folder; blank reads it from the service, else uses `~/.cache/llama.cpp` | blank |
+| `LLAMA_MODELS_DIR` | Folder `llama-server` serves with `--models-dir`; blank reads it from the running server | blank |
 | `LLAMA_BUILD_METHOD` | How the "Update llama.cpp" button installs/upgrades: `custom_script` / `source` / `release_binary` / `conda` / `homebrew` | auto-detected at install |
 | `LLAMA_BUILD_SEARCH_DIRS` | Extra folders to search for llama.cpp builds shown under ⋯ → Installed builds, where an admin can make one active | none |
 | `LLAMA_BUILD_NOTES` | A note per build folder, shown next to that build in Installed builds (YAML only) | none |
@@ -536,7 +542,7 @@ The agent attempts to configure itself. If your inference servers run on differe
 | `LMS_UNLOAD_TIMEOUT_S` | How long to wait for an LM Studio model unload before reporting failure (keep under 90) | `60` |
 | `PROCESS_WATCHLIST` | Process names the agent should report on (psutil-style) | see the example file |
 
-The installer fills most of these in at deploy time via auto-detect and prompts. Any field can also be set via environment variable `LSA_<NAME>` (e.g. `LSA_LLAMA_API_URL=http://...`). The agent installer offers `--enable-llama`, `--enable-lms`, `--enable-vllm`, and `--enable-perf` flags, and auto-detects most of these from what's installed on the host. A host with neither `llama-server` nor LM Studio just reports system metrics. Per-agent settings can also be edited from the Agents tab.
+When you install from a terminal, the installer shows what it found (the `llama-server` binary, its port, the service name, the presets file, and whether it serves one model or many) and asks you to confirm each. Without a terminal, and for the .deb/.rpm packages, it uses what it found. If `llama-server` runs as another user, the installer offers to run the agent as that user. Any field can also be set via environment variable `LSA_<NAME>` (e.g. `LSA_LLAMA_API_URL=http://...`). The agent installer offers `--enable-llama`, `--enable-lms`, `--enable-vllm`, and `--enable-perf` flags. A host with neither `llama-server` nor LM Studio just reports system metrics. Per-agent settings can also be edited from the Agents tab.
 
 ### Trim your config file
 
@@ -937,6 +943,46 @@ Setup:
 3. Alerts are pushed by the alarm engine through the manager's `/api/companion/push/notify` bridge. A co-located install needs no token configuration; a split install presents `[alarm_engine].management_token` (or `push_notify_token` if you set one).
 
 Home, Alerts, Tower, Energy, and Models screens work for every role (the Tower tab shows only while the Tower assistant is enabled); control actions (model swap/pin, autopilot approval, restarts) and the Admin screen require an admin session, and every action confirms in a sheet before it runs. `pywebpush` must be installed in the manager venv for push delivery — the installer includes it.
+
+## Using a llama-server you installed yourself
+
+The agent can control a `llama-server` you set up on your own, as long as it runs as a service on the host. LLM Control then lets you load and unload models and change settings from the dashboard.
+
+What the agent needs:
+
+- A llama-server service (a systemd unit) that the agent can restart.
+- Multi-model mode with a presets file, if you want to add models from the dashboard.
+- The same user for the agent and `llama-server`.
+
+When something is missing, LLM Control shows a message with a link to this page:
+
+- **The server serves one fixed model:** press **Switch to multi-model mode**. The agent restarts the server so it can serve many models. If the service file sets the model through environment variables, the button is not shown; change the service file yourself.
+- **No presets file:** press **Add a presets file**. The agent creates one and points the server at it.
+- **The agent and the server run as different users:** run both as the same user. The installer offers to do this for you.
+
+If the agent found your settings (port, service name, folders) but they are not saved yet, press **Save** on the LLM Control page and the agent writes them to its config.
+
+The agent never edits a service file that came from a package. It adds a small extra settings file under `/etc/systemd/system/<unit>.d/` instead.
+
+**Updating llama.cpp** from the dashboard only works for a llama-server the agent installed (or one in a folder the agent user can write). When the server came from a package (`apt`, `dnf`) or Homebrew, or sits in a folder owned by root, **Update llama.cpp** refuses and tells you how to update it instead; nothing is changed.
+
+### Updating the agent's helper
+
+The helper is a small program, owned by root, that the agent uses to edit and restart the llama-server service.
+
+The dashboard asks you to update it when you press **Switch to multi-model mode** or **Add a presets file**, and when you start or stop the server after its service name changed. Run this once on that computer as root, then try again:
+
+```bash
+sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update
+```
+
+If you installed the agent from the .deb package, run `sudo dpkg-reconfigure llm-systems-agent` instead.
+
+If you installed it from the .rpm package, run `sudo dnf reinstall llm-systems-agent` instead.
+
+New installs and the .deb/.rpm packages already include it. Agents installed before this feature keep updating from the dashboard as before; only the actions above wait for the helper.
+
+The updated helper only edits a service that runs as the agent's user: the service file needs a `User=` line naming that user. A service without `User=` (it would run as root) or with another user is left alone, and the dashboard tells you which line to add. Start, stop and restart still work for it.
 
 ---
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import threading
@@ -235,18 +236,25 @@ def listed_build(path: str) -> Optional[dict]:
     return None
 
 
-def set_yaml_key(path, key: str, value: str) -> str:
-    """Sets a top-level `KEY: "value"` line (replacing the first live one, else appending); returns the backup path."""
+def set_yaml_keys(path, values: "dict[str, str]") -> str:
+    """Sets top-level `KEY: "value"` lines (live line, else commented `# KEY:`, else after the
+    `# -- llama.cpp` anchor, else appended); returns the backup path."""
     p = Path(path)
-    text = p.read_text(encoding="utf-8")
-    line = f"{key}: {json.dumps(value)}"
-    lines = text.splitlines()
-    for i, ln in enumerate(lines):
-        if ln.startswith(f"{key}:"):
-            lines[i] = line
-            break
-    else:
-        lines.append(line)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    anchor = next((i for i, ln in enumerate(lines) if ln.startswith("# -- llama.cpp")), None)
+    added = 0
+    for key, value in values.items():
+        line = f"{key}: {'true' if value else 'false'}" if isinstance(value, bool) else f"{key}: {json.dumps(value)}"
+        idx = next((i for i, ln in enumerate(lines) if ln.startswith(f"{key}:")), None)
+        if idx is None:
+            idx = next((i for i, ln in enumerate(lines) if re.match(rf"#\s*{re.escape(key)}\s*:", ln)), None)
+        if idx is not None:
+            lines[idx] = line
+        elif anchor is not None:
+            added += 1
+            lines.insert(anchor + added, line)
+        else:
+            lines.append(line)
     backup = f"{p}.{time.strftime('%Y%m%d-%H%M%S')}.bak"
     shutil.copy2(p, backup)
     st = p.stat()
@@ -257,6 +265,11 @@ def set_yaml_key(path, key: str, value: str) -> str:
         os.chown(tmp, st.st_uid, st.st_gid)
     os.replace(tmp, p)
     return backup
+
+
+def set_yaml_key(path, key: str, value: str) -> str:
+    """Sets one top-level `KEY: "value"` line; returns the backup path."""
+    return set_yaml_keys(path, {key: value})
 
 
 def switch(target: str, exec_tokens: list, *, preflight: Callable, apply_exec: Callable,

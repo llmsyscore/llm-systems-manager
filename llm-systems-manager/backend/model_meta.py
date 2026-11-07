@@ -43,6 +43,12 @@ _KEY_RE = {
 _REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,95}/[A-Za-z0-9][A-Za-z0-9._\-]{0,95}$")
 
 
+def quant_upper(model_id: str) -> str:
+    """Upper-cases the text after the last colon; an id without a colon is unchanged."""
+    head, sep, tail = model_id.rpartition(":")
+    return f"{head}:{tail.upper()}" if sep else model_id
+
+
 def valid_repo(s: Any) -> bool:
     return isinstance(s, str) and bool(_REPO_RE.match(s))
 

@@ -1623,7 +1623,8 @@ async function adminSetGpu(aid, device) {
 // Reusable themed yes/no modal. Resolves true on confirm, false on
 // cancel/Escape/backdrop. bodyHtml is interpolated as innerHTML — callers
 // are responsible for escaping any user-supplied substrings (use adminEsc()).
-function _themedConfirm({ title, bodyHtml, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false }) {
+// altLabel adds a third button that resolves 'alt'.
+function _themedConfirm({ title, bodyHtml, confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false, altLabel = '' }) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);'
@@ -1640,6 +1641,8 @@ function _themedConfirm({ title, bodyHtml, confirmLabel = 'OK', cancelLabel = 'C
       <div style="display:flex;justify-content:flex-end;gap:8px;">
         <button id="tcCancel" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
                 border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">${cancelLabel}</button>
+        ${altLabel ? `<button id="tcAlt" style="background:var(--bg-card-alt);color:var(--fg);border:1px solid var(--border);
+                border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;">${altLabel}</button>` : ''}
         <button id="tcConfirm" style="background:${confirmBg};color:#fff;border:1px solid var(--border);
                 border-radius:5px;padding:7px 16px;cursor:pointer;font-size:0.88em;font-weight:500;">${confirmLabel}</button>
       </div>`;
@@ -1658,6 +1661,8 @@ function _themedConfirm({ title, bodyHtml, confirmLabel = 'OK', cancelLabel = 'C
     overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
     box.querySelector('#tcCancel').addEventListener('click', () => cleanup(false));
     box.querySelector('#tcConfirm').addEventListener('click', () => cleanup(true));
+    const alt = box.querySelector('#tcAlt');
+    if (alt) alt.addEventListener('click', () => cleanup('alt'));
     // Focus the confirm button so Enter works without an explicit tab.
     setTimeout(() => box.querySelector('#tcConfirm').focus(), 0);
   });

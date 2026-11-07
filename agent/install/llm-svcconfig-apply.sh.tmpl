@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 # Managed by llm-systems-agent installer. Installed root-owned to
 # /usr/local/sbin/llm-svcconfig-apply (mode 0755). Do not edit by hand.
-# Rewrites only the ExecStart= line of the trusted, root-owned llama unit so
-# the agent can change server flags without a grant to write arbitrary content.
-# SVCCONFIG_WRAPPER_VERSION=2
+# Rewrites only the ExecStart= line of a llama-server/vllm unit (in place, or
+# through a drop-in for vendor units) and runs start/stop/restart for it.
+# SVCCONFIG_WRAPPER_VERSION=3
+# SVCCONFIG_WRAPPER_MIN_VERSION=2
 # Bump the version above on ANY change to this file OR the sudoers template —
 # self-update aborts (asking for a root install.sh --update) when the installed
 # version is older, since unprivileged self-update can't rewrite these.
 set -euo pipefail
 
 UNIT_PATH='__UNIT_PATH__'
+SYSTEMCTL='__SYSTEMCTL__'
+ETC='__ETC__'
 
 _die() { echo "llm-svcconfig-apply: $*" >&2; exit 1; }
 
-[[ -f "$UNIT_PATH" && ! -L "$UNIT_PATH" ]] || _die "unit not found or not a regular file: $UNIT_PATH"
-
-# stdin: line 1 = binary, remaining lines = ExecStart arg tokens (one per line).
+# stdin: line 1 = header (op=<op> unit=<name>) or legacy binary path; for apply,
+# then the binary (header mode) and ExecStart arg tokens, one per line.
 mapfile -t _lines || _die "failed to read stdin"
 [[ ${#_lines[@]} -ge 1 ]] || _die "empty input"
 
-BINARY="${_lines[0]}"
-ARGS=("${_lines[@]:1}")
-
-# Binary: absolute path, existing regular file, no whitespace/control/quote chars.
-[[ "$BINARY" == /* ]]                  || _die "binary must be an absolute path"
-[[ "$BINARY" != *[[:space:]\"\\]* ]]   || _die "binary path contains disallowed characters"
-[[ -f "$BINARY" ]]                     || _die "binary is not a regular file: $BINARY"
+_install_file() {
+  # Install FILE ($1) to DEST ($2) as 0644, root-owned when running as root.
+  if [[ "$(id -u)" -eq 0 ]]; then
+    install -m 0644 -o root -g root "$1" "$2"
+  else
+    install -m 0644 "$1" "$2"
+  fi
+}
 
 _render_arg() {
   # Reject control chars; systemd-quote tokens with whitespace, quotes, or a
@@ -41,27 +44,152 @@ _render_arg() {
   fi
 }
 
-EXEC="ExecStart=$BINARY"
-for a in ${ARGS[@]+"${ARGS[@]}"}; do
-  EXEC+=" $(_render_arg "$a")"
-done
+_build_exec() {
+  # Sets EXEC from BINARY ($1) and the remaining args.
+  local binary="$1"; shift
+  [[ "$binary" == /* ]]                  || _die "binary must be an absolute path"
+  [[ "$binary" != *[[:space:]\"\\]* ]]   || _die "binary path contains disallowed characters"
+  [[ -f "$binary" ]]                     || _die "binary is not a regular file: $binary"
+  EXEC="ExecStart=$binary"
+  local a
+  for a in "$@"; do
+    EXEC+=" $(_render_arg "$a")"
+  done
+}
 
-# Preserve the trusted unit verbatim; replace only the first ExecStart= line.
-# Everything else (User=, Environment=, limits, ExecStartPre) is left as the
-# operator/installer wrote it — the request can only influence server flags.
-_replaced=0
-TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
-while IFS= read -r line || [[ -n "$line" ]]; do
-  if [[ "$_replaced" -eq 0 && "${line#"${line%%[![:space:]]*}"}" == ExecStart=* ]]; then
-    printf '%s\n' "$EXEC" >> "$TMP"
-    _replaced=1
-  else
-    printf '%s\n' "$line" >> "$TMP"
+_edit_in_place() {
+  # Back up unit file $1, then replace only its first ExecStart= line.
+  # Everything else (User=, Environment=, limits, ExecStartPre) is left as the
+  # operator/installer wrote it — the request can only influence server flags.
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" ]] || _die "unit not found or not a regular file: $path"
+  local replaced=0 line
+  TMP="$(mktemp)"
+  trap 'rm -f "$TMP"' EXIT
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$replaced" -eq 0 && "${line#"${line%%[![:space:]]*}"}" == ExecStart=* ]]; then
+      printf '%s\n' "$EXEC" >> "$TMP"
+      replaced=1
+    else
+      printf '%s\n' "$line" >> "$TMP"
+    fi
+  done < "$path"
+  [[ "$replaced" -eq 1 ]] || _die "no ExecStart= line found in $path"
+  cp -p "$path" "$path.llmsys-bak"
+  _install_file "$TMP" "$path"
+}
+
+_no_link() {
+  # Refuse when any given path is a symlink.
+  local f
+  for f in "$@"; do [[ ! -L "$f" ]] || _die "refusing symlink: $f"; done
+}
+
+_check_binary() {
+  # Accept BINARY ($1) only when it is llama-server, vllm or a python running vllm (args $2 $3).
+  local bin="${1##*/}"
+  if [[ "$bin" =~ ^python[0-9.]*$ ]]; then
+    if [[ "$2" == -m ]]; then
+      [[ "$3" == vllm || "$3" == vllm.* ]] || _die "python binary needs -m vllm or a vllm entrypoint"
+    elif [[ "$2" != */vllm && "$2" != vllm ]]; then
+      _die "python binary needs -m vllm or a vllm entrypoint"
+    fi
+  elif [[ "$bin" != llama-server && "$bin" != vllm ]]; then
+    _die "binary must be llama-server, vllm or python"
   fi
-done < "$UNIT_PATH"
-[[ "$_replaced" -eq 1 ]] || _die "no ExecStart= line found in $UNIT_PATH"
+}
 
-install -m 0644 -o root -g root "$TMP" "$UNIT_PATH"
-/usr/bin/systemctl daemon-reload
+_validate_unit() {
+  # Accept only a unit whose ExecStart executable is llama-server or vllm; apply
+  # and restore also need User= to be the calling (sudo) user, never root.
+  local unit="$1" op="${2:-}" state exec_line exe uuser
+  state="$("$SYSTEMCTL" show -p LoadState --value -- "$unit")" || _die "cannot query unit $unit"
+  [[ "$state" == loaded ]] || _die "unit is not loaded: $unit"
+  exec_line="$("$SYSTEMCTL" show -p ExecStart --value -- "$unit")" || _die "cannot query unit $unit"
+  [[ "$exec_line" =~ path=([^[:space:]]+) ]] || _die "not a llama-server or vllm unit: $unit"
+  exe="${BASH_REMATCH[1]##*/}"
+  case "$exe" in
+    llama-server|vllm) ;;
+    *) [[ "$exe" =~ ^python[0-9.]*$ ]] || _die "not a llama-server or vllm unit: $unit"
+       [[ "$exec_line" =~ argv\[\]=[^[:space:]]+[[:space:]]+(-m[[:space:]]+vllm([[:space:].]|$)|[^[:space:]]*/vllm([[:space:]]|$)) ]] \
+               || _die "not a llama-server or vllm unit: $unit" ;;
+  esac
+  if [[ "$op" == apply || "$op" == restore ]]; then
+    uuser="$("$SYSTEMCTL" show -p User --value -- "$unit")" || _die "cannot query unit $unit"
+    [[ -n "$uuser" && "$uuser" != root ]] || _die "unit runs as root; refusing to edit"
+    [[ -z "${SUDO_USER:-}" || "$uuser" == "$SUDO_USER" ]] \
+      || _die "unit runs as $uuser, not as the agent user $SUDO_USER; refusing to edit"
+  fi
+}
+
+_header_op() {
+  local op="$1" unit="$2" path dropin dropdir _bin
+  _validate_unit "$unit" "$op"
+  path="$("$SYSTEMCTL" show -p FragmentPath --value -- "$unit")" || _die "cannot query unit $unit"
+  [[ -n "$path" ]] || _die "no unit file path for $unit"
+  dropdir="$ETC/$unit.d"
+  dropin="$dropdir/50-llm-systems-agent.conf"
+  case "$op" in
+    apply)
+      [[ ${#_lines[@]} -ge 2 ]] || _die "empty input: apply needs a binary line"
+      _no_link "$dropdir" "$dropin" "$dropin.llmsys-bak" "$path" "$path.llmsys-bak"
+      # Backups from earlier applies are dropped first: restore undoes this apply only.
+      rm -f -- "$dropin.llmsys-bak" "$path.llmsys-bak"
+      _args=("${_lines[@]:2}")
+      _build_exec "${_lines[1]}" ${_args[@]+"${_args[@]}"}
+      _check_binary "${_lines[1]}" "${_lines[2]:-}" "${_lines[3]:-}"
+      if [[ "$path" == "$ETC"/* ]]; then
+        _edit_in_place "$path"
+      else
+        TMP="$(mktemp)"
+        trap 'rm -f "$TMP"' EXIT
+        printf '[Service]\nExecStart=\n%s\n' "$EXEC" > "$TMP"
+        mkdir -p "$dropdir"
+        _no_link "$dropdir" "$dropin" "$dropin.llmsys-bak"
+        [[ ! -e "$dropin" ]] || cp -p "$dropin" "$dropin.llmsys-bak"
+        _install_file "$TMP" "$dropin"
+      fi
+      "$SYSTEMCTL" daemon-reload
+      ;;
+    restore)
+      _no_link "$dropdir" "$dropin" "$dropin.llmsys-bak" "$path" "$path.llmsys-bak"
+      if [[ -f "$dropin.llmsys-bak" ]]; then
+        _install_file "$dropin.llmsys-bak" "$dropin"
+        rm -f "$dropin.llmsys-bak"
+      elif [[ -e "$dropin" ]]; then
+        rm -f "$dropin"
+        rmdir "$dropdir" 2>/dev/null || true
+      elif [[ -f "$path.llmsys-bak" ]]; then
+        _install_file "$path.llmsys-bak" "$path"
+        rm -f "$path.llmsys-bak"
+      else
+        _die "nothing to restore for $unit"
+      fi
+      "$SYSTEMCTL" daemon-reload
+      ;;
+    start|stop|restart)
+      "$SYSTEMCTL" "$op" -- "$unit"
+      ;;
+  esac
+  echo "ok"
+}
+
+HEADER="${_lines[0]}"
+if [[ "$HEADER" == op=* ]]; then
+  if [[ "$HEADER" =~ ^op=(apply|restore|start|stop|restart)\ unit=([A-Za-z0-9][A-Za-z0-9_.@-]*\.service)$ ]]; then
+    _header_op "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    exit 0
+  fi
+  _die "bad header"
+fi
+
+# Legacy protocol: line 1 = binary, applied in place on the baked unit path.
+[[ -f "$UNIT_PATH" && ! -L "$UNIT_PATH" ]] || _die "unit not found or not a regular file: $UNIT_PATH"
+_args=("${_lines[@]:1}")
+_build_exec "$HEADER" ${_args[@]+"${_args[@]}"}
+_check_binary "$HEADER" "${_lines[1]:-}" "${_lines[2]:-}"
+_state="$("$SYSTEMCTL" show -p LoadState --value -- "${UNIT_PATH##*/}" 2>/dev/null || true)"
+[[ "$_state" != loaded ]] || _validate_unit "${UNIT_PATH##*/}" apply
+_edit_in_place "$UNIT_PATH"
+"$SYSTEMCTL" daemon-reload
 echo "ok"

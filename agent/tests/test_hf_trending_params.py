@@ -28,7 +28,7 @@ def _run(llama, monkeypatch, **kwargs):
     argv = {}
     monkeypatch.setattr(llama, "_require_ctx", _Ctx)
     monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
-    monkeypatch.setattr(llama, "_hf_cli_path", lambda: "hf")
+    monkeypatch.setattr(llama, "_hf_cli_cmd", lambda: ["hf"])
 
     import json as _json
     rows = kwargs.pop("_rows", [])

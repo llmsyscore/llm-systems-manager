@@ -228,30 +228,65 @@ def build_svcconfig_tokens(head_tokens: list,
     return tokens
 
 
-def svcconfig_apply(wrapper: str, svc_file_path: str, tokens: "list[str]",
-                    sudoers_hint: str, restart_unit: "Optional[str]" = None,
-                    restart_timeout: int = 30) -> "dict[str, Any]":
-    """Baked-unit-mismatch guard → sudo wrapper apply → optional restart."""
-    payload = ("\n".join(tokens) + "\n").encode()
-    baked = wrapper_baked_unit_path(wrapper)
-    if baked and baked != svc_file_path:
-        return {"ok": False,
-                "error": f"svcconfig helper is baked for {baked} but the configured "
-                         f"unit is {svc_file_path} — run a root agent install.sh --update "
-                         f"to re-bake the helper and sudoers for the renamed unit"}
+def wrapper_version(wrapper: str) -> int:
+    """SVCCONFIG_WRAPPER_VERSION of the installed wrapper, or 0 if unreadable."""
     try:
-        r = subprocess.run(
-            ["sudo", "-n", wrapper],
-            input=payload, capture_output=True, timeout=15,
-        )
+        for line in Path(wrapper).read_text().splitlines():
+            m = re.match(r"#\s*SVCCONFIG_WRAPPER_VERSION=(\d+)", line)
+            if m:
+                return int(m.group(1))
+    except OSError:
+        pass  # no wrapper installed: version 0
+    return 0
+
+
+def _run_wrapper(wrapper: str, payload: bytes, timeout: int,
+                 sudoers_hint: str = "the wrapper") -> "dict[str, Any]":
+    """Run the wrapper through sudo with payload on stdin."""
+    try:
+        r = subprocess.run(["sudo", "-n", wrapper], input=payload,
+                           capture_output=True, timeout=timeout)
         if r.returncode != 0:
             return {"ok": False,
                     "error": r.stderr.decode().strip()
                              or f"svcconfig apply failed — check sudoers for {sudoers_hint}"}
     except Exception as e:
         return {"ok": False, "error": f"Write failed: {e}"}
+    return {"ok": True, "error": None}
+
+
+def svcconfig_op(wrapper: str, op: str, unit: str, timeout: int = 30) -> "dict[str, Any]":
+    """Send a header-only op (restore/start/stop/restart) for unit to the wrapper."""
+    return _run_wrapper(wrapper, f"op={op} unit={unit}\n".encode(), timeout)
+
+
+def svcconfig_apply(wrapper: str, svc_file_path: str, tokens: "list[str]",
+                    sudoers_hint: str, restart_unit: "Optional[str]" = None,
+                    restart_timeout: int = 30,
+                    unit: "Optional[str]" = None) -> "dict[str, Any]":
+    """Baked-unit-mismatch guard → sudo wrapper apply → optional restart.
+    With unit, uses the header protocol and skips the baked-path guard."""
+    body = "\n".join(tokens) + "\n"
+    if unit:
+        payload = f"op=apply unit={unit}\n{body}".encode()
+    else:
+        payload = body.encode()
+        baked = wrapper_baked_unit_path(wrapper)
+        if baked and baked != svc_file_path:
+            return {"ok": False,
+                    "error": f"svcconfig helper is baked for {baked} but the configured "
+                             f"unit is {svc_file_path} — run a root agent install.sh --update "
+                             f"to re-bake the helper and sudoers for the renamed unit"}
+    res = _run_wrapper(wrapper, payload, 15, sudoers_hint)
+    if not res["ok"]:
+        return res
 
     if restart_unit:
+        if unit:
+            res = svcconfig_op(wrapper, "restart", unit, timeout=restart_timeout)
+            if not res["ok"]:
+                return {"ok": False, "error": f"restart failed: {res['error']}"}
+            return {"ok": True}
         try:
             subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", restart_unit],
                            timeout=restart_timeout, check=True, capture_output=True)

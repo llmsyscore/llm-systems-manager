@@ -3,6 +3,7 @@
 install.sh's --update path) by extracting it and running it on fixtures."""
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -130,3 +131,18 @@ def test_reconcile_does_not_corrupt_activated_list_block(tmp_path):
     assert "  - name: llama-server\n    match: llama-server\n" in cfg   # preserved verbatim
     assert "enabled" not in cfg                                         # not injected
     assert "PROCESS_WATCHLIST.enabled" in stdout                        # flagged instead
+
+
+def test_llama_cache_and_models_dir_keys_documented_and_default_blank():
+    example = (_AGENT_ROOT / "agent_config.yaml.example").read_text()
+    src = (_AGENT_ROOT / "llm-systems-agent.py").read_text()
+    for key in ("LLAMA_CACHE_DIR", "LLAMA_MODELS_DIR"):
+        assert re.search(rf'^# {key}:\s+""', example, re.M), key
+        assert re.search(rf'^\s+{key}: str = ""$', src, re.M), key
+
+
+def test_llama_cache_and_models_dir_values_preserved_by_reconcile(tmp_path):
+    live = 'AGENT_OS: linux\nLLAMA_CACHE_DIR: "/x/cache"\nLLAMA_MODELS_DIR: "/x/models"\n'
+    out, _ = _run(tmp_path, live, (_AGENT_ROOT / "agent_config.yaml.example").read_text())
+    assert re.search(r'^LLAMA_CACHE_DIR:\s+"/x/cache"', out, re.M)
+    assert re.search(r'^LLAMA_MODELS_DIR:\s+"/x/models"', out, re.M)

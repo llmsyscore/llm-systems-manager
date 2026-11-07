@@ -66,6 +66,11 @@ STAGE="$WORK/stage"
 mkdir -p "$STAGE$AGENT_DIR" "$STAGE/usr/lib/systemd/system" "$OUT_DIR"
 
 install -m 0755 "$BINARY" "$STAGE$AGENT_DIR/llm-systems-agent"
+# Llama-server detector and the privilege templates the maintainer scripts render.
+install -d -m 0755 "$STAGE$AGENT_DIR/install"
+for f in detect_llama.py llm-svcconfig-apply.sh.tmpl llm-systems-agent.sudoers.tmpl; do
+  install -m 0644 "$REPO_ROOT/agent/install/$f" "$STAGE$AGENT_DIR/install/$f"
+done
 install -m 0644 "$REPO_ROOT/agent/agent_config.yaml.example" "$STAGE$AGENT_DIR/agent_config.yaml.example"
 
 # Renders the binary unit template's ${AGENT_*} tokens with package defaults.
@@ -92,8 +97,16 @@ done
 for s in pre post preun postun; do
   cat "$HERE/agent/scripts/common.sh" "$HERE/agent/scripts/rpm/$s" > "$SCRIPTS/rpm-$s"
   chmod 0755 "$SCRIPTS/rpm-$s"
+  # rpmbuild expands %-macros in the spec once: ship an escaped copy and verify the stored text.
+  sed 's/%/%%/g' "$SCRIPTS/rpm-$s" > "$SCRIPTS/rpm-$s.esc"
 done
-bash -n "$SCRIPTS"/deb-* "$SCRIPTS"/rpm-*
+bash -n "$SCRIPTS"/deb-* "$SCRIPTS"/rpm-pre "$SCRIPTS"/rpm-post "$SCRIPTS"/rpm-preun "$SCRIPTS"/rpm-postun
+
+# debconf config with the detector embedded (it runs before the payload is unpacked).
+DEBCONF_CONFIG="$SCRIPTS/debconf-config"
+"$HERE/render-debconf-config.sh" "$HERE/agent/debconf/config" \
+  "$REPO_ROOT/agent/install/detect_llama.py" "$DEBCONF_CONFIG"
+sh -n "$DEBCONF_CONFIG"
 
 COMMON_ARGS=(
   -s dir -n "$PKG_NAME" -v "$VERSION"
@@ -115,7 +128,7 @@ if [[ ",$FORMATS," == *,deb,* ]]; then
     --after-install "$SCRIPTS/deb-postinst" \
     --before-remove "$SCRIPTS/deb-prerm" \
     --after-remove "$SCRIPTS/deb-postrm" \
-    --deb-config "$HERE/agent/debconf/config" \
+    --deb-config "$DEBCONF_CONFIG" \
     --deb-templates "$HERE/agent/debconf/templates" \
     --deb-no-default-config-files \
     "${COMMON_ARGS[@]}" .
@@ -129,11 +142,27 @@ if [[ ",$FORMATS," == *,rpm,* ]]; then
   fpm -t rpm -a "$RPM_ARCH" -p "$RPM_OUT" \
     --depends ca-certificates \
     --rpm-os linux \
-    --before-install "$SCRIPTS/rpm-pre" \
-    --after-install "$SCRIPTS/rpm-post" \
-    --before-remove "$SCRIPTS/rpm-preun" \
-    --after-remove "$SCRIPTS/rpm-postun" \
+    --before-install "$SCRIPTS/rpm-pre.esc" \
+    --after-install "$SCRIPTS/rpm-post.esc" \
+    --before-remove "$SCRIPTS/rpm-preun.esc" \
+    --after-remove "$SCRIPTS/rpm-postun.esc" \
     "${COMMON_ARGS[@]}" .
+  if command -v rpm >/dev/null 2>&1; then
+    for pair in "PREIN:pre" "POSTIN:post" "PREUN:preun" "POSTUN:postun"; do
+      tag="${pair%%:*}"; s="${pair#*:}"
+      got="$(rpm -qp --qf "%{$tag}" "$RPM_OUT" 2>/dev/null)"; want="$(cat "$SCRIPTS/rpm-$s")"
+      if [[ "$got" != "$want" ]]; then
+        diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") | head -40 >&2
+        die "rpm scriptlet $tag differs from $SCRIPTS/rpm-$s after macro expansion (diff above: < source, > package)"
+      fi
+    done
+    flags="$(rpm -qp --qf '%{PREINFLAGS}%{POSTINFLAGS}%{PREUNFLAGS}%{POSTUNFLAGS}' "$RPM_OUT" 2>/dev/null)"
+    [[ "$flags" == "0000" || "$flags" == "(none)(none)(none)(none)" ]] \
+      || die "rpm scriptlets carry run-time macro expansion flags ($flags); they must run verbatim"
+    echo "rpm scriptlets verified byte-for-byte, no run-time expansion"
+  else
+    echo "WARNING: rpm not installed on this host; scriptlet verification skipped" >&2
+  fi
   BUILT+=("$RPM_OUT")
 fi
 

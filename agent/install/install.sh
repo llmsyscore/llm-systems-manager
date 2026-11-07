@@ -46,6 +46,7 @@
 set -euo pipefail
 
 USER_ARG="llmsys"
+USER_ARG_EXPLICIT=false
 INSTALL_DIR="/opt/llm-systems-agent"
 INSTALL_DIR_EXPLICIT=false   # set true if --install-dir was given on CLI
 HOSTNAME_OVERRIDE=""          # --hostname: agent display name in logs / admin tab
@@ -62,6 +63,7 @@ MANAGER_URL_PRE_PIN=""                              # MANAGER_URL before the pin
 ALARM_ENGINE_URL=""                    # optional CLI override; empty → derived
 ALARM_ENGINE_URL_EXPLICIT=false        # set true if --alarm-engine-url given
 ROLE="auto"
+ROLE_WRITTEN=""          # value written to AGENT_ROLE; "auto" when the installer resolved it
 ENABLE_PERF=false
 PERF_FLAG_EXPLICIT=false   # set true if --enable-perf/--no-perf given on CLI
 ENABLE_LLAMA=false
@@ -128,7 +130,7 @@ PERF_BASE_DIR=""            # previous shipped examples, snapshotted before --up
 # Banner version — read from the agent source so it tracks
 # llm-systems-agent.py's VERSION instead of drifting out of date.
 VERSION="$(sed -n 's/^VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-  "$(dirname "$0")/../llm-systems-agent.py" 2>/dev/null | head -n1)"
+  "$(dirname "$0")/../llm-systems-agent.py" 2>/dev/null | head -n1 || true)"
 [[ -n "$VERSION" ]] || VERSION="unknown"
 
 usage() {
@@ -421,7 +423,7 @@ _need_arg() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --user)         _need_arg "$1" "${2:-}"; USER_ARG="$2"; shift 2 ;;
+    --user)         _need_arg "$1" "${2:-}"; USER_ARG="$2"; USER_ARG_EXPLICIT=true; shift 2 ;;
     --install-dir)  _need_arg "$1" "${2:-}"; INSTALL_DIR="$2"; INSTALL_DIR_EXPLICIT=true; shift 2 ;;
     --hostname)     _need_arg "$1" "${2:-}"; HOSTNAME_OVERRIDE="$2"; shift 2 ;;
     --description)  _need_arg "$1" "${2:-}"; DESCRIPTION_OVERRIDE="$2"; shift 2 ;;
@@ -583,6 +585,7 @@ _compute_required_install_files() {
     "$SRC_DIR/providers/vllm.py"
     "$SRC_DIR/bench/speed_bench.py"
     "$SRC_DIR/bench/requirements-bench.txt"
+    "$TMPL_DIR/detect_llama.py"
   )
   case "$(uname -s)" in
     Linux)
@@ -731,6 +734,13 @@ _svcconfig_wrapper_version() {
   printf '%s' "${v:-0}"
 }
 
+# _svcconfig_wrapper_min_version FILE — oldest helper the agent code still works with (0 = unset).
+_svcconfig_wrapper_min_version() {
+  local f="$1" v=""
+  [[ -r "$f" ]] && v="$(sed -n 's/^# *SVCCONFIG_WRAPPER_MIN_VERSION=\([0-9][0-9]*\).*/\1/p' "$f" | head -1)"
+  printf '%s' "${v:-0}"
+}
+
 # _svcconfig_wrapper_unit_path FILE
 #   Echo the UNIT_PATH baked into an installed wrapper, or empty.
 _svcconfig_wrapper_unit_path() {
@@ -782,7 +792,7 @@ _xml_escape() {
 #   svcconfig helper (Linux, privileged). Called from both fresh install and
 #   root --update. Returns non-zero on a visudo failure without installing.
 _apply_sudoers_and_wrapper() {
-  local unit vunit tmp_sudoers tmp_wrap tmp_vwrap
+  local unit vunit tmp_sudoers tmp_wrap tmp_vwrap _vout
   unit="$(_resolved_llama_unit)"
   vunit="$(_resolved_vllm_unit)"
   tmp_sudoers="$(mktemp)"
@@ -794,8 +804,10 @@ _apply_sudoers_and_wrapper() {
     sed -i -e '/^Cmnd_Alias LSA_VLLM/,/llm-vllm-svcconfig-apply ""$/d' \
            -e 's/, LSA_VLLM$//' "$tmp_sudoers"
   fi
-  if ! $SUDO visudo -c -f "$tmp_sudoers" >/dev/null 2>&1; then
+  chmod 0440 "$tmp_sudoers"
+  if ! _vout="$($SUDO visudo -c -f "$tmp_sudoers" 2>&1)"; then
     echo "ERROR: visudo validation failed for $tmp_sudoers — NOT installing sudoers." >&2
+    printf '%s\n' "$_vout" | sed 's/^/    visudo: /' >&2
     rm -f "$tmp_sudoers"; return 1
   fi
   $SUDO install -m 0440 -o root -g root "$tmp_sudoers" /etc/sudoers.d/llm-systems-agent
@@ -803,7 +815,8 @@ _apply_sudoers_and_wrapper() {
   rm -f "$tmp_sudoers"
   tmp_wrap="$(mktemp)"
   _subst_tokens "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" \
-      '__UNIT_PATH__' "/etc/systemd/system/$unit" > "$tmp_wrap"
+      '__UNIT_PATH__' "/etc/systemd/system/$unit" \
+        '__SYSTEMCTL__' /usr/bin/systemctl '__ETC__' /etc/systemd/system > "$tmp_wrap"
   $SUDO install -d -m 0755 /usr/local/sbin
   $SUDO install -m 0755 -o root -g root "$tmp_wrap" /usr/local/sbin/llm-svcconfig-apply
   _ok "svcconfig helper installed: /usr/local/sbin/llm-svcconfig-apply"
@@ -812,7 +825,8 @@ _apply_sudoers_and_wrapper() {
   if _vllm_grant_wanted; then
     tmp_vwrap="$(mktemp)"
     _subst_tokens "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl" \
-        '__UNIT_PATH__' "/etc/systemd/system/$vunit" > "$tmp_vwrap"
+        '__UNIT_PATH__' "/etc/systemd/system/$vunit" \
+        '__SYSTEMCTL__' /usr/bin/systemctl '__ETC__' /etc/systemd/system > "$tmp_vwrap"
     $SUDO install -m 0755 -o root -g root "$tmp_vwrap" /usr/local/sbin/llm-vllm-svcconfig-apply
     _ok "vllm svcconfig helper installed: /usr/local/sbin/llm-vllm-svcconfig-apply"
     rm -f "$tmp_vwrap"
@@ -1499,14 +1513,18 @@ if $DO_UPDATE; then
   _lu_unit_file="/etc/systemd/system/$_lu_guard"
   _wrap_bin=/usr/local/sbin/llm-svcconfig-apply
   _want_wrap_ver="$(_svcconfig_wrapper_version "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")"
+  _min_wrap_ver="$(_svcconfig_wrapper_min_version "$TMPL_DIR/llm-svcconfig-apply.sh.tmpl")"
+  [[ "$_min_wrap_ver" -gt 0 ]] || _min_wrap_ver="$_want_wrap_ver"
   _have_wrap_ver="$(_svcconfig_wrapper_version "$_wrap_bin")"
   _wrap_stale=false
-  { [[ ! -x "$_wrap_bin" ]] || (( _have_wrap_ver < _want_wrap_ver )); } && _wrap_stale=true
+  { [[ ! -x "$_wrap_bin" ]] || (( _have_wrap_ver < _min_wrap_ver )); } && _wrap_stale=true
+  _wrap_behind=false
+  [[ -x "$_wrap_bin" ]] && (( _have_wrap_ver >= _min_wrap_ver && _have_wrap_ver < _want_wrap_ver )) && _wrap_behind=true
   # Also fires when the wrapper's baked unit path differs from the configured
   # unit (renamed unit).
   _have_unit_path="$(_svcconfig_wrapper_unit_path "$_wrap_bin")"
   _wrap_mismatch=false
-  [[ -x "$_wrap_bin" && -n "$_have_unit_path" \
+  [[ -x "$_wrap_bin" && -n "$_have_unit_path" && "$_have_wrap_ver" -lt 3 \
         && "$_have_unit_path" != "$_lu_unit_file" ]] && _wrap_mismatch=true
   if $FROM_SELF_UPDATE && { $_wrap_stale || $_wrap_mismatch; } && [[ "$AGENT_OS" == "linux" \
         && "$_llama_on" != "false" && -f "$_lu_unit_file" ]]; then
@@ -1535,6 +1553,11 @@ if $DO_UPDATE; then
       echo "      sudo bash \"$SRC_DIR/install/install.sh\" --update --no-pull" >&2
       exit 1
     fi
+  elif $FROM_SELF_UPDATE && $_wrap_behind && [[ "$AGENT_OS" == "linux" && "$_llama_on" != "false" ]]; then
+    echo "ⓘ the root helper on this computer is v$_have_wrap_ver (newest v$_want_wrap_ver). Everything that"
+    echo "  worked before keeps working; the multi-model switch for a self-managed llama-server"
+    echo "  needs a one-time root update on this host:"
+    echo "      sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update"
   fi
 
   # Root --update: install the sudoers file + root-owned svcconfig helper BEFORE
@@ -1567,6 +1590,12 @@ if $DO_UPDATE; then
     $SUDO rm -rf "$INSTALL_DIR/$_pkg"
     $SUDO mv "$INSTALL_DIR/$_pkg.new" "$INSTALL_DIR/$_pkg"
   done
+  # detect_llama.py is imported by the agent from <install>/install.
+  $SUDO mkdir -p "$INSTALL_DIR/install"
+  $SUDO cp "$TMPL_DIR/detect_llama.py" "$INSTALL_DIR/install/detect_llama.py"
+  $SUDO chmod 0755 "$INSTALL_DIR/install"
+  $SUDO chmod 0644 "$INSTALL_DIR/install/detect_llama.py"
+  $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/install"
   # Same stage-then-rename swap for the top-level .py files.
   for _f in llm-systems-agent.py buffered_metric_client.py _utils.py \
             _best_effort.py _bench_replay.py agent_context.py \
@@ -2806,6 +2835,64 @@ _offer_vllm_install() {
   _offer_vllm_unit "$(_resolved_vllm_unit)" "$venv/bin/vllm"
 }
 
+# Runs detect_llama.py and evals its LLAMA_DETECTED_* lines; $1 = port hint.
+_run_detect_llama_py() {
+  LLAMA_DETECTED_FOUND="" LLAMA_DETECTED_PORT="" LLAMA_DETECTED_HOST=""
+  LLAMA_DETECTED_BINARY="" LLAMA_DETECTED_PRESETS_FILE="" LLAMA_DETECTED_MODE=""
+  LLAMA_DETECTED_UNIT="" LLAMA_DETECTED_UNIT_USER="" LLAMA_DETECTED_PROCESS_USER=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "      ⓘ python3 not found; unit name not detected"
+    return 0
+  fi
+  eval "$(python3 "$TMPL_DIR/detect_llama.py" --port "${1:-}" --sh 2>/dev/null || true)"
+}
+
+# Prints the one-line detection summary; $1 = binary, $2 = port, $3 = presets file.
+_llama_summary_line() {
+  local _mode="unknown"
+  case "${LLAMA_DETECTED_MODE:-}" in
+    router) _mode="many models" ;;
+    single) _mode="one model" ;;
+  esac
+  echo "      Found llama-server: ${1:-unknown}, port ${2:-unknown}," \
+       "unit ${LLAMA_DETECTED_UNIT:-none}, presets ${3:-none}, mode $_mode," \
+       "runs as ${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-unknown}}"
+}
+
+# No-TTY: sets API URL and unit overrides from detection; $1 = host, $2 = port, $3 = presets file.
+_llama_notty_overrides() {
+  local _h="${1:-127.0.0.1}"
+  [[ "$_h" == "0.0.0.0" || "$_h" == "::" ]] && _h="127.0.0.1"
+  if [[ -n "${2:-}" ]]; then
+    LLAMA_API_URL_OVERRIDE="http://${_h}:$2"
+  else
+    echo "      ⓘ using default LLAMA_API_URL"
+  fi
+  if [[ -n "${LLAMA_DETECTED_UNIT:-}" ]]; then
+    LLAMA_SYSTEMD_UNIT_OVERRIDE="$LLAMA_DETECTED_UNIT"
+  else
+    echo "      ⓘ using default LLAMA_SYSTEMD_UNIT"
+  fi
+  [[ -n "${3:-}" ]] || echo "      ⓘ using default LLAMA_CONFIG_INI"
+}
+
+# Fresh installs: proposes the llama-server's non-root user as the agent user (prompts on a TTY).
+_propose_agent_user() {
+  local _srv="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}" _v=""
+  [[ -z "${EXISTING_USER:-}" && "${USER_ARG_EXPLICIT:-false}" != true ]] || return 0
+  [[ -n "$_srv" && "$_srv" != "root" && "$_srv" != "$USER_ARG" ]] || return 0
+  _user_exists "$_srv" || return 0
+  echo "      llama-server runs as $_srv; running the agent as the same user lets it see the server's models and presets."
+  if [[ -t 0 ]]; then
+    read -rp "      Agent run-as user [$_srv]: " _v
+    _v="${_v:-$_srv}"
+    if _user_exists "$_v"; then USER_ARG="$_v"; else echo "      ⚠ user '$_v' not found; keeping '$USER_ARG'"; fi
+  else
+    USER_ARG="$_srv"
+    echo "      ⓘ running the agent as $_srv (llama-server's user)"
+  fi
+}
+
 _detect_llama() {
   echo
   echo "  • llama.cpp"
@@ -3012,6 +3099,19 @@ _detect_llama() {
   fi
 
   # When found OR the user opted into manual configuration, gather paths.
+  # Prefer detect_llama.py results (port, host, presets, unit, users) over the bash probe.
+  _run_detect_llama_py "${detected_port:-}"
+  if [[ "${LLAMA_DETECTED_FOUND:-}" == true ]]; then
+    detected_port="${LLAMA_DETECTED_PORT:-$detected_port}"
+    detected_host="${LLAMA_DETECTED_HOST:-$detected_host}"
+    detected_config="${LLAMA_DETECTED_PRESETS_FILE:-$detected_config}"
+    detected_bin="${detected_bin:-$LLAMA_DETECTED_BINARY}"
+  fi
+  if [[ "${LLAMA_DETECTED_FOUND:-}" == true || -n "$detected_bin" ]]; then
+    _llama_summary_line "$detected_bin" "$detected_port" "$detected_config"
+  fi
+  _propose_agent_user
+
   # Detect existing install method from the binary path.
   detected_build_method="custom_script"
   case "$detected_bin" in
@@ -3036,6 +3136,7 @@ _detect_llama() {
     # The user will need to edit agent_config.yaml after install if they
     # want non-default paths. We log the caveat clearly.
     echo "      ⓘ no TTY; using agent built-in path defaults — edit agent_config.yaml to override"
+    _llama_notty_overrides "$detected_host" "$detected_port" "$detected_config"
     LLAMA_BIN_OVERRIDE="${detected_bin}"
     LLAMA_LOG_FILE_OVERRIDE="${detected_log:-${detected_dir:+$detected_dir/llama-server.log}}"
     LLAMA_CONFIG_INI_OVERRIDE="${detected_config}"
@@ -3133,8 +3234,8 @@ _detect_llama() {
     LLAMA_API_URL_OVERRIDE="http://$LLAMA_API_URL_OVERRIDE"
   fi
 
-  read -rp "      systemd unit [llama_server.service]: " _v
-  LLAMA_SYSTEMD_UNIT_OVERRIDE="${_v:-llama_server.service}"
+  read -rp "      systemd unit [${LLAMA_DETECTED_UNIT:-llama_server.service}]: " _v
+  LLAMA_SYSTEMD_UNIT_OVERRIDE="${_v:-${LLAMA_DETECTED_UNIT:-llama_server.service}}"
 
   echo "      Build method — how a llama upgrade from the control page will rebuild:"
   _print_llama_method_help custom_script source release_binary conda homebrew
@@ -3580,6 +3681,8 @@ if [[ "$ROLE" == "auto" ]]; then
   else
     ROLE="system_only"
   fi
+  # The YAML keeps "auto" so the agent re-probes at start and picks up a llama-server installed later.
+  ROLE_WRITTEN="auto"
   echo
   echo "  → resolved role: $ROLE"
 
@@ -3892,8 +3995,7 @@ fi
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" \
       && "$ENABLE_LLAMA" != "true" && "$ENABLE_PERF" != "true" \
       && "$ENABLE_VLLM" != "true" && "$INSTALL_VLLM" != "true" ]]; then
-  echo "  ⓘ skipping sudoers (no llama, no vllm, no perf controller — nothing for the agent to sudo)"
-  SKIP_SUDOERS=true
+  echo "  ⓘ installing sudoers now (no llama, no vllm, no perf controller yet — a llama-server installed later is picked up without a root update)"
 elif [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "true" \
       && ( "$ENABLE_LLAMA" == "true" || "$ENABLE_PERF" == "true" \
            || "$ENABLE_VLLM" == "true" || "$INSTALL_VLLM" == "true" ) ]]; then
@@ -4153,6 +4255,12 @@ for _pkg in collectors providers bench; do
   $SUDO cp -r "$SRC_DIR/$_pkg" "$INSTALL_DIR/$_pkg"
   $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_pkg"
 done
+# detect_llama.py is imported by the agent from <install>/install.
+$SUDO mkdir -p "$INSTALL_DIR/install"
+$SUDO cp "$TMPL_DIR/detect_llama.py" "$INSTALL_DIR/install/detect_llama.py"
+$SUDO chmod 0755 "$INSTALL_DIR/install"
+$SUDO chmod 0644 "$INSTALL_DIR/install/detect_llama.py"
+$SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/install"
 $SUDO cp "$SRC_DIR/llm-systems-agent.py"      "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/buffered_metric_client.py" "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/_utils.py"                 "$INSTALL_DIR/"
@@ -4202,7 +4310,7 @@ if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
     COLLECT_UPS_DET="$COLLECT_UPS" \
     COLLECT_ISCSI_DET="$COLLECT_ISCSI" \
     python3 - "$INSTALL_DIR/agent_config.yaml" \
-    "$AGENT_OS" "$ROLE" "$MANAGER_URL" "$ALARM_ENGINE_URL" \
+    "$AGENT_OS" "${ROLE_WRITTEN:-$ROLE}" "$MANAGER_URL" "$ALARM_ENGINE_URL" \
     "$USER_ARG" "$INSTALL_DIR" "$HOSTNAME_OVERRIDE" "$DESCRIPTION_OVERRIDE" \
     "$ENABLE_PERF" "$ENABLE_LLAMA" "$ENABLE_LMS" "$ENABLE_OPENCLAW" "$ENABLE_IMGGEN" \
     "$LLAMA_API_URL_OVERRIDE" "$LLAMA_LOG_FILE_OVERRIDE" "$LLAMA_SYSTEMD_UNIT_OVERRIDE" \

@@ -25,6 +25,8 @@ def test_sudoers_grants_only_no_arg_wrapper_and_build():
     text = SUDOERS.read_text()
     assert '/usr/local/sbin/llm-svcconfig-apply ""' in text
     assert '/usr/local/llama-server/build-llama-cpp.sh ""' in text
+    wrapper_text = (AGENT_DIR / "install" / "llm-svcconfig-apply.sh.tmpl").read_text()
+    assert "SVCCONFIG_WRAPPER_VERSION=3" in wrapper_text
 
 
 def test_sudoers_pins_liquidctl_to_status():

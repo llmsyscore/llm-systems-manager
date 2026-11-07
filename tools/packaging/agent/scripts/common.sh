@@ -3,12 +3,19 @@
 # build-agent-package.sh concatenates this ahead of scripts/deb|rpm/ bodies.
 set -e
 
-LLMSYS_AGENT_DIR=/opt/llm-systems-agent
+# All paths derive from LLMSYS_TEST_ROOT (empty in production; tests set it).
+LLMSYS_TEST_ROOT="${LLMSYS_TEST_ROOT:-}"
+LLMSYS_AGENT_DIR="$LLMSYS_TEST_ROOT/opt/llm-systems-agent"
 LLMSYS_RUN_USER=llmsys
 LLMSYS_AGENT_UNIT=llm-systems-agent.service
 LLMSYS_AGENT_CFG="$LLMSYS_AGENT_DIR/agent_config.yaml"
 LLMSYS_AGENT_MARKER="$LLMSYS_AGENT_DIR/.llmsys-package-state"
 LLMSYS_AGENT_PREV_VER="$LLMSYS_AGENT_DIR/.llmsys-prev-version"
+LLMSYS_SUDOERS_FILE="$LLMSYS_TEST_ROOT/etc/sudoers.d/llm-systems-agent"
+LLMSYS_WRAPPER_FILE="$LLMSYS_TEST_ROOT/usr/local/sbin/llm-svcconfig-apply"
+LLMSYS_UNIT_ETC="$LLMSYS_TEST_ROOT/etc/systemd/system"
+LLMSYS_DROPIN_FILE="$LLMSYS_UNIT_ETC/llm-systems-agent.service.d/user.conf"
+LLMSYS_PRIV_MARKER="Managed by llm-systems-agent installer"
 
 # Script-installer (venv) state this package must not silently shadow (#416).
 # A bare tarball install (binary + config, no unit/venv) is adoptable instead.
@@ -69,9 +76,49 @@ llmsys_systemd_ready() {
   command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
+# Chooses the run-as user: a drop-in from an earlier pass wins, else the
+# detected server user when this is a fresh install and that user exists.
+llmsys_agent_pick_user() {
+  local u=""
+  LLMSYS_USER_OVERRIDE=""
+  if [ -f "$LLMSYS_DROPIN_FILE" ] && grep -q "$LLMSYS_PRIV_MARKER" "$LLMSYS_DROPIN_FILE"; then
+    u="$(sed -n 's/^User=//p' "$LLMSYS_DROPIN_FILE" | head -1)"
+    if [ -n "$u" ] && getent passwd "$u" >/dev/null 2>&1; then
+      LLMSYS_RUN_USER="$u"; LLMSYS_USER_OVERRIDE=1
+      return 0
+    fi
+    # The named user is gone: drop the stale drop-in and fall back to the default user.
+    rm -f "$LLMSYS_DROPIN_FILE"
+    rmdir "$(dirname "$LLMSYS_DROPIN_FILE")" 2>/dev/null || true
+    if llmsys_systemd_ready && [ -z "$LLMSYS_TEST_ROOT" ]; then systemctl daemon-reload || true; fi
+  fi
+  u="${LLMSYS_RUN_USER_DEFAULT:-}"
+  [ -n "$u" ] && [ "$u" != root ] || return 0
+  case "$u" in *[!A-Za-z0-9_.@-]*|-*) return 0 ;; esac
+  [ -f "$LLMSYS_AGENT_CFG" ] && return 0
+  getent passwd "$LLMSYS_RUN_USER" >/dev/null 2>&1 && return 0
+  getent passwd "$u" >/dev/null 2>&1 || return 0
+  LLMSYS_RUN_USER="$u"; LLMSYS_USER_OVERRIDE=1
+}
+
+# Points the packaged unit at the chosen existing user through a drop-in.
+llmsys_agent_write_user_dropin() {
+  local g
+  g="$(id -gn "$LLMSYS_RUN_USER")"
+  mkdir -p "$(dirname "$LLMSYS_DROPIN_FILE")"
+  printf '# %s. Do not edit by hand.\n[Service]\nUser=%s\nGroup=%s\n' \
+    "$LLMSYS_PRIV_MARKER" "$LLMSYS_RUN_USER" "$g" > "$LLMSYS_DROPIN_FILE"
+  chmod 0644 "$LLMSYS_DROPIN_FILE"
+}
+
 # Group is created explicitly so it always matches the Group= baked into
 # the packaged unit regardless of the host's USERGROUPS_ENAB setting.
 llmsys_create_user() {
+  llmsys_agent_pick_user
+  if [ -n "${LLMSYS_USER_OVERRIDE:-}" ]; then
+    llmsys_agent_write_user_dropin
+    return 0
+  fi
   getent group "$LLMSYS_RUN_USER" >/dev/null 2>&1 \
     || groupadd --system "$LLMSYS_RUN_USER"
   getent passwd "$LLMSYS_RUN_USER" >/dev/null 2>&1 \
@@ -99,6 +146,16 @@ llmsys_agent_normalize_url() {
   printf '%s://%s:%s%s' "$scheme" "$host" "$port" "$path"
 }
 
+# Prints a value for a double-quoted YAML scalar; a value holding a quote,
+# backslash or newline is dropped with a warning. Args: KEY VALUE.
+llmsys_agent_yaml_safe() {
+  case "$2" in
+    *\"*|*\\*|*"
+"*) echo "llm-systems-agent: WARNING — unusable $1 value ignored; set it in $LLMSYS_AGENT_CFG." >&2; return 0 ;;
+  esac
+  printf '%s' "$2"
+}
+
 # Generates agent_config.yaml from the packaged example, setting the
 # identity keys + manager/AE URLs (LLMSYS_CFG_* carry debconf answers).
 llmsys_agent_write_config() {
@@ -124,8 +181,20 @@ llmsys_agent_write_config() {
     host="${mgr#*://}"; host="${host%%/*}"; host="${host%%:*}"
     ae="http://${host}:8081"
   fi
+  local l_url l_ini l_unit
+  l_url="$(llmsys_agent_yaml_safe LLAMA_API_URL "${LLMSYS_CFG_LLAMA_API_URL:-}")"
+  l_ini="$(llmsys_agent_yaml_safe LLAMA_CONFIG_INI "${LLMSYS_CFG_LLAMA_CONFIG_INI:-}")"
+  l_unit="$(llmsys_agent_yaml_safe LLAMA_SYSTEMD_UNIT "${LLMSYS_CFG_LLAMA_SYSTEMD_UNIT:-}")"
   while IFS= read -r line; do
     case "$line" in
+      "LLAMA_ENABLED:"*)
+        if [ "${LLMSYS_CFG_LLAMA_ENABLED:-}" = true ]; then printf 'LLAMA_ENABLED: true\n'; else printf '%s\n' "$line"; fi ;;
+      "# LLAMA_API_URL:"*)
+        if [ -n "$l_url" ]; then printf 'LLAMA_API_URL: "%s"\n' "$l_url"; else printf '%s\n' "$line"; fi ;;
+      "# LLAMA_CONFIG_INI:"*)
+        if [ -n "$l_ini" ]; then printf 'LLAMA_CONFIG_INI: "%s"\n' "$l_ini"; else printf '%s\n' "$line"; fi ;;
+      "# LLAMA_SYSTEMD_UNIT:"*)
+        if [ -n "$l_unit" ]; then printf 'LLAMA_SYSTEMD_UNIT: "%s"\n' "$l_unit"; else printf '%s\n' "$line"; fi ;;
       "AGENT_USER:"*)        printf 'AGENT_USER:        "%s"\n' "$LLMSYS_RUN_USER" ;;
       "AGENT_INSTALL_DIR:"*) printf 'AGENT_INSTALL_DIR: "%s"\n' "$LLMSYS_AGENT_DIR" ;;
       "MANAGER_URL:"*)       printf 'MANAGER_URL:      "%s"\n' "$mgr" ;;
@@ -135,6 +204,121 @@ llmsys_agent_write_config() {
   done < "$LLMSYS_AGENT_DIR/agent_config.yaml.example" > "$LLMSYS_AGENT_CFG"
   chown "$LLMSYS_RUN_USER:$(id -gn "$LLMSYS_RUN_USER")" "$LLMSYS_AGENT_CFG"
   chmod 0640 "$LLMSYS_AGENT_CFG"
+}
+
+# Runs the packaged llama-server detector and fills any LLMSYS_CFG_LLAMA_*
+# value that is still empty; sets LLAMA_ENABLED and the server's user.
+llmsys_agent_detect_llama() {
+  local py="$LLMSYS_AGENT_DIR/install/detect_llama.py" out host
+  LLMSYS_RUN_USER_DEFAULT=""
+  if [ -f "$py" ] && command -v python3 >/dev/null 2>&1 \
+     && out="$(python3 -I "$py" --sh 2>/dev/null)"; then
+    eval "$out"
+    if [ "${LLAMA_DETECTED_FOUND:-}" = true ]; then
+      host="${LLAMA_DETECTED_HOST:-127.0.0.1}"
+      case "$host" in 0.0.0.0|::) host=127.0.0.1 ;; esac
+      if [ -z "${LLMSYS_CFG_LLAMA_API_URL:-}" ] && [ -n "${LLAMA_DETECTED_PORT:-}" ]; then
+        LLMSYS_CFG_LLAMA_API_URL="http://$host:$LLAMA_DETECTED_PORT"
+      fi
+      [ -n "${LLMSYS_CFG_LLAMA_CONFIG_INI:-}" ] || LLMSYS_CFG_LLAMA_CONFIG_INI="${LLAMA_DETECTED_PRESETS_FILE:-}"
+      [ -n "${LLMSYS_CFG_LLAMA_SYSTEMD_UNIT:-}" ] || LLMSYS_CFG_LLAMA_SYSTEMD_UNIT="${LLAMA_DETECTED_UNIT:-}"
+      LLMSYS_CFG_LLAMA_ENABLED=true
+      LLMSYS_RUN_USER_DEFAULT="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}"
+    fi
+  fi
+  if [ -n "${LLMSYS_CFG_LLAMA_API_URL:-}${LLMSYS_CFG_LLAMA_CONFIG_INI:-}${LLMSYS_CFG_LLAMA_SYSTEMD_UNIT:-}" ]; then
+    LLMSYS_CFG_LLAMA_ENABLED=true
+  fi
+  export LLMSYS_CFG_LLAMA_API_URL LLMSYS_CFG_LLAMA_CONFIG_INI LLMSYS_CFG_LLAMA_SYSTEMD_UNIT \
+         LLMSYS_CFG_LLAMA_ENABLED LLMSYS_RUN_USER_DEFAULT
+}
+
+# Renders TEMPLATE to stdout, replacing each TOKEN with VALUE by literal
+# split-and-join (never sed). Args: TEMPLATE [TOKEN VALUE]...
+llmsys_subst_tokens() {
+  local text token val out
+  text="$(<"$1")"; shift
+  while [ "$#" -ge 2 ]; do
+    token="$1"; val="$2"; shift 2
+    out=""
+    while [[ "$text" == *"$token"* ]]; do
+      out+="${text%%"$token"*}$val"
+      text="${text#*"$token"}"
+    done
+    text="$out$text"
+  done
+  printf '%s\n' "$text"
+}
+
+# True when the file is absent or carries the installer marker comment.
+llmsys_agent_file_ours() {
+  [ ! -L "$1" ] || return 1
+  [ ! -e "$1" ] || grep -q "^# $LLMSYS_PRIV_MARKER" "$1" 2>/dev/null
+}
+
+# Installs the sudoers fragment and the root svcconfig wrapper for the
+# configured llama unit, or for llama_server.service when none is configured.
+llmsys_agent_install_privileges() {
+  local unit="" tdir="$LLMSYS_AGENT_DIR/install" tmp own="" _vout=""
+  if [ -f "$LLMSYS_AGENT_CFG" ]; then
+    unit="$(sed -n 's/^LLAMA_SYSTEMD_UNIT: *"\(.*\)" *$/\1/p' "$LLMSYS_AGENT_CFG" | head -1)"
+  fi
+  [ -n "$unit" ] || unit="${LLMSYS_CFG_LLAMA_SYSTEMD_UNIT:-}"
+  [ -n "$unit" ] || unit=llama_server.service
+  case "$unit" in
+    ''|*[!A-Za-z0-9_.@-]*|-*|*/*) echo "llm-systems-agent: WARNING — llama unit '$unit' is not a plain service name; sudo rules not installed." >&2; return 0 ;;
+  esac
+  if [ ! -f "$tdir/llm-systems-agent.sudoers.tmpl" ] || [ ! -f "$tdir/llm-svcconfig-apply.sh.tmpl" ]; then
+    echo "llm-systems-agent: WARNING — privilege templates missing under $tdir; sudo rules not installed." >&2
+    return 0
+  fi
+  if ! llmsys_agent_file_ours "$LLMSYS_SUDOERS_FILE" || ! llmsys_agent_file_ours "$LLMSYS_WRAPPER_FILE"; then
+    echo "llm-systems-agent: WARNING — an existing sudoers/helper file is not managed by this package; left untouched." >&2
+    return 0
+  fi
+  if ! command -v visudo >/dev/null 2>&1; then
+    echo "llm-systems-agent: WARNING — visudo not found; sudo rules not installed." >&2
+    return 0
+  fi
+  [ "$(id -u)" = 0 ] && own="-o root -g root"
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2016  # the ${...} tokens are literal template placeholders
+  llmsys_subst_tokens "$tdir/llm-systems-agent.sudoers.tmpl" \
+    '${AGENT_USER}' "$LLMSYS_RUN_USER" '${LLAMA_UNIT}' "$unit" \
+    '${VLLM_UNIT}' vllm.service > "$tmp"
+  # Drops the vLLM sudoers alias unless the installed fragment already grants it.
+  if ! { [ -f "$LLMSYS_SUDOERS_FILE" ] && grep -q 'LSA_VLLM' "$LLMSYS_SUDOERS_FILE"; }; then
+    sed -i -e '/^Cmnd_Alias LSA_VLLM/,/llm-vllm-svcconfig-apply ""$/d' \
+           -e 's/, LSA_VLLM$//' "$tmp"
+  fi
+  chmod 0440 "$tmp"
+  if ! _vout="$(visudo -cf "$tmp" 2>&1)"; then
+    echo "llm-systems-agent: WARNING — rendered sudoers failed validation; sudo rules not installed." >&2
+    printf '%s\n' "$_vout" | sed 's/^/    visudo: /' >&2
+    rm -f "$tmp"; return 0
+  fi
+  chmod 0644 "$tmp"
+  mkdir -p "$(dirname "$LLMSYS_SUDOERS_FILE")" "$(dirname "$LLMSYS_WRAPPER_FILE")"
+  # shellcheck disable=SC2086  # $own is an intentional option list
+  install -m 0440 $own "$tmp" "$LLMSYS_SUDOERS_FILE"
+  llmsys_subst_tokens "$tdir/llm-svcconfig-apply.sh.tmpl" \
+    '__UNIT_PATH__' "$LLMSYS_UNIT_ETC/$unit" '__SYSTEMCTL__' /usr/bin/systemctl \
+    '__ETC__' "$LLMSYS_UNIT_ETC" > "$tmp"
+  # shellcheck disable=SC2086
+  install -m 0755 $own "$tmp" "$LLMSYS_WRAPPER_FILE"
+  rm -f "$tmp"
+}
+
+# Removes the sudoers fragment, wrapper and user drop-in, each only when it
+# carries the installer marker comment.
+llmsys_agent_remove_privileges() {
+  local f
+  for f in "$LLMSYS_SUDOERS_FILE" "$LLMSYS_WRAPPER_FILE" "$LLMSYS_DROPIN_FILE"; do
+    if [ -f "$f" ] && grep -q "$LLMSYS_PRIV_MARKER" "$f" 2>/dev/null; then
+      rm -f "$f"
+    fi
+  done
+  rmdir "$(dirname "$LLMSYS_DROPIN_FILE")" 2>/dev/null || true
 }
 
 # Stores the enrollment secret beside the token (0600) when the package was given one.
@@ -183,7 +367,10 @@ llmsys_agent_configure() {
   grp="$(id -gn "$LLMSYS_RUN_USER")"
   install -d -m 0750 -o "$LLMSYS_RUN_USER" -g "$grp" "$LLMSYS_AGENT_DIR/data"
   chown -R "$LLMSYS_RUN_USER:$grp" "$LLMSYS_AGENT_DIR"
+  # Templates rendered into root-owned files stay root-owned, not agent-writable.
+  [ ! -d "$LLMSYS_AGENT_DIR/install" ] || chown -R root:root "$LLMSYS_AGENT_DIR/install"
   llmsys_agent_write_config
+  llmsys_agent_install_privileges
   llmsys_agent_write_enrollment_secret
   llmsys_agent_write_marker "$adopt"
   llmsys_agent_downgrade_check

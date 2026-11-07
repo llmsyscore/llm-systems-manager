@@ -373,7 +373,7 @@ def test_get_model_job_downloads_registers_loads_checks_and_evals(monkeypatch):
     assert done["status"] == "done", done
     assert done["result"]["pin_offer"] and done["result"]["model"] == mid and done["result"]["eval"]["passed"] == 1
     paths = [p for _m, p, _j in log]
-    assert paths == ["/llama/download", "/llama/download/stream", "/llama/config", "/llama/config", "/llama/server/restart",
+    assert paths == ["/llama/download", "/llama/download/stream", "/llama/config", "/llama/cache/gguf", "/llama/config", "/llama/server/restart",
                      "/llama/models", "/llama/models", "/llama/load"]
     assert any(s.get("phase") == "restart" for s in states)
     assert sections[mid] == te.NEW_MODEL_INI and "__DEFAULTS__" not in sections and "old-model" in sections
