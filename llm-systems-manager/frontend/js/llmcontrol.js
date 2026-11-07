@@ -130,7 +130,10 @@ async function openServerConfig(provider) {
     _svcBinary = d.binary;
     _svcArgs   = (d.args || []).map(a => ({...a})); // shallow copy
     document.getElementById('svcConfigBinary').textContent = _svcBinary;
-    document.getElementById('svcConfigStatus').textContent = '';
+    const _stEl = document.getElementById('svcConfigStatus');
+    _stEl.style.color = '';
+    _stEl.textContent = d.source === 'drop-in'
+      ? "Edits go to a small extra settings file; the package's service file is left alone." : '';
     _renderSvcArgs();
   } catch(e) {
     console.error('openServerConfig failed:', e);
@@ -233,7 +236,7 @@ async function serverStatus() {
     panel.style.display = '';
     _logPanelOpen = true;
     box.textContent =
-      `── systemctl status llama_server ─────────────────────────────────\n` +
+      `── systemctl status ${r.mode && r.mode.unit ? r.mode.unit : 'llama_server'} ─────────────────────────────────\n` +
       (r.output || r.error || '(no output)') +
       `\n\n── log stream paused — click ↺ Refresh to resume ──`;
     box.scrollTop = 0;

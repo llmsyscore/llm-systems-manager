@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import configparser
+import contextlib
+import getpass
+import glob
 import json
 import logging
 import math
@@ -393,7 +396,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
             _llama_counters.reset(now)
         _llama_main_pid["last"] = pid
 
-    api_base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    api_base = _llama_effective_api_url().rstrip("/")
 
     llama: dict[str, Any] = {
         "state": "unknown",
@@ -498,6 +501,7 @@ def collect_llama_for_metrics() -> dict[str, Any]:
             log.warning("llama /v1/models unreachable: %s", e)
         _residency_inputs.update({"models": [], "server": "down", "ts": now})
         _llama_loaded["last"] = None
+        llama_redetect_tick()
         llama["state"] = "unknown"
         _llama_info_cache = llama
         return dict(llama)
@@ -692,7 +696,7 @@ def _llama_router_mode() -> bool:
     Only a non-empty model list decides; an empty one is not evidence either way.
     """
     try:
-        r = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models",
+        r = requests.get(f"{_llama_effective_api_url().rstrip('/')}/v1/models",
                          timeout=_ROUTER_PROBE_TIMEOUT_S)
         models = ((r.json() or {}).get("data") or []) if r.ok else []
         if models:
@@ -705,8 +709,15 @@ def _llama_router_mode() -> bool:
 
 def _llama_router_mode_from_unit_file() -> bool:
     """True when the llama systemd unit launches in multi-model router mode."""
+    info = llama_unit_info()
+    if info["exec_start"]:
+        return llama_sse.router_mode_from_flags(llama_sse.parse_exec_flags(info["exec_start"]))
+    svc_path = _llama_svc_file_path()
+    if not svc_path:
+        log.debug("router-mode detect: no systemd unit; SSE off")
+        return False
     try:
-        content = Path(_llama_svc_file_path()).read_text()
+        content = Path(svc_path).read_text()
     except FileNotFoundError:
         log.debug("router-mode detect: service file absent; SSE off")
         return False
@@ -783,7 +794,7 @@ def _maybe_start_sse_listener() -> None:
     if mode != "on" and not _llama_router_mode():
         log.info("llama /models/sse: single-model mode; SSE listener not started")
         return
-    url = f"{ctx.config.LLAMA_API_URL.rstrip('/')}/models/sse"
+    url = f"{_llama_effective_api_url().rstrip('/')}/models/sse"
     _llama_sse_session = requests.Session()
     sess = _llama_sse_session
     _llama_sse_listener = llama_sse.LlamaSseListener(
@@ -808,7 +819,7 @@ def llama_state_endpoint(authorization: Optional[str] = Header(default=None)) ->
     power = power_snapshot()
     return {
         "state": llama_get_state(),
-        "port": llama_api_port(ctx.config.LLAMA_API_URL),
+        "port": llama_api_port(_llama_effective_api_url()),
         "perf_controller_enabled": ctx.config.PERF_CONTROLLER_ENABLED,
         "perf": power,
         "power": power,
@@ -871,10 +882,136 @@ def _list_cache_ggufs(root: Path) -> list[dict]:
     return rows
 
 
+def quant_upper(model_id: str) -> str:
+    """Upper-cases the text after the last colon; an id without a colon is unchanged."""
+    head, sep, tail = model_id.rpartition(":")
+    return f"{head}:{tail.upper()}" if sep else model_id
+
+
+def _llama_cache_root() -> "Optional[Path]":
+    """llama.cpp flat cache: config dir, else the unit's LLAMA_CACHE, else ~/.cache/llama.cpp of the unit user."""
+    cfg_dir = (getattr(_require_ctx().config, "LLAMA_CACHE_DIR", "") or "").strip()
+    if cfg_dir:
+        return Path(cfg_dir)
+    info = llama_unit_info()
+    env_dir = ((info.get("environment") or {}).get("LLAMA_CACHE") or "").strip()
+    if env_dir:
+        return Path(env_dir)
+    user = info.get("unit_user") or getattr(_require_ctx().config, "AGENT_USER", "")
+    if user:
+        try:
+            cand = Path(pwd.getpwnam(user).pw_dir) / ".cache" / "llama.cpp"
+        except KeyError:
+            return None
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def _llama_cache_row(p: Path, repo: str, file: str, source: str) -> dict:
+    try:
+        size = p.stat().st_size
+    except OSError:
+        size = 0
+    return {"repo": repo, "file": file, "path": str(p), "size": size, "source": source}
+
+
+_FLAT_URL_RE = re.compile(r"^https://huggingface\.co/([^/]+/[^/]+)/resolve/[^/]+/([^/]+\.gguf)$")
+
+
+def _list_llama_cache_ggufs(root: Path) -> list[dict]:
+    """Flat-layout .gguf files under root; the sidecar <file>.gguf.json url names repo and file."""
+    rows: list[dict] = []
+    if not root.is_dir():
+        return rows
+    for p in root.glob("*.gguf"):
+        if p.name.lower().startswith("mmproj-"):
+            continue
+        repo, file = "", p.name
+        try:
+            man = json.loads(p.with_name(p.name + ".json").read_text())
+            m = _FLAT_URL_RE.match(str(man.get("url") or "")) if isinstance(man, dict) else None
+            if m:
+                repo, file = m.group(1), m.group(2)
+        except (OSError, ValueError):
+            pass  # no readable sidecar: row keeps the bare file name
+        rows.append(_llama_cache_row(p, repo, file, "llama-cache"))
+    rows.sort(key=lambda r: (r["repo"], r["file"]))
+    return rows
+
+
+def _list_models_dir_ggufs(root: Path) -> list[dict]:
+    """Every .gguf under a --models-dir folder, projectors excluded."""
+    rows: list[dict] = []
+    if not root.is_dir():
+        return rows
+    for p in root.rglob("*.gguf"):
+        if p.name.lower().startswith("mmproj-"):
+            continue
+        rows.append(_llama_cache_row(p, "", p.name, "models-dir"))
+    rows.sort(key=lambda r: r["path"])
+    return rows
+
+
+def _hf_cache_rows() -> list[dict]:
+    return [dict(r, source="hf-hub") for r in _list_cache_ggufs(_hf_cache_root())]
+
+
+def _models_dir_root(block: "Optional[dict]" = None) -> "Optional[Path]":
+    d = (getattr(_require_ctx().config, "LLAMA_MODELS_DIR", "") or "").strip()
+    if not d:
+        d = (block if block is not None else llama_mode_block()).get("models_dir") or ""
+    return Path(d) if d else None
+
+
+_CACHED_MODELS_TTL_S = 15.0
+_cached_models_memo: dict[str, Any] = {"ts": 0.0, "key": None, "rows": []}
+
+
+def _cached_models_invalidate() -> None:
+    """Forces the next cached_models() call to rescan the disks."""
+    _cached_models_memo.update(ts=0.0, key=None, rows=[])
+
+
+def cached_models(mode: "Optional[dict]" = None) -> list[dict]:
+    """Hub, flat-cache and models-dir GGUFs keyed by (repo, file), hub first, each with a model_id."""
+    block = mode if mode is not None else llama_mode_block()
+    flat = _llama_cache_root()
+    mdir = _models_dir_root(block)
+    key = (str(_hf_cache_root()), str(mdir or ""), str(flat or ""))
+    now = time.monotonic()
+    memo = _cached_models_memo
+    if memo["key"] == key and now - memo["ts"] < _CACHED_MODELS_TTL_S:
+        rows = list(memo["rows"])
+    else:
+        rows = _hf_cache_rows()
+        hub_files = {r["file"] for r in rows}
+        if flat:
+            rows += [r for r in _list_llama_cache_ggufs(flat) if r["repo"] or r["file"] not in hub_files]
+        if mdir:
+            rows += _list_models_dir_ggufs(mdir)
+        memo.update(ts=now, key=key, rows=list(rows))
+    deployable = block["mode"] == "router" and bool(block["presets_writable"]) and bool(block["managed"])
+    seen: set = set()
+    out: list[dict] = []
+    for r in rows:
+        key = (r["repo"], r["file"])
+        if key in seen:
+            continue
+        seen.add(key)
+        if r["repo"]:
+            quant = _quant_from_path(r["file"]) or Path(r["file"]).stem
+            mid = quant_upper(f"{r['repo']}:{quant}")
+        else:
+            mid = Path(r["file"]).stem
+        out.append(dict(r, model_id=mid, deployable=deployable))
+    return out
+
+
 def _llama_read_ini() -> configparser.ConfigParser:
     cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
     cp.optionxform = str
-    cp.read(_require_ctx().config.LLAMA_CONFIG_INI)
+    cp.read(_llama_effective_presets_path())
     return cp
 
 
@@ -893,7 +1030,7 @@ def _llama_write_ini(sections: dict[str, dict[str, Any]]) -> None:
                 continue
             if v not in (None, ""):
                 cp.set(section, k, str(v))
-    with open(_require_ctx().config.LLAMA_CONFIG_INI, "w") as f:
+    with open(_llama_effective_presets_path(), "w") as f:
         cp.write(f)
 
 
@@ -914,7 +1051,8 @@ def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
     if not repo and ":" in model_id and "/" in model_id:
         repo, quant = model_id.rsplit(":", 1)
     elif not repo:
-        return [], f"Could not derive repo from model_id={model_id!r}"
+        found = _models_dir_stem_matches(model_id)
+        return (found, None) if found else ([], f"Could not derive repo from model_id={model_id!r}")
     # Cards saved from the editor keep the quant in the repo key: hf-repo = owner/repo:QUANT
     if repo and ":" in repo:
         repo, suffix = repo.rsplit(":", 1)
@@ -932,29 +1070,42 @@ def _locate_quant_files(model_id: str) -> "tuple[list[Path], Optional[str]]":
     cache_root = _hf_cache_root()
     repo_dir = cache_root / f"models--{repo.replace('/', '--')}"
     snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return [], f"Snapshots dir not found: {snapshots}"
 
     # Case-insensitive: model_id's quant token (e.g. "Q4_K_M") doesn't always
     # match the on-disk filename's casing (some repos ship it lowercase).
     quant_lower = quant.lower()
-    matches: list[Path] = []
-    for snap in snapshots.iterdir():
-        if not snap.is_dir():
-            continue
-        gguf_files = [p for p in snap.iterdir() if p.suffix == ".gguf"]
+
+    def _hit(name: str) -> bool:
+        n = name.lower()
         if quant.endswith(".gguf"):
-            matches.extend(sorted(p for p in gguf_files
-                                  if p.name.lower() == quant_lower))
-        else:
-            matches.extend(
-                p for p in gguf_files
-                if quant_lower in p.name.lower()
-                and not p.name.lower().startswith("mmproj-")
-            )
+            return n == quant_lower
+        return quant_lower in n and not n.startswith("mmproj-")
+
+    matches: list[Path] = []
+    if snapshots.is_dir():
+        for snap in snapshots.iterdir():
+            if snap.is_dir():
+                matches.extend(sorted(p for p in snap.iterdir() if p.suffix == ".gguf" and _hit(p.name)))
+    flat = None
     if not matches:
+        try:
+            flat = _llama_cache_root()
+        except RuntimeError as e:
+            log.debug("flat llama cache lookup skipped: %s", e)
+    if flat:
+        matches.extend(Path(r["path"]) for r in _list_llama_cache_ggufs(flat)
+                       if r["repo"].lower() == repo.lower() and _hit(r["file"]))
+    if not matches:
+        if not snapshots.is_dir() and not flat:
+            return [], f"Snapshots dir not found: {snapshots}"
         return [], f"No quant files matched {quant!r} under {snapshots}"
     return matches, None
+
+
+def _models_dir_stem_matches(model_id: str) -> "list[Path]":
+    """Files in the models dir whose stem is the model id."""
+    mdir = _models_dir_root()
+    return [Path(r["path"]) for r in _list_models_dir_ggufs(mdir) if Path(r["file"]).stem == model_id] if mdir else []
 
 
 def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str]]":
@@ -962,6 +1113,10 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
     candidates, err = _locate_quant_files(model_id)
     if err:
         return [], err
+    hub = _hf_cache_root().resolve()
+    candidates = [c for c in candidates if hub in c.resolve().parents or hub in c.parents]
+    if not candidates:
+        return [], "No deletable files in the Hugging Face cache"
 
     deleted: list[str] = []
     for symlink in candidates:
@@ -974,9 +1129,26 @@ def _delete_quant_from_hf_cache(model_id: str) -> "tuple[list[str], Optional[str
                     target.unlink()
                     deleted.append(str(target))
         except Exception as e:
+            _cached_models_invalidate()
             return deleted, f"Failed to unlink {symlink}: {e}"
-
+    deleted += _remove_empty_hub_repos(hub, candidates)
+    _cached_models_invalidate()
     return deleted, None
+
+
+def _remove_empty_hub_repos(hub: Path, paths: list) -> list[str]:
+    """Deletes each models--* folder of the given paths that holds no .gguf any more."""
+    gone: list[str] = []
+    for p in paths:
+        repo_dir = next((a for a in [p, *p.parents] if a.parent == hub and a.name.startswith("models--")), None)
+        if repo_dir is None or not repo_dir.is_dir():
+            continue
+        if any(repo_dir.rglob("*.gguf")):
+            continue
+        with best_effort("hf cache: remove empty repo folder", log=log):
+            shutil.rmtree(repo_dir)
+            gone.append(str(repo_dir))
+    return gone
 
 
 def _model_gguf_size_bytes(model_id: str) -> "Optional[int]":
@@ -1050,7 +1222,7 @@ def _llama_fetch_model_entries() -> "dict[str, dict]":
     """id -> /v1/models entry (llama-swap router shape); {} on any failure —
     gpu_layers just comes back unknown for every model."""
     try:
-        api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+        api = _llama_effective_api_url().rstrip("/")
         resp = requests.get(f"{api}/v1/models", timeout=5)
         data = (resp.json() or {}).get("data") or []
     except Exception as e:
@@ -1065,7 +1237,7 @@ _model_sizes_cache: "dict[str, Any]" = {"mtime": None, "sizes": {}, "layers": {}
 def _llama_catalog_sweep() -> "tuple[dict[str, int], dict[str, Optional[int]]]":
     """(sizes_bytes, gpu_layers) for every config.ini model section, cached
     together until LLAMA_CONFIG_INI's mtime changes."""
-    ini_path = _require_ctx().config.LLAMA_CONFIG_INI
+    ini_path = _llama_effective_presets_path()
     try:
         mtime = os.path.getmtime(ini_path)
     except OSError:
@@ -1262,6 +1434,7 @@ def _llama_run_command(cmd: list, stdin_input: "Optional[bytes]" = None,
         _dl_put({"type": "done", "ok": False, "error": str(e), "dry_run": dry_run})
     finally:
         _dl_proc = None
+        _cached_models_invalidate()
         with _dl_lock:
             _dl_active = False
 
@@ -1283,12 +1456,295 @@ def _llama_queue_command(cmd: list, stdin_input: "Optional[bytes]" = None,
     return True
 
 
+def _llama_log_source() -> list[str]:
+    """tail -F of the configured log file when it exists, else journalctl -f of the effective unit."""
+    path = (getattr(_require_ctx().config, "LLAMA_LOG_FILE", "") or "").strip()
+    if path and os.path.exists(path):
+        return ["tail", "-n", "0", "-F", path]
+    return ["journalctl", "-f", "-n", "0", "-u", _llama_effective_unit(), "-o", "cat"]
+
+
 def _llama_log_streamer() -> None:
-    """tail -F llama-server.log from now → subscribers, dropping idle/noisy lines."""
-    _log_state.pump(
-        ["tail", "-n", "0", "-F", _require_ctx().config.LLAMA_LOG_FILE],
-        should_keep=_llama_log_should_keep,
-    )
+    """Server log lines from now → subscribers, dropping idle/noisy lines; a hint when the journal is unreadable."""
+    src = _llama_log_source()
+    if src[0] == "journalctl" and not _journal_readable(src[5]):
+        _log_state.publish(f"the agent cannot read the server log; run: journalctl -u {src[5]} -n 50")
+    _log_state.pump(src, should_keep=_llama_log_should_keep)
+
+
+def _journal_readable(unit: str) -> bool:
+    try:
+        r = subprocess.run(["journalctl", "-u", unit, "-n", "1", "-o", "cat", "--no-pager", "-q"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Unit facts, mode block and effective unit.
+# ---------------------------------------------------------------------------
+
+_detected: dict[str, Any] = {}
+_detect_matched: set = set()
+_NO_UNIT_ERR = "no systemd unit found for llama-server"
+_UNIT_INFO_TTL_S = 30.0
+_unit_info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_unit_info_lock = threading.Lock()
+_unit_info_gen = 0
+_CLASS_DEFAULTS = {"LLAMA_SYSTEMD_UNIT": "llama_server.service",
+                   "LLAMA_API_URL": "http://localhost:8080", "LLAMA_CONFIG_INI": ""}
+
+
+def _detect_module() -> Any:
+    """Import the installer's detect_llama module from the frozen, source or installed tree."""
+    cands = []
+    if getattr(sys, "frozen", False):
+        cands.append(Path(getattr(sys, "_MEIPASS", "")) / "install")
+    cands.append(Path(__file__).resolve().parents[1] / "install")
+    inst = (getattr(getattr(_ctx, "config", None), "AGENT_INSTALL_DIR", "") or "") if _ctx else ""
+    if inst:
+        cands.append(Path(inst) / "install")
+    for c in cands:
+        if (c / "detect_llama.py").is_file():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            break
+    import detect_llama  # type: ignore[import-not-found]
+    return detect_llama
+
+
+_SINGLE_MODEL_FLAGS = ("-m", "--model", "-hf", "-hfr", "--hf-repo", "-mu", "--model-url")
+
+
+def _flag_value(flags: list, *names: str) -> str:
+    """Value of the first matching flag (`--x v`, `--x=v`), else ''."""
+    for i, tok in enumerate(flags):
+        for name in names:
+            if tok == name:
+                return flags[i + 1] if i + 1 < len(flags) else ""
+            if tok.startswith(name + "="):
+                return tok[len(name) + 1:]
+    return ""
+
+
+def _unit_info_invalidate() -> None:
+    global _unit_info_gen
+    with _unit_info_lock:
+        _unit_info_gen += 1
+        _unit_info_cache.clear()
+    _mode_probe_memo.update(ts=0.0, url=None, ok=False)
+
+
+def _empty_unit_info() -> dict[str, Any]:
+    return {"unit": "", "unit_path": "", "drop_ins": [], "unit_user": "", "exec_start": "",
+            "flags": [], "environment": {}, "load_state": "", "active_state": "", "source": "none",
+            "systemctl_available": True}
+
+
+def _unit_env_from_props(props: dict[str, str], read: Callable = open) -> dict[str, str]:
+    """Merged KEY=VALUE pairs from a unit's Environment= and EnvironmentFile= entries."""
+    env: dict[str, str] = {}
+    raw = props.get("Environment", "")
+    try:
+        items = shlex.split(raw)
+    except ValueError:
+        items = raw.split()
+    for item in items:
+        k, sep, v = item.partition("=")
+        if sep and k:
+            env[k] = v
+    files = props.get("EnvironmentFiles", "")
+    for path in re.findall(r"(\S+) \(ignore_errors=[^)]*\)", files) or files.split():
+        try:
+            with read(path) as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            k, sep, v = line.partition("=")
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            if sep and k.strip():
+                env[k.strip()] = v
+    return env
+
+
+_UNIT_SHOW_PROPS = "FragmentPath,DropInPaths,User,ExecStart,Environment,EnvironmentFiles,LoadState,ActiveState"
+
+
+def _unit_show(unit: str, force: bool = False) -> dict[str, Any]:
+    """Cached `systemctl show` facts for one unit (empty when systemctl fails)."""
+    now = time.monotonic()
+    with _unit_info_lock:
+        hit = _unit_info_cache.get(unit)
+        if hit and not force and now - hit[0] < _UNIT_INFO_TTL_S:
+            return hit[1]
+        gen = _unit_info_gen
+    info = _empty_unit_info()
+    props: dict[str, str] = {}
+    if unit:
+        try:
+            r = subprocess.run(
+                ["systemctl", "show", unit, "-p", _UNIT_SHOW_PROPS],
+                capture_output=True, text=True, timeout=10)
+            out = getattr(r, "stdout", "")
+            for line in (out if isinstance(out, str) and r.returncode == 0 else "").splitlines():
+                k, sep, v = line.partition("=")
+                if sep:
+                    k = k.strip()
+                    props[k] = (props[k] + " " + v.strip()) if k == "EnvironmentFiles" and k in props else v.strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            log.debug("systemctl show %s failed: %s", unit, e)
+            info["systemctl_available"] = False
+    if props:
+        m = re.search(r"argv\[\]=(.*?)\s;", props.get("ExecStart", ""))
+        argv = m.group(1) if m else ""
+        try:
+            tokens = shlex.split(argv)
+        except ValueError:
+            tokens = []
+        env = _unit_env_from_props(props)
+        info.update({
+            "unit": unit, "unit_path": props.get("FragmentPath", ""),
+            "drop_ins": props.get("DropInPaths", "").split(),
+            "unit_user": props.get("User", ""), "exec_start": argv,
+            "flags": tokens[1:], "environment": env,
+            "load_state": props.get("LoadState", ""), "active_state": props.get("ActiveState", ""),
+        })
+        if info["unit_path"]:
+            vendor = not info["unit_path"].startswith("/etc/systemd/system/")
+            info["source"] = "drop-in" if vendor else "unit"
+    with _unit_info_lock:
+        if gen == _unit_info_gen:
+            _unit_info_cache[unit] = (now, info)
+    return info
+
+
+def _llama_effective_unit() -> str:
+    """Configured unit when it is loaded, else the detected unit, else the configured name."""
+    cfg = getattr(_require_ctx(), "config", None)
+    cfg_unit = getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or ""
+    explicit = cfg_unit.strip() and cfg_unit != _CLASS_DEFAULTS["LLAMA_SYSTEMD_UNIT"]
+    if explicit and _unit_show(cfg_unit)["load_state"] == "loaded":
+        return cfg_unit
+    return _detected.get("unit") or cfg_unit
+
+
+def _llama_effective_api_url() -> str:
+    """Configured API URL when set to a non-default value, else the detected one, else the default."""
+    cur = (getattr(_require_ctx().config, "LLAMA_API_URL", "") or "").strip()
+    d = _CLASS_DEFAULTS["LLAMA_API_URL"]
+    if cur and _norm_url(cur) != _norm_url(d):
+        return cur
+    return _detected.get("api_url") or cur or d
+
+
+def llama_unit_info(force: bool = False) -> dict[str, Any]:
+    """Facts about the effective llama unit; empty values when systemd is unavailable."""
+    unit = _llama_effective_unit()
+    info = dict(_unit_show(unit, force))
+    if info["load_state"] != "loaded":
+        info["unit"] = ""
+    return info
+
+
+def _llama_settings_source(mode: str = "") -> str:
+    owners = ("api_url", "unit", "presets_file", "models_dir")
+    if any(_detected.get(k) for k in owners):
+        return "detected"
+    cfg = _require_ctx().config
+    saved = all((getattr(cfg, k, "") or "").strip()
+                and (getattr(cfg, k, "") != d or k in _detect_matched)
+                for k, d in _CLASS_DEFAULTS.items() if k != "LLAMA_CONFIG_INI" or mode != "single")
+    return "saved" if saved else "default"
+
+
+_presets_warned = {"mismatch": False}
+
+
+def _usable_presets(v: str) -> str:
+    """The parsed --models-preset value when it is an absolute, unexpanded-free path, else ''."""
+    return v if v and os.path.isabs(v) and "$" not in v else ""
+
+
+def _llama_effective_presets_path() -> str:
+    """Presets file in use: the ExecStart --models-preset, else the config value, else the detected one."""
+    cfg_path = (getattr(_require_ctx().config, "LLAMA_CONFIG_INI", "") or "").strip()
+    try:
+        parsed = _usable_presets(_flag_value(llama_unit_info()["flags"], "--models-preset"))
+    except Exception as e:
+        log.debug("llama presets path: %s", e)
+        parsed = ""
+    if parsed:
+        if cfg_path and cfg_path != parsed and not _presets_warned["mismatch"]:
+            _presets_warned["mismatch"] = True
+            log.warning("LLAMA_CONFIG_INI (%s) differs from the service's --models-preset (%s); using the latter",
+                        cfg_path, parsed)
+        return parsed
+    return cfg_path or str(_detected.get("presets_file") or "")
+
+
+def _models_endpoint_ok(base: str) -> bool:
+    try:
+        return bool(requests.get(f"{base}/v1/models", timeout=2).ok)
+    except Exception:
+        return False
+
+
+_MODE_PROBE_TTL_S = 30.0
+_mode_probe_memo: dict[str, Any] = {"ts": 0.0, "url": None, "ok": False}
+
+
+def _mode_probe(base: str) -> bool:
+    """_models_endpoint_ok(base), memoised for 30 s."""
+    now = time.monotonic()
+    m = _mode_probe_memo
+    if m["url"] == base and now - m["ts"] < _MODE_PROBE_TTL_S:
+        return bool(m["ok"])
+    ok = _models_endpoint_ok(base)
+    m.update(ts=now, url=base, ok=ok)
+    return ok
+
+
+def llama_mode_block() -> dict[str, Any]:
+    """Spec section 3 facts: mode, presets, unit and where the settings came from."""
+    cfg = _require_ctx().config
+    info = llama_unit_info()
+    flags = info["flags"]
+    env = info["environment"]
+    if _flag_value(flags, *_SINGLE_MODEL_FLAGS):
+        mode, by = "single", "flags"
+    elif _flag_value(flags, "--models-preset", "--models-dir"):
+        mode, by = "router", "flags"
+    elif any(env.get(k) for k in ("LLAMA_ARG_MODEL", "LLAMA_ARG_HF_REPO")):
+        mode, by = "single", "environment"
+    else:
+        mode, by = _detected.get("mode", "") or "unknown", _detected.get("configured_by", "")
+    if mode == "unknown" and _mode_probe(_llama_effective_api_url().rstrip("/")):
+        mode = "router"
+    presets = (_usable_presets(_flag_value(flags, "--models-preset")) or getattr(cfg, "LLAMA_CONFIG_INI", "")
+               or _detected.get("presets_file", ""))
+    writable = _path_writable(presets) if presets else False
+    managed = bool(info["unit"]) and info["load_state"] == "loaded"
+    return {
+        "mode": mode, "configured_by": by, "presets_file": presets, "presets_writable": writable,
+        "models_dir": (_flag_value(flags, "--models-dir") or getattr(cfg, "LLAMA_MODELS_DIR", "")
+                       or _detected.get("models_dir", "")),
+        "unit": info["unit"], "unit_path": info["unit_path"],
+        "unit_user": info["unit_user"] or ("root" if managed else ""),
+        "cache_dir": str(_llama_cache_root() or ""),
+        "managed": managed,
+        "settings_source": _llama_settings_source(mode),
+        "agent_user": (getattr(cfg, "AGENT_USER", "") or "") or getpass.getuser(),
+        "api_url": _llama_effective_api_url(),
+        "helper_update": _helper_needs_update() if managed else False,
+        "root_update_cmd": _root_update_cmd(),
+    }
 
 
 def llama_server_status_endpoint(
@@ -1298,26 +1754,79 @@ def llama_server_status_endpoint(
     _llama_check_enabled()
     try:
         r = subprocess.run(
-            ["systemctl", "status", _require_ctx().config.LLAMA_SYSTEMD_UNIT, "--no-pager", "-l"],
+            ["systemctl", "status", _llama_effective_unit(), "--no-pager", "-l"],
             capture_output=True, text=True, timeout=10,
         )
-        return {"ok": True, "output": r.stdout + r.stderr}
+        try:
+            mode = llama_mode_block()
+        except Exception as e:
+            log.debug("llama mode block failed: %s", e)
+            mode = None
+        return {"ok": True, "output": r.stdout + r.stderr, "mode": mode}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_ROOT_UPDATE_CMD = "sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update"
+_PKG_STATE_MARKER = ".llmsys-package-state"
+_DEFAULT_INSTALL_DIR = "/opt/llm-systems-agent"
+_DPKG_LIST = "/var/lib/dpkg/info/llm-systems-agent.list"
+
+
+_MANUAL_BINARY_HELP = ("this agent was installed from the binary tarball, which has no root helper; "
+                       "see the Agent binary section of the deployment guide to add it")
+
+
+def _root_update_cmd() -> str:
+    """One-time root update command for this install: .deb, .rpm or the install script."""
+    cfg = getattr(_ctx, "config", None) if _ctx else None
+    inst = (getattr(cfg, "AGENT_INSTALL_DIR", "") or "").strip() or _DEFAULT_INSTALL_DIR
+    if os.path.exists(os.path.join(inst, _PKG_STATE_MARKER)):
+        if os.path.exists(_DPKG_LIST):
+            return "sudo dpkg-reconfigure llm-systems-agent"
+        return f"sudo {'dnf' if shutil.which('dnf') else 'yum'} reinstall llm-systems-agent"
+    if getattr(sys, "frozen", False) and not os.path.exists(_SVCCONFIG_WRAPPER):
+        return _MANUAL_BINARY_HELP
+    return _ROOT_UPDATE_CMD
+
+
+def _helper_needs_update() -> bool:
+    """True when the helper predates v3 and the effective unit is not the one it was installed for."""
+    if _shared.wrapper_version(_SVCCONFIG_WRAPPER) >= 3:
+        return False
+    baked = os.path.basename(_shared.wrapper_baked_unit_path(_SVCCONFIG_WRAPPER) or "")
+    unit = _llama_effective_unit()
+    return bool(unit) and unit != (baked or _CLASS_DEFAULTS["LLAMA_SYSTEMD_UNIT"])
+
+
 def _llama_systemctl(action: str, timeout: int = 30) -> dict[str, Any]:
+    """Runs start/stop/restart through the helper, falling back to the sudoers systemctl rule when it refuses."""
+    unit = _llama_effective_unit()
+    refused = None
     try:
+        if not unit:
+            return {"ok": False, "error": "No llama-server service was found on this computer."}
+        if _shared.wrapper_version(_SVCCONFIG_WRAPPER) >= 3:
+            res = _shared.svcconfig_op(_SVCCONFIG_WRAPPER, action, unit, timeout=timeout)
+            log.info("llama-server %s via wrapper: %s", action, res)
+            if res.get("ok"):
+                return res
+            refused = res.get("error") or f"{action} refused"
         r = subprocess.run(
-            ["sudo", "-n", "/usr/bin/systemctl", action, _require_ctx().config.LLAMA_SYSTEMD_UNIT],
+            ["sudo", "-n", "/usr/bin/systemctl", action, unit],
             capture_output=True, text=True, timeout=timeout,
         )
         log.info("llama-server %s: rc=%s %s", action, r.returncode, r.stderr.strip())
-        reconcile_now()
-        return {"ok": r.returncode == 0, "error": r.stderr.strip() or None}
+        err = r.stderr.strip() or None
+        if r.returncode != 0 and err and "password is required" in err:
+            err = refused or (f"Controlling {unit} needs a one-time root update on this computer: "
+                              f"{_root_update_cmd()}")
+        return {"ok": r.returncode == 0, "error": err}
     except Exception as e:
-        reconcile_now()
         return {"ok": False, "error": str(e)}
+    finally:
+        _unit_info_invalidate()
+        reconcile_now()
 
 
 def llama_server_start_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1335,6 +1844,359 @@ def llama_server_restart_endpoint(authorization: Optional[str] = Header(default=
     return _llama_systemctl("restart", timeout=60)
 
 
+# ---------------------------------------------------------------------------
+# Multi-model mode switch, saved settings and start-time detection (#1419).
+# ---------------------------------------------------------------------------
+
+_MODE_POLL_S = 2.0
+_MODE_POLL_TRIES = 20
+_REDETECT_EVERY_S = 300.0
+_redetect_last: "Optional[float]" = None
+
+
+class _Reply:
+    """Minimal JSON reply used when fastapi's JSONResponse is unavailable."""
+
+    def __init__(self, status_code: int, content: Any):
+        self.status_code = status_code
+        self.body = json.dumps(content).encode()
+
+
+def _json_reply(status: int, content: Any) -> Any:
+    try:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=status, content=content)
+    except ImportError:
+        return _Reply(status, content)
+
+
+_EXTRA_MODEL_FLAGS = ("--hf-file", "-hff", "-hfv", "--hf-file-v", "-hfd", "--hf-repo-draft",
+                      "--mmproj", "--mmproj-url")
+
+
+def build_router_exec(exec_start: str, presets_path: str,
+                      drop_models: bool = True) -> "tuple[str, list[dict], Optional[dict]]":
+    """Router-mode ExecStart: model flags dropped, --models-preset and --metrics added, plus the current model's section."""
+    parts = shlex.split(exec_start)
+    drop = (set(_SINGLE_MODEL_FLAGS) | set(_EXTRA_MODEL_FLAGS)) if drop_models else set()
+    args: list[dict[str, Any]] = []
+    model_flag, model_val = "", ""
+    i = 1
+    while i < len(parts):
+        p = parts[i]
+        if not p.startswith("-"):
+            i += 1
+            continue
+        name, eq, val = p.partition("=") if p.startswith("--") else (p, "", "")
+        nxt = parts[i + 1] if i + 1 < len(parts) else None
+        has_val = bool(eq) or (nxt is not None and (name in _LLAMA_VALUE_FLAGS or not nxt.startswith("-")))
+        if not eq and has_val:
+            val, i = nxt, i + 2
+        else:
+            i += 1
+        if name in drop:
+            if name in _SINGLE_MODEL_FLAGS and not model_flag:
+                model_flag, model_val = name, val
+            continue
+        args.append({"flag": name, "value": val, "bool": False} if has_val
+                    else {"flag": name, "value": None, "bool": True})
+    args.append({"flag": "--models-preset", "value": presets_path, "bool": False})
+    if not any(a["flag"] == "--metrics" for a in args):
+        args.append({"flag": "--metrics", "value": None, "bool": True})
+    section: "Optional[dict]" = None
+    if model_flag in ("-m", "--model"):
+        section = {"name": Path(model_val).stem, "values": {"model": model_val}}
+    elif model_flag in ("-hf", "-hfr", "--hf-repo"):
+        name = quant_upper(model_val)
+        row = next((r for r in cached_models() if quant_upper(r["model_id"]) == name), None)
+        section = {"name": name, "values": {"model": row["path"]} if row else {}}
+    elif model_flag in ("-mu", "--model-url"):
+        section = {"name": Path(urlparse(model_val).path).stem, "values": {"model-url": model_val}}
+    return parts[0], args, section
+
+
+def _path_writable(p: str) -> bool:
+    return os.access(p, os.W_OK) if os.path.exists(p) else os.access(os.path.dirname(p) or ".", os.W_OK)
+
+
+_SYSTEM_PRESETS_DIR = "/etc/llama-server"
+
+
+def _presets_path_choice() -> str:
+    """Configured presets file when writable, else the system presets folder when writable,
+    else the agent user's llama.cpp config folder ('' when none)."""
+    cfg = _require_ctx().config
+    cur = (getattr(cfg, "LLAMA_CONFIG_INI", "") or "").strip()
+    if cur and _path_writable(cur):
+        return cur
+    sys_cand = os.path.join(_SYSTEM_PRESETS_DIR, "models.ini")
+    if os.path.isdir(_SYSTEM_PRESETS_DIR) and _path_writable(sys_cand):
+        return sys_cand
+    try:
+        home = pwd.getpwnam(getattr(cfg, "AGENT_USER", "") or "").pw_dir
+    except (KeyError, TypeError):
+        return ""
+    cand = Path(home) / ".config/llama.cpp/models.ini"
+    try:
+        cand.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return ""
+    return str(cand) if _path_writable(str(cand)) else ""
+
+
+_PRESETS_HEADER = "# llama-server models (managed from the LLM Systems Manager dashboard)\n"
+
+
+def _read_presets(path: str) -> configparser.ConfigParser:
+    cp = configparser.ConfigParser(default_section="__DEFAULTS__", interpolation=None)
+    cp.optionxform = str
+    cp.read(path)
+    return cp
+
+
+def _write_preset_section(path: str, section: "Optional[dict]", cp: configparser.ConfigParser) -> None:
+    if not section or cp.has_section(section["name"]):
+        return
+    cp.add_section(section["name"])
+    for k, v in section["values"].items():
+        cp.set(section["name"], k, str(v))
+    with open(path, "w") as f:
+        cp.write(f)
+
+
+def _remove_preset_section(presets: str, section: str) -> None:
+    """Drops one section from the presets file; errors are logged only."""
+    try:
+        cp = _read_presets(presets)
+        if cp.remove_section(section):
+            with open(presets, "w") as f:
+                cp.write(f)
+    except (OSError, configparser.Error, UnicodeDecodeError) as e:
+        log.warning("could not remove presets section %s from %s: %s", section, presets, e)
+
+
+def _mode_rollback(unit: str, err: str, presets: str = "", created: str = "") -> Any:
+    if created:
+        _remove_preset_section(presets, created)
+    res = _shared.svcconfig_op(_SVCCONFIG_WRAPPER, "restore", unit) or {}
+    log.warning("llama mode switch failed (%s); restore result: %s", err, res)
+    if not res.get("ok") and "nothing to restore" in str(res.get("error") or ""):
+        return _json_reply(500, {"error": err, "restored": False, "changed": False,
+                                 "detail": "nothing was changed"})
+    out: dict[str, Any] = {"error": err, "restored": bool(res.get("ok"))}
+    if res.get("ok"):
+        rs = _shared.svcconfig_op(_SVCCONFIG_WRAPPER, "restart", unit, timeout=60) or {}
+        out["restarted"] = bool(rs.get("ok"))
+        if not out["restarted"]:
+            out["restart_error"] = str(rs.get("error") or "the service did not restart")
+    else:
+        out["restore_error"] = str(res.get("error") or "the service file could not be restored")
+    return _json_reply(500, out)
+
+
+def _router_answers(base: str, allow_empty: bool = False) -> bool:
+    for n in range(_MODE_POLL_TRIES):
+        try:
+            r = requests.get(f"{base}/v1/models", timeout=2)
+            if r.ok and (allow_empty or (r.json() or {}).get("data")):
+                return True
+        except Exception as e:
+            log.debug("llama mode poll: %s", e)
+        if n + 1 < _MODE_POLL_TRIES:
+            time.sleep(_MODE_POLL_S)
+    return False
+
+
+def llama_mode_post(body: dict, authorization: Optional[str] = Header(default=None)) -> Any:
+    """Switches a single-model llama-server unit to multi-model mode; a rollback removes a presets section it added."""
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    if (body or {}).get("to") != "router":
+        raise HTTPException(status_code=400, detail="to must be 'router'")
+    cfg = _require_ctx().config
+    block = llama_mode_block()
+
+    def refuse(reason: str, detail: str, **extra: Any) -> Any:
+        return _json_reply(409, {"reason": reason, "detail": detail, **extra})
+
+    if _shared.wrapper_version(_SVCCONFIG_WRAPPER) < 3:
+        return refuse("wrapper-outdated", "The agent's helper on this computer is older than this feature. "
+                                          f"Run once on that computer: {_root_update_cmd()}",
+                      root_update_cmd=_root_update_cmd())
+    if not block["managed"]:
+        return refuse("unmanaged", "The agent does not manage this server's service.")
+    add_only = block["mode"] == "router" and not block["presets_file"]
+    if block["mode"] == "router" and not add_only:
+        return refuse("already-router", "This server already runs in multi-model mode.")
+    if block["configured_by"] == "environment":
+        return refuse("environment", "The server is set up through environment variables, which the agent does not edit.")
+    presets = _presets_path_choice()
+    if not presets:
+        return refuse("presets-not-writable", "The agent cannot write a models file for this server.")
+    _unit_info_invalidate()
+    info = llama_unit_info(force=True)
+    unit = info["unit"]
+    binary, args, section = build_router_exec(info["exec_start"], presets, drop_models=not add_only)
+    tokens = _shared.build_svcconfig_tokens([binary], args)
+    if tokens is None:
+        return _json_reply(500, {"error": "invalid ExecStart token (newline or non-string)", "restored": False})
+    try:
+        existing = _read_presets(presets)
+    except (configparser.Error, UnicodeDecodeError) as e:
+        log.warning("llama mode switch: presets unreadable: %s", e)
+        return refuse("presets-unreadable", f"The models file cannot be read ({_shared.err_kind(e)}); see the agent log.")
+    created = section["name"] if section and not existing.has_section(section["name"]) else ""
+    try:
+        _write_preset_section(presets, section, existing)
+        if add_only and (not os.path.exists(presets) or os.path.getsize(presets) == 0):
+            Path(presets).write_text(_PRESETS_HEADER)
+    except OSError as e:
+        log.warning("llama mode switch: presets not writable: %s", e)
+        return refuse("presets-not-writable", f"The agent cannot write the models file ({_shared.err_kind(e)}); see the agent log.")
+    try:
+        res = _shared.svcconfig_apply(_SVCCONFIG_WRAPPER, block["unit_path"], tokens, "llm-svcconfig-apply",
+                                      restart_unit=unit, restart_timeout=60, unit=unit)
+        if not (res or {}).get("ok"):
+            return _mode_rollback(unit, str((res or {}).get("error") or "the service did not restart"),
+                                  presets, created)
+        if not _router_answers(_llama_effective_api_url().rstrip("/"), allow_empty=add_only):
+            return _mode_rollback(unit, "the server did not list its models after the restart", presets, created)
+    finally:
+        _unit_info_invalidate()
+    if not (getattr(cfg, "LLAMA_CONFIG_INI", "") or "").strip():
+        cfg.LLAMA_CONFIG_INI = presets
+        _detect_matched.add("LLAMA_CONFIG_INI")
+        _persist_agent_yaml({"LLAMA_CONFIG_INI": presets})
+    reconcile_now()
+    return {"ok": True, "presets_file": presets, "unit": unit, "source": llama_unit_info(force=True)["source"]}
+
+
+def _persist_agent_yaml(values: "dict[str, str]") -> None:
+    path = getattr(_require_ctx().config, "_loaded_from", None)
+    if not path:
+        return
+    try:
+        llama_inventory.set_yaml_keys(path, values)
+    except OSError as e:
+        log.warning("could not persist %s: %s", ", ".join(values), e)
+
+
+def llama_settings_save(body: Optional[dict] = None, authorization: Optional[str] = Header(default=None)) -> Any:
+    """Writes the detected llama settings into agent_config.yaml and marks them saved."""
+    _require_ctx().check_bearer(authorization); _llama_check_enabled()
+    if llama_mode_block()["settings_source"] != "detected":
+        return _json_reply(409, {"reason": "not-detected", "detail": "There are no detected settings to save."})
+    cfg = _require_ctx().config
+    path = getattr(cfg, "_loaded_from", None)
+    if not path:
+        return _json_reply(500, {"error": "no agent_config.yaml is loaded"})
+    keys = {"LLAMA_API_URL": "api_url", "LLAMA_CONFIG_INI": "presets_file",
+            "LLAMA_SYSTEMD_UNIT": "unit", "LLAMA_MODELS_DIR": "models_dir"}
+    values: dict[str, Any] = {k: str(_detected[d]) for k, d in keys.items() if _detected.get(d)}
+    for k in keys:
+        if k in _detect_matched and k not in values and (getattr(cfg, k, "") or "").strip():
+            values[k] = str(getattr(cfg, k)).strip()
+    if _auto_enabled:
+        values["LLAMA_ENABLED"] = True
+    if not values:
+        return {"ok": True, "saved": {}, "settings_source": llama_mode_block()["settings_source"]}
+    try:
+        llama_inventory.set_yaml_keys(path, values)
+    except OSError as e:
+        log.warning("llama settings save: %s", e)
+        return _json_reply(500, {"error": f"could not write the agent config ({_shared.err_kind(e)})"})
+    for k, v in values.items():
+        setattr(cfg, k, v)
+    _detected.clear()
+    _unit_info_invalidate()
+    return {"ok": True, "saved": values, "settings_source": llama_mode_block()["settings_source"]}
+
+
+def _norm_url(u: str) -> str:
+    """Comparable form of a URL or path: localhost → 127.0.0.1, no trailing slash."""
+    return u.rstrip("/").replace("localhost", "127.0.0.1")
+
+
+def llama_startup_detect() -> None:
+    """Fills _detected from the running llama-server when a unit, URL or presets setting is blank or default."""
+    global _redetect_last
+    cfg = _require_ctx().config
+    if not cfg.LLAMA_ENABLED:
+        return
+    _redetect_last = time.monotonic()
+    _detect_matched.clear()
+    cur = {k: (getattr(cfg, k, "") or "").strip() for k in _CLASS_DEFAULTS}
+    open_keys = {k for k, d in _CLASS_DEFAULTS.items() if not cur[k] or _norm_url(cur[k]) == _norm_url(d)}
+    if not open_keys:
+        return
+    try:
+        det = _detect_module().detect(cfg_port=llama_api_port(cfg.LLAMA_API_URL),
+                                      cfg_unit=(getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "").strip())
+    except ImportError as e:
+        log.warning("llama detection unavailable: %s", e)
+        return
+    if not det.found:
+        return
+    host = det.host if det.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    found = {"unit": det.unit, "presets_file": det.presets_file, "models_dir": det.models_dir,
+             "mode": det.mode, "configured_by": getattr(det, "configured_by", ""), "binary": getattr(det, "binary", ""),
+             "unit_path": getattr(det, "unit_path", ""), "managed": det.managed,
+             "api_url": f"http://{host}:{det.port}" if det.port else ""}
+    owner = {"unit": "LLAMA_SYSTEMD_UNIT", "presets_file": "LLAMA_CONFIG_INI", "api_url": "LLAMA_API_URL",
+             "models_dir": "LLAMA_MODELS_DIR"}
+    if not (getattr(cfg, "LLAMA_MODELS_DIR", "") or "").strip():
+        open_keys.add("LLAMA_MODELS_DIR")
+    def same(k: str, v: str) -> bool:
+        return _norm_url(v) == _norm_url(cur.get(owner[k], ""))
+
+    fill = {k: v for k, v in found.items()
+            if owner.get(k) is not None and owner[k] in open_keys and v and not same(k, v)}
+    _detect_matched.update(owner[k] for k, v in found.items() if owner.get(k) and v and same(k, v))
+    _detected.update(fill)
+    _detected.update({k: v for k, v in found.items() if k not in owner})
+    _unit_info_invalidate()
+
+
+def llama_redetect_tick() -> None:
+    """Collector hook: re-runs detection every 300 s while the server is unreachable."""
+    if _redetect_last is not None and time.monotonic() - _redetect_last < _REDETECT_EVERY_S:
+        return
+    with best_effort("llama: re-detect", log=log):
+        llama_startup_detect()
+
+
+_auto_enabled = False
+
+
+def llama_auto_enable_tick() -> bool:
+    """Collector hook for role=auto hosts with llama off: enables llama support when a server appears."""
+    global _redetect_last, _auto_enabled
+    cfg = _require_ctx().config
+    if cfg.LLAMA_ENABLED or not getattr(cfg, "_auto_role", False):
+        return False
+    if _redetect_last is not None and time.monotonic() - _redetect_last < _REDETECT_EVERY_S:
+        return False
+    _redetect_last = time.monotonic()
+    try:
+        det = _detect_module().detect(cfg_port=llama_api_port(cfg.LLAMA_API_URL),
+                                      cfg_unit=(getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "").strip())
+    except Exception as e:
+        log.debug("llama auto-enable probe failed: %s", e)
+        return False
+    if not det.found:
+        return False
+    cfg.LLAMA_ENABLED = True
+    _auto_enabled = True
+    if getattr(cfg, "AGENT_ROLE", "") == "system_only":
+        cfg.AGENT_ROLE = "llama_host"
+    log.warning("llama-server found (unit %s, port %s): llama support enabled; save the settings on the dashboard",
+                det.unit or "none", det.port or "?")
+    with best_effort("llama: auto-enable detection", log=log):
+        llama_startup_detect()
+    with best_effort("llama: auto-enable sse", log=log):
+        _maybe_start_sse_listener()
+    return True
+
+
 # Warm-up completion read timeout: a sleeping model reloads its weights first.
 _LLAMA_WAKE_TIMEOUT_S = 300
 
@@ -1343,7 +2205,7 @@ def llama_server_wake_endpoint(body: Optional[dict] = None,
                                authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     # GET /v1/models, target the requested model else the sleeping/loaded one, then warm it.
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    base = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    base = _llama_effective_api_url().rstrip("/")
     requested = (body or {}).get("model") or (body or {}).get("model_id")
     model_id = None
     try:
@@ -1382,7 +2244,12 @@ def llama_server_wake_endpoint(body: Optional[dict] = None,
 
 
 def _llama_svc_file_path() -> str:
-    return f"/etc/systemd/system/{_require_ctx().config.LLAMA_SYSTEMD_UNIT}"
+    info = llama_unit_info()
+    if info["unit_path"]:
+        return info["unit_path"]
+    if info["source"] == "none" and not info["systemctl_available"]:
+        return f"/etc/systemd/system/{_llama_effective_unit()}"
+    return ""
 
 
 def _svcconfig_wrapper_baked_unit_path() -> str:
@@ -1392,34 +2259,43 @@ def _svcconfig_wrapper_baked_unit_path() -> str:
 
 def llama_svcconfig_get(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    try:
-        content = Path(_llama_svc_file_path()).read_text()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("ExecStart="):
-            exec_line = stripped[len("ExecStart="):].strip()
-            parts = shlex.split(exec_line)
-            binary = parts[0]
-            args: list[dict[str, Any]] = []
-            i = 1
-            while i < len(parts):
-                p = parts[i]
-                if p.startswith("-"):
-                    nxt = parts[i + 1] if i + 1 < len(parts) else None
-                    expects_value = (p in _LLAMA_VALUE_FLAGS
-                                     or (nxt is not None and not nxt.startswith("-")))
-                    if expects_value and nxt is not None:
-                        args.append({"flag": p, "value": nxt, "bool": False})
-                        i += 2
-                    else:
-                        args.append({"flag": p, "value": None, "bool": True})
-                        i += 1
-                else:
-                    i += 1
-            return {"ok": True, "binary": binary, "args": args}
-    return {"ok": False, "error": "ExecStart line not found in service file"}
+    svc_path = _llama_svc_file_path()
+    if not svc_path:
+        return {"ok": False, "error": _NO_UNIT_ERR}
+    info = llama_unit_info()
+    exec_line = info["exec_start"]
+    if not exec_line:
+        try:
+            content = Path(svc_path).read_text()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ExecStart="):
+                exec_line = stripped[len("ExecStart="):].strip()
+                break
+    if not exec_line:
+        return {"ok": False, "error": "ExecStart line not found in service file"}
+    extra = {"source": info["source"], "path": svc_path}
+    parts = shlex.split(exec_line)
+    binary = parts[0]
+    args: list[dict[str, Any]] = []
+    i = 1
+    while i < len(parts):
+        p = parts[i]
+        if p.startswith("-"):
+            nxt = parts[i + 1] if i + 1 < len(parts) else None
+            expects_value = (p in _LLAMA_VALUE_FLAGS
+                             or (nxt is not None and not nxt.startswith("-")))
+            if expects_value and nxt is not None:
+                args.append({"flag": p, "value": nxt, "bool": False})
+                i += 2
+            else:
+                args.append({"flag": p, "value": None, "bool": True})
+                i += 1
+        else:
+            i += 1
+    return {"ok": True, "binary": binary, "args": args, **extra}
 
 
 def llama_svcconfig_post(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1431,11 +2307,19 @@ def llama_svcconfig_post(body: dict, authorization: Optional[str] = Header(defau
                                             body.get("args", []))
     if tokens is None:
         return {"ok": False, "error": "invalid ExecStart token (newline or non-string)"}
-    return _shared.svcconfig_apply(
-        _SVCCONFIG_WRAPPER, _llama_svc_file_path(), tokens,
-        sudoers_hint="llm-svcconfig-apply",
-        restart_unit=_require_ctx().config.LLAMA_SYSTEMD_UNIT if do_restart else None,
-        restart_timeout=30)
+    svc_path = _llama_svc_file_path()
+    if not svc_path:
+        return {"ok": False, "error": _NO_UNIT_ERR}
+    new_wrapper = _shared.wrapper_version(_SVCCONFIG_WRAPPER) >= 3
+    unit = _llama_effective_unit()
+    try:
+        return _shared.svcconfig_apply(
+            _SVCCONFIG_WRAPPER, svc_path, tokens,
+            sudoers_hint="llm-svcconfig-apply",
+            restart_unit=unit if do_restart else None,
+            restart_timeout=30, **({"unit": unit} if new_wrapper else {}))
+    finally:
+        _unit_info_invalidate()
 
 
 def llama_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1443,7 +2327,9 @@ def llama_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[
     Reads only the last 128 KB to cap memory; uses a bounded deque."""
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     TAIL_BYTES = 128 * 1024
-    path = _require_ctx().config.LLAMA_LOG_FILE
+    path = (getattr(_require_ctx().config, "LLAMA_LOG_FILE", "") or "").strip()
+    if not path or not os.path.exists(path):
+        return _llama_journal_tail()
     try:
         size = os.path.getsize(path)
         offset = max(0, size - TAIL_BYTES)
@@ -1464,6 +2350,25 @@ def llama_log_tail(authorization: Optional[str] = Header(default=None)) -> dict[
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _llama_journal_tail() -> dict[str, Any]:
+    """Last 100 kept lines of the unit's journal; a hint line when the journal cannot be read."""
+    unit = _llama_effective_unit()
+    try:
+        r = subprocess.run(["journalctl", "-u", unit, "-n", "200", "-o", "cat", "--no-pager"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0 or not (r.stdout or "").strip():
+            raise RuntimeError(r.stderr.strip() or f"rc={r.returncode}, no journal lines")
+        out: deque = deque(maxlen=100)
+        for raw in (r.stdout or "").splitlines():
+            line = raw.rstrip()
+            if line and _llama_log_should_keep(line):
+                out.append(line)
+        return {"ok": True, "lines": list(out)}
+    except Exception as e:
+        log.debug("llama journal tail failed: %s", e)
+        return {"ok": True, "lines": [f"the agent cannot read the server log; run: journalctl -u {unit} -n 50"]}
+
+
 def llama_log_stream(
     authorization: Optional[str] = Header(default=None),
     token: Optional[str] = Query(default=None),
@@ -1480,9 +2385,56 @@ def llama_log_stream(
     return _log_state.sse_response(_llama_log_streamer)
 
 
+def _moved_snapshot_file(model: str, hub: Path) -> "Optional[Path]":
+    """Newest existing file with the same basename under the repo's other HF snapshots, else None."""
+    p = Path(model)
+    try:
+        rel = p.relative_to(hub)
+    except ValueError:
+        return None
+    if len(rel.parts) < 4 or not rel.parts[0].startswith("models--") or rel.parts[1] != "snapshots" \
+            or ".." in rel.parts:
+        return None
+    cands = [c for c in (hub / rel.parts[0] / "snapshots").glob(f"*/{glob.escape(p.name)}") if c.exists()]
+    return max(cands, key=lambda c: c.stat().st_mtime) if cands else None
+
+
+def _heal_moved_presets(cp: configparser.ConfigParser) -> None:
+    """Points sections whose hub snapshot file is gone at the same file in a newer snapshot (one write)."""
+    try:
+        hub: "Optional[Path]" = None
+        moved = {}
+        for sec in cp.sections():
+            model = cp.get(sec, "model", fallback="") or ""
+            if model and os.path.isabs(model) and not os.path.exists(model):
+                hub = hub or _hf_cache_root()
+                new = _moved_snapshot_file(model, hub)
+                if new is not None:
+                    moved[sec] = (model, str(new))
+        if not moved:
+            return
+        path = _llama_effective_presets_path()
+        disk = _read_presets(path)
+        for sec, (old, new) in moved.items():
+            cp.set(sec, "model", new)
+            if disk.has_section(sec):
+                disk.set(sec, "model", new)
+            log.info("presets: %s moved to %s", old, new)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        st = os.stat(path)
+        with open(tmp, "w") as f:
+            disk.write(f)
+        os.chmod(tmp, st.st_mode & 0o7777)
+        with contextlib.suppress(OSError):
+            os.chown(tmp, st.st_uid, st.st_gid)
+        os.replace(tmp, path)
+    except (OSError, configparser.Error, UnicodeDecodeError) as e:
+        log.warning("presets: could not repoint moved snapshot files: %s", e)
+
+
 def _drop_ghost_presets(listing: dict) -> dict:
-    """Drops presets llama-server keeps listing after their config.ini section and cache file were deleted
-    (the router only re-reads presets on restart); a loaded one stays."""
+    """Drops presets llama-server keeps listing after their config.ini section was deleted
+    (the router only re-reads presets on restart); a loaded or loading one stays."""
     data = listing.get("data") if isinstance(listing, dict) else None
     if not isinstance(data, list):
         return listing
@@ -1490,15 +2442,14 @@ def _drop_ghost_presets(listing: dict) -> dict:
         cp = _llama_read_ini()
     except Exception:
         return listing
+    _heal_moved_presets(cp)
     keep = []
     for m in data:
         mid = str(m.get("id") or "") if isinstance(m, dict) else ""
         status = ((m.get("status") or {}).get("value") if isinstance(m, dict) else None)
         if mid and m.get("source") == "preset" and not cp.has_section(mid) and status not in _LLAMA_BUSY_STATUSES:
-            files, _err = _locate_quant_files(mid)
-            if not files:
-                log.info("llama models: %s is gone from config.ini and the cache; hidden until llama-server restarts", mid)
-                continue
+            log.info("llama models: %s is gone from config.ini; hidden until llama-server restarts", mid)
+            continue
         keep.append(m)
     listing["data"] = keep
     return listing
@@ -1507,11 +2458,56 @@ def _drop_ghost_presets(listing: dict) -> dict:
 def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     try:
-        resp = requests.get(f"{_require_ctx().config.LLAMA_API_URL.rstrip('/')}/v1/models", timeout=5)
+        resp = requests.get(f"{_llama_effective_api_url().rstrip('/')}/v1/models", timeout=5)
         listing = resp.json()
     except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return _drop_ghost_presets(listing)
+        log.debug("llama models: server unreachable: %s", e)
+        return _json_reply(503, {"detail": f"llama-server is not answering ({_shared.err_kind(e)})",
+                                 "extra": _models_extra(_presets_section_ids())})
+    listing = _drop_ghost_presets(listing)
+    if isinstance(listing, dict):
+        served = {quant_upper(str(m.get("id"))) for m in listing.get("data") or [] if isinstance(m, dict)}
+        listing["extra"] = _models_extra(served)
+    return listing
+
+
+def _presets_section_ids() -> set:
+    """quant_upper of every section in the effective presets file; empty on any error."""
+    return _presets_claims()[0]
+
+
+def _presets_claims() -> tuple:
+    """(section ids, model paths) of the effective presets file; both empty on any error."""
+    try:
+        path = _llama_effective_presets_path()
+        if not path:
+            return set(), set()
+        cp = _read_presets(path)
+        ids = {quant_upper(s) for s in cp.sections() if s != "__DEFAULTS__"}
+        paths = set()
+        for s in cp.sections():
+            m = cp.get(s, "model", fallback="").strip()
+            if m:
+                paths.add(m)
+                paths.add(os.path.realpath(m))
+        return ids, paths
+    except Exception as e:
+        log.debug("llama models: presets sections unreadable: %s", e)
+        return set(), set()
+
+
+def _models_extra(served: set) -> dict[str, Any]:
+    """The cached-models rows neither served nor already in the presets file, plus the mode block."""
+    try:
+        block = llama_mode_block()
+        ids, paths = _presets_claims()
+        taken = served | ids
+        cached = [r for r in cached_models(block) if quant_upper(r["model_id"]) not in taken
+                  and r.get("path") not in paths and os.path.realpath(r.get("path") or "") not in paths]
+        return {"cached": cached, "mode": block}
+    except Exception as e:
+        log.debug("llama models: extra block failed: %s", e)
+        return {"cached": [], "mode": {}}
 
 
 def llama_model_sizes_endpoint(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1529,7 +2525,7 @@ async def _llama_openai_forward(sub: str, request: Request,
     ctx = _require_ctx()
     ctx.check_bearer(authorization)
     _llama_check_enabled()
-    return await _shared.openai_forward(sub, request, ctx.config.LLAMA_API_URL)
+    return await _shared.openai_forward(sub, request, _llama_effective_api_url())
 
 
 async def llama_openai_chat(request: Request,
@@ -1600,7 +2596,7 @@ def _llama_load_request(api: str, model_id: str):
 
 def _live_load_and_wait(model_id: str, timeout_s: float = 300) -> "tuple[bool, Optional[str]]":
     """Loads model_id the way the Load button does, then polls /v1/models until it reports loaded."""
-    api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    api = _llama_effective_api_url().rstrip("/")
     try:
         lr = _llama_load_request(api, model_id)
     except Exception as e:
@@ -1629,7 +2625,7 @@ def llama_load_endpoint(body: dict, authorization: Optional[str] = Header(defaul
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="model required")
-    api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    api = _llama_effective_api_url().rstrip("/")
     try:
         lr = _llama_load_request(api, model_id)
         if lr is None:
@@ -1669,7 +2665,7 @@ def llama_unload_endpoint(body: dict, authorization: Optional[str] = Header(defa
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="model required")
-    api = _require_ctx().config.LLAMA_API_URL.rstrip("/")
+    api = _llama_effective_api_url().rstrip("/")
     try:
         resp = requests.post(f"{api}/models/unload", json={"model": model_id}, timeout=15)
         body_resp = _json_or_raw(resp)
@@ -1723,15 +2719,27 @@ def llama_config_delete(
         cp = _llama_read_ini()
         if cp.has_section(model_id):
             cp.remove_section(model_id)
-            with open(_require_ctx().config.LLAMA_CONFIG_INI, "w") as f:
+            with open(_llama_effective_presets_path(), "w") as f:
                 cp.write(f)
         return {"ok": True, "deleted_files": deleted_files, "cache_error": cache_error}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-def _hf_cli_path() -> str:
-    return _require_ctx().config.HF_CLI_PATH or shutil.which("hf") or os.path.expanduser("~/.local/bin/hf")
+def _hf_cli_cmd() -> list[str]:
+    """Argv prefix for the hf CLI: configured/PATH/user binary, else the agent itself."""
+    configured = _require_ctx().config.HF_CLI_PATH
+    if configured:
+        return [configured]
+    found = shutil.which("hf")
+    if found:
+        return [found]
+    user_bin = os.path.expanduser("~/.local/bin/hf")
+    if os.path.isfile(user_bin):
+        return [user_bin]
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--hf-cli"]
+    return [sys.executable, str(Path(__file__).resolve().parents[1] / "llm-systems-agent.py"), "--hf-cli"]
 
 
 def llama_download_endpoint(body: dict, authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
@@ -1744,7 +2752,7 @@ def llama_download_endpoint(body: dict, authorization: Optional[str] = Header(de
         raise HTTPException(status_code=400, detail="repo required")
     if not _hf_repo_valid(repo):
         raise HTTPException(status_code=400, detail="invalid repo format — expected owner/repo")
-    cmd = [_hf_cli_path(), "download", repo]
+    cmd = [*_hf_cli_cmd(), "download", repo]
     all_patterns = list(patterns)
     if include and f"*{include}*" not in all_patterns:
         all_patterns.append(f"*{include}*")
@@ -1874,8 +2882,8 @@ def _llama_build_worker(force: bool = False) -> None:
     cfg = _require_ctx().config
     method = (getattr(cfg, "LLAMA_BUILD_METHOD", "") or "custom_script")
     opts = getattr(cfg, "LLAMA_BUILD_OPTS", None) or {}
-    bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
-    unit = getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "llama_server.service"
+    bin_cfg = _llama_live_binary()
+    unit = _llama_effective_unit() or "llama_server.service"
     try:
         try:
             iplan = llama_install.plan(method, opts, cfg)
@@ -1908,7 +2916,6 @@ def _llama_build_worker(force: bool = False) -> None:
                 emit(f"[info] building: {cur['reason']}")
         rc, resolved = llama_install.run_install(iplan, emit=emit)
         if rc == 0:
-            bin_cfg = getattr(cfg, "LLAMA_BIN", "") or ""
             if llama_upgrade.should_upgrade_in_place(method, opts) and bin_cfg and resolved:
                 try:
                     br = str(llama_install._build_root(cfg))
@@ -1921,8 +2928,7 @@ def _llama_build_worker(force: bool = False) -> None:
                     emit(f"[warn] backup_retain {opts.get('backup_retain')!r} is not an integer; using 2")
                     retain = 2
                 res = llama_upgrade.upgrade_in_place(
-                    resolved, bin_cfg, build_root=br,
-                    unit=getattr(cfg, "LLAMA_SYSTEMD_UNIT", "") or "llama_server.service",
+                    resolved, bin_cfg, build_root=br, unit=unit,
                     agent_user=getattr(cfg, "AGENT_USER", "") or "",
                     retain=retain, emit=emit,
                 )
@@ -1953,9 +2959,8 @@ def _llama_build_worker(force: bool = False) -> None:
                     rc = 3
                     report = {"action": "failed", "method": iplan.label, "error": res.message}
             elif resolved and bin_cfg and resolved != bin_cfg:
-                warn = (f"[warn] llama-server installed at {resolved}; configured "
-                        f"LLAMA_BIN={bin_cfg} — update LLAMA_BIN and restart "
-                        f"{getattr(cfg, 'LLAMA_SYSTEMD_UNIT', 'the llama unit')} to run it")
+                warn = (f"[warn] llama-server installed at {resolved}; the service runs "
+                        f"{bin_cfg} — point LLAMA_BIN (or the service) at the new binary and restart {unit} to run it")
                 _build_put({"type": "line", "data": warn, "text": warn})
     except FileNotFoundError as e:
         rc = 127
@@ -1977,11 +2982,63 @@ def _llama_build_worker(force: bool = False) -> None:
             _build_running = False
 
 
+def _llama_live_binary() -> str:
+    """LLAMA_BIN when set, else the binary the llama unit's ExecStart runs, else the detected one."""
+    cfg_bin = (getattr(_require_ctx().config, "LLAMA_BIN", "") or "").strip()
+    if cfg_bin:
+        return cfg_bin
+    try:
+        tokens = shlex.split(llama_unit_info().get("exec_start") or "")
+    except Exception as e:
+        log.debug("llama live binary: unit info failed: %s", e)
+        tokens = []
+    return (tokens[0] if tokens else "") or str(_detected.get("binary") or "")
+
+
+def _binary_package(path: str) -> str:
+    """Name of the deb/rpm package that owns path, else ''."""
+    real = os.path.realpath(path)
+    for cmd in (["dpkg", "-S", real], ["rpm", "-qf", real]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        out = (res.stdout or "").strip().splitlines()
+        if res.returncode == 0 and out:
+            return out[0].split(":")[0].strip() if cmd[0] == "dpkg" else out[0].strip()
+    return ""
+
+
+def _build_refusal() -> Optional[str]:
+    """Why an update from here cannot replace the live llama-server, else None."""
+    b = _llama_live_binary()
+    if not b:
+        return None
+    pkg = _binary_package(b)
+    if pkg:
+        return (f"llama-server on this computer comes from the {pkg} package. "
+                "Update it with the package manager (apt upgrade / dnf upgrade) instead.")
+    if "/homebrew/" in b or "/linuxbrew/" in b:
+        return "llama-server on this computer was installed by Homebrew. Run brew upgrade llama.cpp there instead."
+    cfg = _require_ctx().config
+    in_place = llama_upgrade.should_upgrade_in_place(getattr(cfg, "LLAMA_BUILD_METHOD", "") or "custom_script",
+                                                     getattr(cfg, "LLAMA_BUILD_OPTS", None) or {})
+    if in_place and not os.access(os.path.dirname(os.path.realpath(b)), os.W_OK):
+        return (f"llama-server on this computer is at {b}, in a folder the agent user cannot write. "
+                "Update it the way it was installed, or make that folder writable by the agent user and retry.")
+    return None
+
+
 def llama_build(body: Optional[dict] = None,
                 authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     global _build_running
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     force = bool((body or {}).get("force"))
+    why = _build_refusal()
+    if why:
+        return _json_reply(409, {"ok": False, "reason": "binary-not-ours", "detail": why})
     with _build_lock:
         if _build_running:
             raise HTTPException(status_code=409, detail="A build is already running")
@@ -2027,7 +3084,7 @@ def llama_cache_list(authorization: Optional[str] = Header(default=None)) -> dic
     env["FORCE_COLOR"] = "0"
     try:
         out = subprocess.check_output(
-            [_hf_cli_path(), "cache", "list", "--format", "json"],
+            [*_hf_cli_cmd(), "cache", "list", "--format", "json"],
             text=True, timeout=30, close_fds=True,
             stderr=subprocess.STDOUT, env=env,
         )
@@ -2045,15 +3102,16 @@ def llama_cache_list(authorization: Optional[str] = Header(default=None)) -> dic
 def llama_cache_gguf(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
     try:
-        return {"ok": True, "data": _list_cache_ggufs(_hf_cache_root())}
+        return {"ok": True, "data": cached_models()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
 def llama_cache_prune(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
     _require_ctx().check_bearer(authorization); _llama_check_enabled()
-    if not _llama_queue_command([_hf_cli_path(), "cache", "prune"], stdin_input=b"y\n"):
+    if not _llama_queue_command([*_hf_cli_cmd(), "cache", "prune"], stdin_input=b"y\n"):
         raise HTTPException(status_code=409, detail="Another operation is in progress")
+    _cached_models_invalidate()
     return {"ok": True}
 
 
@@ -2065,10 +3123,11 @@ def llama_cache_rm(body: dict, authorization: Optional[str] = Header(default=Non
     if not _hf_repo_valid(repo_id):
         raise HTTPException(status_code=400, detail="invalid repo format — expected owner/repo")
     if not _llama_queue_command(
-        [_hf_cli_path(), "cache", "rm", "model/" + repo_id],
+        [*_hf_cli_cmd(), "cache", "rm", "model/" + repo_id],
         stdin_input=b"y\n",
     ):
         raise HTTPException(status_code=409, detail="Another operation is in progress")
+    _cached_models_invalidate()
     return {"ok": True}
 
 
@@ -2097,7 +3156,7 @@ def llama_hf_trending(
     env["FORCE_COLOR"] = "0"
     try:
         out = subprocess.check_output(
-            [_hf_cli_path(), "models", "ls",
+            [*_hf_cli_cmd(), "models", "ls",
              "--sort", sort_key,
              "--limit", str(pool),
              "--format", "json",
@@ -2554,7 +3613,7 @@ def _bench_live_root() -> Path:
 
 def _bench_live_server() -> dict:
     """Running-server snapshot for the live bench: models, loaded id, slots, spec settings."""
-    base = (_require_ctx().config.LLAMA_API_URL or "").rstrip("/")
+    base = (_llama_effective_api_url() or "").rstrip("/")
     out: dict = {"up": False, "url": base, "models": [], "loaded_id": None,
                  "slots_idle": 0, "slots_total": 0, "spec": None}
     if not base:
@@ -2592,7 +3651,7 @@ _QUANT_RE = re.compile(r"[-_.](I?Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32)$", re.IGNORECA
 
 def _props_for(model_id: str) -> dict:
     """GET /props of the llama server for one model; {} when unreachable."""
-    base = (_require_ctx().config.LLAMA_API_URL or "").rstrip("/")
+    base = (_llama_effective_api_url() or "").rstrip("/")
     with best_effort("run conditions: /props probe", log=log):
         props = requests.get(f"{base}/props", params={"model": model_id, "autoload": "0"}, timeout=2).json()
         if isinstance(props, dict):
@@ -3086,7 +4145,7 @@ def _llama_unit_active() -> bool:
     """True when the llama-server systemd unit reports active."""
     active = False
     with best_effort("autotune: probe llama unit is-active", log=log):
-        st = subprocess.run(["systemctl", "is-active", _require_ctx().config.LLAMA_SYSTEMD_UNIT],
+        st = subprocess.run(["systemctl", "is-active", _llama_effective_unit()],
                             capture_output=True, text=True, timeout=5)
         active = (st.stdout or "").strip() == "active"
     return active
@@ -4128,7 +5187,7 @@ def llama_autotune_run(body: dict, authorization: Optional[str] = Header(default
             return {"ok": False, "error": pdet["hint"]}
     # Refuse to start if llama-server is running — port/VRAM would collide.
     if _llama_unit_active():
-        return {"ok": False, "error": f"{_require_ctx().config.LLAMA_SYSTEMD_UNIT} is running — stop it before auto-tune"}
+        return {"ok": False, "error": f"{_llama_effective_unit()} is running — stop it before auto-tune"}
     with _autotune_lock:
         if _autotune_active or _bench_active:
             return {"ok": False, "error": "Another benchmark or auto-tune is in progress"}
@@ -4316,8 +5375,16 @@ def _build_return_recover() -> None:
 
 
 def _llama_exec_tokens() -> "list[str]":
-    """ExecStart= of the llama unit as tokens (binary first); raises when missing."""
-    for line in Path(_llama_svc_file_path()).read_text().splitlines():
+    """Effective ExecStart= of the llama unit as tokens (binary first), drop-ins included; raises when missing."""
+    info = llama_unit_info()
+    if info.get("exec_start"):
+        tokens = shlex.split(info["exec_start"])
+        if tokens:
+            return tokens
+    svc_path = _llama_svc_file_path()
+    if not svc_path:
+        raise ValueError(_NO_UNIT_ERR)
+    for line in Path(svc_path).read_text().splitlines():
         s = line.strip()
         if s.startswith("ExecStart="):
             if s.endswith("\\"):
@@ -4328,8 +5395,11 @@ def _llama_exec_tokens() -> "list[str]":
 
 def _switch_preflight(target: str) -> "tuple[bool, Optional[str]]":
     """Runs target --version with the service unit's working folder and Environment= variables."""
+    svc_path = _llama_svc_file_path()
     try:
-        cwd, extra = llama_inventory.unit_run_context(Path(_llama_svc_file_path()).read_text())
+        if not svc_path:
+            raise FileNotFoundError(_NO_UNIT_ERR)
+        cwd, extra = llama_inventory.unit_run_context(Path(svc_path).read_text())
     except OSError:
         cwd, extra = None, {}
     if cwd and not os.path.isdir(cwd):
@@ -4354,7 +5424,7 @@ def _switch_unit_show() -> dict:
     out: dict = {}
     with best_effort("switch: systemctl show", log=log):
         r = subprocess.run(["systemctl", "show", "-p", "ActiveState,NRestarts",
-                            _require_ctx().config.LLAMA_SYSTEMD_UNIT],
+                            _llama_effective_unit()],
                            capture_output=True, text=True, timeout=5)
         for ln in (r.stdout or "").splitlines():
             k, _, v = ln.partition("=")
@@ -4364,7 +5434,7 @@ def _switch_unit_show() -> dict:
 
 def _switch_wait_ready() -> "tuple[bool, Optional[str]]":
     """Polls /health until 200; stops early when the unit fails or restarts itself."""
-    url = (_require_ctx().config.LLAMA_API_URL or "http://localhost:8080").rstrip("/")
+    url = (_llama_effective_api_url() or "http://localhost:8080").rstrip("/")
     base = _switch_unit_show().get("NRestarts")
     deadline = time.monotonic() + _SWITCH_READY_TIMEOUT_S
     while time.monotonic() < deadline:
@@ -4381,9 +5451,14 @@ def _switch_wait_ready() -> "tuple[bool, Optional[str]]":
 
 
 def _switch_apply(tokens: "list[str]") -> dict:
+    svc_path = _llama_svc_file_path()
+    if not svc_path:
+        return {"ok": False, "error": _NO_UNIT_ERR}
+    unit = _llama_effective_unit()
+    new_wrapper = _shared.wrapper_version(_SVCCONFIG_WRAPPER) >= 3
     res = _shared.svcconfig_apply(
-        _SVCCONFIG_WRAPPER, _llama_svc_file_path(), tokens, sudoers_hint="llm-svcconfig-apply",
-        restart_unit=_require_ctx().config.LLAMA_SYSTEMD_UNIT, restart_timeout=30)
+        _SVCCONFIG_WRAPPER, svc_path, tokens, sudoers_hint="llm-svcconfig-apply",
+        restart_unit=unit, restart_timeout=30, **({"unit": unit} if new_wrapper else {}))
     reconcile_now()
     return res
 
@@ -4391,7 +5466,7 @@ def _switch_apply(tokens: "list[str]") -> dict:
 def _switch_log_tail() -> "list[str]":
     lines: "list[str]" = []
     with best_effort("switch: journal tail", log=log):
-        r = subprocess.run(["journalctl", "-u", _require_ctx().config.LLAMA_SYSTEMD_UNIT, "-n", "12",
+        r = subprocess.run(["journalctl", "-u", _llama_effective_unit(), "-n", "12",
                             "--no-pager", "-o", "cat"], capture_output=True, text=True, timeout=5)
         lines = [ln[:300] for ln in (r.stdout or "").splitlines()][-12:]
     log_file = _require_ctx().config.LLAMA_LOG_FILE
@@ -4401,7 +5476,7 @@ def _switch_log_tail() -> "list[str]":
                 f.seek(max(0, os.path.getsize(log_file) - 16384))
                 lines = [ln[:300] for ln in f.read().decode(errors="replace").splitlines()][-12:]
     if not lines:
-        unit = _require_ctx().config.LLAMA_SYSTEMD_UNIT
+        unit = _llama_effective_unit()
         lines = [f"the agent cannot read the server log; run: journalctl -u {unit} -n 50"]
     return lines
 
@@ -4499,6 +5574,8 @@ _ROUTES: tuple = (
     ("POST",   "/llama/server/start",             llama_server_start_endpoint),
     ("POST",   "/llama/server/stop",              llama_server_stop_endpoint),
     ("POST",   "/llama/server/restart",           llama_server_restart_endpoint),
+    ("POST",   "/llama/mode",                     llama_mode_post),
+    ("POST",   "/llama/settings/save",            llama_settings_save),
     ("POST",   "/llama/server/wake",              llama_server_wake_endpoint),
     ("GET",    "/llama/server/svcconfig",         llama_svcconfig_get),
     ("POST",   "/llama/server/svcconfig",         llama_svcconfig_post),
@@ -4549,6 +5626,8 @@ def register_routes(app) -> None:
 
 def start_background() -> "Optional[asyncio.Task]":
     """Start the /models/sse listener; the perf controller is the tick-driven arbiter now."""
+    with best_effort("llama: start-time detection", log=log):
+        llama_startup_detect()
     _maybe_start_sse_listener()
     with best_effort("llama: record active build", log=log):
         if _require_ctx().config.LLAMA_ENABLED:

@@ -30,11 +30,12 @@ GUARD = _extract('_lu_guard="$(_resolved_llama_unit)"', is_func=False)
 YAML_SCALAR = _extract("_yaml_scalar", is_func=True)
 WRAP_VER = _extract("_svcconfig_wrapper_version", is_func=True)
 WRAP_UNIT = _extract("_svcconfig_wrapper_unit_path", is_func=True)
+WRAP_MIN = _extract("_svcconfig_wrapper_min_version", is_func=True)
 
 
 def _run(*, from_self="true", unit_name="llama_server.service", unit_present=True,
          have_ver=None, want_ver=1, llama_enabled="true", baked_unit=None,
-         sudoers_present=True, tmp_path):
+         sudoers_present=True, tmp_path, min_ver=None):
     unitdir = tmp_path / "systemd"; unitdir.mkdir()
     if unit_present:
         (unitdir / unit_name).write_text("[Service]\n")
@@ -43,7 +44,8 @@ def _run(*, from_self="true", unit_name="llama_server.service", unit_present=Tru
         "" if llama_enabled is None else f"LLAMA_ENABLED: {llama_enabled}\n")
     tmpl = tmp_path / "tmpl"; tmpl.mkdir()
     (tmpl / "llm-svcconfig-apply.sh.tmpl").write_text(
-        f"#!/usr/bin/env bash\n# SVCCONFIG_WRAPPER_VERSION={want_ver}\n")
+        f"#!/usr/bin/env bash\n# SVCCONFIG_WRAPPER_VERSION={want_ver}\n"
+        + (f"# SVCCONFIG_WRAPPER_MIN_VERSION={min_ver}\n" if min_ver is not None else ""))
     sudoers = tmp_path / "sudoers-llm-systems-agent"
     if sudoers_present:
         sudoers.write_text("stub\n")
@@ -61,7 +63,7 @@ def _run(*, from_self="true", unit_name="llama_server.service", unit_present=Tru
                  .replace("/etc/sudoers.d/llm-systems-agent", str(sudoers))
     script = (
         "set -u\n"
-        f"{YAML_SCALAR}\n{WRAP_VER}\n{WRAP_UNIT}\n"
+        f"{YAML_SCALAR}\n{WRAP_VER}\n{WRAP_UNIT}\n{WRAP_MIN}\n"
         '_resolved_llama_unit() { printf "%s" "$UNITNAME"; }\n'
         'AGENT_OS="linux"\n'
         f"FROM_SELF_UPDATE={from_self}\n"
@@ -169,3 +171,24 @@ def test_root_update_installs_wrapper_before_deploying_code():
     apply_at = text.index('_apply_sudoers_and_wrapper || exit 1')
     deploy_at = text.index('_section "Updating agent code"')
     assert apply_at < deploy_at
+
+
+def test_proceeds_with_notice_when_helper_meets_min_version(tmp_path):
+    r = _run(have_ver=2, want_ver=3, min_ver=2, tmp_path=tmp_path)
+    assert _proceeded(r)
+    assert "root helper on this computer is v2" in r.stdout and "--update" in r.stdout
+
+
+def test_aborts_below_min_version(tmp_path):
+    assert _aborted(_run(have_ver=1, want_ver=3, min_ver=2, tmp_path=tmp_path))
+
+
+def test_shipped_template_declares_min_version_2():
+    tmpl = (AGENT_DIR / "install" / "llm-svcconfig-apply.sh.tmpl").read_text()
+    assert "# SVCCONFIG_WRAPPER_MIN_VERSION=2" in tmpl
+
+
+def test_v3_helper_ignores_baked_unit_mismatch(tmp_path):
+    r = _run(unit_name="new-llama.service", have_ver=3, want_ver=3,
+             baked_unit="llama_server.service", tmp_path=tmp_path)
+    assert _proceeded(r)

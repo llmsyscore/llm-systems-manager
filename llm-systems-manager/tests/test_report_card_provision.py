@@ -298,3 +298,26 @@ def test_agent_call_maps_every_failure_shape(monkeypatch):
         ok, err = rc._agent_call(AGENT, "POST", "/x")
         assert ok is expect_ok, payload
         assert (err is None) is expect_ok, payload
+
+
+def test_register_uses_cached_path_when_agent_lists_it(monkeypatch):
+    calls = _calls_recorder(monkeypatch)
+    base = rc._agent_json
+
+    def fake(agent, method, path, timeout=15, **kw):
+        if path == "/llama/cache/gguf":
+            return {"ok": True, "data": [{"model_id": SRC["model_id"], "path": "/cache/m.gguf",
+                                          "repo": SRC["repo"], "file": "m.gguf"}]}
+        return base(agent, method, path, timeout=timeout, **kw)
+
+    monkeypatch.setattr(rc, "_agent_json", fake)
+    rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
+    posted = next(b for m, p, b in calls if p == "/llama/config" and m == "POST")
+    assert posted[rc.quant_upper(SRC["model_id"])]["model"] == "/cache/m.gguf"
+
+
+def test_register_keeps_legacy_section_when_cache_row_absent(monkeypatch):
+    calls = _calls_recorder(monkeypatch)
+    rc.provision_model(AGENT, "llama", SRC, lambda _e: None)
+    posted = next(b for m, p, b in calls if p == "/llama/config" and m == "POST")
+    assert "model" not in posted[rc.quant_upper(SRC["model_id"])]

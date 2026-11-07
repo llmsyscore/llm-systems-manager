@@ -323,3 +323,18 @@
 .svcconfig-actions { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 18px; align-items: center; gap: 10px; }
 .svcconfig-status { margin-top: 0; min-height: 0; }
 
+
+/* Self-managed llama-server notices and downloaded-not-served cards (#1419). */
+.mc-mode-banner { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.mc-mode-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.45; color: var(--fg); background: color-mix(in srgb, var(--warn) 10%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+.mc-mode-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.mc-mode-actions a.mcbtn { text-decoration: none; }
+.mc-cmd { white-space: pre-wrap; word-break: break-all; font-family: var(--mono, monospace); font-size: 12px; padding: 8px 10px; margin: 8px 0; border-radius: 6px; background: var(--bg-elev, rgba(255,255,255,.06)); user-select: all; }
+.mc-cached-grid { margin-top: 12px; }
+.mc-cached { padding: 12px 14px; gap: 6px; }
+.mc-cached-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.mc-cached-name { flex: 1 1 200px; min-width: 0; font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
+.mc-cached-sub { font-size: 12px; color: var(--fg-dim); overflow-wrap: anywhere; }
+.mc-cached-act { margin-top: 4px; }
+.mc-cached-reason { font-size: 12px; color: var(--fg-muted); }
+.mc-cached-hidden { grid-column: 1 / -1; font-size: 12px; color: var(--fg-muted); display: flex; align-items: center; gap: 6px; }

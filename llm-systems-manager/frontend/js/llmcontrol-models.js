@@ -24,6 +24,7 @@ async function refreshLLMTab() {
       (typeof loadBenchmarkData === 'function' ? loadBenchmarkData() : Promise.resolve()),
     ]);
     _llmModels = mr.data || [];
+    _llamaMode.setExtra(mr.extra);
     _llmConfig = cr;
     _llmAliases = (ar && typeof ar === 'object') ? ar : {};
     try {
@@ -391,6 +392,7 @@ function _llamaDescriptor(modelId, statusLookup) {
     b ? `offline <b>${MC.esc(Number(b.avg_gen_tps ?? 0).toFixed(1))} t/s</b>` : null,
     live ? `live <b>${MC.esc(live.gen)} t/s</b>` : null,
     prof.active ? MC.esc(prof.active) : null,
+    (modelId in (_llmConfig || {})) ? null : 'not in the presets file yet — Edit and Save adds it',
   ].filter(Boolean).join(' · ');
 
   const benchAge = b ? MC.age(b.ts) : null;
@@ -410,6 +412,16 @@ function _llamaDescriptor(modelId, statusLookup) {
   };
 }
 
+// ===== Llama card ids (#1419) begin
+// Presets sections first, then models llama-server lists that have no section yet.
+function _llamaCardIds(config, models) {
+  const ids = Object.keys(config || {}).filter(k => k !== '*' && k !== '__DEFAULTS__');
+  const seen = new Set(ids);
+  (models || []).forEach(m => { if (m && m.id && !seen.has(m.id)) { seen.add(m.id); ids.push(m.id); } });
+  return ids;
+}
+// ===== Llama card ids (#1419) end
+
 function renderModelCards() {
   const container = document.getElementById('llmModelCards');
   if (!container) return;
@@ -420,13 +432,14 @@ function renderModelCards() {
   // innerHTML and steal focus from the input the user is typing into.
   // The render will catch up on the next tick after the edit commits.
   if (container.querySelector('.mc-name input')) return;
+  _llamaMode.render(container);
 
   const sortSel = document.getElementById('modelSortSel');
   if (sortSel && sortSel.value !== _currentModelSort()) sortSel.value = _currentModelSort();
   MC.syncSeg('llama');
 
-  // Use config.ini sections as primary source — excluding global [*]
-  const configIds = Object.keys(_llmConfig).filter(k => k !== '*' && k !== '__DEFAULTS__');
+  // config.ini sections plus the models llama-server serves on its own (#1419)
+  const configIds = _llamaCardIds(_llmConfig, _llmModels);
 
   if (!configIds.length) {
     container.className = 'model-cards';
@@ -503,6 +516,253 @@ function renderModelCards() {
     });
   }
 }
+
+
+// ===== Llama mode banner (#1419) begin =====
+const _llamaMode = (function () {
+  const HELP = 'https://github.com/llmsyscore/llm-systems-manager/blob/main/docs/DEPLOYMENT.md#using-a-llama-server-you-installed-yourself';
+  const HELP_HELPER = HELP.replace(/#.*$/, '') + '#updating-the-agents-helper';
+  const HELP_HELPER_LINK = `<a href="${HELP_HELPER}" target="_blank" rel="noopener">Show me how</a>`;
+  let _extra = { cached: [], mode: {} };
+  const _deploying = new Set();
+  const HIDDEN_KEY = 'llmCachedHidden';
+  function _hidden() { try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]')); } catch (_) { return new Set(); } }
+  function _setHidden(set) { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...set])); } catch (_) {} }
+  function _rowKey(r) { return String(r.model_id || r.file || ''); }
+  function hideCached(i) { const r = (_extra.cached || [])[i]; if (!r) return; const h = _hidden(); h.add(_rowKey(r)); _setHidden(h); _redraw(); }
+  function unhideCached() { _setHidden(new Set()); _redraw(); }
+  const opts = { pollMs: 2000, maxMs: 60000 };
+  function _redraw() { const c = document.getElementById('llmModelCards'); if (c) render(c); }
+
+  function _name() {
+    const m = (typeof _llmModels !== 'undefined' && _llmModels && _llmModels[0]) || null;
+    return m && m.id ? shortName(m.id) : '';
+  }
+  function _port(mode) {
+    if (mode.port) return mode.port;
+    const m = /:(\d+)(?:\/|$)/.exec(String(mode.api_url || ''));
+    return m ? m[1] : '';
+  }
+  function _btn(act, label, cls) {
+    return `<button type="button" class="mcbtn ${cls}" data-act="${act}">${_esc(label)}</button>`;
+  }
+  // Notices to show for a mode object: [{text, buttons}]; empty when nothing is wrong.
+  function notices(mode) {
+    const out = [];
+    if (!mode || !mode.mode) return out;
+    const env = mode.configured_by === 'environment';
+    if (mode.managed === false) {
+      out.push({ text: 'llama-server is running but is not a system service, so the dashboard cannot start, stop or change it. Downloads and the model list still work.', buttons: '' });
+    }
+    const otherUser = mode.managed !== false && mode.unit_user && mode.agent_user && mode.unit_user !== mode.agent_user;
+    if (otherUser && mode.unit_user === 'root') {
+      out.push({ html: true, text: `llama-server runs as <b>root</b>, so the agent (<b>${_esc(mode.agent_user)}</b>) cannot change its service. Add <code>User=${_esc(mode.agent_user)}</code> to the server's service file and restart it.`, buttons: '' });
+    } else if (otherUser) {
+      out.push({ html: true, text: `llama-server runs as <b>${_esc(mode.unit_user)}</b>; the agent runs as <b>${_esc(mode.agent_user)}</b> and cannot see its models or write its presets file. Run both as the same user, or move the server's models to a shared folder.`, buttons: '' });
+    }
+    const canEdit = mode.managed !== false && !otherUser && !env;
+    if (mode.mode === 'single') {
+      const n = _name();
+      let t = `This llama-server serves one fixed model${n ? ` (${n})` : ''}. To add models from the dashboard it needs to run in multi-model mode with a presets file.`;
+      let b = '';
+      if (env) t += ' This server is set up through environment variables; edit its service file by hand.';
+      else if (canEdit) b += _btn('mode-switch', 'Switch to multi-model mode', 'mcbtn-pri');
+      b += `<a class="mcbtn mcbtn-ghost" data-act="mode-help" href="${HELP}" target="_blank" rel="noopener">Show me how</a>`;
+      out.push({ text: t, buttons: b });
+    } else if (mode.mode === 'router' && !mode.presets_file) {
+      out.push({ text: 'This llama-server can switch models but has no presets file, so the dashboard has nowhere to record new ones.',
+                 buttons: canEdit ? _btn('mode-switch', 'Add a presets file', 'mcbtn-pri') : '' });
+    }
+    if (mode.helper_update) {
+      out.push({ html: true, text: `The llama-server service on this computer changed and the agent's helper is older than this feature, so start, stop, restart and deploy need a one-time root update there: <pre class="mc-cmd">${_esc(mode.root_update_cmd || '')}</pre>`,
+                 buttons: `<a class="mcbtn mcbtn-ghost" href="${HELP_HELPER}" target="_blank" rel="noopener">Show me how</a>` });
+    }
+    if (mode.settings_source === 'detected') {
+      const port = _port(mode);
+      out.push({ text: `Found llama-server settings on this computer (${port ? `port ${port}, ` : ''}unit ${mode.unit || ''}). Save them so they survive a restart.`,
+                 buttons: _btn('settings-save', 'Save', 'mcbtn-pri') });
+    }
+    return out;
+  }
+  function renderBanner(mode, container) {
+    if (!container) return;
+    const list = notices(mode);
+    if (!list.length) { container.innerHTML = ''; container.style.display = 'none'; return; }
+    container.style.display = '';
+    container.innerHTML = '<div class="mc-mode-banner" data-mode-banner>' + list.map(n =>
+      `<div class="mc-mode-note"><span class="mc-mode-text">${n.html ? n.text : _esc(n.text)}</span>`
+      + (n.buttons ? `<span class="mc-mode-actions">${n.buttons}</span>` : '') + '</div>').join('') + '</div>';
+  }
+
+  // Reason shown instead of Deploy on a cached row that cannot be deployed.
+  function _reason(mode) {
+    if (mode.managed === false) return 'Not a system service';
+    if (mode.mode === 'single') return 'Switch to multi-model mode to deploy';
+    if (mode.presets_file && mode.presets_writable === false) return 'Presets file is read-only for the agent';
+    return 'Cannot be deployed from here';
+  }
+  function cachedHtml(extra) {
+    const rows = (extra && extra.cached) || [];
+    const mode = (extra && extra.mode) || {};
+    const hidden = _hidden();
+    let nHidden = 0;
+    const cards = rows.map((r, i) => {
+      if (hidden.has(_rowKey(r))) { nHidden++; return ''; }
+      const act = _deploying.has(i) ? '<span class="mc-cached-reason">Deploying…</span>' : (r.deployable
+        ? _btn('cached-deploy', 'Deploy', 'mcbtn-pri').replace('<button', `<button data-i="${i}"`)
+        : `<span class="mc-cached-reason">${_esc(_reason(mode))}</span>`)
+        + ' ' + _btn('cached-hide', 'Hide', 'mcbtn-ghost').replace('<button', `<button data-i="${i}"`);
+      return `<div class="mc-card mc-cached" data-cached="${i}"><div class="mc-cached-head">`
+        + `<span class="mc-cached-name">${_esc(r.model_id || r.file || '')}</span>`
+        + '<span class="mc-pill p-unloaded">Downloaded, not yet served</span></div>'
+        + `<div class="mc-cached-sub">${_esc(r.repo || '')} · ${_esc(r.file || '')}</div>`
+        + `<div class="mc-cached-act">${act}</div></div>`;
+    }).join('');
+    const note = nHidden ? `<div class="mc-cached-hidden">${nHidden} downloaded ${nHidden === 1 ? 'model' : 'models'} hidden · `
+      + _btn('cached-unhide', 'Show', 'mcbtn-ghost') + '</div>' : '';
+    return cards + note;
+  }
+
+  async function _post(url, body) {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let j = {};
+    try { j = await resp.json(); } catch (_) {}
+    return { ok: resp.ok, status: resp.status, j };
+  }
+  function _fail(r, verb) {
+    const j = r.j || {};
+    if (r.status === 409 && j.reason === 'wrapper-outdated') {
+      const cmd = j.root_update_cmd || String(j.detail || '').replace(/^[^:]*:\s*/, '');
+      _themedAlert({
+        title: 'Update the agent\'s helper first',
+        bodyHtml: 'This computer\'s agent helper is older than this feature. Run this once on that computer as root, then try again:'
+          + `<pre class="mc-cmd">${_esc(cmd)}</pre>` + HELP_HELPER_LINK,
+        okLabel: 'Close',
+      });
+    } else if (r.status === 500 && j.error) {
+      _toastErr(String(j.error) + (j.restored === false ? ' — the service may need a manual restart' : ''));
+    } else {
+      _toastErr(String(j.detail || j.error || (verb + ' failed')));
+    }
+  }
+  async function switchMode() {
+    const ok = await _themedConfirm({
+      title: 'Switch to multi-model mode?',
+      bodyHtml: 'The dashboard will edit the llama-server service file and restart it. The model that is loaded now will be unloaded.',
+      confirmLabel: 'Switch', cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      const r = await _post('/api/llm/mode', { to: 'router' });
+      if (!r.ok) { _fail(r, 'Switch'); return; }
+      await refreshLLMTab();
+    } catch (e) { _toastErr('Switch error: ' + e); }
+  }
+  async function saveSettings() {
+    const ok = await _themedConfirm({
+      title: 'Save the detected settings?',
+      bodyHtml: 'The dashboard will remember the llama-server settings it found so they survive a restart.',
+      confirmLabel: 'Save', cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      const r = await _post('/api/llm/settings/save', {});
+      if (!r.ok) { _fail(r, 'Save'); return; }
+      await refreshLLMTab();
+    } catch (e) { _toastErr('Save error: ' + e); }
+  }
+  // Upper-cases the part after the last colon, matching the agent's quant_upper.
+  function _quantUpper(id) {
+    const i = String(id).lastIndexOf(':');
+    return i < 0 ? String(id) : id.slice(0, i + 1) + id.slice(i + 1).toUpperCase();
+  }
+  function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  // Writes the cached file into the config, restarts the server and waits for the model to be listed.
+  // Index of the cached row for repo:quant (quant '' matches any single row of the repo), else -1.
+  function cachedIndex(repo, quant) {
+    const rows = (_extra.cached || []).map((r, i) => [r, i]).filter(([r]) => r.repo === repo);
+    const want = quant ? _quantUpper(`${repo}:${quant}`) : '';
+    const hit = want ? rows.filter(([r]) => _quantUpper(r.model_id) === want) : rows;
+    return hit.length === 1 ? hit[0][1] : -1;
+  }
+  function cachedRow(i) { return (_extra.cached || [])[i] || {}; }
+  async function deployCached(i, confirmed) {
+    const row = (_extra.cached || [])[i];
+    if (!row || _deploying.has(i)) return;
+    const ok = confirmed || await _themedConfirm({
+      title: `Deploy "${adminEsc(row.model_id || row.file)}"?`,
+      bodyHtml: 'The downloaded file will be added to the llama-server models and the server will restart.',
+      confirmLabel: 'Deploy', cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    const id = _quantUpper(row.model_id);
+    const have = Object.entries(_llmConfig || {}).find(([k, v]) => k !== '__DEFAULTS__'
+      && (_quantUpper(k) === id || (v && v.model && row.path && v.model === row.path)));
+    if (have) { _toastErr(`${have[0]} already uses this file — restart llama-server to serve it`); await refreshLLMTab(); return; }
+    _deploying.add(i); _redraw();
+    try {
+      const cfg = { ..._llmConfig };
+      delete cfg['__DEFAULTS__'];
+      cfg[id] = { model: row.path, 'ctx-size': '4096' };
+      if (row.source === 'hf-hub') cfg[id]['hf-file'] = row.file;
+      let r = await _post('/api/llm/config', cfg);
+      if (!r.ok || (r.j && r.j.ok === false)) { _fail(r, 'Deploy'); return; }
+      r = await _post('/api/llm/server/restart', {});
+      if (!r.ok || (r.j && r.j.ok === false)) { _fail(r, 'Deploy restart'); return; }
+      let seen = false;
+      for (let t = 0; t <= opts.maxMs && !seen; t += opts.pollMs) {
+        await _sleep(opts.pollMs);
+        try {
+          const m = await fetch('/api/llm/models').then(x => x.json());
+          seen = (m.data || []).some(x => _quantUpper(x.id) === id);
+        } catch (_) {}
+      }
+      if (!seen) _toastErr(`Deploy: the server restarted but ${id} did not appear within ${Math.round(opts.maxMs / 1000)} s`);
+      await refreshLLMTab();
+    } catch (e) { _toastErr('Deploy error: ' + e); }
+    finally { _deploying.delete(i); _redraw(); }
+  }
+  function bind(el) {
+    if (!el || el._modeBound) return;
+    el._modeBound = true;
+    el.addEventListener('click', ev => {
+      const b = ev.target.closest('[data-act]');
+      if (!b) return;
+      if (b.dataset.act === 'mode-switch') switchMode();
+      else if (b.dataset.act === 'settings-save') saveSettings();
+      else if (b.dataset.act === 'cached-deploy') deployCached(Number(b.dataset.i));
+      else if (b.dataset.act === 'cached-hide') hideCached(Number(b.dataset.i));
+      else if (b.dataset.act === 'cached-unhide') unhideCached();
+    });
+  }
+  function setExtra(x) {
+    _extra = { cached: (x && x.cached) || [], mode: (x && x.mode) || {} };
+  }
+  // Draws the banner above the model cards and the cached rows below them.
+  function render(cardsEl) {
+    if (!cardsEl || !cardsEl.parentNode) return;
+    let ban = document.getElementById('llmModeBanner');
+    if (!ban) {
+      ban = document.createElement('div');
+      ban.id = 'llmModeBanner';
+      cardsEl.parentNode.insertBefore(ban, cardsEl);
+    }
+    let cac = document.getElementById('llmCachedCards');
+    if (!cac) {
+      cac = document.createElement('div');
+      cac.id = 'llmCachedCards';
+      cardsEl.parentNode.insertBefore(cac, cardsEl.nextSibling);
+    }
+    bind(ban); bind(cac);
+    renderBanner(_extra.mode, ban);
+    const html = cachedHtml(_extra);
+    cac.className = html ? 'mc-grid mc-cached-grid' : '';
+    cac.innerHTML = html;
+  }
+  return { notices, renderBanner, cachedHtml, setExtra, render, opts, cachedIndex, cachedRow, deployCached };
+})();
+function renderModeBanner(mode, container) { _llamaMode.renderBanner(mode, container); }
+// ===== Llama mode banner (#1419) end =====
 
 
 // ----- Load / Unload -----
@@ -870,6 +1130,7 @@ async function deleteModel(modelId, deleteCache = false) {
   if (typeof EFL !== 'undefined') EFL.markClean();
   closeEditor();
   await refreshLLMTab();
+  if (deleteCache && document.getElementById('cacheTable')) loadCacheList();
 }
 // ----- Rename -----
 function startCardRename(nameDiv, modelId) {
@@ -1463,6 +1724,8 @@ async function startDownload() {
         } else if (msg.ok) {
           _dlBase += '\n✓ Download complete.\n';
           _renderAddDownloadedButtons();
+          if (document.getElementById('cacheTable')) loadCacheList();
+          _afterDownload();
         } else {
           _dlBase += `\n✗ Failed (exit ${msg.rc || msg.error}).\n`;
         }
@@ -1745,7 +2008,7 @@ async function startLlamaBuild(force) {
     if (log) log.textContent = 'Error: ' + err + '\n';
     if (stat) { stat.textContent = 'failed'; stat.style.color = 'var(--crit)'; }
     if (btn) btn.disabled = false;
-    if (r.status === 409) _toastErr('A build is already running.');
+    if (r.status === 409) _toastErr(r.body && r.body.reason === 'binary-not-ours' ? err : 'A build is already running.');
     return;
   }
 
@@ -1819,10 +2082,55 @@ function _quantsFromFilter(raw) {
   return out.length ? out : [''];
 }
 
-function _renderAddDownloadedButtons() {
+// ===== Download quant resolution (#1419) begin
+// Quants to offer for "add to config": the repo's cached quants that match the filter
+// (all of them for a wildcard/blank filter); the filter's own quants only when nothing is cached.
+function _resolveDownloadQuants(filter, repo, cacheRows) {
+  const fromFilter = _quantsFromFilter(filter).filter(q => q && q !== '*' && q.toLowerCase() !== 'all');
+  const cached = [];
+  (cacheRows || []).forEach(r => {
+    if (!r || r.repo !== repo) return;
+    const q = String(r.model_id || '').split(':').slice(1).join(':');
+    if (q && !cached.includes(q)) cached.push(q);
+  });
+  if (!cached.length) return fromFilter.length ? fromFilter : [''];
+  if (!fromFilter.length) return cached;
+  const hit = cached.filter(q => fromFilter.some(f => q.toUpperCase().includes(f.toUpperCase())));
+  return hit.length ? hit : cached;
+}
+// ===== Download quant resolution (#1419) end
+
+// After a download: refresh the tab, then offer Deploy (defaults) or a custom config for a single new file.
+async function _afterDownload() {
+  await refreshLLMTab();
+  if (!_dlLastRepo) return;
+  let rows = [];
+  try { rows = (await fetch('/api/llm/cache/gguf').then(r => r.json())).data || []; } catch (_) {}
+  const quants = _resolveDownloadQuants(_dlLastQuant, _dlLastRepo, rows);
+  if (quants.length !== 1) return;
+  const quant = quants[0];
+  const i = _llamaMode.cachedIndex(_dlLastRepo, quant);
+  if (i < 0) return;
+  const id = quant ? `${_dlLastRepo}:${quant}` : _dlLastRepo;
+  const deployable = !!_llamaMode.cachedRow(i).deployable;
+  const choice = await _themedConfirm({
+    title: `Downloaded ${adminEsc(shortName(id))}`,
+    bodyHtml: deployable
+      ? 'Deploy it now with the default settings (llama-server restarts), or set up a custom config first?'
+      : 'Set up a config for it now?',
+    confirmLabel: deployable ? 'Deploy' : 'Custom config',
+    altLabel: deployable ? 'Custom config' : '',
+    cancelLabel: 'Not now',
+  });
+  if (choice === 'alt' || (choice === true && !deployable)) addDownloadedModel(quant);
+  else if (choice === true) _llamaMode.deployCached(i, true);
+}
+async function _renderAddDownloadedButtons() {
   const box = document.getElementById('dlAddBtn');
   if (!box || !_dlLastRepo) return;
-  const quants = _quantsFromFilter(_dlLastQuant);
+  let rows = [];
+  try { rows = (await fetch('/api/llm/cache/gguf').then(r => r.json())).data || []; } catch (_) {}
+  const quants = _resolveDownloadQuants(_dlLastQuant, _dlLastRepo, rows);
   box.innerHTML = quants.map(q => {
     const label = q ? `+ Add ${q} to config` : '+ Add downloaded model to config';
     return `<button class="btn btn-slate-muted-gradient" data-act="add-downloaded" data-quant="${_esc(q)}">${_esc(label)}</button>`;
@@ -1839,9 +2147,10 @@ function _renderAddDownloadedButtons() {
 
 function addDownloadedModel(explicitQuant) {
   if (!_dlLastRepo) return;
-  const quant   = (explicitQuant !== undefined)
+  let quant   = (explicitQuant !== undefined)
     ? (explicitQuant || '')
     : extractQuantId(_dlLastQuant);
+  if (quant === '*' || quant.toLowerCase() === 'all') quant = '';
   const modelId = quant ? `${_dlLastRepo}:${quant}` : _dlLastRepo;
   openAddModel();   // resets _editorIsDownload = false; we override below
   _editorIsDownload = true;
@@ -1933,9 +2242,7 @@ function _streamCacheOp(url, body) {
         log.textContent += msg.ok ? '\n✓ Done.\n' : `\n✗ Failed (exit ${msg.rc ?? msg.error}).\n`;
         try { src.close(); } catch(_){}
         if (_dlEventSrc === src) _dlEventSrc = null;
-        // Delay before refreshing so user can read the output
-        log.textContent += '\nRefreshing cache list in 5 seconds...\n';
-        setTimeout(loadCacheList, 5000);
+        loadCacheList();
       }
     };
     src.onerror = () => {
@@ -1943,8 +2250,16 @@ function _streamCacheOp(url, body) {
       log.textContent += '\n[stream disconnected]\n';
       try { src.close(); } catch(_){}
       _dlEventSrc = null;
+      loadCacheList();
     };
   }).catch(e => { log.textContent = 'Error: ' + e; });
+}
+
+function closeCacheOp() {
+  const wrap = document.getElementById('cacheOpWrap');
+  const log = document.getElementById('cacheLog');
+  if (log) log.textContent = '';
+  if (wrap) wrap.style.display = 'none';
 }
 
 async function confirmPrune() {

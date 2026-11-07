@@ -56,10 +56,12 @@ LLAMA_ENABLED: false
 # LLAMA_BIN:           ""    # llama-server binary, e.g. /usr/local/llama-server/llama-server
 # LLAMA_CONFIG_INI:    ""    # llama-server config.ini, e.g. /usr/local/llama-server/config.ini
 # LLAMA_LOG_FILE:      ""    # llama-server log file, e.g. /usr/local/llama-server/llama-server.log
-# LLAMA_SYSTEMD_UNIT:  "llama_server.service"
+# LLAMA_SYSTEMD_UNIT:  "llama_server.service"  # the unit may live anywhere systemd loads it
 # LLAMA_API_URL:       "http://localhost:8080"
-#   (llama-server has announced its default port will move to :9931 —
-#    set LLAMA_API_URL explicitly if your build uses the new default)
+#   (the installer detects the port and service name when llama-server is running; you can save
+#    them from the dashboard later. llama-server has announced its default port will move to :9931)
+# LLAMA_CACHE_DIR:     ""    # llama.cpp's own model cache (LLAMA_CACHE); blank => read from the service, else ~/.cache/llama.cpp
+# LLAMA_MODELS_DIR:    ""    # folder llama-server serves with --models-dir; blank => read from the running server
 # LLAMA_BUILD_METHOD:  ""    # custom_script|source|release_binary|conda|homebrew (blank => custom_script)
 # LLAMA_BUILD_DIR:     ""    # managed install root for source/release_binary; blank => ~/.local/share/llama.cpp
 # LLAMA_BUILD_OPTS:          # per-method knobs (YAML only — not settable via LSA_* env)
@@ -109,7 +111,7 @@ IMGGEN_ENABLED:      false
 # IMGGEN_PORT:         1234
 
 # -- HuggingFace CLI  ---------------------------------------------
-# HF_CLI_PATH: ""        # blank => shutil.which("hf")
+# HF_CLI_PATH: ""        # blank => hf on PATH, else ~/.local/bin/hf, else the built-in tool
 
 # -- Live benchmark (speed-bench) ---------------------------------------------
 # SPEED_BENCH_PYTHON: ""  # interpreter with datasets/requests/tqdm; blank => data/bench/venv

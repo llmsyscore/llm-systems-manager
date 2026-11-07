@@ -12,6 +12,7 @@ import uuid as _uuid
 from pathlib import Path
 
 from _best_effort import best_effort  # type: ignore[import-not-found]  # sibling
+from model_meta import quant_upper  # type: ignore[import-not-found]  # sibling
 
 log = logging.getLogger("llm-systems-manager.report_card")
 
@@ -602,13 +603,27 @@ def register_llama_model(agent: dict, src: dict) -> "tuple[bool, str | None]":
     if not isinstance(cfg, dict):
         return False, "could not read the llama.cpp config"
     sections = {k: v for k, v in cfg.items() if isinstance(v, dict)}
-    model_id = src["model_id"]
+    model_id = quant_upper(src["model_id"])
     if model_id not in sections:
-        # hf-repo is derived from the section name; only the file pattern
-        # and a modest context need persisting.
-        sections[model_id] = {"hf-file": src.get("file") or "", "ctx-size": "4096"}
+        if src.get("path"):
+            sections[model_id] = {"model": src["path"], "hf-file": src.get("file") or "", "ctx-size": "4096"}
+        else:
+            # hf-repo is derived from the section name; only the file pattern
+            # and a modest context need persisting.
+            sections[model_id] = {"hf-file": src.get("file") or "", "ctx-size": "4096"}
     return _agent_call(agent, "POST", "/llama/config", timeout=30,
                        json=sections)
+
+
+def _cached_model_path(agent: dict, src: dict) -> str:
+    """Path of the downloaded file the agent lists for this preset, else ''."""
+    data = _agent_json(agent, "GET", "/llama/cache/gguf", timeout=20, quiet=True)
+    want = quant_upper(src["model_id"])
+    for r in (data.get("data") if isinstance(data, dict) else None) or []:
+        if isinstance(r, dict) and (quant_upper(str(r.get("model_id") or "")) == want
+                                    or (r.get("repo"), r.get("file")) == (src.get("repo"), src.get("file"))):
+            return str(r.get("path") or "")
+    return ""
 
 
 def wait_for_model(agent: dict, provider: str, src: dict,
@@ -655,7 +670,8 @@ def provision_model(agent: dict, provider: str, src: dict, emit,
         if err:
             return {"status": "error", "error": err}
         emit({"phase": "register", "model": src["model_id"]})
-        ok, err = register_llama_model(agent, src)
+        found = "" if src.get("path") else _cached_model_path(agent, src)
+        ok, err = register_llama_model(agent, dict(src, path=found) if found else src)
         if not ok:
             return {"status": "error",
                     "error": err or "could not register the model"}

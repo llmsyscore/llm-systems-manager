@@ -55,3 +55,15 @@ def test_boolean_flags_stay_boolean_before_other_flags(llama, monkeypatch, tmp_p
 def test_trailing_flag_is_boolean(llama, monkeypatch, tmp_path):
     args = _parse(llama, monkeypatch, tmp_path, "/usr/bin/llama-server --kv-unified")
     assert args["--kv-unified"]["bool"] is True
+
+
+def test_dropin_exec_start_wins_over_unit_file(llama, monkeypatch, tmp_path):
+    unit = tmp_path / "llama.service"
+    unit.write_text("[Service]\nExecStart=/usr/bin/llama-server -m old.gguf\n")
+    info = {"exec_start": "/usr/bin/llama-server --models-preset p.ini", "source": "drop-in"}
+    monkeypatch.setattr(llama, "_require_ctx", _Ctx)
+    monkeypatch.setattr(llama, "_llama_check_enabled", lambda: None)
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(unit))
+    monkeypatch.setattr(llama, "llama_unit_info", lambda force=False: info)
+    r = llama.llama_svcconfig_get(authorization="Bearer x")
+    assert [a["flag"] for a in r["args"]] == ["--models-preset"] and r["source"] == "drop-in"

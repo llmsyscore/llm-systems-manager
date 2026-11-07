@@ -4,3 +4,4 @@ psutil>=5.9,<8
 pyyaml>=6.0,<7
 requests>=2.33,<3
 tomli>=2.0,<3; python_version < "3.11"
+huggingface_hub>=2.0,<3

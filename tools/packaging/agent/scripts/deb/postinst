@@ -5,7 +5,10 @@ case "$1" in
       . /usr/share/debconf/confmodule
       for pair in manager-url:LLMSYS_CFG_MANAGER_URL \
                   alarm-engine-url:LLMSYS_CFG_ALARM_ENGINE_URL \
-                  enrollment-secret:LLMSYS_CFG_ENROLLMENT_SECRET; do
+                  enrollment-secret:LLMSYS_CFG_ENROLLMENT_SECRET \
+                  llama-api-url:LLMSYS_CFG_LLAMA_API_URL \
+                  llama-presets-file:LLMSYS_CFG_LLAMA_CONFIG_INI \
+                  llama-unit:LLMSYS_CFG_LLAMA_SYSTEMD_UNIT; do
         RET=""
         db_get "llm-systems-agent/${pair%%:*}" || true
         if [ -n "${RET:-}" ]; then export "${pair##*:}=$RET"; fi
@@ -13,6 +16,8 @@ case "$1" in
       db_reset llm-systems-agent/enrollment-secret || true
       db_stop || true
     fi
+    # Debconf answers win; detection (payload is unpacked by now) fills the rest.
+    llmsys_agent_detect_llama
     llmsys_agent_configure "${2:-}"
     ;;
 esac

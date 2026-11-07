@@ -11,6 +11,7 @@ case "$1" in
       . /usr/share/debconf/confmodule
     fi
     llmsys_agent_remove_generated
+    llmsys_agent_remove_privileges
     llmsys_agent_scoped_purge
     if [ -f /usr/share/debconf/confmodule ]; then
       db_purge || true

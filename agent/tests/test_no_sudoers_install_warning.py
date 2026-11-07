@@ -1,7 +1,7 @@
 # agent/tests/test_no_sudoers_install_warning.py
 """#316: fresh install with --no-sudoers while llama/perf is enabled must warn
 that svcconfig (ExecStart editor) and unit restarts will be unavailable; the
-auto-skip note still prints only when there is nothing for the agent to sudo."""
+with nothing to sudo yet the sudoers are still installed (a llama-server installed later is picked up)."""
 from __future__ import annotations
 
 import subprocess
@@ -15,7 +15,7 @@ INSTALL_SH = AGENT_DIR / "install" / "install.sh"
 
 def _extract_block() -> str:
     lines = INSTALL_SH.read_text().splitlines()
-    anchor = next(i for i, l in enumerate(lines) if "skipping sudoers (no llama" in l)
+    anchor = next(i for i, l in enumerate(lines) if "installing sudoers now (no llama" in l)
     s = next(i for i in range(anchor, -1, -1) if lines[i].startswith("if [["))
     e = next(i for i in range(s + 1, len(lines)) if lines[i] == "fi")
     return "\n".join(lines[s:e + 1])
@@ -60,9 +60,9 @@ def test_no_warning_when_no_sudoers_and_nothing_to_sudo():
     assert "svcconfig" not in r.stdout
 
 
-def test_auto_skip_still_fires_when_nothing_to_sudo():
+def test_sudoers_still_installed_when_nothing_to_sudo_yet():
     r = _run(skip="false", llama="false", perf="false")
-    assert "skipping sudoers" in r.stdout and "SKIP=true" in r.stdout
+    assert "installing sudoers now" in r.stdout and "SKIP=false" in r.stdout
 
 
 def test_no_output_when_sudoers_wanted_and_llama_on():

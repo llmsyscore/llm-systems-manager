@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 import jobs
 import tower
 import tower_tools
+from model_meta import quant_upper
 
 log = logging.getLogger("llm-systems-manager.tower")
 
@@ -862,6 +863,13 @@ class Evaluator:
             self._name(agent, model_id, sections[model_id])
             return None
         sections[model_id] = dict(NEW_MODEL_INI)
+        cr, _t, _e = self._call(agent, "GET", "/llama/cache/gguf", timeout=20)
+        rows = (self._json(cr) or {}).get("data") or []
+        want = quant_upper(model_id)
+        path = next((str(x.get("path")) for x in rows if isinstance(x, dict) and x.get("path")
+                     and quant_upper(str(x.get("model_id") or "")) == want), "")
+        if path:
+            sections[model_id]["model"] = path
         r, _tried, err = self._call(agent, "POST", "/llama/config", json=sections, timeout=30)
         body = self._json(r)
         if body is None or body.get("ok") is False:

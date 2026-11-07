@@ -34,6 +34,8 @@ Local endpoints served:
     GET  /api/llm/models                — proxy /v1/models from llama-server
     POST /api/llm/load                  — load a model in llama-server
     POST /api/llm/unload                — unload a model from llama-server
+    POST /api/llm/mode                  — switch a self-managed llama-server to multi-model mode
+    POST /api/llm/settings/save         — save the detected llama-server settings
     GET  /api/llm/config                — read config.ini
     POST /api/llm/config                — write config.ini
     DELETE /api/llm/config/<model>      — remove model section from config.ini
@@ -179,7 +181,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.05-1"
+__version__ = "v2026.11.07-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -2253,6 +2255,17 @@ def _read_ini():
 @app.route("/api/llm/models")
 def llm_models():
     return proxies.proxy_to_primary("llama", "GET", "/llama/models")
+@app.route("/api/llm/mode", methods=["POST"])
+def llm_mode():
+    if auth.effective_role() != "admin":
+        return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
+    body = flask_request.get_json(silent=True) or {}
+    return proxies.proxy_to_primary("llama", "POST", "/llama/mode", json=body, timeout=240)
+@app.route("/api/llm/settings/save", methods=["POST"])
+def llm_settings_save():
+    if auth.effective_role() != "admin":
+        return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
+    return proxies.proxy_to_primary("llama", "POST", "/llama/settings/save", json={})
 @app.route("/api/llm/load", methods=["POST"])
 def llm_load():
     data     = flask_request.get_json(force=True)
@@ -4217,6 +4230,8 @@ _AUDIT_LABELS: dict[str, str] = {
     "agent.collection": "Paused or resumed collection",
     "agent.enrollment-secret": "Changed the agent enrollment secret",
     "security.flood": "Request flood on the open routes",
+    "llama.mode-switch": "Switched llama-server to multi-model mode",
+    "llama.settings-save": "Saved the detected llama-server settings",
     "service.restart": "Restarted a service", "auth.mode-change": "Changed the login mode",
     "auth.login": "Signed in", "auth.logout": "Signed out",
     "account.password": "Changed own password",
@@ -4316,6 +4331,8 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/llm/builds/activate$"),             "llama.build-switch", "config.server"),
     ("POST",   re.compile(r"^/api/config/interval$"),                  "config.interval",    "config.server"),
     ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
+    ("POST",   re.compile(r"^/api/llm/mode$"),                         "llama.mode-switch",  "config.server"),
+    ("POST",   re.compile(r"^/api/llm/settings/save$"),                "llama.settings-save", "config.server"),
     ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load",         "llama.model"),
     ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload",       "llama.model"),
     ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load",           "lms.model"),
