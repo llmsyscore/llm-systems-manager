@@ -19,6 +19,7 @@ from typing import Optional
 _SINGLE_MODEL_FLAGS = ("-m", "--model", "-hf", "-hfr", "--hf-repo", "-mu", "--model-url")
 _ROUTER_FLAGS = ("--models-preset", "--models-dir")
 _ENV_MODEL_KEYS = ("LLAMA_ARG_MODEL", "LLAMA_ARG_HF_REPO")
+_SHOW_PROPS = "FragmentPath,DropInPaths,User,ExecStart,Environment,EnvironmentFiles,LoadState,ActiveState"
 
 
 def single_model_flags() -> tuple:
@@ -105,9 +106,7 @@ def _process_user(status: str) -> str:
 
 def _systemctl_show(unit: str, run) -> dict:
     try:
-        res = run(["systemctl", "show", unit, "-p",
-                   "FragmentPath,DropInPaths,User,ExecStart,Environment,EnvironmentFiles,"
-                   "LoadState,ActiveState"],
+        res = run(["systemctl", "show", unit, "-p", _SHOW_PROPS],
                   capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return {}

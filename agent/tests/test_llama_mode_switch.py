@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 _AGENT_ROOT = Path(__file__).resolve().parent.parent
-_FIX = Path(__file__).resolve().parent / "fixtures" / "detect_llama"
 for _p in (str(_AGENT_ROOT), str(_AGENT_ROOT / "install")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -325,7 +324,7 @@ def _flags_info(flags):
 
 def test_effective_presets_path_prefers_parsed_and_warns_once(cfg, monkeypatch, caplog):
     monkeypatch.setattr(llama, "llama_unit_info", lambda force=False: _flags_info(["--models-preset", "/real.ini"]))
-    monkeypatch.setattr(llama, "_presets_mismatch_warned", False)
+    monkeypatch.setitem(llama._presets_warned, "mismatch", False)
     with caplog.at_level("WARNING"):
         assert llama._llama_effective_presets_path() == "/real.ini"
         assert llama._llama_effective_presets_path() == "/real.ini"

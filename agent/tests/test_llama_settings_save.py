@@ -87,7 +87,6 @@ def test_save_replaces_live_line_and_keeps_mode(env, monkeypatch):
 
 
 def test_startup_detect_fills_detected_when_keys_blank(env, monkeypatch):
-    cfg, _f = env
     monkeypatch.setattr(llama, "_detected", {})
     det = SimpleNamespace(found=True, host="0.0.0.0", port=9931, unit="u.service", presets_file="",
                           models_dir="", mode="single", managed=True)
@@ -100,7 +99,7 @@ def test_startup_detect_fills_detected_when_keys_blank(env, monkeypatch):
 
 
 def test_startup_detect_never_overrides_saved(env, monkeypatch):
-    cfg, _f = env
+    cfg = env[0]
     monkeypatch.setattr(llama, "_detected", {})
     cfg.LLAMA_SYSTEMD_UNIT, cfg.LLAMA_API_URL = "mine.service", "http://h:1234"
     det = SimpleNamespace(found=True, host="", port=9931, unit="u.service", presets_file="/p/m.ini",
@@ -116,7 +115,7 @@ def test_startup_detect_never_overrides_saved(env, monkeypatch):
 
 
 def test_startup_detect_skips_when_disabled(env, monkeypatch):
-    cfg, _f = env
+    cfg = env[0]
     cfg.LLAMA_ENABLED = False
     monkeypatch.setattr(llama, "_detected", {})
     monkeypatch.setattr(llama, "_detect_module", lambda: (_ for _ in ()).throw(AssertionError("ran")))
@@ -125,7 +124,6 @@ def test_startup_detect_skips_when_disabled(env, monkeypatch):
 
 
 def test_single_mode_save_is_saved_and_startup_leaves_detected_empty(env, monkeypatch):
-    cfg, _f = env
     llama._detected.clear()
     llama._detected.update({"unit": "u.service", "api_url": "http://127.0.0.1:9931", "mode": "single"})
     monkeypatch.setattr(llama, "llama_unit_info", lambda force=False: {
@@ -143,7 +141,7 @@ def test_single_mode_save_is_saved_and_startup_leaves_detected_empty(env, monkey
 
 
 def test_router_mode_blank_presets_stays_detected(env, monkeypatch):
-    cfg, _f = env
+    cfg = env[0]
     cfg.LLAMA_SYSTEMD_UNIT, cfg.LLAMA_API_URL = "u.service", "http://h:1"
     monkeypatch.setattr(llama, "_detected", {"mode": "router"})
     assert llama._llama_settings_source("router") == "default"
@@ -185,7 +183,7 @@ def test_start_background_detects_before_sse(env, monkeypatch):
     order = []
     monkeypatch.setattr(llama, "llama_startup_detect", lambda: order.append("detect"))
     monkeypatch.setattr(llama, "_maybe_start_sse_listener", lambda: order.append("sse"))
-    cfg, _f = env
+    cfg = env[0]
     cfg.LLAMA_ENABLED = False
     llama.start_background()
     assert order == ["detect", "sse"]

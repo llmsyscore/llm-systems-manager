@@ -1574,6 +1574,9 @@ def _unit_env_from_props(props: dict[str, str], read: Callable = open) -> dict[s
     return env
 
 
+_UNIT_SHOW_PROPS = "FragmentPath,DropInPaths,User,ExecStart,Environment,EnvironmentFiles,LoadState,ActiveState"
+
+
 def _unit_show(unit: str, force: bool = False) -> dict[str, Any]:
     """Cached `systemctl show` facts for one unit (empty when systemctl fails)."""
     now = time.monotonic()
@@ -1587,9 +1590,7 @@ def _unit_show(unit: str, force: bool = False) -> dict[str, Any]:
     if unit:
         try:
             r = subprocess.run(
-                ["systemctl", "show", unit, "-p",
-                 "FragmentPath,DropInPaths,User,ExecStart,Environment,EnvironmentFiles,"
-                 "LoadState,ActiveState"],
+                ["systemctl", "show", unit, "-p", _UNIT_SHOW_PROPS],
                 capture_output=True, text=True, timeout=10)
             out = getattr(r, "stdout", "")
             for line in (out if isinstance(out, str) and r.returncode == 0 else "").splitlines():
@@ -1663,7 +1664,7 @@ def _llama_settings_source(mode: str = "") -> str:
     return "saved" if saved else "default"
 
 
-_presets_mismatch_warned = False
+_presets_warned = {"mismatch": False}
 
 
 def _usable_presets(v: str) -> str:
@@ -1673,7 +1674,6 @@ def _usable_presets(v: str) -> str:
 
 def _llama_effective_presets_path() -> str:
     """Presets file in use: the ExecStart --models-preset, else the config value, else the detected one."""
-    global _presets_mismatch_warned
     cfg_path = (getattr(_require_ctx().config, "LLAMA_CONFIG_INI", "") or "").strip()
     try:
         parsed = _usable_presets(_flag_value(llama_unit_info()["flags"], "--models-preset"))
@@ -1681,8 +1681,8 @@ def _llama_effective_presets_path() -> str:
         log.debug("llama presets path: %s", e)
         parsed = ""
     if parsed:
-        if cfg_path and cfg_path != parsed and not _presets_mismatch_warned:
-            _presets_mismatch_warned = True
+        if cfg_path and cfg_path != parsed and not _presets_warned["mismatch"]:
+            _presets_warned["mismatch"] = True
             log.warning("LLAMA_CONFIG_INI (%s) differs from the service's --models-preset (%s); using the latter",
                         cfg_path, parsed)
         return parsed
@@ -2100,7 +2100,8 @@ def llama_settings_save(body: Optional[dict] = None, authorization: Optional[str
     try:
         llama_inventory.set_yaml_keys(path, values)
     except OSError as e:
-        return _json_reply(500, {"error": str(e)})
+        log.warning("llama settings save: %s", e)
+        return _json_reply(500, {"error": f"could not write the agent config ({type(e).__name__})"})
     for k, v in values.items():
         setattr(cfg, k, v)
     _detected.clear()
@@ -2458,7 +2459,9 @@ def llama_models_endpoint(authorization: Optional[str] = Header(default=None)) -
         resp = requests.get(f"{_llama_effective_api_url().rstrip('/')}/v1/models", timeout=5)
         listing = resp.json()
     except Exception as e:
-        return _json_reply(503, {"detail": str(e), "extra": _models_extra(_presets_section_ids())})
+        log.debug("llama models: server unreachable: %s", e)
+        return _json_reply(503, {"detail": f"llama-server is not answering ({type(e).__name__})",
+                                 "extra": _models_extra(_presets_section_ids())})
     listing = _drop_ghost_presets(listing)
     if isinstance(listing, dict):
         served = {quant_upper(str(m.get("id"))) for m in listing.get("data") or [] if isinstance(m, dict)}

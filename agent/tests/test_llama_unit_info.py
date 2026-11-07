@@ -408,7 +408,7 @@ def test_sudo_denied_on_old_wrapper_names_the_root_update(env, monkeypatch, tmp_
     monkeypatch.setattr(llama, "_SVCCONFIG_WRAPPER", _wrapper(tmp_path, 2))
     res = llama._llama_systemctl("restart")
     assert res["ok"] is False
-    assert "one-time root update" in res["error"] and "get.llmsysmanager.com" in res["error"]
+    assert "one-time root update" in res["error"] and llama._ROOT_UPDATE_CMD in res["error"]
 
 
 def test_helper_update_flag_when_unit_differs_from_baked(env, monkeypatch, tmp_path):
@@ -419,7 +419,7 @@ def test_helper_update_flag_when_unit_differs_from_baked(env, monkeypatch, tmp_p
     monkeypatch.setattr(llama, "_detected", {"unit": "llama-server.service"})
     assert llama._helper_needs_update() is True
     block = llama.llama_mode_block()
-    assert block["helper_update"] is True and "get.llmsysmanager.com" in block["root_update_cmd"]
+    assert block["helper_update"] is True and block["root_update_cmd"] == llama._ROOT_UPDATE_CMD
     llama._require_ctx().config.LLAMA_SYSTEMD_UNIT = "llama_server.service"
     monkeypatch.setattr(llama, "_detected", {"unit": "llama_server.service"})
     assert llama._helper_needs_update() is False
@@ -471,7 +471,6 @@ def test_root_update_cmd_rpm(env, monkeypatch, tmp_path):
 def test_root_update_cmd_script_install(env, monkeypatch, tmp_path):
     _pkg_install(env, monkeypatch, tmp_path, marker=False, dpkg=True)
     assert llama._root_update_cmd() == llama._ROOT_UPDATE_CMD
-    assert "get.llmsysmanager.com" in llama._root_update_cmd()
 
 
 def test_root_update_cmd_feeds_mode_block_and_sudo_error(env, monkeypatch, tmp_path):
