@@ -376,7 +376,7 @@ On macOS, download the `-macos-arm64.tar.gz` tarball instead; it bundles the sam
 
 ### Updating agents from the dashboard
 
-Per-agent **Update** on **Admin → Agents**: the agent downloads the latest release tarball for its platform, verifies the `.sha256`, extracts and smoke-tests the staged binary, swaps it atomically (previous binary kept beside it as `.self-update.bak.<ts>`), and restarts. **Update all** in the **Manage ▾** menu upgrades every agent, one at a time: each has to report the new version before the next starts, and the sequence stops at the first failure with the remainder left untouched.
+Per-agent **Update** on **Admin → Agents**: the agent downloads the latest release tarball for its platform, verifies the `.sha256`, extracts and smoke-tests the staged binary, swaps it atomically (previous binary kept beside it as `.self-update.bak.<ts>`), and restarts. **Update all** in the **Manage ▾** menu upgrades every agent, one at a time: each has to report the new version before the next starts. An agent that fails to update is listed at the end and the rest carry on, but an agent that does not come back on the new version stops the run. The run happens on the manager, so it keeps going if you close the output window or leave the page; open **Admin** again to see its progress, or find it on the **Jobs** tab.
 
 ---
 

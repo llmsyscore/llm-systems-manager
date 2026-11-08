@@ -606,7 +606,9 @@
       rows.push({ k: 'note', g: '↑',
         t: `${au.outdated} agent${au.outdated === 1 ? '' : 's'} can update to `
           + `<span class="m">${esc(au.latest || '')}</span> · `
-          + (typeof _adminUpdateBusy !== 'undefined' && _adminUpdateBusy
+          + (typeof _adminUpdateAllWatching !== 'undefined' && _adminUpdateAllWatching
+            ? '<button type="button" class="lnk" data-act="updateall">Update all running · show output</button>'
+            : typeof _adminUpdateBusy !== 'undefined' && _adminUpdateBusy
             ? '<button type="button" class="lnk" data-act="updateall" disabled>Update all (running…)</button>'
             : '<button type="button" class="lnk" data-act="updateall">Update all</button>') });
     }

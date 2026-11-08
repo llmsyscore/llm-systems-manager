@@ -687,7 +687,7 @@ Backend API endpoints consumed:
                 <button type="button" class="mc-toggle on" id="agAuthTg" data-act="auth" aria-pressed="true"><span class="track"></span><span><span class="tlbl">Agent security</span><div class="sub" id="agAuthSub">Agents require their token on every call</div></span></button>
               </div>
               <hr>
-              <button type="button" class="mi-row" data-act="updateall" title="Update every agent needing an upgrade, one at a time; stops on the first failure"><span class="mi">⇈</span>Update all agents<span class="cnt" id="agUpdateCnt" hidden></span></button>
+              <button type="button" class="mi-row" data-act="updateall" title="Update every agent needing an upgrade, one at a time, on the manager"><span class="mi">⇈</span><span id="agUpdateAllLbl">Update all agents</span><span class="cnt" id="agUpdateCnt" hidden></span></button>
               <button type="button" class="mi-row" data-act="approveall" id="agApproveAll" hidden><span class="mi">✓</span>Approve all pending<span class="cnt"></span></button>
               <button type="button" class="mi-row" data-act="enrollclose" id="agEnrollClose" hidden><span class="mi">⦸</span>Close enrollment</button>
               <button type="button" class="mi-row" data-act="pushca" title="Every approved agent fetches the current cert + key + CA bundle on its next heartbeat"><span class="mi">⤴</span>Push CA to agents</button>

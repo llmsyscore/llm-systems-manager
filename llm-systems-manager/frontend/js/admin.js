@@ -5,6 +5,7 @@ function adminStartAutoRefresh() {
   if (window.GatewayView && typeof _subTabState !== 'undefined' && _subTabState.admin === 'routing') {
     GatewayView.start();
   }
+  adminResumeUpdateAll();
   if (_adminRefreshTimer) return;
   // 20s cadence (was 10s) — paired with the backend's anti-flap
   // (requires 2 consecutive failed alarm-engine probes before flipping to
@@ -1904,22 +1905,6 @@ async function _adminStreamUpdate(aid) {
   return { ok: doneOk, noRestart: doneNoRestart, transport: false, msg: doneMsg, retryable: doneRetry };
 }
 
-// Poll /api/agents until the agent reports targetV; true on success (#637).
-async function _adminAwaitAgentVersion(aid, targetV, timeoutMs = 120000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    await new Promise(res => setTimeout(res, 3000));
-    try {
-      const r = await fetch('/api/agents');
-      if (!r.ok) continue;
-      const d = await r.json();
-      const a = (d.agents || []).find(x => x.agent_id === aid);
-      if (a && a.version === targetV) return true;
-    } catch {}
-  }
-  return false;
-}
-
 // True while any agent update (single or Update all) is running; repaints the agents roster and System Health.
 let _adminUpdateBusy = false;
 function _adminSetUpdateBusy(on) {
@@ -1930,9 +1915,13 @@ function _adminSetUpdateBusy(on) {
   } catch (_) { /* repaint only; the flag is already set */ }
 }
 
-// #637: sequential fleet-wide update — one agent at a time, each verified back on the new version;
-// a failed download is retried once; failures carry on except a missed version check, which stops the run (#1108).
+// #637/#1423: confirms, then starts the manager-side Update all run (one agent at a time, each
+// verified back on the new version) and watches its output.
 async function adminUpdateAll() {
+  if (_adminUpdateAllWatching) {
+    _adminUpdateShow();
+    return;
+  }
   if (_adminUpdateBusy) {
     _themedToast('An agent update is already running', { kind: 'warn' });
     return;
@@ -1955,7 +1944,8 @@ async function adminUpdateAll() {
       `border-radius:6px;padding:10px 12px;margin-bottom:12px;max-height:200px;overflow-y:auto;">${listHtml}</div>` +
       `<div>Agents update one at a time; each must come back on the new version ` +
       `before the next starts. A failed agent is reported at the end and the rest carry on, ` +
-      `but an agent that doesn't come back on the new version stops the run.</div>` +
+      `but an agent that doesn't come back on the new version stops the run. ` +
+      `The run carries on if you close this window or leave the page.</div>` +
       (off.length ? `<div style="margin-top:8px;">Skipping ${off.length} disabled agent${off.length > 1 ? 's' : ''}: ` +
         `${adminEsc(off.map(a => a.hostname || a.agent_id.slice(0, 8)).join(', '))}</div>` : ''),
     confirmLabel: 'Update all',
@@ -1963,55 +1953,91 @@ async function adminUpdateAll() {
   });
   if (!ok || _adminUpdateBusy) return;
 
-  _adminSetUpdateBusy(true);
-  _adminUpdateOpen(`all agents (${todo.length})`);
-  const results = off.map(a => ({ name: a.hostname || a.agent_id.slice(0, 8), state: 'skipped' }));
-  for (const r of results) _adminUpdateLog(`– ${r.name}: disabled, skipped`);
+  let r, d = {};
   try {
-    for (let i = 0; i < todo.length; i++) {
-      const a = todo[i];
-      const name = a.hostname || a.agent_id.slice(0, 8);
-      if (i) _adminUpdateLog('', 'blank');
-      _adminUpdateLog(`── [${i + 1}/${todo.length}] ${name}: ${a.version || '?'} → ${newV}`, 'stage');
-      let res = await _adminStreamUpdate(a.agent_id);
-      if (res.ok === false && res.retryable) {
-        _adminUpdateLog(`retrying ${name} once — the download failed`, 'stage');
-        res = await _adminStreamUpdate(a.agent_id);
-      }
-      let okAgent = res.ok === true;
-      let badBuild = false;
-      if (okAgent && !res.noRestart) {
-        _adminUpdateLog(`waiting for ${name} to come back on ${newV}…`);
-        okAgent = await _adminAwaitAgentVersion(a.agent_id, newV);
-        badBuild = !okAgent;
-        _adminUpdateLog(okAgent
-          ? `✓ ${name} is back on ${newV}`
-          : `✗ ${name} did not report ${newV} within 2 minutes`,
-          okAgent ? 'ok' : 'err');
-      } else if (okAgent) {
-        _adminUpdateLog(`✓ ${name} already up to date; no restart needed`, 'ok');
-      }
-      results.push({ name, state: okAgent ? 'updated' : 'failed' });
-      if (badBuild) {
-        _adminUpdateLog(`stopping: ${name} did not come back on ${newV}, so the rest are left as they are`, 'err');
-        for (const rest of todo.slice(i + 1)) {
-          results.push({ name: rest.hostname || rest.agent_id.slice(0, 8), state: 'skipped' });
-        }
+    r = await fetch('/api/agents/update-all', { method: 'POST' });
+    d = await r.json().catch(() => ({}));
+  } catch (e) {
+    _toastErr(`Update all did not start: ${e.message}`);
+    return;
+  }
+  if (!r.ok || !d.ok || !d.job) {
+    _toastErr(`Update all did not start: ${d.error || 'HTTP ' + r.status}`);
+    return;
+  }
+  _adminUpdateOpen(`all agents (${(d.todo || todo).length})`);
+  await _adminWatchUpdateAll(d.job.id);
+}
+
+// #1423: Update all runs on the manager; the page polls its output and re-attaches when the Admin tab opens.
+let _ADMIN_UPDATE_ALL_POLL_MS = 1500;
+const _ADMIN_UPDATE_ALL_MAX_MISSES = 20;
+let _adminUpdateAllWatching = null;
+async function _adminWatchUpdateAll(jobId) {
+  if (_adminUpdateAllWatching) return;
+  _adminUpdateAllWatching = jobId;
+  _adminUpdateAllLabel(true);
+  _adminSetUpdateBusy(true);
+  let next = 0;
+  let job = null;
+  let misses = 0;
+  try {
+    while (true) {
+      let d = null;
+      try {
+        const r = await fetch(`/api/agents/update-all?job=${encodeURIComponent(jobId)}&after=${next}`);
+        if (r.ok) d = await r.json();
+        else if (r.status === 401 || r.status === 403) misses = _ADMIN_UPDATE_ALL_MAX_MISSES;
+      } catch {}
+      misses = d ? 0 : misses + 1;
+      if (misses >= _ADMIN_UPDATE_ALL_MAX_MISSES) {
+        _adminUpdateLog('── lost contact with the manager; the run carries on there. Reopen the Admin tab to see it.', 'err');
         break;
       }
+      if (d && !d.job) break;
+      if (d) {
+        for (const l of d.lines || []) _adminUpdateLog(l.text, l.level || undefined, l.t);
+        next = d.next || next;
+        job = d.job;
+        if (job.status !== 'queued' && job.status !== 'running') break;
+      }
+      await new Promise(res => setTimeout(res, _ADMIN_UPDATE_ALL_POLL_MS));
     }
   } finally {
+    _adminUpdateAllWatching = null;
+    _adminUpdateAllLabel(false);
     _adminSetUpdateBusy(false);
   }
-  const updated = results.filter(r => r.state === 'updated').map(r => r.name);
-  const failed = results.filter(r => r.state === 'failed').map(r => r.name);
-  const skipped = results.filter(r => r.state === 'skipped').map(r => r.name);
-  _adminUpdateLog('', 'blank');
-  _adminUpdateLog(`── Update all finished: ${updated.length} updated`
-    + (failed.length ? `, failed: ${failed.join(', ')}` : '')
-    + (skipped.length ? `, skipped: ${skipped.join(', ')}` : ''),
-    failed.length ? 'err' : 'ok');
+  if (job && job.status === 'cancelled') {
+    _adminUpdateLog('── Update all was cancelled; an agent already updating finishes first, the rest are left as they are', 'err');
+  }
+  else if (job && job.status === 'failed') _adminUpdateLog(`── Update all failed: ${job.message || 'unknown error'}`, 'err');
   adminLoadAgents();
+}
+
+// Manage ▾ item reads "Show Update all output" while a run is being watched.
+function _adminUpdateAllLabel(running) {
+  const el = document.getElementById('agUpdateAllLbl');
+  if (el) el.textContent = running ? 'Show Update all output' : 'Update all agents';
+}
+
+// Re-opens the output window for an Update all run that is still going.
+async function adminResumeUpdateAll() {
+  if (_adminUpdateAllWatching) {
+    _adminUpdateShow();
+    return;
+  }
+  if (_adminUpdateBusy) return;
+  let d = null;
+  try {
+    const r = await fetch('/api/agents/update-all');
+    if (r.ok) d = await r.json();
+  } catch {}
+  const job = d && d.job;
+  if (!job || (job.status !== 'queued' && job.status !== 'running') || _adminUpdateAllWatching || _adminUpdateBusy) return;
+  const total = job.state && job.state.total;
+  _adminUpdateOpen(total ? `all agents (${total})` : 'all agents');
+  await _adminWatchUpdateAll(job.id);
 }
 
 // ── Agent log viewer (streams /api/agents/<id>/log/stream) ────────────
@@ -2168,10 +2194,14 @@ function _adminUpdateOpen(label) {
   document.getElementById('adminUpdateLog').textContent = '';
   _adminUpdatePanel = p;
 }
+// Shows the output window again without clearing it.
+function _adminUpdateShow() {
+  if (_adminUpdatePanel) _adminUpdatePanel.style.display = 'flex';
+}
 function _adminUpdateClose() {
   if (_adminUpdatePanel) _adminUpdatePanel.style.display = 'none';
 }
-function _adminUpdateLog(msg, level) {
+function _adminUpdateLog(msg, level, at) {
   const log = document.getElementById('adminUpdateLog');
   if (!log) return;
   // Blank-line frames from install.sh become visual separators with no
@@ -2188,7 +2218,7 @@ function _adminUpdateLog(msg, level) {
   if (!level && typeof msg === 'string' && /^\s*(╔|║|╚|\+\+\+ added \d+ new key|⚠ commented out \d+ key)/.test(msg)) {
     level = 'stage';
   }
-  const ts = new Date().toLocaleTimeString();
+  const ts = at || new Date().toLocaleTimeString();
   const line = document.createElement('div');
   const cls = [];
   if (level === 'err' || level === 'stage' || level === 'ok') cls.push('l-' + level);
