@@ -1123,6 +1123,15 @@ Triggers an in-place agent self-update: the agent runs its installer with `--upd
 
 ---
 
+### `POST /api/agents/update-all` · `GET /api/agents/update-all`
+`POST` starts an Update all run on the manager: every enabled agent that is behind the manager's agent version is updated one at a time, and each must come back on the new version before the next starts. The run keeps going when the browser closes or leaves the page, and it also shows on the Jobs tab. Returns `409` when a run is already going or no agent needs an update.
+
+`GET` returns the running run, or the latest one: `job` (status, progress `state`, final `result`), its output `lines` and `next`. Pass `?after=<next>` to fetch only new lines and `?job=<id>` to read a given run.
+
+**Access:** [Admin]
+
+---
+
 ## Remote Data Push
 
 These endpoints receive live data pushed by agents. They are not intended for manual use.

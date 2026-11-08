@@ -2446,6 +2446,36 @@ echo "────────────────────────�
 # _user_exists USER → 0 if exists, 1 otherwise.
 _user_exists() { id -u "$1" >/dev/null 2>&1; }
 
+# Runs detect_llama.py and evals its LLAMA_DETECTED_* lines; $1 = port hint.
+_run_detect_llama_py() {
+  LLAMA_DETECTED_FOUND="" LLAMA_DETECTED_PORT="" LLAMA_DETECTED_HOST=""
+  LLAMA_DETECTED_BINARY="" LLAMA_DETECTED_PRESETS_FILE="" LLAMA_DETECTED_MODE=""
+  LLAMA_DETECTED_UNIT="" LLAMA_DETECTED_UNIT_USER="" LLAMA_DETECTED_PROCESS_USER=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "      ⓘ python3 not found; unit name not detected"
+    return 0
+  fi
+  eval "$(python3 "$TMPL_DIR/detect_llama.py" --port "${1:-}" --sh 2>/dev/null || true)"
+}
+
+# Fresh installs: proposes the llama-server's non-root user as the agent user (prompts on a TTY).
+_propose_agent_user() {
+  local _srv="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}" _v=""
+  [[ -z "${EXISTING_USER:-}" && "${USER_ARG_EXPLICIT:-false}" != true ]] || return 0
+  [[ -n "$_srv" && "$_srv" != "root" && "$_srv" != "$USER_ARG" && -z "${LLAMA_USER_PROPOSED:-}" ]] || return 0
+  _user_exists "$_srv" || return 0
+  LLAMA_USER_PROPOSED=1
+  echo "      llama-server runs as $_srv; running the agent as the same user lets it see the server's models and presets."
+  if [[ -t 0 ]]; then
+    read -rp "      Agent run-as user [$_srv]: " _v
+    _v="${_v:-$_srv}"
+    if _user_exists "$_v"; then USER_ARG="$_v"; else echo "      ⚠ user '$_v' not found; keeping '$USER_ARG'"; fi
+  else
+    USER_ARG="$_srv"
+    echo "      ⓘ running the agent as $_srv (llama-server's user)"
+  fi
+}
+
 # _can_write_to PARENT → 0 if we (or sudo) can create files there, 1 otherwise.
 # Tests by attempting a no-op `mkdir -p && touch && rm`. The parent of the
 # target install dir must already exist; we don't `mkdir` arbitrary chains
@@ -2498,6 +2528,11 @@ if [[ -n "$DESCRIPTION_OVERRIDE" ]]; then
     exit 2
   fi
   echo "  ✓ description: '$DESCRIPTION_OVERRIDE'"
+fi
+# Fresh auto installs: a running llama-server's user replaces a missing default user before the account step.
+if [[ "$ROLE" == "auto" ]] && ! { $LLAMA_FLAG_EXPLICIT && ! $INSTALL_LLAMA; } && ! _user_exists "$USER_ARG"; then
+  _run_detect_llama_py ""
+  [[ "${LLAMA_DETECTED_FOUND:-}" != true ]] || _propose_agent_user
 fi
 while ! _user_exists "$USER_ARG"; do
   echo "  ✗ user '$USER_ARG' does not exist on this system"
@@ -2835,18 +2870,6 @@ _offer_vllm_install() {
   _offer_vllm_unit "$(_resolved_vllm_unit)" "$venv/bin/vllm"
 }
 
-# Runs detect_llama.py and evals its LLAMA_DETECTED_* lines; $1 = port hint.
-_run_detect_llama_py() {
-  LLAMA_DETECTED_FOUND="" LLAMA_DETECTED_PORT="" LLAMA_DETECTED_HOST=""
-  LLAMA_DETECTED_BINARY="" LLAMA_DETECTED_PRESETS_FILE="" LLAMA_DETECTED_MODE=""
-  LLAMA_DETECTED_UNIT="" LLAMA_DETECTED_UNIT_USER="" LLAMA_DETECTED_PROCESS_USER=""
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "      ⓘ python3 not found; unit name not detected"
-    return 0
-  fi
-  eval "$(python3 "$TMPL_DIR/detect_llama.py" --port "${1:-}" --sh 2>/dev/null || true)"
-}
-
 # Prints the one-line detection summary; $1 = binary, $2 = port, $3 = presets file.
 _llama_summary_line() {
   local _mode="unknown"
@@ -2874,23 +2897,6 @@ _llama_notty_overrides() {
     echo "      ⓘ using default LLAMA_SYSTEMD_UNIT"
   fi
   [[ -n "${3:-}" ]] || echo "      ⓘ using default LLAMA_CONFIG_INI"
-}
-
-# Fresh installs: proposes the llama-server's non-root user as the agent user (prompts on a TTY).
-_propose_agent_user() {
-  local _srv="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}" _v=""
-  [[ -z "${EXISTING_USER:-}" && "${USER_ARG_EXPLICIT:-false}" != true ]] || return 0
-  [[ -n "$_srv" && "$_srv" != "root" && "$_srv" != "$USER_ARG" ]] || return 0
-  _user_exists "$_srv" || return 0
-  echo "      llama-server runs as $_srv; running the agent as the same user lets it see the server's models and presets."
-  if [[ -t 0 ]]; then
-    read -rp "      Agent run-as user [$_srv]: " _v
-    _v="${_v:-$_srv}"
-    if _user_exists "$_v"; then USER_ARG="$_v"; else echo "      ⚠ user '$_v' not found; keeping '$USER_ARG'"; fi
-  else
-    USER_ARG="$_srv"
-    echo "      ⓘ running the agent as $_srv (llama-server's user)"
-  fi
 }
 
 _detect_llama() {

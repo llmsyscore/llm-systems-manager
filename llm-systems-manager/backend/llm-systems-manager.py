@@ -181,7 +181,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.07-1"
+__version__ = "v2026.11.07-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -223,6 +223,7 @@ import tower_eval  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cy
 import tower_watch  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #924
 import tower_timers  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #1029
 import jobs  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #915
+import agent_update_all  # type: ignore[import-not-found]  # noqa: E402  # #1423
 import companion  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #522
 import export_log  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #797
 import settings_catalog  # type: ignore[import-not-found]  # noqa: E402  # leaf, no cycle; #606
@@ -4222,7 +4223,8 @@ _AUDIT_EVENT_GROUP = {ev["key"]: g["key"] for g in AUDIT_EVENT_GROUPS for ev in 
 _AUDIT_LABELS: dict[str, str] = {
     "agent.approve": "Approved an agent", "agent.disable": "Disabled an agent",
     "agent.delete": "Deleted an agent", "agent.restart": "Restarted an agent",
-    "agent.self-update": "Pushed the agent update", "agent.config-file": "Edited an agent config file",
+    "agent.self-update": "Pushed the agent update", "agent.update-all": "Started Update all agents",
+    "agent.config-file": "Edited an agent config file",
     "agent.gpu-device": "Changed which GPU an agent monitors",
     "agent.role-primary": "Changed the primary provider host",
     "agent.host-role": "Changed the manager host role",
@@ -4306,6 +4308,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/agents/enrollment-secret$"),         "agent.enrollment-secret", "agent.lifecycle"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/restart$"),      "agent.restart",      "agent.control"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/self-update$"),  "agent.self-update",  "agent.control"),
+    ("POST",   re.compile(r"^/api/agents/update-all$"),                "agent.update-all",   "agent.control"),
     ("PUT",    re.compile(r"^/api/agents/(?P<t>[^/]+)/config-file$"),  "agent.config-file",  "agent.config"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/gpu-device$"),   "agent.gpu-device",   "agent.config"),
     ("POST",   re.compile(r"^/api/agents/(?P<t>[^/]+)/collection$"),   "agent.collection",   "agent.collection"),
@@ -9636,6 +9639,97 @@ def agents_self_update(agent_id: str):
     finally:
         if not slot_handed:
             stream_pool.POOL.release()
+
+
+def _agent_self_update_frames(agent: dict):
+    """Yields the agent's self-update SSE payloads as dicts; raises RuntimeError when no callback URL answers."""
+    last_err = "no callback URL recorded"
+    for base in agent_registry.agent_callback_urls(agent):
+        full = f"{base}/agent/self-update"
+        try:
+            upstream = agent_registry.agent_http(agent).post(
+                full, headers={"Authorization": f"Bearer {agent['token']}"},
+                stream=True, timeout=(10, 60), **agent_registry.agent_tls_kwargs(full))
+        except Exception as e:  # noqa: BLE001 — try the next callback URL
+            agent_registry.note_dial_error(agent, base, e)
+            last_err = f"{type(e).__name__}: {e}"
+            continue
+        agent_registry.note_dial_result(agent, base, True)
+        try:
+            ctype = upstream.headers.get("Content-Type", "")
+            if upstream.status_code >= 400 or "text/event-stream" not in ctype.lower():
+                detail = _upstream_error_detail(upstream)
+                yield {"stage": "done", "ok": False, "rc": upstream.status_code,
+                       "msg": f"agent returned HTTP {upstream.status_code}" + (f": {detail}" if detail else "")}
+                return
+            buf = b""
+            for chunk in upstream.iter_content(chunk_size=None):
+                buf += chunk or b""
+                while b"\n\n" in buf:
+                    frame, buf = buf.split(b"\n\n", 1)
+                    data = "".join(ln[5:].strip() for ln in frame.decode("utf-8", "replace").split("\n")
+                                   if ln.startswith("data:"))
+                    if not data:
+                        continue
+                    try:
+                        yield json.loads(data)
+                    except ValueError:
+                        continue
+        except requests.exceptions.RequestException:
+            return
+        finally:
+            upstream.close()
+        return
+    raise RuntimeError(f"could not reach the agent ({last_err})")
+
+
+def _update_all_record(user: str, item: dict, ok: bool) -> None:
+    """Audit row per agent the Update all job updated, as the operator who started it."""
+    if "agent.control" in _AUDIT_CFG["disabled"]:
+        return
+    aid = str(item.get("agent_id") or "")
+    _audit_record((datetime.now(timezone.utc).isoformat(timespec="seconds"), user or "system", "admin",
+                   "", "session", "POST", f"/api/agents/{aid}/self-update", "agent.self-update", aid,
+                   200 if ok else 502, "ok" if ok else "error",
+                   json.dumps({"via": "update-all", "name": item.get("name")}), "agent.control"))
+
+
+_update_all = agent_update_all.UpdateAll(
+    _jobs_service, load_agents=agent_registry.load_agents, latest_version=_latest_agent_version,
+    update_available=agent_registry.agent_update_available, open_stream=_agent_self_update_frames,
+    record_update=_update_all_record)
+
+
+def _update_all_view(row: "dict | None", after: int) -> dict:
+    if not row:
+        return {"ok": True, "job": None, "lines": [], "next": 0}
+    lines, nxt = _update_all.lines(row["id"], after)
+    job = _jobs_service.view(row, detail=True)
+    return {"ok": True, "job": {k: job.get(k) for k in ("id", "status", "message", "label", "user", "state", "result",
+                                                        "created_local", "resolved_local")},
+            "lines": lines, "next": nxt}
+
+
+@app.route("/api/agents/update-all", methods=["GET", "POST"])
+def agents_update_all():
+    """POST starts the manager-side Update all job; GET returns the running (else latest) job and its new output."""
+    deny = _require_admin()
+    if deny is not None:
+        return deny
+    if flask_request.method == "POST":
+        row, err, p = _update_all.start(user=tower.session_user(_flask_session) or "", role="admin")
+        if err:
+            return jsonify({"ok": False, "error": err, **p}), 409
+        return jsonify({**_update_all_view(row, 0), **p})
+    job_id = flask_request.args.get("job") or ""
+    row = _jobs_service.get(job_id) if job_id else (_update_all.live() or _update_all.latest())
+    if row is not None and row.get("kind") != agent_update_all.KIND:
+        row = None
+    try:
+        after = int(flask_request.args.get("after") or 0)
+    except ValueError:
+        after = 0
+    return jsonify(_update_all_view(row, after))
 
 
 

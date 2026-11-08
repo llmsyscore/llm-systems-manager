@@ -1,5 +1,5 @@
-// #637/#1108: Admin → Agents "Update all" — sequential runs, verify gate stops the run, other failures carry on, one download retry.
-// Co-loads the real admin.js in jsdom and drives adminUpdateAll() with the stream/verify/confirm seams stubbed.
+// #637/#1423: Admin → Agents "Update all" — the page starts the manager-side run, shows its output, and re-attaches.
+// Co-loads the real admin.js in jsdom with fetch/confirm/toast stubbed; run order and retries are tested in the backend.
 import { describe, test, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
@@ -25,148 +25,154 @@ function harness(bootstrap) {
   return dom.window;
 }
 
-// Stubs the seams and starts adminUpdateAll(); scenario knobs:
-// streams: {aid: {ok, noRestart}}, verify: {aid: bool}, confirm: bool.
-function boot({ agents, streams, verify, confirm = true }) {
+// polls: successive GET replies for the job; post: the POST reply ({status, body}); start: the call to run.
+function boot({ agents = [], post, polls = [], getLatest = null, confirm = true, start = 'adminUpdateAll()' }) {
   return `
     _adminAgentsCache = ${JSON.stringify(agents)};
     _latestAgentVersion = 'v2';
-    window.__calls = { stream: [], verify: [], toasts: [], reloads: 0 };
+    window.__calls = { posts: 0, gets: [], toasts: [], reloads: 0 };
     _themedConfirm = async () => ${JSON.stringify(confirm)};
     _themedToast = (m) => { window.__calls.toasts.push(m); };
     adminLoadAgents = async () => { window.__calls.reloads++; };
-    const __streams = ${JSON.stringify(streams || {})};
-    _adminStreamUpdate = async (aid) => {
-      window.__calls.stream.push(aid);
-      const s = __streams[aid];
-      const one = Array.isArray(s) ? s.shift() : s;
-      return { transport: false, noRestart: false, ...one };
+    _ADMIN_UPDATE_ALL_POLL_MS = 0;
+    const __post = ${JSON.stringify(post || null)};
+    const __polls = ${JSON.stringify(polls)};
+    const __latest = ${JSON.stringify(getLatest)};
+    const reply = (status, body) => ({ ok: status < 400, status, json: async () => body });
+    fetch = async (url, opts) => {
+      if (opts && opts.method === 'POST') { window.__calls.posts++; return reply(__post.status, __post.body); }
+      if (url.startsWith('/api/agents/update-all')) window.__calls.gets.push(url);
+      if (!url.includes('job=')) return reply(200, __latest || { ok: true, job: null, lines: [], next: 0 });
+      return reply(200, __polls.length > 1 ? __polls.shift() : __polls[0]);
     };
-    _adminAwaitAgentVersion = async (aid, v) => {
-      window.__calls.verify.push([aid, v]);
-      return (${JSON.stringify(verify || {})})[aid] !== false;
-    };
-    window.__P = adminUpdateAll();
+    window.__P = ${start};
   `;
 }
 
 const agent = (aid, host, upd = true) =>
-  ({ agent_id: aid, hostname: host, version: 'v1', update_available: upd });
+  ({ agent_id: aid, hostname: host, version: 'v1', update_available: upd, status: 'approved' });
+const line = (text, level = '') => ({ t: '20:01:02', text, level });
+const job = (status, extra = {}) => ({ id: 'j1', status, message: '', state: { total: 2 }, ...extra });
 
 function panelText(win) {
   const el = win.document.getElementById('adminUpdateLog');
   return el ? el.textContent : '';
 }
 
-describe('#637 adminUpdateAll', () => {
-  test('updates agents sequentially and verifies each version', async () => {
+describe('#1423 adminUpdateAll', () => {
+  test('starts the run on the manager and shows its output until it ends', async () => {
     const win = harness(boot({
       agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: { ok: true }, [A2]: { ok: true } },
+      post: { status: 200, body: { ok: true, job: job('queued'), lines: [], next: 0, todo: [{}, {}] } },
+      polls: [
+        { ok: true, job: job('running'), lines: [line('── [1/2] h1: v1 → v2', 'stage')], next: 1 },
+        { ok: true, job: job('running'), lines: [line('✓ h1 is back on v2', 'ok')], next: 2 },
+        { ok: true, job: job('done'), lines: [line('── Update all finished: 2 updated', 'ok')], next: 3 },
+      ],
     }));
     await win.__P;
-    expect(win.__calls.stream).toEqual([A1, A2]);
-    expect(win.__calls.verify).toEqual([[A1, 'v2'], [A2, 'v2']]);
+    expect(win.__calls.posts).toBe(1);
+    expect(win.__calls.gets).toEqual([
+      '/api/agents/update-all?job=j1&after=0', '/api/agents/update-all?job=j1&after=1',
+      '/api/agents/update-all?job=j1&after=2']);
     const text = panelText(win);
-    expect(text).toContain('[1/2] h1: v1 → v2');
-    expect(text).toContain('[2/2] h2: v1 → v2');
+    expect(text).toContain('[20:01:02] ── [1/2] h1: v1 → v2');
     expect(text).toContain('✓ h1 is back on v2');
     expect(text).toContain('Update all finished: 2 updated');
+    expect(win.document.getElementById('adminUpdateTitle').textContent).toBe('all agents (2)');
     expect(win.__calls.reloads).toBe(1);
+    expect(win.eval('_adminUpdateBusy')).toBe(false);
   });
 
-  test('a stream failure is reported and the rest still update (#1108)', async () => {
-    const win = harness(boot({
-      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: { ok: false, msg: 'install.sh failed' }, [A2]: { ok: true } },
-    }));
-    await win.__P;
-    expect(win.__calls.stream).toEqual([A1, A2]);
-    const text = panelText(win);
-    expect(text).toContain('Update all finished: 1 updated, failed: h1');
-    expect(text).not.toContain('retrying');
-  });
-
-  test('a failed download is retried once, then the host counts as updated (#1108)', async () => {
-    const win = harness(boot({
-      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: [{ ok: false, retryable: true, msg: 'tarball download failed: connection broken after 131072 of 437120 bytes (3 tries)' }, { ok: true }],
-                 [A2]: { ok: true } },
-    }));
-    await win.__P;
-    expect(win.__calls.stream).toEqual([A1, A1, A2]);
-    const text = panelText(win);
-    expect(text).toContain('retrying h1 once — the download failed');
-    expect(text).toContain('Update all finished: 2 updated');
-  });
-
-  test('a download that fails twice is reported and not retried again', async () => {
-    const bad = { ok: false, retryable: true, msg: 'tarball download failed: connection broken after 1 of 9 bytes (3 tries)' };
-    const win = harness(boot({
-      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: [bad, bad, { ok: true }], [A2]: { ok: true } },
-    }));
-    await win.__P;
-    expect(win.__calls.stream).toEqual([A1, A1, A2]);
-    expect(panelText(win)).toContain('failed: h1');
-  });
-
-  test('a non-retryable download failure is not retried', async () => {
+  test('a refused start shows the reason and opens nothing', async () => {
     const win = harness(boot({
       agents: [agent(A1, 'h1')],
-      streams: { [A1]: [{ ok: false, retryable: false, msg: 'tarball download failed: HTTP 401 from the manager' }, { ok: true }] },
+      post: { status: 409, body: { ok: false, error: 'an Update all run is already going' } },
     }));
     await win.__P;
-    expect(win.__calls.stream).toEqual([A1]);
-  });
-
-  test('a verify timeout stops the run and skips the rest (bad build guard)', async () => {
-    const win = harness(boot({
-      agents: [agent(A1, 'h1'), agent(A2, 'h2')],
-      streams: { [A1]: { ok: true }, [A2]: { ok: true } },
-      verify: { [A1]: false },
-    }));
-    await win.__P;
-    expect(win.__calls.stream).toEqual([A1]);
-    const text = panelText(win);
-    expect(text).toContain('✗ h1 did not report v2');
-    expect(text).toContain('stopping: h1 did not come back on v2');
-    expect(text).toContain('0 updated, failed: h1, skipped: h2');
-  });
-
-  test('no-restart success skips the verify wait', async () => {
-    const win = harness(boot({
-      agents: [agent(A1, 'h1')],
-      streams: { [A1]: { ok: true, noRestart: true } },
-    }));
-    await win.__P;
-    expect(win.__calls.verify).toEqual([]);
-    expect(panelText(win)).toContain('h1 already up to date');
-  });
-
-  test('only update_available agents are included', async () => {
-    const win = harness(boot({
-      agents: [agent(A1, 'h1'), agent(A2, 'h2', false)],
-      streams: { [A1]: { ok: true } },
-    }));
-    await win.__P;
-    expect(win.__calls.stream).toEqual([A1]);
-  });
-
-  test('nothing to do → toast, no panel', async () => {
-    const win = harness(boot({ agents: [agent(A1, 'h1', false)] }));
-    await win.__P;
-    expect(win.__calls.toasts.length).toBe(1);
+    expect(win.__calls.toasts.join(' ')).toContain('an Update all run is already going');
     expect(win.document.getElementById('adminUpdatePanel')).toBeNull();
   });
 
-  test('declined confirm runs nothing', async () => {
+  test('a cancelled run says so', async () => {
     const win = harness(boot({
-      agents: [agent(A1, 'h1')], streams: { [A1]: { ok: true } },
-      confirm: false,
+      agents: [agent(A1, 'h1')],
+      post: { status: 200, body: { ok: true, job: job('queued'), todo: [{}] } },
+      polls: [{ ok: true, job: job('cancelled'), lines: [], next: 0 }],
     }));
     await win.__P;
-    expect(win.__calls.stream).toEqual([]);
+    expect(panelText(win)).toContain('Update all was cancelled');
+  });
+
+  test('a lost session stops watching and says the run carries on', async () => {
+    const win = harness(boot({
+      agents: [agent(A1, 'h1')],
+      post: { status: 200, body: { ok: true, job: job('queued'), todo: [{}] } },
+      polls: [],
+      start: `(fetch = ((f) => async (url, opts) => (url.includes('job=') ? ({ ok: false, status: 401, json: async () => ({}) }) : f(url, opts)))(fetch), adminUpdateAll())`,
+    }));
+    await win.__P;
+    expect(panelText(win)).toContain('lost contact with the manager');
+    expect(win.eval('_adminUpdateBusy')).toBe(false);
+  });
+
+  test('nothing to do → toast, no request', async () => {
+    const win = harness(boot({ agents: [agent(A1, 'h1', false)] }));
+    await win.__P;
+    expect(win.__calls.toasts.length).toBe(1);
+    expect(win.__calls.posts).toBe(0);
+  });
+
+  test('declined confirm starts nothing', async () => {
+    const win = harness(boot({ agents: [agent(A1, 'h1')], confirm: false }));
+    await win.__P;
+    expect(win.__calls.posts).toBe(0);
+    expect(win.document.getElementById('adminUpdatePanel')).toBeNull();
+  });
+});
+
+describe('#1423 adminResumeUpdateAll', () => {
+  test('while a run is watched, Update all and re-entering Admin show the hidden window again', async () => {
+    const win = harness(boot({
+      agents: [agent(A1, 'h1')],
+      post: { status: 200, body: { ok: true, job: job('queued'), todo: [{}] } },
+      polls: [{ ok: true, job: job('running'), lines: [line('step one')], next: 1 }],
+      start: 'adminUpdateAll()',
+    }));
+    await new Promise(r => setTimeout(r, 20));
+    const panel = win.document.getElementById('adminUpdatePanel');
+    expect(win.document.getElementById('adminUpdateLog').textContent).toContain('step one');
+    win.eval('_adminUpdateClose()');
+    expect(panel.style.display).toBe('none');
+    await win.eval('adminResumeUpdateAll()');
+    expect(panel.style.display).toBe('flex');
+    win.eval('_adminUpdateClose()');
+    await win.eval('adminUpdateAll()');
+    expect(panel.style.display).toBe('flex');
+    expect(win.__calls.posts).toBe(1);
+    expect(win.document.getElementById('adminUpdateLog').textContent).toContain('step one');
+  });
+
+  test('re-opens the output window for a run that is still going', async () => {
+    const win = harness(boot({
+      getLatest: { ok: true, job: job('running'), lines: [], next: 0 },
+      polls: [{ ok: true, job: job('done'), lines: [line('earlier'), line('── Update all finished: 2 updated')], next: 2 }],
+      start: 'adminResumeUpdateAll()',
+    }));
+    await win.__P;
+    expect(win.__calls.gets[0]).toBe('/api/agents/update-all');
+    expect(win.__calls.gets[1]).toBe('/api/agents/update-all?job=j1&after=0');
+    expect(panelText(win)).toContain('earlier');
+    expect(win.document.getElementById('adminUpdateTitle').textContent).toBe('all agents (2)');
+  });
+
+  test('a finished run is not re-opened', async () => {
+    const win = harness(boot({
+      getLatest: { ok: true, job: job('done'), lines: [], next: 0 },
+      start: 'adminResumeUpdateAll()',
+    }));
+    await win.__P;
+    expect(win.__calls.gets).toEqual(['/api/agents/update-all']);
     expect(win.document.getElementById('adminUpdatePanel')).toBeNull();
   });
 });

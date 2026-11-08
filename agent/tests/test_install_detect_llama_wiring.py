@@ -94,3 +94,59 @@ def test_summary_line_printed_only_when_something_was_found():
     text = INSTALL_SH.read_text()
     assert ('if [[ "${LLAMA_DETECTED_FOUND:-}" == true || -n "$detected_bin" ]]; then\n'
             '    _llama_summary_line "$detected_bin"') in text
+
+
+def _precheck() -> str:
+    text = INSTALL_SH.read_text()
+    m = re.search(r"^# Fresh auto installs: a running llama-server's user.*?^fi\n", text, re.S | re.M)
+    assert m, "pre-account detection block not found"
+    assert text.index(m.group(0)) < text.index('while ! _user_exists "$USER_ARG"; do')
+    return m.group(0)
+
+
+def _run_precheck(tmp_path: Path, fake_out: str, flags: str = "") -> subprocess.CompletedProcess:
+    (tmp_path / "detect_llama.py").write_text(f"print({fake_out!r})\n")
+    script = "\n".join([
+        "set -euo pipefail",
+        f"TMPL_DIR={tmp_path}",
+        "_user_exists() { [[ \"$1\" == llama || \"$1\" == root ]]; }",
+        _func("_run_detect_llama_py"), _func("_propose_agent_user"),
+        "ROLE=auto LLAMA_FLAG_EXPLICIT=false INSTALL_LLAMA=false USER_ARG=llmsys",
+        flags, _precheck(), 'echo "USER=$USER_ARG"',
+    ])
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=30)
+
+
+def test_missing_default_user_takes_server_user_before_account_step(tmp_path):
+    r = _run_precheck(tmp_path, FOUND)
+    assert r.returncode == 0, r.stderr
+    assert "USER=llama" in r.stdout
+
+
+def test_missing_default_user_kept_when_nothing_detected(tmp_path):
+    r = _run_precheck(tmp_path, "LLAMA_DETECTED_FOUND=false")
+    assert r.returncode == 0, r.stderr
+    assert "USER=llmsys" in r.stdout
+
+
+def test_precheck_skipped_for_explicit_llama_flag_or_user(tmp_path):
+    for flags in ("LLAMA_FLAG_EXPLICIT=true", "USER_ARG_EXPLICIT=true", "ROLE=system_only"):
+        r = _run_precheck(tmp_path, FOUND, flags)
+        assert r.returncode == 0, r.stderr
+        assert "USER=llmsys" in r.stdout, flags
+
+
+def test_server_user_is_proposed_only_once(tmp_path):
+    body = """
+USER_ARG=llmsys
+_run_detect_llama_py ""
+_propose_agent_user
+USER_ARG=other
+_propose_agent_user
+echo "USER=$USER_ARG"
+"""
+    r = _run(tmp_path, FOUND, body)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.count("llama-server runs as llama") == 1
+    assert "USER=other" in r.stdout
