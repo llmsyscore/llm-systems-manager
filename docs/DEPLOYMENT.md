@@ -1112,14 +1112,7 @@ The Admin tab button in the navigation bar turns red when any component reports 
 
 ## Troubleshooting
 
-| Symptom | Where to look |
-|---|---|
-| Dashboard won't load / 502 in the browser | `sudo systemctl status llm-systems-manager` then `sudo journalctl -u llm-systems-manager -n 100 --no-pager`. |
-| Host doesn't appear in the dashboard | Agent installed but not approved: **Admin → Agents → Approve**. Approved but no data: check the agent log with `sudo journalctl -u llm-systems-agent -f` on that host. |
-| Agent shows up but metrics are flat | The agent is probably not reaching the alarm engine. On the agent host: `curl -i http://<manager-host>:8081/health` (or `https://...` if alarm engine TLS is on). 401 means the agent doesn't have the ingest token yet: wait one heartbeat (≤60 s) or restart it. |
-| Alarm engine red dot in the Admin tab | Open `http://<manager-host>:5000/api/admin/system-health` to see which component is degraded. Common causes: alarm engine TLS cert missing on a split install (copy `ae-tls.{crt,key}` from the manager host to the alarm engine host's data directory), ingest token mismatch (both hosts must carry the same value), InfluxDB down. |
-| `llm-systems-influx-setup` says "waiting for the InfluxDB API to finish starting" | InfluxDB answers its health check a moment before its API is ready. The command waits up to 2 minutes (`LSM_INFLUX_WAIT_S=<seconds>` changes that), then onboards as usual. If it gives up, check `brew services info influxdb@2` and the InfluxDB log it prints. |
-| Install or uninstall pauses with "waiting for another package manager to finish" | Another apt process (usually automatic updates on a fresh machine) holds the package lock. The installer waits up to 5 minutes for it and then carries on. Set `LLMSYS_APT_LOCK_TIMEOUT=<seconds>` to wait longer or shorter. |
+Common problems and their fixes are in the [Troubleshooting guide](TROUBLESHOOTING.md).
 
 ---
 
