@@ -90,7 +90,8 @@ Full list: [Features](docs/FEATURES.md).
 
 | Guide | What's in it |
 |---|---|
-| [Deployment](docs/DEPLOYMENT.md) | Every install method, multiple machines, offline installs, configuration, updating, troubleshooting, uninstalling |
+| [Deployment](docs/DEPLOYMENT.md) | Every install method, multiple machines, offline installs, configuration, updating, uninstalling |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problems and their fixes, and what to include in a bug report |
 | [Features](docs/FEATURES.md) | Everything that ships, with screenshots |
 | [Architecture](docs/ARCHITECTURE.md) | How the manager, alarm engine and agents fit together, storage and security |
 | [API reference](docs/API_REFERENCE.md) | Every HTTP endpoint, including the OpenAI-compatible gateway |
