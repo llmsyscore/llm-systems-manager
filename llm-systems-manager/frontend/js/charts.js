@@ -698,7 +698,7 @@ function _setIscsiSeriesVisible(on) {
   if (typeof diskUsageChart === 'undefined' || !diskUsageChart) return;
   if (diskUsageChart.data.datasets[1].hidden !== !on) {
     diskUsageChart.data.datasets[1].hidden = !on;
-    diskUsageChart.update('none');
+    _redrawChart(diskUsageChart);
   }
   const leg = document.getElementById('diskIscsiLegend');
   if (leg) leg.style.display = on ? '' : 'none';
@@ -708,7 +708,7 @@ function _setIscsiSeriesVisible(on) {
 function _setGttSeriesVisible(on) {
   if (gpuMemChart.data.datasets[1].hidden !== !on) {
     gpuMemChart.data.datasets[1].hidden = !on;
-    gpuMemChart.update('none');
+    _redrawChart(gpuMemChart);
   }
 }
 
@@ -735,11 +735,15 @@ function _withPushBatch(fn) {
   const outer = _pushBatch;
   _pushBatch = outer || new Set();
   try { fn(); } finally {
-    if (!outer) { const b = _pushBatch; _pushBatch = null; b.forEach(ch => ch.update('none')); }
+    if (!outer) { const b = _pushBatch; _pushBatch = null; b.forEach(_redrawChart); }
   }
 }
+// Redraws through the visibility gate in foundation.js when it is loaded.
+function _redrawChart(ch) {
+  if (typeof window._chartUpdate === 'function') window._chartUpdate(ch); else ch.update('none');
+}
 function _pushUpdate(chart) {
-  if (_pushBatch) _pushBatch.add(chart); else chart.update('none');
+  if (_pushBatch) _pushBatch.add(chart); else _redrawChart(chart);
 }
 
 function pushPoint(chart, ts, val) {
@@ -1297,12 +1301,12 @@ async function checkConfig() {
 // History backfill
 // ---------------------------------------------------------------------------
 // Empty a chart's labels + every dataset so a backfill replaces rather than
-// appends. update('none') redraws without animation.
+// appends; inside a push batch the redraw waits for the batch to close.
 function _clearChart(ch) {
   if (!ch || !ch.data) return;
   ch.data.labels = [];
   (ch.data.datasets || []).forEach(d => { d.data = []; });
-  ch.update('none');
+  _pushUpdate(ch);
 }
 
 // Wipe every dashboard time-series. Called at the top of loadHistory so a
@@ -1375,17 +1379,16 @@ async function loadHistory() {
     const rows = await _historyRows(url, 'llama');
     if (gen !== _histGen) return;
     if (!rows || !rows.length) return;
-    // Clear again after the await: a live fetchMetrics tick can append a
-    // current-time point during the fetch, which the bucketed backfill would
-    // otherwise collapse onto (charts start at "now" on agent switch) (#137).
-    _resetMetricCharts();
     // Convert bytes-per-second → MiB-per-second so backfill points match the
     // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
     const B_PER_MIB = 1048576;
     const _peakSeedTs = LMPeaks.rowClock(rows, Date.now());
     _genTokensCarry = 0;
     let _sawIscsiHistory = false;
-    _withPushBatch(() => { for (const r of rows.slice(-MAX_POINTS)) {
+    _withPushBatch(() => {
+      // Clears again after the await so a live point added during the fetch is dropped (#137).
+      _resetMetricCharts();
+      for (const r of rows.slice(-MAX_POINTS)) {
       pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
       pushPoint(ramChart,  r.ts, r.ram_percent || 0);
       pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
@@ -1454,8 +1457,10 @@ async function loadManagerPerfHistory() {
     ]);
     const rows = zipByTs([api, hist]);
     if (rows.length) {
-      _clearChart(mgrPerfChart);  // discard any racing live point (#137)
-      _withPushBatch(() => { for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals); });
+      _withPushBatch(() => {
+        _clearChart(mgrPerfChart);  // discard any racing live point (#137)
+        for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals);
+      });
     }
   }
 
@@ -1470,8 +1475,10 @@ async function loadManagerPerfHistory() {
     const series = await Promise.all(names.map(fetchPoints));
     const rows = zipByTs(series);
     if (rows.length) {
-      _clearChart(aePerfChart);  // discard any racing live point (#137)
-      _withPushBatch(() => { for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals); });
+      _withPushBatch(() => {
+        _clearChart(aePerfChart);  // discard any racing live point (#137)
+        for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals);
+      });
     }
   }
 }
@@ -1493,9 +1500,8 @@ function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) 
       `/api/history?agent=${encodeURIComponent(agent)}`, provider);
     if (g !== gen) return;
     if (rows && rows.length) {
-      resetCharts();
       const clock = LMPeaks.rowClock(rows, Date.now());
-      _withPushBatch(() => { for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock); });
+      _withPushBatch(() => { resetCharts(); for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock); });
     }
   };
 }
@@ -1586,20 +1592,21 @@ async function loadOverallHistory() {
 // Overlay datasets fill here only; live polls advance just gen/prompt.
 function _ovHeroRender() {
   if (typeof ovHeroChart === 'undefined' || !ovHeroChart || !_ovHeroRows) return;
-  _clearChart(ovHeroChart);  // discard any racing live point (#137)
-  const bucketMs = ovHeroBucketMs();
-  const l = ovHeroChart.data.labels;
-  const d0 = ovHeroChart.data.datasets[0].data, d1 = ovHeroChart.data.datasets[1].data;
-  const dsPower = ovHeroChart.data.datasets[2];
-  for (const p of OV.heroSeries(_ovHeroRows, bucketMs).slice(-MAX_POINTS)) {
-    if (p.gen == null && p.prompt == null && p.power == null) continue;
-    l.push(new Date(p.ts));
-    d0.push(p.gen || 0);
-    d1.push(p.prompt || 0);
-    if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
-  }
-  _ovRenderEnergyOverlay();
-  ovHeroChart.update('none');
+  _withPushBatch(() => {
+    _clearChart(ovHeroChart);  // discard any racing live point (#137)
+    const bucketMs = ovHeroBucketMs();
+    const l = ovHeroChart.data.labels;
+    const d0 = ovHeroChart.data.datasets[0].data, d1 = ovHeroChart.data.datasets[1].data;
+    const dsPower = ovHeroChart.data.datasets[2];
+    for (const p of OV.heroSeries(_ovHeroRows, bucketMs).slice(-MAX_POINTS)) {
+      if (p.gen == null && p.prompt == null && p.power == null) continue;
+      l.push(new Date(p.ts));
+      d0.push(p.gen || 0);
+      d1.push(p.prompt || 0);
+      if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
+    }
+    _ovRenderEnergyOverlay();
+  });
 }
 
 // Fetches /api/energy/hourly into the cache, then paints the overlay.
@@ -1609,7 +1616,7 @@ async function _ovLoadEnergyOverlay() {
     if (!d.ok) return;
     _ovEnergyRows = d.rows;
     _ovRenderEnergyOverlay();
-    if (ovHeroChart) ovHeroChart.update('none');
+    if (ovHeroChart) _redrawChart(ovHeroChart);
   } catch (_) {}
 }
 
@@ -1974,7 +1981,7 @@ function _applyThresholds() {
     if (!(p in hostCache)) hostCache[p] = _thresholdHost(meta.provider);
     try {
       c.options.plugins.annotation.annotations = Thresholds.thresholdAnnotations(_alarmRules, { source: meta.source, metricName: meta.metric_name, host: hostCache[p], hostWildcard: false });
-      c.update('none');
+      _redrawChart(c);
     } catch (_) {}
   });
 }

@@ -65,6 +65,7 @@ function switchSubTab(parent, sub) {
   });
 
   _subTabState[parent] = sub;
+  if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
   document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab: parent, sub } }));
 
   // Stop the llama log SSE/retry + the 5s model-card poll whenever the LLM

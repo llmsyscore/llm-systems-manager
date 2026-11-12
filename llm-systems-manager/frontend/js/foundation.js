@@ -636,6 +636,10 @@ function _retintCharts() {
   if (!(window.Chart && Chart.instances)) return;
   const tick = cssVar('--fg-muted'), grid = cssVar('--border-soft');
   const ttBg = cssVar('--bg-card'), ttTitle = cssVar('--fg'), ttBody = cssVar('--fg-muted'), ttBorder = cssVar('--border');
+  // Charts already carry these colours: nothing to redraw.
+  const tint = [tick, grid, ttBg, ttTitle, ttBody, ttBorder].join('|');
+  if (tint === _chartTint) return;
+  _chartTint = tint;
   Object.values(Chart.instances).forEach(c => {
     try {
       const sc = c.options && c.options.scales;
@@ -646,12 +650,42 @@ function _retintCharts() {
       });
       const tt = c.options && c.options.plugins && c.options.plugins.tooltip;
       if (tt) { tt.backgroundColor = ttBg; tt.titleColor = ttTitle; tt.bodyColor = ttBody; tt.borderColor = ttBorder; tt.borderWidth = 1; }
-      c.update('none');
+      _chartUpdate(c);
     } catch (_) {}
+  });
+}
+
+// Charts skipped while hidden, waiting for _flushDirtyCharts.
+const _dirtyCharts = new Set();
+let _chartShownMemo = null;
+// Whether a canvas is on screen; each canvas is read once per task.
+function _chartShown(cv) {
+  if (!_chartShownMemo) { _chartShownMemo = new Map(); queueMicrotask(() => { _chartShownMemo = null; }); }
+  let v = _chartShownMemo.get(cv);
+  if (v === undefined) { v = cv.offsetParent !== null; _chartShownMemo.set(cv, v); }
+  return v;
+}
+// Redraws a chart whose canvas is on screen; a hidden chart is marked for _flushDirtyCharts.
+function _chartUpdate(ch) {
+  if (!ch) return;
+  if (ch.canvas && !_chartShown(ch.canvas)) { _dirtyCharts.add(ch); return; }
+  _dirtyCharts.delete(ch);
+  ch.update('none');
+}
+// Redraws the marked charts that are now on screen; drops charts whose canvas left the page.
+function _flushDirtyCharts() {
+  _chartShownMemo = null;
+  _dirtyCharts.forEach(ch => {
+    if (!ch.canvas || !ch.canvas.isConnected) { _dirtyCharts.delete(ch); return; }
+    if (ch.canvas.offsetParent === null) return;
+    _dirtyCharts.delete(ch);
+    try { ch.update('none'); } catch (_) {}
   });
 }
 // Apply chart defaults once at load before any Chart() is instantiated below.
 _themeChartDefaults();
+// Chrome colours the charts are built with at load; _retintCharts compares against it.
+let _chartTint = ['--fg-muted', '--border-soft', '--bg-card', '--fg', '--fg-muted', '--border'].map(v => cssVar(v)).join('|');
 
 // Effective hidden-card list for a surface — per-agent for the llama.cpp/LMS
 // dashboards, global elsewhere. Falls back to the global list if the lib is absent.
@@ -674,6 +708,7 @@ function _applyHiddenForGrid(gridId, hiddenKey) {
   grid.querySelectorAll('.card').forEach(c => {
     c.style.display = hidden.includes(c.dataset.card) ? 'none' : '';
   });
+  if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
 }
 
 // Effective card-order list for a surface — per-agent for llama.cpp/LMS, global
@@ -795,6 +830,7 @@ function applyLayout() {
     // Adopt into the fresh shells when the Overall tab is showing
     if (_activeTab === 'overall' && typeof adoptPinnedCards === 'function') adoptPinnedCards();
   }
+  if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
 }
 
 // Serialize layout POSTs so rapid drag-drops can't race. Multiple calls while
@@ -868,6 +904,7 @@ function adoptPinnedCards() {
     _ensureSizeBtn(shell);
     _ovAdopted.add(id);
   });
+  if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
   if (typeof _resizeChartsIn === 'function') _resizeChartsIn(document.getElementById('overallGrid'));
 }
 
@@ -1051,6 +1088,7 @@ function toggleCard(cardId, visible) {
   else if (idx === -1) { list.push(cardId); }
   const card = document.querySelector(`[data-card="${cardId}"]`);
   if (card) card.style.display = visible ? '' : 'none';
+  if (visible && typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
   saveLayout();
 }
 
@@ -1661,6 +1699,7 @@ function switchTab(tab) {
     if (typeof stopVllmLogRefresh === 'function') stopVllmLogRefresh();
     if (typeof rcStopStream === 'function') rcStopStream();
   }
+  if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
   document.dispatchEvent(new CustomEvent('lsm:tab', { detail: { tab } }));
 }
 
