@@ -1982,7 +1982,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         </div>
         <span class="ov-updated" id="overallLastUpdate">—</span>
       </div>
-      <div class="ov-toplines" id="ovToplines"></div>
+      <div class="ov-toplines" id="ovToplines"><div class="ov-topline" aria-hidden="true"><div class="stat">—</div><div class="sub">&nbsp;</div></div></div>
       <div class="ov-hero-chart"><canvas id="ovHeroChart" role="img"
            aria-label="Fleet token throughput, last 24 hours"></canvas></div>
     </section>
@@ -1995,20 +1995,30 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <span class="fc-ov-foot" id="fcOvFoot"></span>
         <button type="button" class="fc-link" id="fcOvView" hidden>View all</button>
       </div>
-      <div id="fcOvBody"></div>
+      <div id="fcOvBody"><div class="fc-empty">Loading…</div></div>
     </section>
     <section class="ov-tiles-strip" data-strip="tiles" aria-label="Providers">
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="ov-tiles" id="ovTiles"></div>
+      <div class="ov-tiles" id="ovTiles"><!-- Placeholder tile: holds the strip's height until the first paint. -->
+        <div class="ov-tile" aria-hidden="true">
+          <div class="ov-tile-head"><span class="ov-eyebrow">&nbsp;</span><span class="ov-tile-online">&nbsp;</span></div>
+          <div class="ov-tile-stats">
+            <div><div class="stat">—</div><div class="sub">&nbsp;</div><div class="ov-tile-peak">&nbsp;</div></div>
+            <div><div class="stat">—</div><div class="sub">&nbsp;</div><div class="ov-tile-peak">&nbsp;</div></div>
+            <div><div class="stat">—</div><div class="sub">&nbsp;</div></div>
+            <div><div class="stat">—</div><div class="sub">&nbsp;</div></div>
+          </div>
+        </div>
+      </div>
     </section>
     <section class="ov-agents" data-strip="agents" aria-label="Agents">
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
       <span class="ov-eyebrow">Agents</span>
-      <div class="ov-agent-rows" id="ovAgentsStrip"></div>
+      <div class="ov-agent-rows" id="ovAgentsStrip"><div class="ov-agents-empty">Loading agents…</div></div>
     </section>
     <section class="ov-alerts-strip" data-strip="alerts" aria-label="Active alerts">
       <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="ov-alerts" id="ovAlertsStrip"></div>
+      <div class="ov-alerts" id="ovAlertsStrip"><span>Loading alerts…</span></div>
     </section>
   </div>
   <div class="grid" id="overallGrid"></div>

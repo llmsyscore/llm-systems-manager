@@ -147,3 +147,41 @@ describe('Overall hero overlays default on (#1140)', () => {
     expect(ds[3].hidden).toBe(true);
   });
 });
+
+describe('Overall strips hold their height before the first paint (#1436)', () => {
+  test('index.html ships placeholder content in the band strips', () => {
+    const doc = new JSDOM(html).window.document;
+    expect(doc.querySelectorAll('#ovToplines .ov-topline')).toHaveLength(1);
+    expect(doc.querySelectorAll('#ovTiles .ov-tile .ov-tile-stats > div')).toHaveLength(4);
+    expect(doc.querySelector('#ovAgentsStrip .ov-agents-empty').textContent).toBe('Loading agents…');
+    expect(doc.querySelector('#fcOvBody .fc-empty').textContent).toBe('Loading…');
+    expect(doc.getElementById('ovAlertsStrip').textContent).toBe('Loading alerts…');
+  });
+
+  test('the first paint replaces the placeholders', () => {
+    const doc = new JSDOM(html).window.document;
+    document.body.innerHTML = ['ovToplines', 'ovTiles', 'ovAgentsStrip'].map(id => doc.getElementById(id).outerHTML).join('');
+    const overall = srcFile('js/overall.js');
+    evalGlobal([fnSrc(overall, '_ovPaintToplines'), fnSrc(overall, '_ovPaintTiles'), fnSrc(overall, '_ovPaintAgents'),
+      'window._ovPaintToplines = _ovPaintToplines; window._ovPaintTiles = _ovPaintTiles; window._ovPaintAgents = _ovPaintAgents;'].join('\n'));
+    window._esc = (s) => String(s);
+    window._ovPaintToplines([{ v: '3', l: 'agents online' }]);
+    window._ovPaintTiles([{ key: 'llama', label: 'llama.cpp', online: 1, total: 1, accent: 'ok', stats: [{ v: '1', l: 'servers' }] }]);
+    window._ovPaintAgents([]);
+    expect(document.querySelector('#ovToplines .stat').textContent).toBe('3');
+    expect(document.querySelectorAll('#ovTiles .ov-tile')).toHaveLength(1);
+    expect(document.querySelector('#ovTiles .ov-tile').dataset.prov).toBe('llama');
+    expect(document.getElementById('ovAgentsStrip').textContent).toBe('No approved agents yet.');
+  });
+});
+
+describe('Pinned shells are sized when Overall opens (#1437)', () => {
+  test('switchTab relays out #overallGrid right after adopting the pinned cards', () => {
+    const src = fnSrc(srcFile('js/foundation.js'), 'switchTab');
+    const adopt = src.indexOf('adoptPinnedCards();');
+    const relayout = src.indexOf("_relayoutGridCards(document.getElementById('overallGrid'))");
+    expect(adopt).toBeGreaterThan(-1);
+    expect(relayout).toBeGreaterThan(adopt);
+    expect(relayout).toBeLessThan(src.indexOf('fetchOverallMetrics();'));
+  });
+});

@@ -1618,6 +1618,8 @@ function switchTab(tab) {
   if (tab === 'overall')    {
     document.getElementById('overallTab').style.display = '';
     if (typeof adoptPinnedCards === 'function') adoptPinnedCards();
+    // Sizes the pinned shells now that the tab is visible, before the first paint.
+    if (typeof _relayoutGridCards === 'function') _relayoutGridCards(document.getElementById('overallGrid'));
     _ovBackfillPinnedProviders();
     fetchOverallMetrics();
     if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});

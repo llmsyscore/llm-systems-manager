@@ -198,6 +198,8 @@
 .fc-ov-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 3px; }
 .fc-ov-count { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
 .fc-ov-foot { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--fg-dim); font-size: 0.9em; }
+/* Empty count and footer keep their line height, so the strip head does not change height as they fill. */
+.fc-ov-count:empty::before, .fc-ov-foot:empty::before { content: '\200b'; }
 .fc-link { margin-left: auto; background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 .fc-link:hover { text-decoration: underline; }
 .fc-ov-digest { color: var(--fg-muted); margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
