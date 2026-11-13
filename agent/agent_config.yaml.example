@@ -43,8 +43,8 @@ ALARM_ENGINE_URL: ""                 # Use the format http://<IP Address>:8081 f
 
 # -- LM Studio (set LMS_ENABLED: true on hosts running LM Studio) ----------
 LMS_ENABLED: false
-# LMS_CMD:     ""                              # blank => detected at runtime (which lms / ~/.lmstudio/bin/lms)
-# LMS_API_URL: "http://localhost:1235"
+# LMS_CMD:     ""                              # blank => found at runtime: this path, the LM Studio user's ~/.lmstudio/bin/lms, lms on PATH, /usr/local/bin/lms, /opt/homebrew/bin/lms
+# LMS_API_URL: "http://localhost:1234"
 # LMS_LOAD_TIMEOUT_S: 180                     # /lms/load REST timeout; cold loads run ~15 s/GB. Keep < 200 (manager ceiling)
 # LMS_UNLOAD_TIMEOUT_S: 60                    # /lms/unload REST timeout. Keep < 90 (manager ceiling, minus the 30 s CLI fallback)
 

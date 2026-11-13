@@ -17,7 +17,7 @@ a = Analysis(
     [f"{SPECPATH}/llm-systems-agent.py"],
     pathex=[SPECPATH],
     binaries=[],
-    datas=[('install/detect_llama.py', 'install')],
+    datas=[('install/detect_llama.py', 'install'), ('install/detect_lms.py', 'install')],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],

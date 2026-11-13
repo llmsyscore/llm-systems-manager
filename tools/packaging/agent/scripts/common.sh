@@ -185,6 +185,9 @@ llmsys_agent_write_config() {
   l_url="$(llmsys_agent_yaml_safe LLAMA_API_URL "${LLMSYS_CFG_LLAMA_API_URL:-}")"
   l_ini="$(llmsys_agent_yaml_safe LLAMA_CONFIG_INI "${LLMSYS_CFG_LLAMA_CONFIG_INI:-}")"
   l_unit="$(llmsys_agent_yaml_safe LLAMA_SYSTEMD_UNIT "${LLMSYS_CFG_LLAMA_SYSTEMD_UNIT:-}")"
+  local m_url m_cmd
+  m_url="$(llmsys_agent_yaml_safe LMS_API_URL "${LLMSYS_CFG_LMS_API_URL:-}")"
+  m_cmd="$(llmsys_agent_yaml_safe LMS_CMD "${LLMSYS_CFG_LMS_CMD:-}")"
   while IFS= read -r line; do
     case "$line" in
       "LLAMA_ENABLED:"*)
@@ -195,6 +198,12 @@ llmsys_agent_write_config() {
         if [ -n "$l_ini" ]; then printf 'LLAMA_CONFIG_INI: "%s"\n' "$l_ini"; else printf '%s\n' "$line"; fi ;;
       "# LLAMA_SYSTEMD_UNIT:"*)
         if [ -n "$l_unit" ]; then printf 'LLAMA_SYSTEMD_UNIT: "%s"\n' "$l_unit"; else printf '%s\n' "$line"; fi ;;
+      "LMS_ENABLED:"*)
+        if [ "${LLMSYS_CFG_LMS_ENABLED:-}" = true ]; then printf 'LMS_ENABLED: true\n'; else printf '%s\n' "$line"; fi ;;
+      "# LMS_API_URL:"*)
+        if [ -n "$m_url" ]; then printf 'LMS_API_URL: "%s"\n' "$m_url"; else printf '%s\n' "$line"; fi ;;
+      "# LMS_CMD:"*)
+        if [ -n "$m_cmd" ]; then printf 'LMS_CMD: "%s"\n' "$m_cmd"; else printf '%s\n' "$line"; fi ;;
       "AGENT_USER:"*)        printf 'AGENT_USER:        "%s"\n' "$LLMSYS_RUN_USER" ;;
       "AGENT_INSTALL_DIR:"*) printf 'AGENT_INSTALL_DIR: "%s"\n' "$LLMSYS_AGENT_DIR" ;;
       "MANAGER_URL:"*)       printf 'MANAGER_URL:      "%s"\n' "$mgr" ;;
@@ -231,6 +240,34 @@ llmsys_agent_detect_llama() {
   fi
   export LLMSYS_CFG_LLAMA_API_URL LLMSYS_CFG_LLAMA_CONFIG_INI LLMSYS_CFG_LLAMA_SYSTEMD_UNIT \
          LLMSYS_CFG_LLAMA_ENABLED LLMSYS_RUN_USER_DEFAULT
+}
+
+# Runs the packaged LM Studio detector and fills any empty LLMSYS_CFG_LMS_*
+# value; sets LMS_ENABLED, and the server's user when llama set none or root.
+llmsys_agent_detect_lms() {
+  local py="$LLMSYS_AGENT_DIR/install/detect_lms.py" out u h
+  if [ -f "$py" ] && command -v python3 >/dev/null 2>&1 \
+     && out="$(python3 -I "$py" --sh 2>/dev/null)"; then
+    eval "$out"
+    if [ "${LMS_DETECTED_FOUND:-}" = true ]; then
+      [ -n "${LLMSYS_CFG_LMS_API_URL:-}" ] || LLMSYS_CFG_LMS_API_URL="${LMS_DETECTED_API_URL:-}"
+      [ -n "${LLMSYS_CFG_LMS_CMD:-}" ] || LLMSYS_CFG_LMS_CMD="${LMS_DETECTED_LMS_CMD:-}"
+      LLMSYS_CFG_LMS_ENABLED=true
+      u="${LMS_DETECTED_PROCESS_USER:-}"
+      # No running server: the lms file's owner, only when lms sits inside that user's own home.
+      if [ -z "$u" ] && [ -n "${LMS_DETECTED_LMS_USER:-}" ]; then
+        h="$(getent passwd "$LMS_DETECTED_LMS_USER" 2>/dev/null | cut -d: -f6 || true)"
+        h="${h%/}"
+        case "${LMS_DETECTED_LMS_CMD:-}" in "$h"/*) [ -z "$h" ] || u="$LMS_DETECTED_LMS_USER" ;; esac
+      fi
+      # A llama user of root counts as none, so LM Studio's user can be used.
+      if { [ -z "${LLMSYS_RUN_USER_DEFAULT:-}" ] || [ "$LLMSYS_RUN_USER_DEFAULT" = root ]; } \
+         && [ -n "$u" ] && [ "$u" != root ]; then
+        LLMSYS_RUN_USER_DEFAULT="$u"
+      fi
+    fi
+  fi
+  export LLMSYS_CFG_LMS_API_URL LLMSYS_CFG_LMS_CMD LLMSYS_CFG_LMS_ENABLED LLMSYS_RUN_USER_DEFAULT
 }
 
 # Renders TEMPLATE to stdout, replacing each TOKEN with VALUE by literal

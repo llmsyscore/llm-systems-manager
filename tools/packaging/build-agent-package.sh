@@ -66,9 +66,9 @@ STAGE="$WORK/stage"
 mkdir -p "$STAGE$AGENT_DIR" "$STAGE/usr/lib/systemd/system" "$OUT_DIR"
 
 install -m 0755 "$BINARY" "$STAGE$AGENT_DIR/llm-systems-agent"
-# Llama-server detector and the privilege templates the maintainer scripts render.
+# Llama-server and LM Studio detectors and the privilege templates the maintainer scripts use.
 install -d -m 0755 "$STAGE$AGENT_DIR/install"
-for f in detect_llama.py llm-svcconfig-apply.sh.tmpl llm-systems-agent.sudoers.tmpl; do
+for f in detect_llama.py detect_lms.py llm-svcconfig-apply.sh.tmpl llm-systems-agent.sudoers.tmpl; do
   install -m 0644 "$REPO_ROOT/agent/install/$f" "$STAGE$AGENT_DIR/install/$f"
 done
 install -m 0644 "$REPO_ROOT/agent/agent_config.yaml.example" "$STAGE$AGENT_DIR/agent_config.yaml.example"

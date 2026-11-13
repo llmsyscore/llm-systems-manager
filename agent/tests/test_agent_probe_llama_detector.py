@@ -52,3 +52,18 @@ def test_probe_tolerates_a_broken_detector(monkeypatch, capsys):
 def test_autoconfigure_marks_the_auto_role():
     body = re.search(r"^def _probe_and_autoconfigure\(.*?(?=^\S)", _SRC, re.MULTILINE | re.DOTALL).group(0)
     assert "cfg._auto_role = True" in body and "_probe_llama_detector(cfg)" in body
+
+
+def test_autoconfigure_flags_lms_auto_enable_only_when_off():
+    body = re.search(r"^def _probe_and_autoconfigure\(.*?(?=^\S)", _SRC, re.MULTILINE | re.DOTALL).group(0)
+    assert re.search(r"if not cfg\.LMS_ENABLED:\s*\n\s*_mark_lms_auto_enabled\(\)\s*\n\s*cfg\.LMS_ENABLED = True", body)
+
+
+def test_mark_lms_auto_enabled_calls_the_provider(monkeypatch):
+    calls = []
+    pkg = types.ModuleType("providers"); mod = types.ModuleType("providers.lms")
+    mod.mark_auto_enabled = lambda: calls.append(1); pkg.lms = mod
+    monkeypatch.setitem(sys.modules, "providers", pkg); monkeypatch.setitem(sys.modules, "providers.lms", mod)
+    ns = _exec_fn("_mark_lms_auto_enabled", {})
+    ns["_mark_lms_auto_enabled"]()
+    assert calls == [1]

@@ -1,0 +1,5 @@
+    1 root     /sbin/launchd
+  412 ana      /Applications/LM Studio.app/Contents/MacOS/LM Studio
+  415 ana      /Applications/LM Studio.app/Contents/Frameworks/LM Studio Helper (Renderer).app/Contents/MacOS/LM Studio Helper (Renderer)
+  900 ana      /bin/zsh
+  901 ana      /usr/bin/tail

@@ -2044,6 +2044,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
   <!-- LM Studio LLM Control -->
   <div id="llm-lmstudio" class="sub-tab-panel" style="padding:8px 20px 20px;">
     <div class="agent-picker" id="agentPickerCtrlLms" style="display:none"></div>
+    <div id="lmsSettingsBanner" style="display:none;"></div>
 
     <!-- LMS Model Roster -->
     <div class="llm-section" id="lmsSecModels">
@@ -2091,6 +2092,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
         <button class="mcbtn mcbtn-ghost mcbtn-sm ml-auto" data-admin-only onclick="toggleLmsTerminal()"><span class="ic">▣</span> Terminal</button>
         <button class="mcbtn mcbtn-ghost mcbtn-sm" onclick="toggleLmsLog()"><span class="ic">≡</span> Server Log</button>
       </div>
+      <div id="lmsServiceNote" style="display:none;"></div>
       <!-- LMS Terminal panel — PTY hosted on the primary LMS agent, proxied via SSE -->
       <div id="lmsTerminalPanel" style="display:none;margin-bottom:8px;">
         <div class="llm-toolbar" style="justify-content:flex-end;margin-bottom:4px;">

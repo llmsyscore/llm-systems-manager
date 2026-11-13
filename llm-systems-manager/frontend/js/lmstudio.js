@@ -323,9 +323,10 @@ async function fetchLMStudioMetrics() {
     // lms server status output format varies and can report false negatives.
     const srvOn = d.server?.on === true || (models && models.length > 0);
     _setLmsBtns(online && srvOn);
+    renderLmsSettingsNotices(d, document.getElementById('lmsSettingsBanner'), document.getElementById('lmsServiceNote'));
     const _lmsPillEl = document.getElementById('lmsCtrlStatus');
     if (_lmsPillEl) _lmsPillEl.className = 'mc-pill ' + (srvOn ? 'p-active' : 'p-unloaded') + ' llm-sec-pill';
-    _setEl('lmsCtrlStatus', srvOn ? `Server ON · port ${d.server?.port || 1235}` : 'Server OFF');
+    _setEl('lmsCtrlStatus', srvOn ? `Server ON · port ${d.server?.port || 1234}` : 'Server OFF');
     document.querySelectorAll('#lmsCtrlBadge').forEach(el => {
       el.className = `status ${online ? 'status--ok' : 'status--crit'}`;
       el.innerHTML = '<span class="status__dot"></span>' + (online ? 'Agent online' : 'Agent offline');
@@ -454,7 +455,7 @@ function renderLMSModelCards(ps, models) {
   // poll would otherwise wipe the input mid-keystroke. We still update
   // the cached ps/models below so the next render after commit reflects
   // the latest state.
-  if (container.querySelector('.mc-name input')) {
+  if (container.querySelector('.mc-name input, .mc-rowname input')) {
     _lmsLastPs = ps; _lmsLastModels = models;
     return;
   }
@@ -596,6 +597,7 @@ function renderLMSModelCards(ps, models) {
       else if (act === 'bench') { MC.closeMenus(); lmsOpenTool('benchmark', id, { mode: 'live' }); }
       else if (act === 'autotune') { MC.closeMenus(); lmsOpenTool('autotune', id); }
       else if (act === 'untune') { MC.closeMenus(); lmsForgetTuned(id); }
+      else if (act === 'rename-name') { MC.closeMenus(); startLmsCardRename(MC.nameElOf(btn), id); }
     });
   }
 }
@@ -686,6 +688,73 @@ function _initLMSSections() {
     startLmsLogRefresh();
   }
 }
+
+// ===== LM Studio settings notices (#1422) begin =====
+const [lmsSettingsNotices, renderLmsSettingsNotices] = (function () {
+  const NOTE = 'LM Studio is not a system service. Start and Stop run the <code>lms</code> command as the agent\'s user.';
+  // Notices for an lms.settings block: [{text, buttons}]; the not-a-service note (small) is always last.
+  function notices(settings, server) {
+    const out = [];
+    const s = (settings && typeof settings === 'object') ? settings : null;
+    if (s && 'cli_found' in s) {
+      const running = s.running === true || (server && server.on === true);
+      if (s.settings_source === 'detected') {
+        const cmd = s.lms_cmd ? `, <code>lms</code> at ${_esc(s.lms_cmd)}` : '';
+        out.push({ text: `Found LM Studio on this computer (API ${_esc(s.api_url || '')}${cmd}). Save these settings so they are kept after a restart.`,
+                   buttons: '<button type="button" class="mcbtn mcbtn-pri" data-act="lms-settings-save">Save</button>' });
+      }
+      if (s.cli_found && !running) {
+        const user = s.process_user || s.agent_user || '';
+        out.push({ text: `LM Studio is installed but its server is not running. Press Start, or run <code>lms server start</code>${user ? ` as ${_esc(user)}` : ''}.`, buttons: '' });
+      } else if (!s.cli_found && !running) {
+        out.push({ text: 'The agent cannot find the <code>lms</code> command. Set its location as <code>LMS_CMD</code> in the agent settings.', buttons: '' });
+      }
+      if (s.process_user && s.process_user !== s.agent_user) {
+        out.push({ text: `LM Studio runs as ${_esc(s.process_user)}; the agent runs as ${_esc(s.agent_user || '')}, so the <code>lms</code> command cannot see its models. Run both as the same user.`, buttons: '' });
+      }
+    }
+    out.push({ text: NOTE, buttons: '', small: true });
+    return out;
+  }
+  async function save() {
+    const ok = await _themedConfirm({
+      title: 'Save the detected settings?',
+      bodyHtml: 'The agent will keep the LM Studio settings it found so they are kept after a restart.',
+      confirmLabel: 'Save', cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      const resp = await fetch('/api/lmstudio/settings/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      let j = {};
+      try { j = await resp.json(); } catch (_) {}
+      if (!resp.ok || j.ok === false) { _toastErr(String(j.detail || j.error || 'Save failed')); return; }
+      fetchLMStudioMetrics();
+    } catch (e) { _toastErr('Save error: ' + e); }
+  }
+  function _paint(el, html) {
+    el.style.display = html ? '' : 'none';
+    if (el.innerHTML !== html) el.innerHTML = html;
+  }
+  // Draws the notices into container and the small note into noteEl (or container when absent); clears both offline.
+  function render(d, container, noteEl) {
+    if (!container) return;
+    if (!container._lmsBound) {
+      container._lmsBound = true;
+      container.addEventListener('click', ev => { if (ev.target.closest('[data-act="lms-settings-save"]')) save(); });
+    }
+    let banner = '', note = '';
+    if (d && d.agent_online === true) {
+      const list = notices(d.settings, d.server);
+      banner = list.filter(n => !n.small).map(n => `<div class="mc-mode-note"><span class="mc-mode-text">${n.text}</span>`
+        + (n.buttons ? `<span class="mc-mode-actions">${n.buttons}</span>` : '') + '</div>').join('');
+      banner = banner ? `<div class="mc-mode-banner">${banner}</div>` : '';
+      note = list.filter(n => n.small).map(n => `<div class="mc-mode-hint">${n.text}</div>`).join('');
+    }
+    if (noteEl) { _paint(container, banner); _paint(noteEl, note); } else _paint(container, banner + note);
+  }
+  return [notices, render];
+})();
+// ===== LM Studio settings notices (#1422) end =====
 
 async function lmsServerAction(action) {
   const _lmsPrompts = {

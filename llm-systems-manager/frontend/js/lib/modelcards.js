@@ -135,7 +135,7 @@
       ${specsHtml(d.specs)}
       ${teleHtml(d)}
       ${d.perfHtml || ''}
-      ${actionsHtml(d)}
+      ${actionsHtml({ ...d, menu: _menuWithRename(d, d.menu) })}
     </div>`;
   }
 
@@ -153,20 +153,35 @@
     return tele + bench;
   }
 
+  // The ⋯ menu items plus "Rename" when the surface supports renaming.
+  function _menuWithRename(d, items) {
+    const base = items || [];
+    return d.renameAct ? [...base, ...(base.length ? ['-'] : []), { act: 'rename-name', icon: '✎', label: 'Rename' }] : base;
+  }
+
+  // Compact card: model ID line under a differing name; "Rename" in the ⋯ menu.
   function compact(d) {
+    const idLine = d.repo && d.repo !== d.name ? `<div class="mc-repo" title="${esc(d.repo)}">${esc(d.repo)}</div>` : '';
+    const menu = _menuWithRename(d, d.menu);
     return `<div class="mc-card${d.open ? ' open' : ''}${d.transition ? ' mc-transition' : ''}" data-id="${esc(d.id)}">
       <div class="mc-ctop" data-mctoggle="${esc(d.id)}" role="button" tabindex="0" aria-expanded="${d.open ? 'true' : 'false'}">
         <span class="mc-chev">▶</span>
-        <div class="mc-title"><div class="mc-name">${esc(d.name)}</div>${d.csub ? `<div class="mc-csub">${d.csub}</div>` : ''}</div>
+        <div class="mc-title"><div class="mc-name">${esc(d.name)}</div>${idLine}${d.csub ? `<div class="mc-csub">${d.csub}</div>` : ''}</div>
         ${pill(d.pill)}
       </div>
       <div class="mc-drawer">
         ${specsHtml(d.specs)}
         ${teleHtml(d)}
         ${d.perfHtml || ''}
-        ${actionsHtml(d)}
+        ${actionsHtml({ ...d, menu })}
       </div>
     </div>`;
+  }
+
+  // The name element of the card or list row holding `el`, for starting an inline rename from a menu.
+  function nameElOf(el) {
+    const c = el && el.closest('.mc-card, .mc-row');
+    return c ? c.querySelector('.mc-name, .mc-rowname .n') : null;
   }
 
   function row(d) {
@@ -177,11 +192,11 @@
     const live = rstat(d.live && d.live.stats, 2);
     const offTitle = (d.benchTitle || 'Offline benchmark results — not live throughput') + _whSuffix(d.extraJson);
     const liveTitle = (d.live && d.live.title) || '';
-    const menuItems = [
+    const menuItems = _menuWithRename(d, [
       ...(d.buttons || []).map(b => ({ act: b.act, label: b.label, icon: b.icon })),
       ...((d.buttons || []).length && (d.menu || []).filter(i => i !== '-').length ? ['-'] : []),
       ...(d.menu || []),
-    ];
+    ]);
     // Collapse doubled separators when buttons is empty but menu leads with one.
     return `<div class="mc-row${d.transition ? ' mc-transition' : ''}" data-id="${esc(d.id)}">
       ${dot(d.pill && d.pill.state)}
@@ -318,6 +333,7 @@
     });
     container.addEventListener('keydown', ev => {
       if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      if (ev.target.closest('input, textarea, select')) return;
       const tog = ev.target.closest('[data-mctoggle]');
       if (tog) { ev.preventDefault(); toggleOpen(surface, tog.dataset.mctoggle); render(); return; }
       const rb = ev.target.closest('.mc-rowcfg[role="button"], .mc-prof-edit[role="button"], .mc-stats[role="button"], .mc-rowmet[role="button"]');
@@ -363,7 +379,7 @@
 
   const _MC_API = {
     VIEWS, esc, validView, viewOf, age, pill, dot, specsHtml, benchHtml, badgesHtml, tuneTag,
-    card, compact, row, rowHeader, groupRow, groupHeader, actionsHtml, menuHtml,
+    card, compact, nameElOf, row, rowHeader, groupRow, groupHeader, actionsHtml, menuHtml,
     filterOf, filterMatch, isCollapsed, toggleGroup, isOpen, toggleOpen,
     setBusy, clearBusy, busyOf, setView, syncSeg, initToolbar, bindContainer, closeMenus,
   };

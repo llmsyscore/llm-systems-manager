@@ -54,7 +54,7 @@ import providers  # type: ignore
 import telemetry_report  # type: ignore
 from collectors.system import collect_system_metrics  # type: ignore
 from collectors._shared import AbsenceLatch, collect_enabled  # type: ignore
-from providers.lms import lms_sample_block  # type: ignore
+from providers.lms import lms_auto_enable_tick, lms_redetect_tick, lms_sample_block, lms_settings_block  # type: ignore
 from providers.llama import collect_llama_for_metrics, llama_api_port, llama_auto_enable_tick, llama_get_state, llama_mode_block  # type: ignore
 from providers.vllm import collect_vllm_for_metrics  # type: ignore
 from providers import residency, power_arbiter, power_readback, run_conditions, llama_inventory  # type: ignore
@@ -80,7 +80,7 @@ except ImportError:
             os.fsync(fh.fileno())
         tmp.replace(p)
 
-VERSION = "v2026.11.07-6"
+VERSION = "v2026.11.13-2"
 
 # LMS ps busy-status substrings, mirroring manager energy.LMS_BUSY_MARKERS;
 # transitional states (LOADING/UNLOADING/DOWNLOADING) are not busy (#619).
@@ -240,6 +240,32 @@ def _probe_llama_detector(cfg: "AgentConfig") -> str:
     return f"unit {det.unit or 'none'}, port {det.port or '?'}, {state}"
 
 
+def _probe_lms_detector(cfg: "AgentConfig") -> str:
+    """One-line summary of an LM Studio server or lms command the installer's detector finds, else ''."""
+    try:
+        from providers import lms as _lms
+        cmd = (cfg.LMS_CMD or "").strip()
+        det = _lms._detect_module().detect(port_hint=_lms._api_port(cfg.LMS_API_URL),
+                                           cmd_hint="" if _lms._is_default("LMS_CMD", cmd, _lms._defaults()) else cmd,
+                                           agent_user=cfg.AGENT_USER or "")
+    except Exception as e:  # noqa: BLE001 — detection is advisory
+        print(f"      detector unavailable: {e}")
+        return ""
+    if not getattr(det, "found", False):
+        return ""
+    state = f"running as {det.process_user or '?'}" if getattr(det, "running", False) else "stopped"
+    return f"port {det.port or '?'}, lms {det.lms_cmd or 'none'}, {state}"
+
+
+def _mark_lms_auto_enabled() -> None:
+    """Flags LM Studio as turned on by auto-detect, so a dashboard Save also writes LMS_ENABLED."""
+    try:
+        from providers import lms as _lms
+        _lms.mark_auto_enabled()
+    except Exception as e:  # noqa: BLE001 — detection is advisory
+        print(f"      LM Studio auto-enable flag not set: {e}")
+
+
 def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     """Probe the host for known LLM subsystems and set cfg flags + AGENT_ROLE.
 
@@ -271,12 +297,17 @@ def _probe_and_autoconfigure(cfg: "AgentConfig") -> None:
     # ── LM Studio ────
     lms_http_ok, lms_http_msg = _probe_http(f"{cfg.LMS_API_URL}/v1/models")
     lms_cli_exists = bool(cfg.LMS_CMD) and os.path.isfile(cfg.LMS_CMD)
-    if lms_http_ok or lms_cli_exists:
+    lms_det = _probe_lms_detector(cfg)
+    if lms_http_ok or lms_cli_exists or lms_det:
         found["lms"] = True
+        if not cfg.LMS_ENABLED:
+            _mark_lms_auto_enabled()
         cfg.LMS_ENABLED = True
         print("  ✓ LM Studio detected")
         print(f"      API   {cfg.LMS_API_URL:<32} {('reachable — ' + lms_http_msg) if lms_http_ok else 'unreachable'}")
         print(f"      cli   {cfg.LMS_CMD:<32} {'exists' if lms_cli_exists else 'missing'}")
+        if lms_det:
+            print(f"      found {lms_det}")
     else:
         print("  ✗ LM Studio not detected")
         print(f"      tried API={cfg.LMS_API_URL} cli={cfg.LMS_CMD or '<none>'}")
@@ -409,7 +440,7 @@ class AgentConfig:
 
     LMS_ENABLED: bool = False
     LMS_CMD: str = ""
-    LMS_API_URL: str = "http://localhost:1235"
+    LMS_API_URL: str = "http://localhost:1234"
     # /lms/load and /lms/unload REST timeouts (seconds).
     LMS_LOAD_TIMEOUT_S: int = 180
     LMS_UNLOAD_TIMEOUT_S: int = 60
@@ -2809,6 +2840,7 @@ def _push_dashboard_payload(sample: dict[str, Any]) -> None:
         "ps": lms.get("ps") or [],
         "ps_ok": lms.get("ps_ok"),
         "ps_error": lms.get("ps_error"),
+        "settings": lms.get("settings") or {},
         "active": next(
             (r for r in (lms.get("ps") or [])
              if any(m in (r.get("status") or "") for m in _LMS_BUSY_MARKERS)),
@@ -3189,6 +3221,10 @@ def _probe_and_reconcile() -> dict[str, Any]:
     sample: dict[str, Any] = {}
     if CONFIG.LMS_ENABLED:
         sample["lms"] = lms_sample_block()
+        try:
+            sample["lms"]["settings"] = lms_settings_block()
+        except Exception as e:
+            logger.debug("lms settings block failed: %s", e)
     if CONFIG.LLAMA_ENABLED:
         rich = collect_llama_for_metrics()
         if not rich:
@@ -3212,6 +3248,12 @@ def _collector_tick() -> None:
         llama_auto_enable_tick()
     except Exception as e:  # noqa: BLE001 — advisory probe
         logger.debug("llama auto-enable: %s", e)
+    try:
+        lms_auto_enable_tick()
+        if CONFIG.LMS_ENABLED:
+            lms_redetect_tick()
+    except Exception as e:  # noqa: BLE001 — advisory probe
+        logger.debug("LM Studio detection: %s", e)
     if not CONFIG.COLLECTION_ENABLED or not _is_approved():
         _probe_and_reconcile()
         return
@@ -3288,6 +3330,10 @@ async def _lifespan(_app: "FastAPI") -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("worker-pool tuning skipped: %s", e)
     providers.llama.start_background()
+    try:
+        providers.lms.lms_startup_detect()
+    except Exception as e:  # noqa: BLE001 — detection is advisory
+        logger.warning("LM Studio start-time detection failed: %s", e)
     try:
         yield
     finally:

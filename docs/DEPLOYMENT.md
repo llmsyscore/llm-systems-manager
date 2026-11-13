@@ -528,7 +528,7 @@ The agent attempts to configure itself. If your inference servers run on differe
 | Key | What it points at | Default |
 |---|---|---|
 | `LLAMA_API_URL` | Your `llama-server` HTTP endpoint (llama.cpp has announced the default port moves to `:9931`) | `http://localhost:8080` |
-| `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1235` |
+| `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1234` |
 | `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | found by the installer |
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | found by the installer |
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | found by the installer |
@@ -722,7 +722,7 @@ An in-dashboard drawer that answers questions about hosts, models, alerts, energ
 - **Server:** built-in function calling needs llama.cpp with jinja templates on (the default in current builds), LM Studio, or vLLM; otherwise Tower uses its text format, which works everywhere but depends more on the model. Leave Tool calls on *Auto*: the **Tool response check** row in Settings › Tower assistant probes the primary and fallback models once and shows *Tools OK* (filled = built-in, outlined = text format), *No tool support* or *small model*; **Verify** re-runs it after a server or model change.
 - **Fallback:** with a second chat model loaded, switch Fallback model on so a timeout, a failed check or a model that keeps writing tool calls as text hands the question to the other model.
 - **Measure it:** the **Model evaluation** row in Settings › Tower assistant runs a handful of canned questions through Tower against the primary model (plain reads, a host named by alias, a two-step read, a timer, an action proposal, and a question card when two hostnames share a prefix) and scores each: the right tool with the right arguments, the right kind of reply, a real answer. More calls per question, corrections and retries mean a weaker model. Nothing changes on any host (every action card is denied, every question card takes its first choice); results are kept per model with its quant and server, listed in the Tools tab ledger, and **Export** downloads the full JSON.
-- **Download a Tower model:** the row below it lists recommended models by the VRAM they need (Qwen3.5 4B / 9B, Nemotron 3 Nano 4B, Gemma 4 E4B / 12B / 26B-A4B, Qwen3 8B), capped at 14B dense plus one mixture-of-experts: bigger models cost first-token time and VRAM on every question without a better score. Q4_K_M is the floor (lower quants start dropping tool calls); the 12 GB and 16 GB tiers offer the 9B and 12B at Q6 instead. Every entry has a thinking mode the Thinking setting can switch, and its grade is the median of three Tower checks (8 of 8 = high, 6 or 7 = good; anything lower is not listed), shown as *expected* until the model has a check of its own. **Download** fetches one to any llama.cpp or LM Studio host (primaries listed first), loads it, runs the tool check and the eval, and then offers **Pin as primary**; the fallback stays as configured. On a llama.cpp host the model gets a config profile named **tower** (32k context, 99 GPU layers, flash attention, jinja, ubatch 1024, temperature 0.2, reasoning on with a 2048-token budget) that LLM Control shows as its active profile, and on either host the alias **Tower Model** unless it already has one. A model kept for Tower takes VRAM away from what the host serves, and on a llama.cpp host the server restarts after the download, so what it was serving is unloaded until it is loaded again; the Download button says so before it starts. **Stop** on a llama.cpp download also removes the half-finished files from the host's cache; on LM Studio it ends the job here only, and the download has to be cancelled in LM Studio as well (the row says so, and a download cancelled in LM Studio ends the job here). LM Studio loads the model with a 32k context and a 2048 batch; temperature is per request, and Tower sends its own. The Primary model list shows each model with its server and hosts, and marks a pinned model the gateway no longer lists as *not available*.
+- **Download a Tower model:** the row below it lists recommended models by the VRAM they need (Qwen3.5 4B / 9B, Nemotron 3 Nano 4B, Gemma 4 E4B / 12B / 26B-A4B, Qwen3 8B), capped at 14B dense plus one mixture-of-experts: bigger models cost first-token time and VRAM on every question without a better score. Q4_K_M is the floor (lower quants start dropping tool calls); the 12 GB and 16 GB tiers offer the 9B and 12B at Q6 instead. Every entry has a thinking mode the Thinking setting can switch, and its grade is the median of three Tower checks (8 of 8 = high, 6 or 7 = good; anything lower is not listed), shown as *expected* until the model has a check of its own. **Download** fetches one to any llama.cpp or LM Studio host (primaries listed first), loads it, runs the tool check and the eval, and then offers **Pin as primary**; the fallback stays as configured. On a llama.cpp host the model gets a config profile named **tower** (32k context, 99 GPU layers, flash attention, jinja, ubatch 1024, temperature 0.2, reasoning on with a 2048-token budget) that LLM Control shows as its active profile, and on either host the name **Tower Model · <model>** (for example *Tower Model · qwen3.5-9b@q6_k*) unless you have already named it. Only the newest Tower download carries that name; earlier Tower models go back to their model ID. A model kept for Tower takes VRAM away from what the host serves, and on a llama.cpp host the server restarts after the download, so what it was serving is unloaded until it is loaded again; the Download button says so before it starts. **Stop** on a llama.cpp download also removes the half-finished files from the host's cache; on LM Studio it ends the job here only, and the download has to be cancelled in LM Studio as well (the row says so, and a download cancelled in LM Studio ends the job here). LM Studio loads the model with a 32k context and a 2048 batch; temperature is per request, and Tower sends its own. The Primary model list shows each model with its server and hosts, and marks a pinned model the gateway no longer lists as *not available*.
 
 It starts scoped down: "Capabilities" defaults to read (answer only), and off-topic questions are refused. Both can be relaxed later in the same settings group, as can the tool list (Available tools).
 
@@ -1008,6 +1008,27 @@ New installs and the .deb/.rpm packages already include it. Agents installed bef
 The updated helper only edits a service that runs as the agent's user: the service file needs a `User=` line naming that user. A service without `User=` (it would run as root) or with another user is left alone, and the dashboard tells you which line to add. Start, stop and restart still work for it.
 
 ---
+
+## Using an LM Studio server you run yourself
+
+LM Studio is not a system service, so you start it yourself, as you would on a desktop. The agent looks for it and fills in its own settings:
+
+- **The server and its port.** The agent finds the running LM Studio server and the port it listens on (LM Studio's own default is 1234).
+- **The `lms` command.** The agent looks at the path you set in `LMS_CMD`, then the LM Studio user's `~/.lmstudio/bin/lms`, then `lms` on the PATH, then `/usr/local/bin/lms` and `/opt/homebrew/bin/lms`.
+- **The user it runs as.** The agent notes which user started LM Studio.
+
+When the agent is left to find servers by itself (the default), a server you start later is noticed within about 5 minutes.
+
+The LM Studio card on the dashboard tells you what it found:
+
+- **Found settings:** the card lists them and shows a **Save** button that writes them to the agent config.
+- **Server not running:** the card offers **Start**, or you can run `lms server start` on the host.
+- **Runs as a different user:** the card names the user LM Studio runs as.
+- **`lms` not found:** the card says so; set `LMS_CMD` to its full path.
+
+**Start** and **Stop** run the `lms` command as the agent's user; they do not use systemd.
+
+Run the agent and LM Studio as the same user. If the agent cannot see another user's LM Studio on a port other than the default, set `LMS_API_URL` to its address.
 
 ## Updating
 
