@@ -106,12 +106,13 @@ def _precheck() -> str:
 
 def _run_precheck(tmp_path: Path, fake_out: str, flags: str = "") -> subprocess.CompletedProcess:
     (tmp_path / "detect_llama.py").write_text(f"print({fake_out!r})\n")
+    (tmp_path / "detect_lms.py").write_text("print('LMS_DETECTED_FOUND=false')\n")
     script = "\n".join([
         "set -euo pipefail",
         f"TMPL_DIR={tmp_path}",
         "_user_exists() { [[ \"$1\" == llama || \"$1\" == root ]]; }",
-        _func("_run_detect_llama_py"), _func("_propose_agent_user"),
-        "ROLE=auto LLAMA_FLAG_EXPLICIT=false INSTALL_LLAMA=false USER_ARG=llmsys",
+        _func("_run_detect_llama_py"), _func("_run_detect_lms_py"), _func("_propose_agent_user"),
+        "ROLE=auto LLAMA_FLAG_EXPLICIT=false LMS_FLAG_EXPLICIT=false INSTALL_LLAMA=false USER_ARG=llmsys",
         flags, _precheck(), 'echo "USER=$USER_ARG"',
     ])
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True,

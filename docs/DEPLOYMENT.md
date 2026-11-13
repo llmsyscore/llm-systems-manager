@@ -528,7 +528,7 @@ The agent attempts to configure itself. If your inference servers run on differe
 | Key | What it points at | Default |
 |---|---|---|
 | `LLAMA_API_URL` | Your `llama-server` HTTP endpoint (llama.cpp has announced the default port moves to `:9931`) | `http://localhost:8080` |
-| `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1235` |
+| `LMS_API_URL` | Your LM Studio API endpoint | `http://localhost:1234` |
 | `LLAMA_BIN` | Path to the `llama-server` binary (only needed for the agent's auto-restart / config-edit flows) | found by the installer |
 | `LLAMA_CONFIG_INI` | Path to `config.ini` driving `llama-server` | found by the installer |
 | `LLAMA_LOG_FILE` | Path to `llama-server.log` (for log-tail + state detection) | found by the installer |
@@ -1008,6 +1008,27 @@ New installs and the .deb/.rpm packages already include it. Agents installed bef
 The updated helper only edits a service that runs as the agent's user: the service file needs a `User=` line naming that user. A service without `User=` (it would run as root) or with another user is left alone, and the dashboard tells you which line to add. Start, stop and restart still work for it.
 
 ---
+
+## Using an LM Studio server you run yourself
+
+LM Studio is not a system service, so you start it yourself, as you would on a desktop. The agent looks for it and fills in its own settings:
+
+- **The server and its port.** The agent finds the running LM Studio server and the port it listens on (LM Studio's own default is 1234).
+- **The `lms` command.** The agent looks at the path you set in `LMS_CMD`, then the LM Studio user's `~/.lmstudio/bin/lms`, then `lms` on the PATH, then `/usr/local/bin/lms` and `/opt/homebrew/bin/lms`.
+- **The user it runs as.** The agent notes which user started LM Studio.
+
+When the agent is left to find servers by itself (the default), a server you start later is noticed within about 5 minutes.
+
+The LM Studio card on the dashboard tells you what it found:
+
+- **Found settings:** the card lists them and shows a **Save** button that writes them to the agent config.
+- **Server not running:** the card offers **Start**, or you can run `lms server start` on the host.
+- **Runs as a different user:** the card names the user LM Studio runs as.
+- **`lms` not found:** the card says so; set `LMS_CMD` to its full path.
+
+**Start** and **Stop** run the `lms` command as the agent's user; they do not use systemd.
+
+Run the agent and LM Studio as the same user. If the agent cannot see another user's LM Studio on a port other than the default, set `LMS_API_URL` to its address.
 
 ## Updating
 

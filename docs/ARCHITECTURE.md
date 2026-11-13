@@ -164,7 +164,7 @@ subsystems, each in its own module:
 
 ### How the manager talks to LM Studio
 
-The manager never dials LM Studio itself: every call goes to the agent on the LM Studio host, which forwards it to the LM Studio server on that host (`LMS_API_URL`, port 1235 by default). Two LM Studio APIs are in use:
+The manager never dials LM Studio itself: every call goes to the agent on the LM Studio host, which forwards it to the LM Studio server on that host (`LMS_API_URL`, port 1234 by default). Two LM Studio APIs are in use:
 
 | API | Agent route | Used for |
 |---|---|---|

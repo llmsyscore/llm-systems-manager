@@ -146,3 +146,8 @@ def test_llama_cache_and_models_dir_values_preserved_by_reconcile(tmp_path):
     out, _ = _run(tmp_path, live, (_AGENT_ROOT / "agent_config.yaml.example").read_text())
     assert re.search(r'^LLAMA_CACHE_DIR:\s+"/x/cache"', out, re.M)
     assert re.search(r'^LLAMA_MODELS_DIR:\s+"/x/models"', out, re.M)
+
+
+def test_default_lms_api_url_is_1234():
+    src = (_AGENT_ROOT / "llm-systems-agent.py").read_text()
+    assert re.search(r'^\s+LMS_API_URL: str = "http://localhost:1234"$', src, re.M)

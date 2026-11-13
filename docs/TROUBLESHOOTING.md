@@ -155,7 +155,7 @@ The `llama-server` came from a package (`apt`, `dnf`), from Homebrew, or sits in
 ## LM Studio and vLLM
 
 **The agent does not see LM Studio.**
-Set `LMS_ENABLED: true` in the agent config. The agent expects LM Studio's server on port 1235; if yours uses another port (LM Studio's own default is 1234), set `LMS_API_URL`. If the `lms` command is not on the path, set `LMS_CMD`.
+Set `LMS_ENABLED: true` in the agent config. The agent finds LM Studio's server and the `lms` command by itself, and the dashboard offers a **Save** button for what it found. Set `LMS_API_URL` or `LMS_CMD` only when they are not found.
 
 **A large LM Studio model is reported as failed to load, then appears loaded.**
 Large models can take minutes to load. Raise `LMS_LOAD_TIMEOUT_S` (default 180, keep it under 200).

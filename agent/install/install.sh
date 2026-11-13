@@ -586,6 +586,7 @@ _compute_required_install_files() {
     "$SRC_DIR/bench/speed_bench.py"
     "$SRC_DIR/bench/requirements-bench.txt"
     "$TMPL_DIR/detect_llama.py"
+    "$TMPL_DIR/detect_lms.py"
   )
   case "$(uname -s)" in
     Linux)
@@ -1590,11 +1591,13 @@ if $DO_UPDATE; then
     $SUDO rm -rf "$INSTALL_DIR/$_pkg"
     $SUDO mv "$INSTALL_DIR/$_pkg.new" "$INSTALL_DIR/$_pkg"
   done
-  # detect_llama.py is imported by the agent from <install>/install.
+  # detect_llama.py and detect_lms.py are imported by the agent from <install>/install.
   $SUDO mkdir -p "$INSTALL_DIR/install"
   $SUDO cp "$TMPL_DIR/detect_llama.py" "$INSTALL_DIR/install/detect_llama.py"
+  $SUDO cp "$TMPL_DIR/detect_lms.py" "$INSTALL_DIR/install/detect_lms.py"
   $SUDO chmod 0755 "$INSTALL_DIR/install"
   $SUDO chmod 0644 "$INSTALL_DIR/install/detect_llama.py"
+  $SUDO chmod 0644 "$INSTALL_DIR/install/detect_lms.py"
   $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/install"
   # Same stage-then-rename swap for the top-level .py files.
   for _f in llm-systems-agent.py buffered_metric_client.py _utils.py \
@@ -2458,21 +2461,45 @@ _run_detect_llama_py() {
   eval "$(python3 "$TMPL_DIR/detect_llama.py" --port "${1:-}" --sh 2>/dev/null || true)"
 }
 
-# Fresh installs: proposes the llama-server's non-root user as the agent user (prompts on a TTY).
+# Runs detect_lms.py and evals its LMS_DETECTED_* lines.
+_run_detect_lms_py() {
+  LMS_DETECTED_FOUND="" LMS_DETECTED_PROCESS_USER="" LMS_DETECTED_PORT=""
+  LMS_DETECTED_API_URL="" LMS_DETECTED_LMS_CMD="" LMS_DETECTED_LMS_USER=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "      ⓘ python3 not found; LM Studio not detected"
+    return 0
+  fi
+  eval "$(python3 "$TMPL_DIR/detect_lms.py" --sh 2>/dev/null || true)"
+}
+
+# Fresh installs: proposes the llama-server's (else LM Studio's) non-root user as the agent user (prompts on a TTY).
 _propose_agent_user() {
-  local _srv="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}" _v=""
+  local _srv="${LLAMA_DETECTED_UNIT_USER:-${LLAMA_DETECTED_PROCESS_USER:-}}" _v="" _name="llama-server" _home=""
+  if [[ -z "$_srv" || "$_srv" == "root" ]] || ! _user_exists "$_srv"; then
+    _srv="${LMS_DETECTED_PROCESS_USER:-}" _name="LM Studio"
+    # No running server: the lms file's owner, only when lms sits inside that user's own home.
+    if [[ -z "$_srv" && -n "${LMS_DETECTED_LMS_USER:-}" ]]; then
+      _home="$(getent passwd "$LMS_DETECTED_LMS_USER" 2>/dev/null | cut -d: -f6 || true)"
+      _home="${_home%/}"
+      if [[ -n "$_home" && "${LMS_DETECTED_LMS_CMD:-}" == "$_home"/* ]]; then _srv="$LMS_DETECTED_LMS_USER"; fi
+    fi
+  fi
   [[ -z "${EXISTING_USER:-}" && "${USER_ARG_EXPLICIT:-false}" != true ]] || return 0
   [[ -n "$_srv" && "$_srv" != "root" && "$_srv" != "$USER_ARG" && -z "${LLAMA_USER_PROPOSED:-}" ]] || return 0
   _user_exists "$_srv" || return 0
   LLAMA_USER_PROPOSED=1
-  echo "      llama-server runs as $_srv; running the agent as the same user lets it see the server's models and presets."
+  if [[ "$_name" == "LM Studio" ]]; then
+    echo "      LM Studio runs as $_srv; running the agent as the same user lets it see the server's models."
+  else
+    echo "      llama-server runs as $_srv; running the agent as the same user lets it see the server's models and presets."
+  fi
   if [[ -t 0 ]]; then
     read -rp "      Agent run-as user [$_srv]: " _v
     _v="${_v:-$_srv}"
     if _user_exists "$_v"; then USER_ARG="$_v"; else echo "      ⚠ user '$_v' not found; keeping '$USER_ARG'"; fi
   else
     USER_ARG="$_srv"
-    echo "      ⓘ running the agent as $_srv (llama-server's user)"
+    echo "      ⓘ running the agent as $_srv (${_name}'s user)"
   fi
 }
 
@@ -2529,10 +2556,13 @@ if [[ -n "$DESCRIPTION_OVERRIDE" ]]; then
   fi
   echo "  ✓ description: '$DESCRIPTION_OVERRIDE'"
 fi
-# Fresh auto installs: a running llama-server's user replaces a missing default user before the account step.
-if [[ "$ROLE" == "auto" ]] && ! { $LLAMA_FLAG_EXPLICIT && ! $INSTALL_LLAMA; } && ! _user_exists "$USER_ARG"; then
-  _run_detect_llama_py ""
-  [[ "${LLAMA_DETECTED_FOUND:-}" != true ]] || _propose_agent_user
+# Fresh auto installs: a running llama-server's user (else LM Studio's) replaces a missing default user before the account step.
+if [[ "$ROLE" == "auto" ]] && ! _user_exists "$USER_ARG"; then
+  { $LLAMA_FLAG_EXPLICIT && ! $INSTALL_LLAMA; } || _run_detect_llama_py ""
+  $LMS_FLAG_EXPLICIT || _run_detect_lms_py
+  if [[ "${LLAMA_DETECTED_FOUND:-}" == true || "${LMS_DETECTED_FOUND:-}" == true ]]; then
+    _propose_agent_user
+  fi
 fi
 while ! _user_exists "$USER_ARG"; do
   echo "  ✗ user '$USER_ARG' does not exist on this system"
@@ -3333,109 +3363,24 @@ _detect_lms() {
   echo
   echo "  • LM Studio"
 
-  # Tracks the port auto-detect already populated, so the post-detect prompt
-  # block knows what's still missing.
-  local detected_port=""
-
-  # a) process check (matches both 'lmstudio' and 'lm-studio' variants)
-  if _proc_running 'lmstudio|lm-studio'; then
-    local pid
-    pid="$(pgrep -f 'lmstudio|lm-studio' | head -1)"
-    echo "      ✓ found running LM Studio process (pid $pid)"
+  # a) detect_lms.py: running server (owner, port) or an installed lms command.
+  _run_detect_lms_py
+  if [[ "${LMS_DETECTED_FOUND:-}" == true ]]; then
     ENABLE_LMS=true
-
-     local _lms_bin=""
-    if _lms_bin="$(_first_existing \
-                    "$(command -v lms 2>/dev/null)" \
-                    "$HOME/.lmstudio/bin/lms" \
-                    "/usr/local/bin/lms" \
-                    "/opt/homebrew/bin/lms")"; then
-      LMS_CMD_OVERRIDE="$_lms_bin"
-      echo "      ✓ lms CLI discovered at: $_lms_bin"
-    else
-      echo "      ⓘ lms CLI not in any known location — prompt will let you set the path"
+    [[ -z "${LMS_DETECTED_API_URL:-}" ]] || LMS_API_URL_OVERRIDE="$LMS_DETECTED_API_URL"
+    [[ -z "${LMS_DETECTED_LMS_CMD:-}" ]] || LMS_CMD_OVERRIDE="$LMS_DETECTED_LMS_CMD"
+    local _srv="not running"
+    if [[ -n "${LMS_DETECTED_API_URL:-}" && -n "${LMS_DETECTED_PORT:-}" ]]; then
+      _srv="running on port $LMS_DETECTED_PORT"
     fi
-
-    if command -v lms >/dev/null 2>&1; then
-      local _lms_status
-      _lms_status="$(lms status 2>/dev/null || true)"
-      if echo "$_lms_status" | grep -qE "Server: ON|running"; then
-        local _p
-        _p="$(echo "$_lms_status" | grep -oE 'port:\s*[0-9]+' | grep -oE '[0-9]+' | head -1)"
-        if [[ -n "$_p" ]]; then
-          detected_port="$_p"
-          LMS_API_URL_OVERRIDE="http://127.0.0.1:$_p"
-          LMS_CMD_OVERRIDE="$(command -v lms)"
-          echo "      ✓ port $_p discovered via 'lms status'"
-        fi
-      fi
-    fi
-    if [[ -z "$detected_port" ]]; then
-      for _try_port in 1234 1235; do
-        if [[ "$(_probe_http_code "http://127.0.0.1:$_try_port/v1/models")" == "200" ]]; then
-          detected_port="$_try_port"
-          LMS_API_URL_OVERRIDE="http://127.0.0.1:$_try_port"
-          echo "      ✓ port $_try_port discovered via HTTP probe"
-          break
-        fi
-      done
-    fi
-    if [[ -z "$detected_port" ]] && command -v lsof >/dev/null 2>&1; then
-      # lsof can list listening TCP ports for a pid. Format varies by
-      # platform; the simplest portable approach is grep for ":<port> (LISTEN)".
-      local _lsof_port
-      _lsof_port="$(lsof -nP -iTCP -sTCP:LISTEN -p "$pid" 2>/dev/null \
-                    | awk '{print $9}' | grep -oE ':[0-9]+$' | tr -d ':' | head -1)"
-      if [[ -n "$_lsof_port" ]]; then
-        detected_port="$_lsof_port"
-        LMS_API_URL_OVERRIDE="http://127.0.0.1:$_lsof_port"
-        echo "      ✓ port $_lsof_port discovered via lsof"
-      fi
-    fi
-    if [[ -z "$detected_port" ]]; then
-      echo "      ⓘ port not auto-discovered — prompt will default to 1234 (override at the prompt)"
-    fi
-  # b) HTTP API on default port 1234
-  elif [[ "$(_probe_http_code http://127.0.0.1:1234/v1/models)" == "200" ]]; then
-    echo "      ✓ HTTP API responding at http://127.0.0.1:1234"
-    LMS_API_URL_OVERRIDE="http://127.0.0.1:1234"
-    detected_port="1234"
-    ENABLE_LMS=true
-    # HTTP says LMS is up; find the lms CLI to drive it.
-    local _lms_bin=""
-    if _lms_bin="$(_first_existing \
-                    "$(command -v lms 2>/dev/null)" \
-                    "$HOME/.lmstudio/bin/lms" \
-                    "/usr/local/bin/lms" \
-                    "/opt/homebrew/bin/lms")"; then
-      LMS_CMD_OVERRIDE="$_lms_bin"
-      echo "      ✓ lms CLI discovered at: $_lms_bin"
-    fi
-  # c) lms binary + 'lms status' check
-  elif command -v lms >/dev/null 2>&1; then
-    local lms_path
-    lms_path="$(command -v lms)"
-    local lms_status
-    lms_status="$(lms status 2>/dev/null || true)"
-    if echo "$lms_status" | grep -qE "Server: ON|running"; then
-      local _port
-      _port="$(echo "$lms_status" | grep -oE 'port:\s*[0-9]+' | grep -oE '[0-9]+' | head -1)"
-      _port="${_port:-1235}"
-      echo "      ✓ 'lms status' reports server ON at port $_port (binary: $lms_path)"
-      LMS_CMD_OVERRIDE="$lms_path"
-      LMS_API_URL_OVERRIDE="http://127.0.0.1:$_port"
-      detected_port="$_port"
-      ENABLE_LMS=true
-    else
-      echo "      ⓘ lms binary present at $lms_path but server is not running"
-      LMS_CMD_OVERRIDE="$lms_path"
-      # Don't auto-enable; treat as not-found and prompt below
-    fi
+    echo "      Found LM Studio: server $_srv, lms ${LMS_DETECTED_LMS_CMD:-not found}," \
+         "runs as ${LMS_DETECTED_PROCESS_USER:-${LMS_DETECTED_LMS_USER:-unknown}}"
+    _propose_agent_user
   fi
 
-  # d) Not detected at all → ask the user whether to configure manually.
+  # b) Not detected at all → ask the user whether to configure manually.
   if ! $ENABLE_LMS; then
-    echo "      ✗ no LM Studio process; default port 1234 not reachable; lms not running"
+    echo "      ✗ no LM Studio server and no lms command found"
     if [[ ! -t 0 ]]; then
       echo "      → skipped (stdin is not a TTY for prompting)"
       return
@@ -3448,20 +3393,7 @@ _detect_lms() {
   fi
 
   if [[ ! -t 0 ]]; then
-    # No TTY: do best-effort defaults so the config has *something* useful.
-    if [[ -z "$LMS_CMD_OVERRIDE" ]]; then
-      if command -v lms >/dev/null 2>&1; then
-        LMS_CMD_OVERRIDE="$(command -v lms)"
-      elif [[ "$AGENT_OS" == "macos" ]]; then
-        LMS_CMD_OVERRIDE="$HOME/.lmstudio/bin/lms"
-      else
-        LMS_CMD_OVERRIDE="/usr/local/bin/lms"
-      fi
-    fi
-    if [[ -z "$LMS_API_URL_OVERRIDE" ]]; then
-      LMS_API_URL_OVERRIDE="http://127.0.0.1:${detected_port:-1234}"
-    fi
-    echo "      ⓘ no TTY; using best-guess: cmd=$LMS_CMD_OVERRIDE url=$LMS_API_URL_OVERRIDE"
+    echo "      ⓘ no TTY; using detected settings: cmd=${LMS_CMD_OVERRIDE:-default} url=${LMS_API_URL_OVERRIDE:-default}"
     return
   fi
 
@@ -3483,11 +3415,9 @@ _detect_lms() {
     echo "      ⚠ '$LMS_CMD_OVERRIDE' not found at that path — agent will retry at runtime"
   fi
 
-  # Confirm/override API URL. The default LM Studio CLI server runs on
-  # 1234 (UI-attached) or 1235 (headless). Prefer whatever auto-detect
-  # found; otherwise 1234.
+  # Confirm/override API URL; defaults to the detected server, else port 1234.
   local _default_url
-  _default_url="${LMS_API_URL_OVERRIDE:-http://127.0.0.1:${detected_port:-1234}}"
+  _default_url="${LMS_API_URL_OVERRIDE:-http://127.0.0.1:1234}"
   read -rp "      API URL [$_default_url]: " _v
   LMS_API_URL_OVERRIDE="${_v:-$_default_url}"
   # Auto-prepend http:// if the user typed "127.0.0.1:1234"
@@ -4261,11 +4191,13 @@ for _pkg in collectors providers bench; do
   $SUDO cp -r "$SRC_DIR/$_pkg" "$INSTALL_DIR/$_pkg"
   $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/$_pkg"
 done
-# detect_llama.py is imported by the agent from <install>/install.
+# detect_llama.py and detect_lms.py are imported by the agent from <install>/install.
 $SUDO mkdir -p "$INSTALL_DIR/install"
 $SUDO cp "$TMPL_DIR/detect_llama.py" "$INSTALL_DIR/install/detect_llama.py"
+$SUDO cp "$TMPL_DIR/detect_lms.py" "$INSTALL_DIR/install/detect_lms.py"
 $SUDO chmod 0755 "$INSTALL_DIR/install"
 $SUDO chmod 0644 "$INSTALL_DIR/install/detect_llama.py"
+$SUDO chmod 0644 "$INSTALL_DIR/install/detect_lms.py"
 $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/install"
 $SUDO cp "$SRC_DIR/llm-systems-agent.py"      "$INSTALL_DIR/"
 $SUDO cp "$SRC_DIR/buffered_metric_client.py" "$INSTALL_DIR/"

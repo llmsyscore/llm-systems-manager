@@ -333,3 +333,12 @@ def test_unload_timeout_defaults_to_60s(lms):
     s = _set_ctx(lms, _Session(loaded={"m"}))
     lms.lms_unload_endpoint({"model": "m"}, authorization=None)
     assert s.posts[0][2] == 60
+
+
+def test_ps_nonzero_exit_logs_without_traceback(lms, monkeypatch, caplog):
+    monkeypatch.setattr(lms.subprocess, "check_output",
+                        _raise(subprocess.CalledProcessError(1, ["lms", "ps", "--json"])))
+    with caplog.at_level("WARNING"):
+        assert lms.lms_get_ps() is None
+    recs = [r for r in caplog.records if "lms ps" in r.getMessage()]
+    assert recs and all(r.exc_info is None for r in recs)

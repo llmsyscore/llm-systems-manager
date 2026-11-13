@@ -18,6 +18,7 @@ case "$1" in
     fi
     # Debconf answers win; detection (payload is unpacked by now) fills the rest.
     llmsys_agent_detect_llama
+    llmsys_agent_detect_lms
     llmsys_agent_configure "${2:-}"
     ;;
 esac

@@ -7,17 +7,21 @@ import logging
 import os
 import pwd
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import requests
 from fastapi import Header, HTTPException, Request
 
 from . import _shared
+from . import llama_inventory
 from . import residency
 
 # PR2: minimal spec the agent's heartbeat body emits — see providers/llama.py.
@@ -30,8 +34,13 @@ PROVIDER_SPEC = {
 log = logging.getLogger("llm-systems-agent.providers.lms")
 
 _residency_inputs: dict = {"models": [], "server": "unknown"}
+# Last /v1/models answer: True ok, False failed, None not probed yet.
+_api_ok: Optional[bool] = None
+# Last `lms server status` "on" read by a sample; None when unread or failed.
+_server_on: Optional[bool] = None
 
 _ctx = None
+_default_cmd: Optional[str] = None
 
 _lms_session: Optional[requests.Session] = None
 _lms_session_lock = threading.Lock()
@@ -56,8 +65,9 @@ _LMS_LOG_IGNORE = (
 
 
 def set_context(ctx) -> None:
-    global _ctx
+    global _ctx, _default_cmd
     _ctx = ctx
+    _default_cmd = _compute_default_lms_cmd()
 
 
 def _require_ctx():
@@ -79,12 +89,15 @@ def _get_session() -> requests.Session:
 # ── Public collectors (called from _build_metric_sample in main) ────────
 
 def lms_get_models() -> list[dict[str, Any]]:
+    global _api_ok
     ctx = _require_ctx()
     try:
         r = _get_session().get(f"{ctx.config.LMS_API_URL}/v1/models", timeout=3)
+        _api_ok = bool(r.ok)
         if r.ok:
             return r.json().get("data", []) or []
     except Exception as e:
+        _api_ok = False
         log.debug("LMS /v1/models unreachable: %s", e)
     return []
 
@@ -152,6 +165,9 @@ def _lms_read_ps() -> "tuple[list[dict[str, Any]] | None, str | None]":
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
         log.debug("lms ps --json parse failure: %s", e)
         return None, f"lms ps parse failure: {e}"
+    except subprocess.CalledProcessError as e:
+        log.warning("lms ps --json exited with status %s", e.returncode)
+        return None, f"lms ps failed: exit {e.returncode}"
     except Exception as e:
         log.warning("lms ps --json failed: %s", e, exc_info=True)
         return None, f"lms ps failed: {e}"
@@ -172,7 +188,7 @@ def lms_get_status() -> dict[str, Any]:
             _lms_status_timeout_count = 0
         data = json.loads(out.strip())
         on = data.get("running", data.get("on", data.get("status") == "running"))
-        port = int(data.get("port", 1235))
+        port = int(data.get("port", 1234))
         return {"on": bool(on), "port": port, "raw": out.strip()}
     except subprocess.TimeoutExpired:
         with _lms_counter_lock:
@@ -196,7 +212,9 @@ def lms_get_status() -> dict[str, Any]:
 
 def lms_sample_block() -> dict[str, Any]:
     """The `lms` block of a metric sample; ps_ok/ps_error say whether `ps` was read."""
+    global _server_on
     server = lms_get_status()
+    _server_on = server.get("on")
     models = lms_get_models()
     ps, err = _lms_read_ps()
     models_list, srv = residency.lms_models_from_ps(ps, server.get("on"), time.time())
@@ -443,6 +461,235 @@ def lms_server_log_endpoint(authorization: Optional[str] = Header(default=None))
         return {"ok": True, "lines": filtered, "source": str(target)}
     except Exception as e:
         return {"ok": False, "lines": [], "error": str(e)}
+
+
+# ── Run-time detection and saved settings (#1422) ─────────────────────
+
+_DEFAULT_API_URL = "http://localhost:1234"
+_REDETECT_EVERY_S = 300.0
+_redetect_last: "Optional[float]" = None
+_detected: dict[str, str] = {}
+_last_det: dict[str, Any] = {"running": False, "process_user": "", "lms_user": ""}
+_auto_enabled = False
+_saved = False
+
+
+class _Reply:
+    """Minimal JSON reply used when fastapi's JSONResponse is unavailable."""
+
+    def __init__(self, status_code: int, content: Any):
+        self.status_code = status_code
+        self.body = json.dumps(content).encode()
+
+
+def _json_reply(status: int, content: Any) -> Any:
+    try:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=status, content=content)
+    except ImportError:
+        return _Reply(status, content)
+
+
+def _compute_default_lms_cmd() -> str:
+    """The agent's built-in LMS_CMD default (same rule as _detect_default_lms_cmd in the agent)."""
+    found = shutil.which("lms")
+    if found:
+        return found
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/.lmstudio/bin/lms")
+    return "/usr/local/bin/lms"
+
+
+def _default_lms_cmd() -> str:
+    """The LMS_CMD default computed at set_context(); computed now if no context is set yet."""
+    return _default_cmd if _default_cmd is not None else _compute_default_lms_cmd()
+
+
+def _norm_url(u: str) -> str:
+    """Comparable form of a URL or path: localhost → 127.0.0.1, no trailing slash."""
+    return u.rstrip("/").replace("localhost", "127.0.0.1")
+
+
+def _defaults() -> "dict[str, str]":
+    return {"LMS_API_URL": _DEFAULT_API_URL, "LMS_CMD": _default_lms_cmd()}
+
+
+def _is_default(key: str, value: str, defaults: "dict[str, str]") -> bool:
+    return not value or _norm_url(value) == _norm_url(defaults[key])
+
+
+def _api_port(url: str) -> "Optional[int]":
+    try:
+        return urlparse(url or "").port
+    except ValueError:
+        return None
+
+
+def _detect_module() -> Any:
+    """Import the installer's detect_lms module from the frozen, source or installed tree."""
+    cands = []
+    if getattr(sys, "frozen", False):
+        cands.append(Path(getattr(sys, "_MEIPASS", "")) / "install")
+    cands.append(Path(__file__).resolve().parents[1] / "install")
+    inst = (getattr(getattr(_ctx, "config", None), "AGENT_INSTALL_DIR", "") or "") if _ctx else ""
+    if inst:
+        cands.append(Path(inst) / "install")
+    for c in cands:
+        if (c / "detect_lms.py").is_file():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            break
+    import detect_lms  # type: ignore[import-not-found]
+    return detect_lms
+
+
+def _run_detect(cfg, cmd_hint: str) -> Any:
+    """One detector pass; remembers whether a server runs and its owner for the settings block."""
+    d = _detect_module().detect(port_hint=_api_port(getattr(cfg, "LMS_API_URL", "")), cmd_hint=cmd_hint,
+                                agent_user=(getattr(cfg, "AGENT_USER", "") or ""))
+    _last_det.update(running=bool(d.running), process_user=d.process_user or "",
+                     lms_user=getattr(d, "lms_user", "") or "")
+    return d
+
+
+def _refresh_facts(cfg) -> None:
+    """Detector pass for the server's owner and process state only; CONFIG and _detected stay as they are."""
+    global _redetect_last
+    _redetect_last = time.monotonic()
+    try:
+        _run_detect(cfg, (getattr(cfg, "LMS_CMD", "") or "").strip())
+    except Exception as e:
+        log.debug("LM Studio owner check failed: %s", e)
+
+
+def _lms_settings_source() -> str:
+    if _detected or (_auto_enabled and not _saved):
+        return "detected"
+    cfg = _require_ctx().config
+    defaults = _defaults()
+    if _saved or any(not _is_default(k, (getattr(cfg, k, "") or "").strip(), defaults) for k in defaults):
+        return "saved"
+    return "default"
+
+
+def lms_settings_block() -> dict[str, Any]:
+    """The `lms.settings` block of a sample: where the URL and lms path came from, and who runs the server."""
+    cfg = _require_ctx().config
+    cmd = (getattr(cfg, "LMS_CMD", "") or "").strip()
+    running = bool(_api_ok) or _server_on is True
+    return {"settings_source": _lms_settings_source(), "api_url": getattr(cfg, "LMS_API_URL", "") or "",
+            "lms_cmd": cmd, "cli_found": bool(cmd) and os.path.isfile(cmd), "running": bool(running),
+            "process_user": _last_det.get("process_user") or "", "agent_user": getattr(cfg, "AGENT_USER", "") or ""}
+
+
+def lms_startup_detect() -> None:
+    """Applies a detected API URL and lms path in memory when the setting is blank, default or detected before."""
+    global _redetect_last
+    cfg = _require_ctx().config
+    if not cfg.LMS_ENABLED:
+        return
+    _redetect_last = time.monotonic()
+    defaults = _defaults()
+    cur = {k: (getattr(cfg, k, "") or "").strip() for k in defaults}
+    open_keys = {k for k in defaults if _is_default(k, cur[k], defaults) or k in _detected}
+    if not open_keys:
+        _refresh_facts(cfg)
+        return
+    try:
+        d = _run_detect(cfg, "" if "LMS_CMD" in open_keys else cur["LMS_CMD"])
+    except Exception as e:
+        log.warning("LM Studio detection unavailable: %s", e)
+        return
+    found = {"LMS_API_URL": d.api_url or "", "LMS_CMD": d.lms_cmd or ""}
+    for k in open_keys:
+        v = found[k]
+        if not v or _norm_url(v) == _norm_url(cur[k]):
+            continue
+        setattr(cfg, k, v)
+        if _is_default(k, v, defaults):
+            _detected.pop(k, None)
+        else:
+            _detected[k] = v
+
+
+def lms_redetect_tick() -> None:
+    """Collector hook every 300 s: full detection while the API does not answer, else the owner check only."""
+    if _redetect_last is not None and time.monotonic() - _redetect_last < _REDETECT_EVERY_S:
+        return
+    try:
+        if _api_ok:
+            _refresh_facts(_require_ctx().config)
+        else:
+            lms_startup_detect()
+    except Exception as e:
+        log.debug("LM Studio re-detect failed: %s", e)
+
+
+def mark_auto_enabled() -> None:
+    """Records that start-up auto-detect turned LM Studio on; Save then writes LMS_ENABLED too."""
+    global _auto_enabled
+    _auto_enabled = True
+
+
+def lms_auto_enable_tick() -> bool:
+    """Collector hook for role=auto hosts with LM Studio off: enables it when a server or lms appears."""
+    global _redetect_last, _auto_enabled
+    cfg = _require_ctx().config
+    if cfg.LMS_ENABLED or not getattr(cfg, "_auto_role", False):
+        return False
+    if _redetect_last is not None and time.monotonic() - _redetect_last < _REDETECT_EVERY_S:
+        return False
+    _redetect_last = time.monotonic()
+    cmd = (getattr(cfg, "LMS_CMD", "") or "").strip()
+    try:
+        d = _run_detect(cfg, "" if _is_default("LMS_CMD", cmd, _defaults()) else cmd)
+    except Exception as e:
+        log.debug("LM Studio auto-enable probe failed: %s", e)
+        return False
+    if not d.found:
+        return False
+    cfg.LMS_ENABLED = True
+    _auto_enabled = True
+    role = getattr(cfg, "AGENT_ROLE", "")
+    if role == "vllm_host":
+        cfg.AGENT_ROLE = "mixed"
+    elif role in ("system_only", "llama_host"):
+        cfg.AGENT_ROLE = "mixed" if getattr(cfg, "LLAMA_ENABLED", False) else "lms_host"
+    log.warning("LM Studio found (port %s, lms %s): LM Studio support enabled; save the settings on the dashboard",
+                d.port or "?", d.lms_cmd or "none")
+    try:
+        lms_startup_detect()
+    except Exception as e:
+        log.debug("LM Studio auto-enable detection failed: %s", e)
+    return True
+
+
+def lms_settings_save(body: Optional[dict] = None, authorization: Optional[str] = Header(default=None)) -> Any:
+    """Writes the detected LM Studio settings into agent_config.yaml and marks them saved."""
+    global _saved
+    _require_ctx().check_bearer(authorization); _lms_check_enabled()
+    if _lms_settings_source() != "detected":
+        return _json_reply(409, {"reason": "not-detected", "detail": "There are no detected settings to save."})
+    cfg = _require_ctx().config
+    path = getattr(cfg, "_loaded_from", None)
+    if not path:
+        return _json_reply(500, {"error": "no agent_config.yaml is loaded"})
+    detected = dict(_detected)
+    auto_enabled = _auto_enabled
+    values: dict[str, Any] = {k: str(v) for k, v in detected.items() if v}
+    if auto_enabled:
+        for k in ("LMS_API_URL", "LMS_CMD"):
+            if (getattr(cfg, k, "") or "").strip():
+                values[k] = str(getattr(cfg, k)).strip()
+        values["LMS_ENABLED"] = True
+    try:
+        llama_inventory.set_yaml_keys(path, values)
+    except OSError as e:
+        log.warning("LM Studio settings save: %s", e)
+        return _json_reply(500, {"error": f"could not write the agent config ({_shared.err_kind(e)})"})
+    _detected.clear()
+    _saved = True
+    return {"ok": True, "saved": values, "settings_source": _lms_settings_source()}
 
 
 _LMS_LOAD_OPTIONS = ("context_length", "eval_batch_size", "physical_batch_size", "parallel", "flash_attention",
@@ -708,6 +955,7 @@ _ROUTES: tuple = (
     ("POST", "/lms/openai/completions",      lms_openai_completions),
     ("POST", "/lms/native/chat",             lms_native_chat),
     ("GET",  "/lms/native/models",           lms_native_models),
+    ("POST", "/lms/settings/save",           lms_settings_save),
 )
 
 

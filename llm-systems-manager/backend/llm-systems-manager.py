@@ -55,6 +55,7 @@ Local endpoints served:
     POST /api/lmstudio/server/start     — lms server start (proxied via primary LMS agent)
     POST /api/lmstudio/server/stop      — lms server stop (proxied via primary LMS agent)
     POST /api/lmstudio/server/restart   — lms server stop+start (proxied via primary LMS agent)
+    POST /api/lmstudio/settings/save    — save the detected LM Studio settings
     GET  /api/lmstudio/server/log       — recent LMS server log (proxied via primary LMS agent)
     POST /api/lmstudio/load             — load model in LM Studio (saved load preferences fill unset keys)
     GET/PUT/DELETE /api/lmstudio/load-prefs — per-model LM Studio load preferences (tuned load options)
@@ -181,7 +182,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.12-2"
+__version__ = "v2026.11.13-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3767,6 +3768,11 @@ def lmstudio_server_stop():
 @app.route("/api/lmstudio/server/restart", methods=["POST"])
 def lmstudio_server_restart():
     return proxies.proxy_to_primary("lms", "POST", "/lms/server/restart", timeout=60)
+@app.route("/api/lmstudio/settings/save", methods=["POST"])
+def lmstudio_settings_save():
+    if auth.effective_role() != "admin":
+        return jsonify({"ok": False, "error": "admin role required", "role_denied": True}), 403
+    return proxies.proxy_to_primary("lms", "POST", "/lms/settings/save", json={})
 @app.route("/api/lmstudio/server/log")
 def lmstudio_server_log():
     """Return recent LM Studio server log lines from the primary LMS agent."""
@@ -4234,6 +4240,7 @@ _AUDIT_LABELS: dict[str, str] = {
     "security.flood": "Request flood on the open routes",
     "llama.mode-switch": "Switched llama-server to multi-model mode",
     "llama.settings-save": "Saved the detected llama-server settings",
+    "lms.settings-save": "Saved the detected LM Studio settings",
     "service.restart": "Restarted a service", "auth.mode-change": "Changed the login mode",
     "auth.login": "Signed in", "auth.logout": "Signed out",
     "account.password": "Changed own password",
@@ -4336,6 +4343,7 @@ _AUDIT_ROUTES: list[tuple] = [
     ("POST",   re.compile(r"^/api/layout$"),                           "config.layout",      "config.layout"),
     ("POST",   re.compile(r"^/api/llm/mode$"),                         "llama.mode-switch",  "config.server"),
     ("POST",   re.compile(r"^/api/llm/settings/save$"),                "llama.settings-save", "config.server"),
+    ("POST",   re.compile(r"^/api/lmstudio/settings/save$"),           "lms.settings-save",  "config.server"),
     ("POST",   re.compile(r"^/api/llm/load$"),                         "llama.load",         "llama.model"),
     ("POST",   re.compile(r"^/api/llm/unload$"),                       "llama.unload",       "llama.model"),
     ("POST",   re.compile(r"^/api/lmstudio/load$"),                    "lms.load",           "lms.model"),
