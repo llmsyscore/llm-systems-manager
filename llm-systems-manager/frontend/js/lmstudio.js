@@ -455,7 +455,7 @@ function renderLMSModelCards(ps, models) {
   // poll would otherwise wipe the input mid-keystroke. We still update
   // the cached ps/models below so the next render after commit reflects
   // the latest state.
-  if (container.querySelector('.mc-name input')) {
+  if (container.querySelector('.mc-name input, .mc-rowname input')) {
     _lmsLastPs = ps; _lmsLastModels = models;
     return;
   }
@@ -597,6 +597,7 @@ function renderLMSModelCards(ps, models) {
       else if (act === 'bench') { MC.closeMenus(); lmsOpenTool('benchmark', id, { mode: 'live' }); }
       else if (act === 'autotune') { MC.closeMenus(); lmsOpenTool('autotune', id); }
       else if (act === 'untune') { MC.closeMenus(); lmsForgetTuned(id); }
+      else if (act === 'rename-name') { MC.closeMenus(); startLmsCardRename(MC.nameElOf(btn), id); }
     });
   }
 }

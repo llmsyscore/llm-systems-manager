@@ -29,8 +29,14 @@ function run(d, extraBootstrap = '') {
     bootstrap: `renderLmsSettingsNotices(${JSON.stringify(d)}, document.getElementById('c'));` + extraBootstrap,
   });
 }
-const texts = (s, server = {}) => run({}).eval(`lmsSettingsNotices(${JSON.stringify(s)}, ${JSON.stringify(server)})`)
-  .map(n => n.text.replace(/<[^>]+>/g, ''));
+const texts = (s, server = {}) => {
+  const w = run({});
+  return w.eval(`lmsSettingsNotices(${JSON.stringify(s)}, ${JSON.stringify(server)})`).map(n => {
+    const el = w.document.createElement('div');
+    el.innerHTML = n.text;
+    return el.textContent;
+  });
+};
 const btns = (w) => [...w.document.querySelectorAll('#c button')].map(b => b.textContent);
 const text = (w) => w.document.getElementById('c').textContent;
 const flush = () => new Promise(r => setTimeout(r, 0));

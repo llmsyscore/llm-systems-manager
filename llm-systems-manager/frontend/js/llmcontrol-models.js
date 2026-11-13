@@ -431,7 +431,7 @@ function renderModelCards() {
   // a background poll (status flip, periodic refresh) would replace
   // innerHTML and steal focus from the input the user is typing into.
   // The render will catch up on the next tick after the edit commits.
-  if (container.querySelector('.mc-name input')) return;
+  if (container.querySelector('.mc-name input, .mc-rowname input')) return;
   _llamaMode.render(container);
 
   const sortSel = document.getElementById('modelSortSel');
@@ -503,6 +503,7 @@ function renderModelCards() {
       else if (act === 'autotune') { MC.closeMenus(); toolsDeepLink('autotune', id); }
       else if (act === 'reverify') { MC.closeMenus(); toolsDeepLink('autotune', id, { verify: true }); }
       else if (act === 'rename') startCardRename(el, id);
+      else if (act === 'rename-name') { MC.closeMenus(); startCardRename(MC.nameElOf(el), id); }
       else if (act === 'profile-rename') renameProfile(id, el.dataset.name);
       else if (act === 'profile-delete') deleteProfile(id, el.dataset.name);
     });

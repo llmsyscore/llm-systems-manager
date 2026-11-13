@@ -110,6 +110,48 @@ describe('compact + row rendering', () => {
     expect(MC.compact(BASE)).toContain('aria-expanded="false"');
     expect(MC.compact(BASE)).toContain('mc-drawer');
   });
+  it('compact shows the model ID under a differing name, not under a bare ID', () => {
+    expect(MC.compact({ ...BASE, name: 'Tower Model · q' })).toContain('<div class="mc-repo" title="unsloth/Qwen-GGUF:Q4_K_XL">');
+    expect(MC.compact({ ...BASE, name: BASE.repo })).not.toContain('mc-repo');
+  });
+  it('compact adds Rename to the menu only when the surface can rename', () => {
+    const html = MC.compact({ ...BASE, renameAct: 'rename' });
+    const menuPart = html.slice(html.indexOf('mc-menu'));
+    expect(menuPart).toContain('data-act="rename-name"');
+    expect(menuPart).toContain('Rename');
+    expect(MC.compact(BASE)).not.toContain('rename-name');
+  });
+  it('card and list views also offer Rename in the menu when the surface can rename', () => {
+    for (const render of [MC.card, MC.row]) {
+      const html = render({ ...BASE, renameAct: 'rename' });
+      expect(html.slice(html.indexOf('mc-menu'))).toContain('data-act="rename-name"');
+      expect(render(BASE)).not.toContain('rename-name');
+    }
+  });
+  it('nameElOf finds the name cell of a list row', () => {
+    const host = document.createElement('div');
+    host.innerHTML = MC.row({ ...BASE, renameAct: 'rename' });
+    expect(MC.nameElOf(host.querySelector('[data-act="rename-name"]'))).toBe(host.querySelector('.mc-rowname .n'));
+  });
+  it('nameElOf finds the name of the card holding a menu button', () => {
+    const host = document.createElement('div');
+    host.innerHTML = MC.compact({ ...BASE, renameAct: 'rename' });
+    const btn = host.querySelector('[data-act="rename-name"]');
+    expect(MC.nameElOf(btn)).toBe(host.querySelector('.mc-name'));
+    expect(MC.nameElOf(null)).toBe(null);
+  });
+  it('typing Enter or space in a rename box does not toggle the compact drawer', () => {
+    const host = document.createElement('div');
+    host.innerHTML = MC.compact(BASE);
+    let renders = 0;
+    MC.bindContainer(host, 'kbd-test', () => { renders++; });
+    const input = document.createElement('input');
+    host.querySelector('.mc-name').appendChild(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    expect(renders).toBe(0);
+    host.querySelector('.mc-ctop').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(renders).toBe(1);
+  });
   it('row folds buttons into the menu and keeps a primary', () => {
     const html = MC.row(BASE);
     expect(html).toContain('mc-dot d-sleeping');

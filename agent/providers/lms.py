@@ -61,7 +61,10 @@ _LMS_LOG_IGNORE = (
     "[Client=lms-cli][Endpoint=getModelInfo]",
     "Listing loaded models",
     "[INFO] Returning",
+    "] Generated packet:",
 )
+_LMS_REASONING_RE = re.compile(r"(Accumulated \d+ tokens in reasoning content)\b.*")
+_LMS_LOG_LINE_MAX = 400
 
 
 def set_context(ctx) -> None:
@@ -285,6 +288,9 @@ def _filter_lms_log(lines: list[str]) -> list[str]:
             if depth > 0:
                 in_block = True
             continue
+        line = _LMS_REASONING_RE.sub(r"\1", line)
+        if len(line) > _LMS_LOG_LINE_MAX:
+            line = line[:_LMS_LOG_LINE_MAX] + " …"
         out.append(line)
     return out
 
@@ -439,11 +445,11 @@ def lms_server_log_endpoint(authorization: Optional[str] = Header(default=None))
     log_dir = Path(home) / ".lmstudio" / "server-logs" / month
     if not log_dir.is_dir():
         return {"ok": True, "lines": [], "note": f"no log dir at {log_dir}"}
-    log_files = sorted(log_dir.glob("*.log"))
+    log_files = list(log_dir.glob("*.log"))
     if not log_files:
         return {"ok": True, "lines": [], "note": f"no .log files in {log_dir}"}
-    target = log_files[-1]
     try:
+        target = max(log_files, key=lambda p: p.stat().st_mtime)
         TAIL_BYTES = 256 * 1024
         size = target.stat().st_size
         offset = max(0, size - TAIL_BYTES)
@@ -452,10 +458,11 @@ def lms_server_log_endpoint(authorization: Optional[str] = Header(default=None))
                 f.seek(offset)
                 f.readline()
             data = f.read()
-        raw = [line.rstrip() for line in data.decode("utf-8", errors="replace").splitlines()][-300:]
-        filtered = _filter_lms_log(raw)
+        raw = [line.rstrip() for line in data.decode("utf-8", errors="replace").splitlines()]
+        filtered = _filter_lms_log(raw)[-300:]
         if not filtered and raw:
-            fallback = [l for l in raw if _LMS_TIMESTAMP_RE.match(l)][-15:]
+            fallback = [l[:_LMS_LOG_LINE_MAX] for l in raw if _LMS_TIMESTAMP_RE.match(l)
+                        and "] Generated packet:" not in l][-15:]
             if fallback:
                 filtered = ["# (idle — showing last unfiltered lines)"] + fallback
         return {"ok": True, "lines": filtered, "source": str(target)}

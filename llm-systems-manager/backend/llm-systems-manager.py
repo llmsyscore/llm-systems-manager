@@ -182,7 +182,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.13-1"
+__version__ = "v2026.11.13-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -4044,7 +4044,7 @@ def llm_aliases_get():
 
 
 _ALIAS_FORBIDDEN_RE = re.compile(r"[\x00-\x1f\x7f<>]")
-_MODEL_ID_RE        = re.compile(r"[^A-Za-z0-9._/:-]")
+_MODEL_ID_RE        = re.compile(r"[^A-Za-z0-9._@/:-]")
 
 
 def _sanitize_alias(s: str) -> str:
@@ -7403,10 +7403,21 @@ def _tower_profile_put(agent_id: str, model_id: str, name: str, values: dict) ->
 
 
 def _tower_alias_set(model_id: str, alias: str) -> None:
-    """Names a downloaded Tower model unless the operator already gave it an alias (#1047)."""
+    """Names the newest Tower model "<alias> · <model>" and clears that name from older ones; operator names stay."""
+    if not model_id:
+        return
     data = load_aliases()
-    if model_id and not data.get(model_id):
-        data[model_id] = alias
+    def is_tower(v) -> bool:
+        return v == alias or str(v).startswith(f"{alias} · ")
+    changed = False
+    for mid in [m for m, v in data.items() if m != model_id and is_tower(v)]:
+        del data[mid]
+        changed = True
+    if not data.get(model_id) or is_tower(data[model_id]):
+        name = _sanitize_alias(f"{alias} · {model_id.rsplit('/', 1)[-1]}")
+        changed = changed or data.get(model_id) != name
+        data[model_id] = name
+    if changed:
         save_aliases(data)
 
 
