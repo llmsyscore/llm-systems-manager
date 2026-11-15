@@ -15,6 +15,7 @@ docs
 dist
 website
 tools/packaging
+tools/kit
 tools/installer/ci-*.sh
 config/llm-systems.toml
 config/unified_config.py

@@ -1,0 +1,5 @@
+# Panel kit changes
+
+- 1.0.0: first shared kit, from devtools kit.js plus cloud map and funnel.
+- 1.0.0: cloud's behaviour: a ✕ close button and double-click open full size (kitSetFull); full size scales charts through their viewBox and calls onRefit(panel); kitConfigure takes dblSkip (an invalid one is logged and ignored) and the hooks onLegend(panel, chartId), onRefit(root) and holderRows(box) for Copy data; app hook errors go to console.error; chart markers use --c5; stacked bars keep the ts-bar class; data-kit-nosort on a table or any ancestor turns sorting off.
+- 1.0.0: cloud's look: cloud theme tokens (the --c1..--c8 and --c-warn set, light --muted #7a8291; --good, --warn, --bad map onto them, light --on-accent #ffffff, darker light-theme --good-text, --bad-text and --warn-text), cloud font stack with no global reset (kit parts zero their own margins, border-box on kit parts only), a fixed .side with .main beside it in a .shell, the one-to-three-column .panels grid with .span2 and .hero (span-N classes removed), the ✕ close button on full-size panels, .top h1 22px, cloud's shadows and small styles, #toast z-index 50.
