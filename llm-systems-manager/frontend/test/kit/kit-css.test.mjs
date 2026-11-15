@@ -129,7 +129,7 @@ describe('kit css', () => {
     assert.ok(tokens.size > 40, 'samples emit the renderer classes');
     ['hint', 'chev', 'folded', 'row-grip', 'row-menu'].forEach((t) => assert.ok(tokens.has(t), 'samples emit ' + t));
     const missing = [...tokens].filter((t) => !KIT_CSS_EXEMPT.includes(t) && !KIT_CSS_HOOKS.includes(t) && !KIT_CSS_GLYPHS.includes(t))
-      .filter((t) => !new RegExp('\\.' + t.replace(/[-]/g, '\\-') + '(?![\\w-])').test(css));
+      .filter((t) => !new RegExp('\\.' + t.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '(?![\\w-])').test(css));
     assert.deepEqual(missing, []);
     assert.deepEqual(KIT_STATE_SELECTORS.filter((s) => !css.includes(s)), [], 'every state selector has a rule');
   });
