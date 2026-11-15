@@ -234,7 +234,7 @@ jobs:
       # -x follows the `. lib-common.sh` sources so cross-file refs resolve.
       - name: Shellcheck standalone scripts
         run: |
-          mapfile -t scripts < <(git ls-files -- tools/installer tools/packaging agent/install | grep -E '\.sh$|\.sh\.tmpl$|/debconf/config$')
+          mapfile -t scripts < <(git ls-files -- tools/installer tools/packaging tools/kit agent/install | grep -E '\.sh$|\.sh\.tmpl$|/debconf/config$')
           printf 'linting %d scripts\n' "${#scripts[@]}"
           shellcheck -S info -e SC2015,SC2016,SC1091 -x "${scripts[@]}"
 

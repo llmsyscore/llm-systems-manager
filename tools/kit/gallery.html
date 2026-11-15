@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel kit gallery</title>
+<link rel="stylesheet" href="../../llm-systems-manager/frontend/kit/kit.css">
+<script src="../../llm-systems-manager/frontend/kit/kit.js"></script>
+<script>
+// A small dot map fixture in the cloud worlddots.js shape: a 40 x 20 grid of 6-unit dots, filled from rough country boxes.
+var WORLD_DOTS = (function() {
+  var boxes = [['RU', 23, 1, 36, 3], ['CA', 4, 2, 12, 4], ['US', 4, 5, 12, 8], ['MX', 7, 9, 9, 10], ['BR', 12, 11, 15, 15], ['AR', 12, 16, 13, 18],
+    ['GB', 18, 4, 18, 5], ['FR', 19, 6, 20, 7], ['DE', 21, 5, 22, 6], ['ES', 18, 8, 19, 8], ['NG', 20, 10, 22, 11], ['ZA', 22, 15, 24, 16],
+    ['IN', 28, 9, 30, 11], ['CN', 29, 5, 33, 8], ['JP', 35, 6, 35, 7], ['AU', 32, 14, 36, 16]];
+  var dots = '';
+  boxes.forEach(function(b, i) {
+    for (var y = b[2]; y <= b[4]; y++) for (var x = b[1]; x <= b[3]; x++) dots += x + ',' + y + ',' + i + ';';
+  });
+  return { w: 240, h: 120, step: 6, codes: boxes.map(function(b) { return b[0]; }), dots: dots };
+})();
+kitConfigure({ prefix: 'gallery' });
+// Theme from the #light or #dark hash, else the saved theme.
+(function() {
+  var h = location.hash.slice(1);
+  document.documentElement.setAttribute('data-theme', h === 'light' || h === 'dark' ? h : kitTheme(kitStore(document)));
+})();
+</script>
+<style>
+  /* Gallery only: range chips, a plain button and body text. */
+  .g-range{display:inline-flex;border:1px solid var(--border-2);border-radius:6px;overflow:hidden}
+  .g-range button{background:none;border:0;border-left:1px solid var(--border-2);color:var(--text-2);font:inherit;font-size:12.5px;padding:4px 10px;cursor:pointer}
+  .g-range button:first-child{border-left:0}
+  .g-range button[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--text)}
+  .g-btn{align-self:flex-start;background:var(--accent);color:var(--on-accent);border:0;border-radius:6px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+  .g-text{margin:0;font-size:13px;color:var(--text-2)}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side" id="side" aria-label="Pages">
+    <div class="side-brand"><span class="side-logo" aria-hidden="true">K</span><span class="side-lab">Panel kit</span></div>
+    <nav class="side-nav" aria-label="Gallery">
+      <div id="navList"></div>
+    </nav>
+    <div class="side-foot">
+      <button type="button" class="sw-btn" id="navPin" role="switch" aria-checked="true"><span class="sw"></span><span class="sw-t" id="navPinT">Sidebar: Pinned</span></button>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <button type="button" class="nav-open" id="navOpen" aria-controls="side" aria-expanded="false" aria-label="Show menu"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg></button>
+      <h1>Panel kit gallery</h1>
+      <div class="tb-right">
+        <div class="g-range" role="group" aria-label="Time range">
+          <button type="button" data-range="7" aria-pressed="false">7 days</button>
+          <button type="button" data-range="14" aria-pressed="true">14 days</button>
+          <button type="button" data-range="30" aria-pressed="false">30 days</button>
+        </div>
+        <button type="button" class="sw-btn" id="themeBtn" role="switch" aria-checked="false"><span class="sw"></span><span class="sw-t" id="themeT">Theme: Dark</span></button>
+        <button type="button" class="sw-btn" id="liveBtn" role="switch" aria-checked="true"><span class="sw"></span><span class="sw-t" id="liveT">Live refresh: On</span></button>
+      </div>
+    </header>
+    <div id="page">
+      <div class="kpis" id="kpis"></div>
+      <section class="row" data-row="charts" id="row-charts"><button type="button" class="row-hd" data-row-fold>Charts</button><div class="panels" id="rowCharts"></div></section>
+      <section class="row" data-row="lists" id="row-lists"><button type="button" class="row-hd" data-row-fold>Lists</button><div class="panels" id="rowLists"></div></section>
+      <section class="row" data-row="tables" id="row-tables"><button type="button" class="row-hd" data-row-fold>Tables</button>
+        <div class="panels">
+          <section class="panel span2" data-card="models" data-title="Requests by model" data-note="Click a header to sort"><div class="p-body"><div class="p-table" id="modelTable"></div></div></section>
+          <section class="panel" data-card="toast" data-title="Toast"><div class="p-body">
+            <p class="g-text">A short message at the bottom of the page that goes away by itself.</p>
+            <button type="button" class="g-btn" id="toastBtn">Show a toast</button>
+          </div></section>
+          <section class="panel hero" data-card="speed" data-title="Speed by agent" data-note="Menu: Show as chart"><div class="p-body"><div class="p-table" id="speedTable"></div></div></section>
+        </div>
+      </section>
+      <section class="row" data-row="folded" id="row-folded" data-fold-default><button type="button" class="row-hd" data-row-fold>Folded row</button>
+        <div class="panels">
+          <section class="panel hero" data-card="folded" data-title="Opened row"><div class="p-body"><p class="g-text">This row starts folded. Its heading opens and folds it.</p></div></section>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<div id="toast" role="status"></div>
+<script>
+(function() {
+  var $ = function(id) { return document.getElementById(id); };
+  var store = kitStore(document);
+
+  // Fixed sample data: 30 days of requests and errors, ending 2026-11-15.
+  var DAYS = kitTimeKeys('2026-10-17', '2026-11-15', 'day');
+  var REQ = [820, 760, 910, 1040, 980, 640, 590, 870, 930, 1010, 1120, 1080, 700, 660, 940, 990, 1150, 1210, 1170, 760, 720, 1030, 1110, 1260, 1340, 1290, 880, 840, 1180, 1250];
+  var ERR = [12, 9, 15, 22, 18, 7, 6, 11, 14, 19, 25, 21, 8, 7, 13, 16, 24, 31, 27, 10, 9, 17, 20, 28, 35, 30, 12, 11, 22, 26];
+  var MARK = [{ day: '2026-11-12', label: 'Release 3.4.0', release: true }];
+  var range = 14;
+
+  // Requests per agent per day, for the stacked chart.
+  var AGENTS = [['tower', 0.38], ['lab-mac', 0.24], ['vm-01', 0.15], ['vm-02', 0.11]];
+  function stackBody() {
+    var n = DAYS.length - range;
+    return tsHtml({ id: 'stack', labels: DAYS.slice(n), w: kitWidth('stackBody'), mode: 'stack',
+      series: AGENTS.map(function(a) { return { name: a[0], values: REQ.slice(n).map(function(v) { return Math.round(v * a[1]); }) }; }) });
+  }
+
+  function tsBody() {
+    var n = DAYS.length - range;
+    return {
+      html: tsHtml({ id: 'req', labels: DAYS.slice(n), w: kitWidth('tsBody'), marks: MARK,
+        series: [{ name: 'Requests', values: REQ.slice(n) }, { name: 'Errors', values: ERR.slice(n), color: 'bad' }] }),
+      table: { cols: ['Day', 'Requests', 'Errors'], rows: DAYS.slice(n).map(function(d, i) { return [d, REQ[n + i], ERR[n + i]]; }) }
+    };
+  }
+
+  $('kpis').innerHTML = [
+    kpiHtml({ id: 'k-req', title: 'Requests', value: 48210, delta: { dir: 'up', tone: 'good', text: '12% vs last week' }, sub: 'Last 7 days', spark: REQ.slice(-14) }),
+    kpiHtml({ id: 'k-tps', title: 'Tokens per second', value: 41, delta: { dir: 'down', tone: 'bad', text: '6% vs last week' }, sub: 'Median over all agents' }),
+    kpiHtml({ id: 'k-agents', title: 'Agents online', value: 8, delta: { dir: 'flat', text: 'no change' }, sub: '8 of 8 reporting' }),
+    kpiHtml({ id: 'k-model', title: 'Busiest model', value: 'qwen2.5-coder-7b-instruct', sub: '31% of requests' })
+  ].join('');
+
+  var ts = tsBody();
+  $('rowCharts').innerHTML =
+    panelHtml('req', 'Requests per day', '<div id="tsBody">' + ts.html + '</div>', { cls: 'span2', note: 'Dashed line: release', table: ts.table }) +
+    panelHtml('share', 'Requests by agent', splitHtml([
+      { label: 'tower', v: 18200 }, { label: 'lab-mac', v: 11400 }, { label: 'vm-01', v: 7300 },
+      { label: 'vm-02', v: 5100 }, { label: 'vm-03', v: 3900 }, { label: 'vm-04', v: 2300 }], { unit: 'requests' })) +
+    panelHtml('runs', 'Scheduled runs today', lanesHtml({ id: 'runs', now: '14:30', lanes: ['Smoke test', 'Install matrix', 'Performance', 'Backup check'],
+      marks: [
+        { lane: 'Smoke test', at: '02:00', state: 'passed', key: 's1', tip: 'Smoke test at 02:00: passed' },
+        { lane: 'Smoke test', at: '08:00', state: 'passed', key: 's2', tip: 'Smoke test at 08:00: passed' },
+        { lane: 'Smoke test', at: '14:00', state: 'failed', key: 's3', tip: 'Smoke test at 14:00: failed' },
+        { lane: 'Smoke test', at: '20:00', state: 'planned', key: 's4', tip: 'Smoke test at 20:00: planned' },
+        { lane: 'Install matrix', at: '03:30', state: 'passed', key: 'i1', tip: 'Install matrix at 03:30: passed' },
+        { lane: 'Performance', at: '05:00', state: 'skipped', key: 'p1', tip: 'Performance at 05:00: skipped' },
+        { lane: 'Performance', at: '17:00', state: 'planned', key: 'p2', tip: 'Performance at 17:00: planned' },
+        { lane: 'Backup check', at: '01:15', state: 'passed', key: 'b1', tip: 'Backup check at 01:15: passed' }] }), { cls: 'span2' }) +
+    panelHtml('feed', 'Recent activity', feedHtml([
+      { kind: 'Release', title: 'Version 3.4.0', detail: 'Installed on 8 agents', at: '2026-11-15T09:00:00Z' },
+      { kind: 'Alarm', title: 'GPU temperature high', detail: 'tower, 86 °C for 5 minutes', at: '2026-11-14T22:00:00Z' },
+      { kind: 'Model', title: 'Model switched', detail: 'vm-02 now runs llama-3.1-8b-instruct', at: '2026-11-13T15:00:00Z' },
+      { kind: 'Agent', title: 'Agent added', detail: 'vm-04 joined the fleet', at: '2026-11-10T11:00:00Z' }], '2026-11-15T12:00:00Z')) +
+    panelHtml('stack', 'Requests per day by agent', '<div id="stackBody">' + stackBody() + '</div>', { cls: 'hero', note: 'Stacked' });
+
+  var MODELS = [
+    { label: 'qwen2.5-coder-7b-instruct', v: 14900 }, { label: 'llama-3.1-8b-instruct', v: 11200 }, { label: 'mistral-7b-instruct', v: 8400 },
+    { label: 'gemma-2-9b-it', v: 6100 }, { label: 'phi-3.5-mini', v: 3700 }, { label: 'deepseek-r1-distill-8b', v: 2400 },
+    { label: 'qwen2.5-3b', v: 900 }, { label: 'tinyllama-1.1b', v: 610 }];
+  $('rowLists').innerHTML =
+    panelHtml('rank', 'Top models', rankHtml(MODELS, { key: 'model', n: 6, unit: 'requests', dim: 'Model' }), { cls: 'span2',
+      table: { cols: ['Model', 'Requests'], rows: MODELS.map(function(m) { return [m.label, m.v]; }) } }) +
+    panelHtml('fun', 'From visit to report', funnelHtml([
+      { label: 'Visited the site', v: 1200 }, { label: 'Downloaded', v: 430 }, { label: 'Installed', v: 310 }, { label: 'Sent a report', v: 190 }])) +
+    panelHtml('map', 'Visits by country', mapHtml([
+      { code: 'US', v: 5200 }, { code: 'DE', v: 2100 }, { code: 'GB', v: 1800 }, { code: 'FR', v: 1300 }, { code: 'JP', v: 900 },
+      { code: 'IN', v: 700 }, { code: 'BR', v: 600 }, { code: 'AU', v: 400 }, { code: 'CA', v: 350 }],
+      { US: 'United States', DE: 'Germany', GB: 'United Kingdom', FR: 'France', JP: 'Japan', IN: 'India', BR: 'Brazil', AU: 'Australia', CA: 'Canada' },
+      { key: 'country' }), { cls: 'hero' });
+
+  $('modelTable').innerHTML = kitTable(['Model', 'Requests', 'Tokens/s', 'Errors'], [
+    ['qwen2.5-coder-7b-instruct', 14900, 44, 31], ['llama-3.1-8b-instruct', 11200, 39, 22], ['mistral-7b-instruct', 8400, 47, 18],
+    ['gemma-2-9b-it', 6100, 33, 9], ['phi-3.5-mini', 3700, 71, 4], ['deepseek-r1-distill-8b', 2400, 36, 12]
+  ]).replace('<table>', '<table data-sort="Requests desc">');
+  $('speedTable').innerHTML = kitTable(['Agent', 'Prompt tokens/s', 'Output tokens/s'], [
+    ['tower', 410, 62], ['lab-mac', 280, 48], ['vm-01', 140, 24], ['vm-02', 125, 22], ['vm-03', 118, 21], ['vm-04', 96, 17]
+  ]).replace('<table>', '<table data-kit-bars="Prompt tokens/s,Output tokens/s">');
+
+  kitDress(document);
+  kitLayout('gallery', $('page'), store);
+  kitWire(document);
+  kitRefit(document);
+
+  // Navigation: one item per row; a click marks it and scrolls to the row.
+  var NAV = [['charts', 'Charts', 'M3 17l6-6 4 4 8-9'], ['lists', 'Lists', 'M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1'],
+    ['tables', 'Tables', 'M4 5h16v14H4zM4 10h16M10 10v9'], ['folded', 'Folded row', 'M6 9l6 6 6-6']];
+  $('navList').innerHTML = '<div class="side-grp"><h4>Gallery</h4>' + NAV.map(function(n, i) {
+    return '<button type="button" class="nav' + (i ? '' : ' on" aria-current="page') + '" data-go="' + n[0] + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + n[2] + '"/></svg><span class="side-lab">' + n[1] + '</span></button>';
+  }).join('') + '</div>';
+  function setNavOpen(on) { $('side').classList.toggle('open', on); $('navOpen').setAttribute('aria-expanded', String(on)); }
+  $('navOpen').onclick = function() { setNavOpen(!$('side').classList.contains('open')); };
+  $('side').addEventListener('click', function(e) {
+    var b = e.target.closest('button[data-go]');
+    if (!b) return;
+    Array.prototype.forEach.call(document.querySelectorAll('#navList [data-go]'), function(x) {
+      x.classList.toggle('on', x === b);
+      if (x === b) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current');
+    });
+    $('row-' + b.getAttribute('data-go')).scrollIntoView({ block: 'start' });
+    setNavOpen(false);
+  });
+  document.addEventListener('click', function(e) { if ($('side').classList.contains('open') && !e.target.closest('#side,#navOpen')) setNavOpen(false); });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && $('side').classList.contains('open')) { setNavOpen(false); $('navOpen').focus(); } });
+
+  // Switches: sidebar pinned or icons only, theme, and Live refresh; each shows its state as text and is saved.
+  if (kitNav(store) === 'collapsed') $('side').classList.add('collapsed');
+  function paintPin() {
+    var pinned = !$('side').classList.contains('collapsed');
+    $('navPin').setAttribute('aria-checked', String(pinned));
+    $('navPinT').textContent = 'Sidebar: ' + (pinned ? 'Pinned' : 'Icons only');
+  }
+  $('navPin').onclick = function() {
+    var c = $('side').classList.toggle('collapsed');
+    try { store.setItem(kitKey('nav'), c ? 'collapsed' : 'pinned'); } catch (e) {}
+    paintPin();
+  };
+  function paintTheme() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    $('themeBtn').setAttribute('aria-checked', String(light));
+    $('themeT').textContent = 'Theme: ' + (light ? 'Light' : 'Dark');
+  }
+  $('themeBtn').onclick = function() {
+    var t = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+    try { store.setItem(kitKey('theme'), t); } catch (e) {}
+    history.replaceState(null, '', '#' + t);
+    paintTheme();
+  };
+  window.addEventListener('hashchange', function() {
+    var h = location.hash.slice(1);
+    if (h === 'light' || h === 'dark') { document.documentElement.setAttribute('data-theme', h); paintTheme(); }
+  });
+  var live = kitLive(store);
+  function paintLive() {
+    $('liveBtn').setAttribute('aria-checked', String(live));
+    $('liveT').textContent = 'Live refresh: ' + (live ? 'On' : 'Off');
+  }
+  $('liveBtn').onclick = function() {
+    live = !live;
+    try { store.setItem(kitKey('live'), live ? 'on' : 'off'); } catch (e) {}
+    paintLive();
+  };
+  paintPin();
+  paintTheme();
+  paintLive();
+
+  // Range chips redraw both time series with the last 7, 14 or 30 days.
+  document.querySelector('.g-range').addEventListener('click', function(e) {
+    var b = e.target.closest('button[data-range]');
+    if (!b) return;
+    range = +b.getAttribute('data-range');
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function(x) { x.setAttribute('aria-pressed', String(x === b)); });
+    var d = tsBody();
+    kitFill('tsBody', d.html, d.table);
+    kitFill('stackBody', stackBody());
+  });
+  $('toastBtn').onclick = function() { kitToast('Saved. This message goes away by itself.'); };
+})();
+</script>
+</body>
+</html>
