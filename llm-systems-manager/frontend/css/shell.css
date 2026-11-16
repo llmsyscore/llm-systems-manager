@@ -1,0 +1,51 @@
+/* Manager shell (#1432): sidebar items, toolbar pills and the fixed-tab offsets on top of the kit shell. */
+
+/* Sidebar width the fixed Events, Tools and Admin tabs read for their left edge. */
+.shell { --mc-side: 210px; }
+/* The tabs keep their own side padding; the toolbar spans the full width with its own 20px. */
+.shell > .main { padding-inline: 0; }
+.shell > .main > #toolbar { margin-inline: 0; }
+@media (min-width: 900px) { .shell:has(.side.collapsed) { --mc-side: 56px; } }
+@media (max-width: 899px) { .shell { --mc-side: 0px; } }
+
+/* Brand link */
+.side-brand .site-logo-link { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
+.side-brand .site-logo-link svg { flex: none; display: block; }
+
+/* Dashboards heading and its sub-items */
+.side-sub { margin: 0; font-size: 10.5px; letter-spacing: .5px; color: var(--muted); font-weight: 600; padding: 8px 10px 4px; white-space: nowrap; }
+.side .nav.sub { padding-left: 22px; }
+
+/* Status dot and count badge at the end of an item */
+.side .nav { position: relative; }
+.side .nav .tab-dot, .side .nav .n { margin-left: auto; flex: none; }
+.side .nav .n { min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 600 9.5px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; }
+
+@media (min-width: 900px) {
+  .side.collapsed:not(.open) .side-sub { display: none; }
+  .side.collapsed:not(.open) .nav.sub { padding-left: 10px; }
+  /* Collapsed: the dot and the badge become a 6px dot on the icon. */
+  .side.collapsed:not(.open) .nav .tab-dot,
+  .side.collapsed:not(.open) .nav .n { position: absolute; top: 5px; left: 22px; margin: 0; width: 6px; height: 6px; min-width: 0; padding: 0; font-size: 0; box-shadow: none; }
+}
+
+/* Tower item states */
+#towerBtn.open, #towerBtn.unread { color: var(--accent); }
+#towerBtn.off { opacity: .55; }
+@media (prefers-reduced-motion: no-preference) {
+  #towerBtn.streaming svg { animation: tw-pulse 1.6s ease-in-out infinite; }
+  #towerBtn.unread { animation: tw-glow 2.4s ease-in-out infinite; }
+}
+
+/* Toolbar: provider state pills after the page title */
+.mc-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.mc-pills .state-banner { min-width: 0; max-width: 100%; }
+.mc-pills .state-pill { max-width: 100%; min-width: 0; }
+.mc-pills .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#toolbar #backToCompanion { position: static; box-shadow: none; padding: 5px 12px; font-size: 12px; }
+
+/* Tower overlay lock: the root stops scrolling; body stays visible so the sticky toolbar keeps its place. */
+html:has(body.tw-lock) { overflow: hidden; }
+html:has(body.tw-lock) body.tw-lock { overflow: visible; }
+/* In-page jumps (scrollIntoView) stop below the sticky toolbar. */
+html { scroll-padding-top: var(--mc-top, 61px); }

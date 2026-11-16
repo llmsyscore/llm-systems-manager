@@ -427,9 +427,9 @@ body.companion {
 #towerInsList .lnk, #towerInsList .inshead .lnk { background: none; border: none; color: var(--accent); font-family: var(--mono); font-size: 12px; padding: 4px 6px; }
 #towerInsList .ins { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 12px; padding: 10px 13px; }
 #towerInsList .ins.crit { border-color: var(--crit); } #towerInsList .ins.done { opacity: .75; }
-#towerInsList .ins .top { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); }
-#towerInsList .ins .top .rule { color: var(--fg); font-weight: 600; font-family: inherit; font-size: 14px; }
-#towerInsList .ins .top .age { margin-left: auto; flex: none; }
+#towerInsList .ins .m-top { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 11.5px; color: var(--fg-muted); }
+#towerInsList .ins .m-top .rule { color: var(--fg); font-weight: 600; font-family: inherit; font-size: 14px; }
+#towerInsList .ins .m-top .age { margin-left: auto; flex: none; }
 #towerInsList .ins .sum { margin: 6px 0; font-size: 13.5px; line-height: 1.4; }
 #towerInsList .ins .acts { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin-top: 4px; }
 #towerInsList .ins .acts .btn { margin-left: 0; }

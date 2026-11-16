@@ -27,7 +27,7 @@ function loadMakeHistoryBackfill() {
 
 function switchTabDom() {
   document.body.innerHTML = `
-    <button class="tab-btn" onclick="switchTab('overall')"></button>
+    <aside id="side"><button class="nav" id="tabBtnOverall" data-tab="overall"></button></aside>
     <div id="overallTab"></div>`;
 }
 

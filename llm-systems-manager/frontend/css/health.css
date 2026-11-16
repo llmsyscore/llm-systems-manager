@@ -27,7 +27,7 @@
 #adminHealthCard .hc-svcr { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; grid-template-rows: auto auto; grid-auto-rows: auto; column-gap: 8px; row-gap: 1px; align-items: center; }
 #adminHealthCard .hc-svcr .dot { grid-column: 1; grid-row: 1 / span 2; }
 #adminHealthCard .hc-svcr .n { grid-column: 2; grid-row: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
-#adminHealthCard .hc-svcr .n .nt { white-space: nowrap; }
+#adminHealthCard .hc-svcr .n .nt { min-width: 0; overflow-wrap: anywhere; }
 #adminHealthCard .hc-svcr .n .lk { flex-shrink: 0; font-family: var(--font-mono); font-size: 10px; font-weight: 500; color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 26%, transparent); border-radius: 4px; padding: 0 5px; line-height: 1.6; }
 #adminHealthCard .hc-svcr .n .lk.off { color: var(--fg-dim); border-color: var(--border-strong); }
 #adminHealthCard .hc-svcr .n .lk.crit { color: var(--crit); border-color: color-mix(in srgb, var(--crit) 30%, transparent); }

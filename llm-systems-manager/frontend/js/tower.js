@@ -344,7 +344,7 @@
       return `<div class="act${running ? ' running' : ''}" data-act="${TW.esc(a.id)}"><div class="eyebrow">${TW.esc(eyebrow)}</div>`
         + `<h4>${TW.esc(a.card.title || a.tool)}</h4><div class="tgt">${TW.esc(a.card.target || '')}</div>`
         + `<p>${TW.esc(a.card.does || '')}${a.card.not ? ' ' + TW.esc(a.card.not) : ''}</p>${opts}`
-        + `<div class="role">${TW.esc(TIER_LABEL[a.tier] || a.tier)} · ${who} · audit: <span class="mono">${TW.esc(a.actor)}</span></div>${btns}</div>`;
+        + `<div class="role">${TW.esc(TIER_LABEL[a.tier] || a.tier)} · ${who} · audit: <span class="m-mono">${TW.esc(a.actor)}</span></div>${btns}</div>`;
     }
     const ok = a.status === 'done';
     const tail = ok ? (a.ms != null ? `${a.ms} ms` : '') : a.status;
@@ -453,7 +453,7 @@
     const v = TW.insightView(r, _view, Date.now() / 1000);
     const open = _openIns.has(v.id), id = TW.esc(v.id);
     const cls = `ins${v.cls ? ' ' + v.cls : ''}${v.id === _flash ? ' flash' : ''}`;
-    const top = `<div class="top"><span class="rule">${TW.esc(v.rule)}</span>${v.host ? `<span class="host">${TW.esc(v.host)}</span>` : ''}<span class="age">${TW.esc(v.age)}</span></div>`;
+    const top = `<div class="m-top"><span class="rule">${TW.esc(v.rule)}</span>${v.host ? `<span class="host">${TW.esc(v.host)}</span>` : ''}<span class="age">${TW.esc(v.age)}</span></div>`;
     const checks = v.checks.map(c => `<div class="tick${c.ok ? '' : ' bad'}"><span class="k">${c.ok ? '▸' : '✕'}</span>${TW.esc(c.summary || c.name || '')}</div>`).join('');
     const hasDet = !!(v.detail || v.action || v.checks.length || v.auditActor || (v.applied && v.summary));
     const det = hasDet ? `<button type="button" class="lnk" data-ins-det="${id}" aria-expanded="${open}">Details ${open ? '▾' : '▸'}</button>` : '';
@@ -517,7 +517,7 @@
     view.innerHTML = _insights.length
       ? `<div class="ins-h"><h3>Insights</h3><span class="cnt">${TW.esc(TW.insightsHeader(_insights))}</span><button type="button" class="lnk" id="twInsDismissAll">Dismiss all</button></div>`
         + msg + _insights.map(insightHtml).join('')
-      : `<div class="empty"><h3>No insights</h3><p>${_api && _api.diagnose_alarms ? 'Each new alert gets a read-only look here as it opens.' : 'Turn on Diagnose new alarms in Settings to get a read-only look at each new alert.'}</p></div>` + msg;
+      : `<div class="m-empty"><h3>No insights</h3><p>${_api && _api.diagnose_alarms ? 'Each new alert gets a read-only look here as it opens.' : 'Turn on Diagnose new alarms in Settings to get a read-only look at each new alert.'}</p></div>` + msg;
     view.scrollTop = prevTop;
     const hit = _flash && [...view.querySelectorAll('[data-ins]')].find(e => e.dataset.ins === _flash);
     if (hit && typeof hit.scrollIntoView === 'function') hit.scrollIntoView({ block: 'nearest' });
@@ -553,7 +553,7 @@
       return;
     }
     if (_view.noModel) {
-      body.innerHTML = `<div class="empty"><h3>Nothing to think with</h3><p>No chat model is loaded on any host, and Tower never loads one on its own. Load a model in <b>LLM Control</b> and this drawer wakes up.</p>`
+      body.innerHTML = `<div class="m-empty"><h3>Nothing to think with</h3><p>No chat model is loaded on any host, and Tower never loads one on its own. Load a model in <b>LLM Control</b> and this drawer wakes up.</p>`
         + `<div class="fu"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm" onclick="switchTab('llm')">Open LLM Control</button></div></div>` + noticeHtml();
       box?.classList.add('dis'); if (input) input.disabled = true; if (sugs) sugs.innerHTML = '';
       paintTitle();
@@ -563,7 +563,7 @@
     const turns = (_state && _state.turns) || [];
     if (!turns.length) {
       const p = page;
-      body.innerHTML = `<div class="empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
+      body.innerHTML = `<div class="m-empty"><h3>Ask about your hosts</h3><p>Tower reads live telemetry, alerts, models, energy and recent runs through the gateway.${p.tab ? ` It knows you are on <b>${TW.esc(p.tab)}</b>.` : ''}</p>`
         + `<div class="fu">${TW.suggestions(p, _view && _view.capabilities).map(sugHtml).join('')}</div></div>` + noticeHtml();
     } else {
       body.innerHTML = (_readOnly ? readOnlyHtml() : '') + turns.map(turnHtml).join('') + pendingHtml() + noticeHtml();

@@ -202,7 +202,7 @@ describe('base.css wiring', () => {
     expect(html).toContain('js/lib/energy.js');
     expect(html).toContain('js/energy.js');
     expect(html).toContain('css/energy.css');
-    expect(html).toContain("switchSubTab('dashboard','energy')");
+    expect(html).toContain('data-tab="dashboard" data-sub="energy"');
   });
 });
 

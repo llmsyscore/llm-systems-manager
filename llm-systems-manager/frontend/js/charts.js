@@ -1267,9 +1267,9 @@ async function checkConfig() {
     toggle('vllmStateBanner',        vllmOn);
 
     // If the currently active tab just got hidden, fall back to Dashboard
-    // — otherwise the operator stares at an empty panel with no nav.
-    const activeBtn = document.querySelector('.tab-nav .tab-btn.active');
-    if (activeBtn && activeBtn.style.display === 'none') switchTab('dashboard');
+    // — a hidden Dashboards page is handled by the sub-page fallback below.
+    const activeBtn = document.querySelector('#side [data-tab].on');
+    if (activeBtn && activeBtn.style.display === 'none' && !activeBtn.dataset.sub) switchTab('dashboard');
 
     // Tools sub-tabs: re-point to an enabled proxy, switching only while
     // Tools is on screen.

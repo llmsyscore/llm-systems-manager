@@ -4,10 +4,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import vm from 'node:vm';
+import { JSDOM } from 'jsdom';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KIT_SRC = readFileSync(resolve(HERE, '../../kit/kit.js'), 'utf8');
 const KIT_VERSION = readFileSync(resolve(HERE, '../../kit/KIT_VERSION'), 'utf8');
+const TS_10 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.0.json'), 'utf8'));
 // A small WORLD_DOTS of the cloud worlddots.js shape: 8 dots over DE, FR, JP and US (3 dots for US).
 const WORLD_SRC = "var WORLD_DOTS = { w: 60, h: 30, step: 6, codes: ['DE', 'FR', 'JP', 'US'], dots: '1,1,0;2,1,0;3,1,1;7,2,2;8,2,2;5,3,3;6,3,3;6,4,3;' };";
 
@@ -36,7 +38,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.0.0');
+    assert.equal(first, '// Panel kit 1.1.0');
   });
 
   test('coexists with an old copy', () => {
@@ -183,7 +185,7 @@ describe('ported from devtools kit.test.mjs', () => {
       marks: [{ day: '2026-11-01', label: 'note' }, { day: '2026-11-02', label: 'v1', release: true }] });
     const strokes = [...html.matchAll(/<line class="mk"[^>]*stroke="([^"]*)"/g)].map((m) => m[1]);
     assert.deepEqual(strokes, ['var(--c5)', 'var(--muted)']);
-    assert.doesNotMatch(KIT_SRC, /var\(--warn\)/);
+    assert.doesNotMatch(html, /var\(--warn\)/);
   });
 
   test('panelHead has the full-size close button between the menu button and the menu', () => {
@@ -546,5 +548,123 @@ describe('ported from cloud kit.test.mjs', () => {
     assert.ok(out.includes('<th>Kind</th><th>Value</th><th class="num">Visits</th><th class="num">Share</th><th class="num">Change</th><th>Note</th>'));
     assert.ok(out.includes('<td>Device</td><td>desktop</td><td class="num" data-v="3">3</td><td class="num">40%</td><td class="num">+4</td><td data-v="7">7</td>'));
     assert.ok(out.includes('<td>OS</td><td>Linux</td><td class="num"></td><td class="num">—</td><td class="num">−1,200.5</td><td>source</td>'));
+  });
+});
+
+// The data-kit-ts options of the first chart in an HTML string.
+const tsJson = (html) => JSON.parse(html.match(/data-kit-ts="([^"]*)"/)[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+const xLabels = (html) => [...html.matchAll(/class="ax ax-x">([^<]*)</g)].map((m) => m[1]);
+// A jsdom window with kit.js loaded and one chart drawn from o in #b.
+function liveDom(o) {
+  const w = new JSDOM('<!doctype html><body><div id="b"></div></body>', { runScripts: 'outside-only' }).window;
+  w.eval(KIT_SRC);
+  w.document.getElementById('b').innerHTML = w.tsHtml(o);
+  return w;
+}
+const liveJson = (w) => JSON.parse(w.document.querySelector('.ts[data-kit-ts]').getAttribute('data-kit-ts'));
+const domLabels = (w) => [...w.document.querySelectorAll('.ax-x')].map((t) => t.textContent);
+const LIVE = (extra = {}) => ({ id: 'live', labels: ['a', 'b', 'c'], series: [{ name: 'A', values: [1, 2, 3] }], ...extra });
+const ZOOM4 = (z) => ({ id: 'z', labels: ['a', 'b', 'c', 'd'], series: [{ name: 'A', values: [1, 2, 3, 4] }], zoom: true, z });
+
+describe('kit 1.1 charts', () => {
+  test('tsHtml 1.0 calls are unchanged in 1.1', () => {
+    const labels = ['2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13'];
+    const calls = {
+      t1: { id: 't1', labels, series: [{ name: 'A', values: [1, 2, 3, 4] }, { name: 'B', values: [4, 3, 2, 1], color: 'bad' }], marks: [{ day: '2026-11-11', label: 'm' }] },
+      t2: { id: 't2', labels, mode: 'stack', series: [{ name: 'A', values: [1, 2, 3, 4] }, { name: 'B', values: [1, 1, 1, 1] }, { name: 'C', values: [2, 0, 1, 3] }] },
+      m: { id: 'm', labels: ['2026-11-01', '2026-11-02', '2026-11-03'], series: [{ name: 'A', values: [3, -2, 5] }], marks: [{ day: '2026-11-02', label: 'r', release: true }] },
+    };
+    assert.deepEqual(Object.keys(TS_10).sort(), Object.keys(calls).sort());
+    for (const [name, o] of Object.entries(calls)) assert.equal(kit().tsHtml(o), TS_10[name], name);
+  });
+
+  test('ymax caps the axis', () => {
+    const out = kit().tsHtml({ id: 'y', labels: ['a', 'b'], series: [{ name: 'A', values: [50, 150] }], ymax: 100 });
+    const axis = [...out.matchAll(/class="ax">([^<]*)</g)].map((m) => m[1]);
+    assert.ok(axis.includes('100'), axis.join());
+    assert.ok(!axis.includes('200'), axis.join());
+    assert.equal(out.match(/<path d="M[\d.]+ [\d.]+L[\d.]+ ([\d.]+)"/)[1], '10');
+    assert.equal(tsJson(out).ymax, 100);
+  });
+
+  test('thresholds draw a labelled line', () => {
+    const out = kit().tsHtml({ id: 'h', labels: ['a', 'b'], series: [{ name: 'A', values: [10, 20] }], thresholds: [{ value: 90, label: 'Limit 90', tone: 'bad' }] });
+    const m = out.match(/<line class="th"[^>]*y1="([\d.]+)"[^>]*stroke="var\(--bad\)"/);
+    assert.ok(m, 'threshold line');
+    assert.ok(out.includes('class="ax th-l">Limit 90<'));
+    assert.ok(+m[1] >= 10);
+  });
+
+  test('threshold above ymax is not drawn', () => {
+    const out = kit().tsHtml({ id: 'h', labels: ['a', 'b'], series: [{ name: 'A', values: [10, 20] }], ymax: 100, thresholds: [{ value: 120, label: 'x' }] });
+    assert.ok(!out.includes('class="th"'));
+  });
+
+  test('zoom shows the slice', () => {
+    const k = kit(), o = ZOOM4({ from: 'b', to: 'c' }), out = k.tsHtml(o);
+    assert.deepEqual(xLabels(out), ['b', 'c']);
+    assert.ok(out.includes('<span class="c-v">5</span>'));
+    assert.ok(out.includes('data-kit-zoom-reset'));
+    assert.ok(out.includes('<div class="ts" data-kit-zoom data-kit-ts='));
+    assert.deepEqual({ ...k.kitTsView(o) }, { i0: 1, i1: 2 });
+    assert.deepEqual({ ...k.kitTsView({ labels: [] }) }, { i0: 0, i1: -1 });
+    assert.deepEqual({ ...k.kitTsView({ labels: ['a', 'b'] }) }, { i0: 0, i1: 1 });
+  });
+
+  test('bad zoom shows everything', () => {
+    for (const z of [{ from: 'c', to: 'b' }, { from: 'x', to: 'c' }]) {
+      const out = kit().tsHtml(ZOOM4(z));
+      assert.deepEqual(xLabels(out), ['a', 'b', 'c', 'd'], JSON.stringify(z));
+      assert.ok(!out.includes('data-kit-zoom-reset'));
+    }
+  });
+
+  test('kitTsAppend drops the oldest', () => {
+    const w = liveDom(LIVE());
+    assert.equal(w.kitTsAppend(w.document, 'live', 'e', [9]), true);
+    const o = liveJson(w);
+    assert.deepEqual(o.labels, ['b', 'c', 'e']);
+    assert.deepEqual(o.series[0].values, [2, 3, 9]);
+  });
+
+  test('kitTsAppend grows to keep', () => {
+    const w = liveDom(LIVE({ keep: 5 }));
+    w.kitTsAppend(w.document, 'live', 'd', [4]);
+    w.kitTsAppend(w.document, 'live', 'e', [5]);
+    assert.equal(liveJson(w).labels.length, 5);
+    w.kitTsAppend(w.document, 'live', 'f', []);
+    const o = liveJson(w);
+    assert.deepEqual(o.labels, ['b', 'c', 'd', 'e', 'f']);
+    assert.deepEqual(o.series[0].values, [2, 3, 4, 5, 0]);
+  });
+
+  test('kitTsAppend keeps zoom while from stays', () => {
+    const w = liveDom(LIVE({ zoom: true, z: { from: 'b', to: 'c' } }));
+    w.kitTsAppend(w.document, 'live', 'd', [4]);
+    assert.deepEqual(liveJson(w).z, { from: 'b', to: 'c' });
+    assert.deepEqual(domLabels(w), ['b', 'c']);
+  });
+
+  test('kitTsAppend resets zoom when from drops', () => {
+    const w = liveDom(LIVE({ zoom: true, z: { from: 'a', to: 'b' } }));
+    w.kitTsAppend(w.document, 'live', 'd', [4]);
+    assert.equal(liveJson(w).z, undefined);
+    assert.deepEqual(domLabels(w), ['b', 'c', 'd']);
+  });
+
+  test('kitTsAppend unknown id', () => {
+    const w = liveDom(LIVE()), body = w.document.getElementById('b'), before = body.innerHTML;
+    assert.equal(w.kitTsAppend(w.document, 'other', 'e', [9]), false);
+    assert.equal(body.innerHTML, before);
+  });
+
+  test('refit keeps the new options', () => {
+    const w = liveDom({ ...ZOOM4({ from: 'b', to: 'c' }), thresholds: [{ value: 3, label: 'Three' }] });
+    const ts = w.document.querySelector('.ts[data-kit-ts]');
+    w.kitRedrawTs(ts, liveJson(w), 800);
+    const html = w.document.getElementById('b').innerHTML;
+    assert.match(html, /viewBox="0 0 800 220"/);
+    assert.ok(html.includes('class="th"'));
+    assert.ok(html.includes('data-kit-zoom-reset'));
   });
 });

@@ -264,7 +264,7 @@ describe('#793 row + drawer markup', () => {
     const row = win.document.querySelector('[data-row="old"]');
     expect(row.querySelector('.sub .m').textContent).toBe('linux·llama host');
     expect(row.querySelector('.ag-ep .ip').textContent).toBe('192.0.2.3');
-    expect(row.querySelector('.ag-ep .ver').textContent).toContain('v1');
+    expect(row.querySelector('.ag-ep .m-ver').textContent).toContain('v1');
     expect(row.querySelector('.ag-ep .ag-upd').textContent).toBe('↑ update to v2');
     expect(row.querySelector('.ag-ep [title]')).toBeNull();
     expect(row.querySelector('.ag-seen')).toBeNull();   // live: no countdown
@@ -341,7 +341,7 @@ describe('#793 row + drawer markup', () => {
     expect(dr).toBeTruthy();
     expect(d.querySelector('[data-row="a1"]').classList.contains('open')).toBe(true);
     expect(dr.querySelector('[data-act="primary"][data-prov="llama"]')).toBeTruthy();
-    expect(dr.querySelector('[data-act="pool"][data-prov="llama"] .hint').textContent).toBe('slot #1');
+    expect(dr.querySelector('[data-act="pool"][data-prov="llama"] .m-hint').textContent).toBe('slot #1');
     const kv = dr.querySelector('.ag-kv').textContent;
     expect(kv).toContain('last seen40 s ago');
     expect(kv).toContain('mutual · cert issued 2026-08-30');

@@ -111,7 +111,7 @@
   .at-rt { width:100%; border-collapse:collapse; font-size:12.5px; }
   .at-rt th, .at-rt td { text-align:left; padding:8px 14px; border-bottom:1px solid var(--border-soft); vertical-align:middle; }
   .at-rt th { font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--fg-faint); font-weight:600; }
-  .at-rt .mono, .at-rt .old, .at-rt .new { font-family:var(--font-mono); }
+  .at-rt .m-mono, .at-rt .old, .at-rt .new { font-family:var(--font-mono); }
   .at-rt .old { color:var(--fg-faint); text-decoration:line-through; } .at-rt .new { font-weight:600; color:var(--fg); }
   .at-rt tr.skip td { opacity:.55; } .at-rt tr.skip .old { text-decoration:none; }
   .at-rt .ev { color:var(--fg-muted); font-size:12px; } .at-rt .ev small { color:var(--fg-dim); }

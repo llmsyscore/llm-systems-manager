@@ -144,20 +144,16 @@
 
   // swatch: [bg, card, accent, accent-2, border] for the picker tile.
   const THEMES = [
-    { id: 'modern',     label: 'Modern',     dark: true,  swatch: ['#0b0d16', '#131626', '#9a7cff', '#2dd4bf', '#242a45'] },
-    { id: 'dark',       label: 'Dark',       dark: true,  swatch: ['#111111', '#1a1a1a', '#77aaff', '#44ee99', '#2a2a2a'] },
-    { id: 'medium',     label: 'Medium',     dark: true,  swatch: ['#1c1c20', '#25252b', '#88ccff', '#66eebb', '#34343c'] },
-    { id: 'oled',       label: 'OLED black', dark: true,  swatch: ['#000000', '#0b0b0c', '#5eb0ff', '#35d6a8', '#1f1f22'] },
-    { id: 'graphite',   label: 'Graphite',   dark: true,  swatch: ['#1a1816', '#221f1c', '#e3a24a', '#7cc4a0', '#332e29'] },
-    { id: 'slate',      label: 'Slate',      dark: true,  swatch: ['#303446', '#414559', '#8caaee', '#81c8be', '#51576d'] },
-    { id: 'enterprise', label: 'Enterprise', dark: true,  swatch: ['#0f1218', '#161a23', '#5b8def', '#4a9fc8', '#232a3a'] },
-    { id: 'light',      label: 'Light',      dark: false, swatch: ['#f4f5f7', '#ffffff', '#0a66c2', '#1a8a4e', '#d4d6dc'] },
-    { id: 'frost',      label: 'Frost',      dark: false, swatch: ['#eef2f7', '#ffffff', '#2a6fd6', '#0f9d8a', '#cdd7e4'] },
+    { id: 'dark',  label: 'Dark',  dark: true,  swatch: ['#0a0a0b', '#131315', '#3987e5', '#14b8a6', '#232327'] },
+    { id: 'light', label: 'Light', dark: false, swatch: ['#eef0f3', '#ffffff', '#2a78d6', '#0f766e', '#dde1e7'] },
   ];
   const THEME_IDS = THEMES.map(t => t.id);
-  const DEFAULT_THEME = 'modern';
-  const LEGACY_THEMES = { classic: 'oled' };
-  const SYSTEM_LIGHT_THEME = 'frost';
+  const DEFAULT_THEME = 'dark';
+  const LEGACY_THEMES = {
+    frost: 'light', modern: 'dark', medium: 'dark', slate: 'dark',
+    enterprise: 'dark', oled: 'dark', graphite: 'dark', classic: 'dark',
+  };
+  const SYSTEM_LIGHT_THEME = 'light';
 
   function normalizeTheme(name) {
     if (THEME_IDS.includes(name)) return name;

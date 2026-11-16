@@ -30,9 +30,8 @@ describe('Forecast sub-tab registration (#1031)', () => {
 describe('Forecast markup (#1031)', () => {
   beforeAll(() => { document.documentElement.innerHTML = indexSrc; });
 
-  it('the sub-tab button sits in the dashboard nav', () => {
-    const btn = document.querySelector(
-      '#dashboardTab .sub-tab-nav [onclick="switchSubTab(\'dashboard\',\'forecast\')"]');
+  it('the sub-tab button sits in the sidebar Dashboards group', () => {
+    const btn = document.querySelector('#side [data-tab="dashboard"][data-sub="forecast"]');
     expect(btn).toBeTruthy();
     expect(btn.textContent.trim()).toBe('Forecast');
   });

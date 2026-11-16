@@ -182,7 +182,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.15-1"
+__version__ = "v2026.11.15-2"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -3997,7 +3997,7 @@ def delete_user_layout(username: str) -> None:
         log.warning("could not remove layout for %s: %s", u, e)
 
 # Theme names retired from the frontend map forward on read.
-_LEGACY_THEMES = {"classic": "oled"}
+_LEGACY_THEMES = {"classic": "dark"}
 
 @app.route("/api/layout", methods=["GET"])
 def get_layout():

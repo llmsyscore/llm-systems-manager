@@ -1200,7 +1200,7 @@
   const applyNeedsAdmin = () => isVllm() && !isAdmin();
   function renderRows() {
     const tb = $('atRecRows'); if (!tb) return;
-    tb.innerHTML = _rows.map((r, i) => `<tr class="${r.selected ? '' : 'skip'}"><td class="mono">${esc(r.key)}</td><td class="old">${esc(r.current || '—')}</td><td class="new">${esc(r.recommended)}</td><td class="ev"><span class="at-src ${esc(r.source)}">${esc(SRC_LABEL[r.source] || r.source)}</span>${esc(r.evidence || '')}${r.note ? ` <small>· ${esc(r.note)}</small>` : ''}</td><td><button type="button" class="mc-toggle${r.selected ? ' on' : ''}" data-row="${i}"><span class="track"></span></button></td></tr>`).join('');
+    tb.innerHTML = _rows.map((r, i) => `<tr class="${r.selected ? '' : 'skip'}"><td class="m-mono">${esc(r.key)}</td><td class="old">${esc(r.current || '—')}</td><td class="new">${esc(r.recommended)}</td><td class="ev"><span class="at-src ${esc(r.source)}">${esc(SRC_LABEL[r.source] || r.source)}</span>${esc(r.evidence || '')}${r.note ? ` <small>· ${esc(r.note)}</small>` : ''}</td><td><button type="button" class="mc-toggle${r.selected ? ' on' : ''}" data-row="${i}"><span class="track"></span></button></td></tr>`).join('');
     const n = _rows.filter(r => r.selected).length;
     const sel = $('atRecSel'); if (sel) sel.textContent = `${n} of ${_rows.length} changes selected`;
     const btn = $('atApplyBtn');

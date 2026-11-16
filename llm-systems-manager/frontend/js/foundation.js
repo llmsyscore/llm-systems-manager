@@ -231,12 +231,15 @@ async function loadLayout() {
     _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
   } catch(e) {}
-  if (layout && layout.theme) layout.theme = SettingsLib.normalizeTheme(layout.theme);
+  const rawTheme = layout && layout.theme;
+  if (rawTheme) layout.theme = SettingsLib.normalizeTheme(rawTheme);
   applyTheme(layout && layout.theme, false);
   applyLayout();
   applyAllGridCols();
   if (typeof applyDensity === 'function') applyDensity(layout && layout.density, false);
   if (typeof applyLayoutEngine === 'function') applyLayoutEngine(layout && layout.layoutEngine, false);
+  // Saves the mapped name once when the stored theme was a legacy or unknown one.
+  if (rawTheme && rawTheme !== layout.theme) saveLayout();
 }
 
 // kraken → aio: existing saved layouts written before the rename still carry
@@ -525,6 +528,7 @@ function applyTheme(name, save) {
     saveLayout();
   }
   if (typeof _sdRenderAppearance === 'function') _sdRenderAppearance();
+  if (typeof mcShellPaintTheme === 'function') mcShellPaintTheme();
 }
 function setThemeFollowSystem(on) {
   if (typeof layout !== 'object' || !layout) layout = {};
@@ -1294,29 +1298,18 @@ function _sdRenderLayout(scope) {
   el.innerHTML = `
     <div class="sd-sh"><h3>Layout</h3><span class="meta">${cols === 'auto' ? 'auto columns' : cols + ' columns'}${flow ? ' · flow' : ''} · ${_esc(String(pname).toLowerCase())}</span>
       <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's default cards, order, columns and sizes">⟲ Reset this page</button></span></div>
-    <div class="sd-row top"><span class="k">Engine</span><div class="grow">${engSeg}
+    <div class="sd-row m-top"><span class="k">Engine</span><div class="grow">${engSeg}
       <div class="help">${flow ? 'Flow sizes every card to its content and packs cards to close gaps.' : 'Grid stretches each row to its tallest card.'} Applies to every card page.</div></div></div>
-    <div class="sd-row top"><span class="k">Density</span><div class="grow">${densSeg}
+    <div class="sd-row m-top"><span class="k">Density</span><div class="grow">${densSeg}
       <div class="help">Compact tightens card padding, stat type and chart height. Applies to every card page.</div></div></div>
     <div class="sd-row"><span class="k">Columns</span><div class="mc-seg" role="group" aria-label="Columns">${seg}</div></div>
-    <div class="sd-row top"><span class="k">Preset</span><div class="grow"><div class="sd-tiles">${tiles}</div>
+    <div class="sd-row m-top"><span class="k">Preset</span><div class="grow"><div class="sd-tiles">${tiles}</div>
       <div class="help">${presetHelp}</div></div></div>`;
 }
 
-// Swatch colours read from the theme's own :root[data-theme] rule so the
-// picker can't drift from base.css; the lib's hex list is the fallback.
+// Swatch colours for a theme's picker tile: [bg, card, accent, accent-2, border]
+// from the theme catalog in settingsdrawer.js.
 function _sdSwatchFor(theme) {
-  const want = ['--bg', '--bg-card', '--accent', '--accent-2', '--border'];
-  try {
-    for (const sheet of document.styleSheets) {
-      let rules; try { rules = sheet.cssRules; } catch (_) { continue; }
-      for (const r of rules) {
-        if (!r.selectorText || !r.selectorText.includes(`[data-theme="${theme.id}"]`)) continue;
-        const vals = want.map(v => r.style.getPropertyValue(v).trim());
-        if (vals.every(Boolean)) return vals;
-      }
-    }
-  } catch (_) {}
   return theme.swatch;
 }
 
@@ -1344,12 +1337,11 @@ function _sdRenderAppearance() {
     const [p0, p1, p2, p3, pb] = _sdSwatchFor(t);
     return `<button type="button" class="sd-swt${t.id === saved ? ' on' : ''}" data-sd="theme" data-id="${t.id}" style="--p0:${p0};--p1:${p1};--p2:${p2};--p3:${p3};--pb:${pb}" aria-pressed="${t.id === saved}"><span class="pv"></span><span class="tn">${_esc(t.label)}</span></button>`;
   }).join('');
-  const light = SettingsLib.THEMES.find(t => t.id === SettingsLib.SYSTEM_LIGHT_THEME);
   el.innerHTML = `
     <div class="sd-sh"><h3>Appearance</h3><span class="meta">${_esc(eff)}${follow && eff !== saved ? ' · following system' : ''}</span></div>
     <div class="sd-sw">${sw}</div>
     <div class="sd-row" style="margin-top:12px;"><button type="button" class="mc-toggle${follow ? ' on' : ''}" data-sd="follow-system" role="switch" aria-checked="${follow}"><span class="track"></span><span class="tlbl">Follow the system light/dark setting</span></button></div>
-    <div class="help">Uses <b>${_esc(light ? light.label : 'Frost')}</b> while your OS is in light mode and your chosen dark theme otherwise.</div>
+    <div class="help">Uses <b>Light</b> while your OS is in light mode and <b>Dark</b> otherwise.</div>
 `;
 }
 
@@ -1639,8 +1631,8 @@ function switchTab(tab) {
   if (_activeTab === 'overall' && tab !== 'overall'
       && typeof returnPinnedCards === 'function') returnPinnedCards();
   _activeTab = tab;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`)?.classList.add('active');
+  if (typeof mcShellMark === 'function') mcShellMark(tab);
+  if (typeof mcShellTitle === 'function') mcShellTitle(tab, _subTabState.dashboard);
 
   const tabs = ['overallTab','dashboardTab','llmTab','eventsTab','toolsTab','adminTab'];
   tabs.forEach(id => {

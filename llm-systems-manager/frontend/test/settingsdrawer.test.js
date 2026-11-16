@@ -49,28 +49,26 @@ describe('layout presets', () => {
 });
 
 describe('themes', () => {
-  it('drops classic, adds oled/graphite/frost, and keeps every legacy theme still valid', () => {
-    expect(L.THEME_IDS).not.toContain('classic');
-    for (const t of ['dark', 'medium', 'light', 'modern', 'slate', 'enterprise', 'oled', 'graphite', 'frost']) {
-      expect(L.THEME_IDS).toContain(t);
-    }
+  it('two themes', () => {
+    expect(L.THEME_IDS).toEqual(['dark', 'light']);
     expect(L.THEMES.every(t => t.swatch.length === 5 && typeof t.dark === 'boolean')).toBe(true);
+    expect(L.DEFAULT_THEME).toBe('dark');
+    expect(L.SYSTEM_LIGHT_THEME).toBe('light');
   });
 
-  it('normalizeTheme migrates classic to oled and unknown names to the default', () => {
-    expect(L.normalizeTheme('classic')).toBe('oled');
-    expect(L.normalizeTheme('nope')).toBe(L.DEFAULT_THEME);
-    expect(L.normalizeTheme(undefined)).toBe('modern');
-    expect(L.normalizeTheme('slate')).toBe('slate');
+  it('legacy names map', () => {
+    const want = {
+      dark: 'dark', medium: 'dark', light: 'light', modern: 'dark', slate: 'dark',
+      enterprise: 'dark', oled: 'dark', graphite: 'dark', frost: 'light', classic: 'dark', '': 'dark', nope: 'dark',
+    };
+    for (const [name, theme] of Object.entries(want)) expect(L.normalizeTheme(name), name).toBe(theme);
+    expect(L.normalizeTheme(undefined)).toBe('dark');
   });
 
-  it('effectiveTheme swaps to the light theme only while following an OS in light mode', () => {
-    expect(L.effectiveTheme('modern', false, true)).toBe('modern');
-    expect(L.effectiveTheme('modern', true, true)).toBe('frost');
-    expect(L.effectiveTheme('modern', true, false)).toBe('modern');
-    expect(L.effectiveTheme('light', true, true)).toBe('light');
-    expect(L.effectiveTheme('light', true, false)).toBe('modern');
-    expect(L.effectiveTheme('classic', true, false)).toBe('oled');
+  it('follow system', () => {
+    expect(L.effectiveTheme('dark', true, true)).toBe('light');
+    expect(L.effectiveTheme('light', true, false)).toBe('dark');
+    expect(L.effectiveTheme('graphite', false, true)).toBe('dark');
   });
 });
 

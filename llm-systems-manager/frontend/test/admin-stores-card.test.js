@@ -60,7 +60,7 @@ describe('model profile maintenance card (#1009)', () => {
   it('shows the empty state and hides Delete all when nothing is left over', () => {
     const w = harness(`window.__T = { render: adminRenderStores };`);
     w.__T.render({ ok: true, at: 1000, removed_agents: [], absent_models: [], absent_aliases: [], aliases_checked: true, unverified: [] });
-    expect(w.document.querySelector('#adminStoresTbody .empty').textContent).toContain('Nothing to review');
+    expect(w.document.querySelector('#adminStoresTbody .m-empty').textContent).toContain('Nothing to review');
     expect(w.document.getElementById('adminStoresCleanAll').hidden).toBe(true);
   });
 
@@ -110,6 +110,6 @@ describe('model profile maintenance card (#1009)', () => {
     expect(w.__calls[0]).toEqual(['/api/admin/stores/clean', { models: [{ agent: 'a1', model: 'gone' }] }]);
     expect(w.__calls[1]).toEqual(['/api/admin/stores/clean', { all: true }]);
     expect(w.document.getElementById('adminStoresResult').textContent).toBe('removed 1 entry');
-    expect(w.document.querySelector('#adminStoresTbody .empty')).toBeTruthy();
+    expect(w.document.querySelector('#adminStoresTbody .m-empty')).toBeTruthy();
   });
 });

@@ -1,4 +1,4 @@
-// DOM contract for the Tower drawer (#924): the real index.html header and
+// DOM contract for the Tower drawer (#924): the real index.html shell and
 // overlay slices booted against the real js/tower.js + js/lib/tower-view.js.
 import { describe, test, expect, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -6,7 +6,7 @@ import { srcFile } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
 const slice = (a, b) => indexSrc.slice(indexSrc.indexOf(a), indexSrc.indexOf(b, indexSrc.indexOf(a)));
-const HEADER = slice('<div class="header-right">', '</h1>');
+const HEADER = slice('<!-- kit shell -->', '<!-- /kit shell -->').replace(/<script[\s\S]*?<\/script>/g, '') + '</div></div>';
 const DRAWER = slice('<div class="tower-overlay" id="towerOverlay"', '<!-- /tower -->');
 
 const _windows = [];
@@ -15,7 +15,7 @@ afterEach(() => { while (_windows.length) _windows.pop().close(); });
 const ENABLED = { ok: true, enabled: true, admin: false, model: 'qwen3-14b', provider: 'llama', hosts: ['box'] };
 
 function boot(state, opts = {}) {
-  const dom = new JSDOM(`<!doctype html><html><body><h1>${HEADER}</h1><div class="grid"></div>${DRAWER}</body></html>`,
+  const dom = new JSDOM(`<!doctype html><html><body>${HEADER}<div class="grid"></div>${DRAWER}</body></html>`,
     { runScripts: 'dangerously', url: 'http://localhost/', pretendToBeVisual: true });
   const w = dom.window;
   _windows.push(w);
@@ -347,7 +347,7 @@ describe('Tower drawer', () => {
     expect(w.__stopped).toBeUndefined();
     expect(w.__sseClosed).toBe(true);
     expect(w.document.querySelector('#twBody .ans')).toBeNull();
-    expect(w.document.querySelector('#twBody .empty h3').textContent).toBe('Ask about your hosts');
+    expect(w.document.querySelector('#twBody .m-empty h3').textContent).toBe('Ask about your hosts');
   });
 
   test('picking an older thread from history parks the live run instead of stopping it (#994)', async () => {
@@ -401,7 +401,7 @@ describe('Tower drawer', () => {
     w._activeTab = 'llm';
     w.document.dispatchEvent(new w.CustomEvent('lsm:tab', { detail: { tab: 'llm' } })); await flush(); await flush();
     expect(w.document.getElementById('twCtxChip').textContent).toContain('llm');
-    expect(w.document.querySelector('#twBody .empty p').textContent).toContain('llm');
+    expect(w.document.querySelector('#twBody .m-empty p').textContent).toContain('llm');
   });
 
   test('history rows delete on a second click; deleting the current thread forgets it', async () => {
@@ -530,7 +530,7 @@ describe('Tower drawer', () => {
   test('no model: composer disabled and the empty state explains', async () => {
     const w = await ready({ ok: true, enabled: true, model: null });
     expect(w.document.getElementById('twInput').disabled).toBe(true);
-    expect(w.document.querySelector('#twBody .empty h3').textContent).toBe('Nothing to think with');
+    expect(w.document.querySelector('#twBody .m-empty h3').textContent).toBe('Nothing to think with');
   });
 });
 
@@ -1067,7 +1067,7 @@ describe('insights', () => {
     $(w, 'twInsDismissAll').click(); await flush(); await flush();
     expect(w.__dismissedAll).toBe(true);
     expect(view.querySelector('.ins')).toBeNull();
-    expect(view.querySelector('.empty h3').textContent).toBe('No insights');
+    expect(view.querySelector('.m-empty h3').textContent).toBe('No insights');
   });
   test('the Alert link hands the alert id to focusAlarmAlert when the page provides it (#962)', async () => {
     const INS = mkIns({ alert_id: 'al-42' });
@@ -1099,7 +1099,7 @@ describe('insights', () => {
     expect($(w, 'twInsView').querySelector('[data-ins-apply]')).not.toBeNull();
     expect(w.__seen).toBe(1);
     $(w, 'twTabConv').click(); await flush();
-    expect($(w, 'twBody').querySelector('.empty h3').textContent).toBe('Nothing to think with');
+    expect($(w, 'twBody').querySelector('.m-empty h3').textContent).toBe('Nothing to think with');
     const off = await openWith({ ok: true, enabled: false, admin: true }, [mkIns()]);
     expect($(off, 'twTabs').hidden).toBe(true);
     expect($(off, 'twInsView').hidden).toBe(true);
@@ -1166,7 +1166,7 @@ describe('insights', () => {
   test('the Insights tab reloads when insights_rev moves even with nothing unseen (auto-applied)', async () => {
     const w = await openWith({ ...QUIET, insights_rev: 100 }, []);
     $(w, 'twTabIns').click(); await flush();
-    expect($(w, 'twInsView').querySelector('.empty h3').textContent).toBe('No insights');
+    expect($(w, 'twInsView').querySelector('.m-empty h3').textContent).toBe('No insights');
     w.__insights = [mkIns({ status: 'applied', applied_by: 'tower via alarm a1', resolved: nowS() })];
     w.__state = { ...QUIET, insights_rev: 200 };
     await w.towerRefreshState(); await flush(); await flush();

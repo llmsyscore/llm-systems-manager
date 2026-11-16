@@ -31,10 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // toolsTab, eventsTab and adminTab are nested inside dashboardTab in the HTML.
-  // Move them to body level so they aren't hidden when dashboardTab hides.
+  // Move them into the shell's .main so they aren't hidden when dashboardTab hides.
   ['toolsTab', 'eventsTab', 'adminTab'].forEach(id => {
     const el = document.getElementById(id);
-    if (el && el.closest('#dashboardTab')) document.body.appendChild(el);
+    if (el && el.closest('#dashboardTab')) (document.querySelector('.shell > .main') || document.body).appendChild(el);
   });
 });
 
@@ -63,6 +63,11 @@ function switchSubTab(parent, sub) {
     const el = document.getElementById(`${cfg.prefix}-${s}`);
     if (el) el.classList.toggle('active', s === sub);
   });
+  // Dashboards pages are sidebar items: mark the item and title the page while Dashboards is on screen.
+  if (parent === 'dashboard' && typeof _activeTab !== 'undefined' && _activeTab === 'dashboard') {
+    if (typeof mcShellMark === 'function') mcShellMark('dashboard', sub);
+    if (typeof mcShellTitle === 'function') mcShellTitle('dashboard', sub);
+  }
 
   _subTabState[parent] = sub;
   if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
@@ -249,7 +254,9 @@ function _rebackfillActiveView() {
 // Boot
 // ---------------------------------------------------------------------------
 (async () => {
-  await loadLayout();
+  // shell.js waits on this promise before applying the saved sidebar state.
+  window.mcLayoutReady = loadLayout();
+  await window.mcLayoutReady;
   if (typeof loadMe === 'function') await loadMe();
   // Populate the multi-agent picker (chips auto-hide at ≤1 agent). Awaited so
   // the restored/default selection is set BEFORE loadHistory backfills the

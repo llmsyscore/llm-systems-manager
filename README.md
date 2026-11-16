@@ -6,7 +6,7 @@ One self-hosted dashboard to monitor, control, benchmark and tune every machine 
 
 Try the demo: https://demo.llmsysmanager.com
 
-<img alt="LLM Systems Manager: Overall, llama.cpp, Energy, Forecast, Tower, Report Card, Autotune and the nine color themes" src="docs/screenshots/tour.gif" width="100%" />
+<img alt="LLM Systems Manager: Overall, llama.cpp, Energy, Forecast, Tower, Report Card, Autotune and the Dark and Light themes" src="docs/screenshots/tour.gif" width="100%" />
 
 ## Install
 

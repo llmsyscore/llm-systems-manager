@@ -761,6 +761,7 @@ def _render_login(error: str = "", change_next: "str | None" = None) -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Systems Manager</title>
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
 <style>
   :root {{ --ac:{accent}; --glow:{glow}; }}
   * {{ box-sizing:border-box; }}

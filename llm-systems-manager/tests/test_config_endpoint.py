@@ -94,7 +94,7 @@ def test_layout_get_migrates_retired_theme(monkeypatch, tmp_path):
     monkeypatch.setattr(manager_mod, "LAYOUT_FILE", f)
     c = _client(monkeypatch)
     d = c.get("/api/layout").get_json()
-    assert d["theme"] == "oled"
+    assert d["theme"] == "dark"
     assert d["cols"] == 3
 
 
