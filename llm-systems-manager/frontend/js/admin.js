@@ -455,7 +455,7 @@ function adminRenderPins() {
 
   const entries = Object.entries(pins).sort(([m1], [m2]) => m1.localeCompare(m2));
   if (entries.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="3"><div class="empty">No pins set — every model round-robins the pool.</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="3"><div class="m-empty">No pins set — every model round-robins the pool.</div></td></tr>';
   } else {
     tbody.innerHTML = entries.map(([model, aid]) => {
       const a = idToAgent[aid];
@@ -469,7 +469,7 @@ function adminRenderPins() {
         ? ' <span class="pill info ap-managed-badge" title="Managed by a Model Autopilot entry — manual edits may be overridden on the next reconcile.">autopilot</span>'
         : '';
       return `<tr>
-        <td class="n mono">${adminEsc(model)}${apBadge}</td>
+        <td class="n m-mono">${adminEsc(model)}${apBadge}</td>
         <td>${host}</td>
         <td class="r"><div class="act">
           <button type="button" class="ib crith" data-tip="Unpin" onclick="adminClearPin('${adminEsc(model)}')">✕</button>
@@ -535,10 +535,10 @@ function adminRenderStores(d) {
   _adminStores = d || null;
   const rows = adminStoreRows(d);
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="3"><div class="empty">Nothing to review — every saved profile and name matches a registered agent and a model it reports.</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="3"><div class="m-empty">Nothing to review — every saved profile and name matches a registered agent and a model it reports.</div></td></tr>';
   } else {
     tbody.innerHTML = rows.map((r, i) => `<tr>
-        <td class="n mono"${r.tip ? ` data-tip="${adminEsc(r.tip)}"` : ''}>${adminEsc(r.entry)}${r.sub ? ` <span class="t">· ${adminEsc(r.sub)}</span>` : ''}</td>
+        <td class="n m-mono"${r.tip ? ` data-tip="${adminEsc(r.tip)}"` : ''}>${adminEsc(r.entry)}${r.sub ? ` <span class="t">· ${adminEsc(r.sub)}</span>` : ''}</td>
         <td${r.unverified ? ' class="t"' : ''}>${adminEsc(r.why)}</td>
         <td class="r"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm mcbtn-del" onclick="adminCleanStores(${i})">Delete</button></td>
       </tr>`).join('');
@@ -2425,11 +2425,11 @@ async function adminUsersLoad() {
   _adminUsersBindOnce();
   try {
     const r = await fetch('/api/admin/users');
-    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5"><div class="empty">Admin-only.</div></td></tr>'; return; }
+    if (!r.ok) { tb.innerHTML = '<tr><td colspan="5"><div class="m-empty">Admin-only.</div></td></tr>'; return; }
     const d = await r.json();
     _adminUsersCache = d.users || [];
     tb.innerHTML = _adminUsersCache.map(_adminUserRow).join('') ||
-      '<tr><td colspan="5"><div class="empty">No users.</div></td></tr>';
+      '<tr><td colspan="5"><div class="m-empty">No users.</div></td></tr>';
     const meta = document.getElementById('adminUsersMeta');
     if (meta) {
       const admins = _adminUsersCache.filter(u => u.role === 'admin').length;
@@ -2438,7 +2438,7 @@ async function adminUsersLoad() {
     }
     adminRenderAccessSummary();
   } catch (e) {
-    tb.innerHTML = '<tr><td colspan="5"><div class="empty">Load failed.</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="5"><div class="m-empty">Load failed.</div></td></tr>';
   }
 }
 
@@ -2649,7 +2649,7 @@ async function adminLoadBackupStatus() {
     adminRenderBackup();
   } catch (e) {
     const body = document.getElementById('adminSchedBackupBody');
-    if (body) body.innerHTML = `<div class="empty">Status unavailable: ${adminEsc(e.message)}</div>`;
+    if (body) body.innerHTML = `<div class="m-empty">Status unavailable: ${adminEsc(e.message)}</div>`;
   }
   adminLoadBackupSettings();
 }
@@ -2708,9 +2708,9 @@ function adminRenderBackup() {
   const body = document.getElementById('adminSchedBackupBody');
   if (body) {
     if (!d.enabled) {
-      body.innerHTML = '<div class="empty">Scheduled backups are off — set an interval under Backup settings.</div>';
+      body.innerHTML = '<div class="m-empty">Scheduled backups are off — set an interval under Backup settings.</div>';
     } else if (!d.scheduler_running) {
-      body.innerHTML = `<div class="empty">Scheduler is not running: ${adminEsc(d.disabled_reason || 'unknown reason')} — fix it under Backup settings below.</div>`;
+      body.innerHTML = `<div class="m-empty">Scheduler is not running: ${adminEsc(d.disabled_reason || 'unknown reason')} — fix it under Backup settings below.</div>`;
     } else {
       const lastLine = last.ts
         ? (last.ok
@@ -2747,7 +2747,7 @@ function adminRenderBackup() {
     const shown = _adminBackupShowAll ? files : files.slice(0, _ADM_BACKUP_ROWS);
     tb.innerHTML = shown.length
       ? shown.map(b => `<tr>
-          <td class="n mono">${adminEsc(b.file)}</td>
+          <td class="n m-mono">${adminEsc(b.file)}</td>
           <td class="comp">${_BACKUP_LABELS[b.component] || adminEsc(b.component || '—')}</td>
           <td class="r">${adminEsc(_fmtBytesShort(b.bytes))}</td>
           <td class="t">${_adminStamp(b.mtime)}</td>
@@ -2755,7 +2755,7 @@ function adminRenderBackup() {
           <td class="r"><button type="button" class="mcbtn mcbtn-ghost mcbtn-sm"
             data-bk-dl="${adminEsc(b.file)}" title="Download this archive">⤓ Download</button></td>
         </tr>`).join('')
-      : '<tr><td colspan="6"><div class="empty">No archives retained yet.</div></td></tr>';
+      : '<tr><td colspan="6"><div class="m-empty">No archives retained yet.</div></td></tr>';
   }
   const more = document.getElementById('adminSchedBackupMore');
   if (more) {

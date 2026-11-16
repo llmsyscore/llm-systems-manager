@@ -4,9 +4,9 @@ One self-hosted dashboard to monitor, control, benchmark and tune every machine 
 
 **Works with** llama.cpp, vLLM, LM Studio and stable-diffusion.cpp · **GPUs:** NVIDIA, AMD (ROCm and Vulkan) and Apple Silicon · **Hosts:** Linux and macOS
 
-Try the demo: https://demo.llmsysmanager.com
+Try the demo: [demo.llmsysmanager.com](https://demo.llmsysmanager.com/?ref=gh)
 
-<img alt="LLM Systems Manager: Overall, llama.cpp, Energy, Forecast, Tower, Report Card, Autotune and the nine color themes" src="docs/screenshots/tour.gif" width="100%" />
+<img alt="LLM Systems Manager: Overall, llama.cpp, Energy, Forecast, Tower, Report Card, Autotune and the Dark and Light themes" src="docs/screenshots/tour.gif" width="100%" />
 
 ## Install
 
@@ -69,7 +69,7 @@ Six minutes through sign-in, every dashboard, Tower, LLM Control, the Tools, cha
 
 https://github.com/user-attachments/assets/b2da9caf-9437-4001-acdc-cd12567fa786
 
-**[▶ Screenshot viewer](https://www.llmsyscore.com/#screenshots)**: all 30 screens, full size.
+**[▶ Screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)**: all 30 screens, full size.
 
 ## What it does
 

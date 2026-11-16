@@ -528,7 +528,7 @@ function _renderEntries() {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = 10;
-    td.appendChild(el('div', 'empty', 'No autopilot entries — add one to declare a desired model placement.'));
+    td.appendChild(el('div', 'm-empty', 'No autopilot entries — add one to declare a desired model placement.'));
     tr.appendChild(td);
     body.appendChild(tr);
   }
@@ -598,7 +598,7 @@ function _renderProposals() {
     pill.textContent = `${_lastProposals.length} waiting`;
   }
   if (!_lastProposals.length) {
-    body.appendChild(el('div', 'rt-pp empty', 'No plan waiting.'));
+    body.appendChild(el('div', 'rt-pp m-empty', 'No plan waiting.'));
     return;
   }
   _lastProposals.forEach(p => {
@@ -771,7 +771,7 @@ function addEntry() {
   const body = document.getElementById('apEntriesBody');
   if (!body) return;
   _dirty = true;
-  const empty = body.querySelector('td .empty');
+  const empty = body.querySelector('td .m-empty');
   if (empty) body.replaceChildren();
   const row = entryRow({ model: '', provider: 'llama', placement: 'auto',
     failover: 'semi', priority: 100, min_replicas: 1, max_replicas: 1 });

@@ -1,15 +1,5 @@
-/* Tower drawer (#924): header button, overlay, transcript, composer.
-   Token-driven; every rule scoped to .hdr-tower / .tower-overlay / #towerAside. */
-
-/* ---------- header button ---------- */
-.hdr-tower { height: 28px; padding: 0 10px 0 8px; border-radius: 7px; border: 1px solid var(--border-strong); background: var(--bg-card); color: var(--fg-muted); display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; font-family: var(--font-sans); font-size: 12px; font-weight: 500; position: relative; transition: color .12s, border-color .12s, opacity .12s; }
-.hdr-tower svg { width: 15px; height: 15px; display: block; }
-.hdr-tower:hover, .hdr-tower.open { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
-.hdr-tower:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.hdr-tower.off { opacity: .55; border-style: dashed; }
-.hdr-tower.off:hover { color: var(--fg-muted); border-color: var(--border-strong); }
-.hdr-tower.unread { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); }
-.hdr-tower .n { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 600 9.5px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--bg); }
+/* Tower drawer (#924): overlay, transcript, composer; the sidebar button lives in shell.css.
+   Token-driven; every rule scoped to .tower-overlay / #towerAside. */
 
 /* ---------- overlay + dock ---------- */
 .tower-overlay { position: fixed; inset: 0; z-index: 60; display: none; }
@@ -152,7 +142,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins.crit::before { background: var(--crit); }
 #towerAside .ins.done::before { background: var(--ok); }
 #towerAside .ins.flash { border-color: var(--accent); }
-#towerAside .ins .top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+#towerAside .ins .m-top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 #towerAside .ins .rule { font-weight: 600; font-size: 12.5px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 #towerAside .ins .host { font: 10.5px var(--font-mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 #towerAside .ins .age { margin-left: auto; font: 10.5px var(--font-mono); color: var(--fg-dim); flex-shrink: 0; }
@@ -189,10 +179,10 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .ins .detb .aud { font: 10.5px var(--font-mono); color: var(--fg-dim); }
 
 /* ---------- empty / notice / enable ---------- */
-#towerAside .empty { display: grid; gap: 10px; padding: 26px 6px 10px; text-align: center; }
-#towerAside .empty h3 { margin: 0; padding: 0; border: 0; font-size: 14.5px; font-weight: 600; color: var(--fg); }
-#towerAside .empty p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.5; }
-#towerAside .empty .fu { justify-content: center; padding: 6px 0 0; }
+#towerAside .m-empty { display: grid; gap: 10px; padding: 26px 6px 10px; text-align: center; }
+#towerAside .m-empty h3 { margin: 0; padding: 0; border: 0; font-size: 14.5px; font-weight: 600; color: var(--fg); }
+#towerAside .m-empty p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.5; }
+#towerAside .m-empty .fu { justify-content: center; padding: 6px 0 0; }
 #towerAside .notice { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border-strong)); background: color-mix(in srgb, var(--warn) 7%, var(--bg-card)); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; }
 #towerAside .notice h4 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 #towerAside .notice h4 i { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
@@ -219,8 +209,8 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .box .send { width: 30px; height: 30px; border-radius: 8px; border: 0; background: var(--accent); color: var(--bg); font: 600 14px var(--font-sans); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
 #towerAside .box .send.stop { background: color-mix(in srgb, var(--crit) 18%, var(--bg-card)); color: var(--crit); border: 1px solid color-mix(in srgb, var(--crit) 45%, transparent); }
 #towerAside .box.dis { opacity: .5; }
-#towerAside .tw-c .hint { font: 10.5px var(--font-mono); color: var(--fg-faint); display: flex; flex-wrap: wrap; gap: 10px; }
-#towerAside .tw-c .hint b { color: var(--fg-dim); font-weight: 500; }
+#towerAside .tw-c .m-hint { font: 10.5px var(--font-mono); color: var(--fg-faint); display: flex; flex-wrap: wrap; gap: 10px; }
+#towerAside .tw-c .m-hint b { color: var(--fg-dim); font-weight: 500; }
 
 /* ---------- action cards ---------- */
 #towerAside .act:not(.tick) { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-strong)); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--bg-card)); margin: 6px 0; }
@@ -232,7 +222,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .act .tgt { font: 11.5px var(--font-mono); color: var(--fg-muted); }
 #towerAside .act p { margin: 0; font-size: 12.5px; color: var(--fg-muted); line-height: 1.45; }
 #towerAside .act .role { font: 11px var(--font-mono); color: var(--fg-dim); }
-#towerAside .act .role .mono { font-family: var(--font-mono); color: var(--fg-muted); }
+#towerAside .act .role .m-mono { font-family: var(--font-mono); color: var(--fg-muted); }
 #towerAside .act .btns { display: flex; gap: 8px; margin-top: 4px; }
 #towerAside .act .opts { display: grid; gap: 6px; margin: 4px 0 6px; }
 #towerAside .act .opt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -265,8 +255,7 @@ body.tw-docked #eventsTab, body.tw-docked #toolsTab, body.tw-docked #adminTab { 
 #towerAside .tick.act.ok .k { color: var(--ok); }
 
 @media (prefers-reduced-motion: no-preference) {
-  .hdr-tower.streaming svg, #towerAside.streaming .tw-h .beacon { animation: tw-pulse 1.6s ease-in-out infinite; }
-  .hdr-tower.unread { animation: tw-glow 2.4s ease-in-out infinite; }
+  #towerAside.streaming .tw-h .beacon { animation: tw-pulse 1.6s ease-in-out infinite; }
   #towerAside .caret { animation: tw-blink 1s steps(2) infinite; }
 }
 @keyframes tw-glow { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); } }

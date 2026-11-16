@@ -842,6 +842,32 @@ test('a panel outside a card box, a grip outside a panel and a panel in another 
   assert.deepEqual(cardIds(otherBox), ['c3']);
 });
 
+test('a mouse pointerup leaves draggable on a card outside a card box', () => {
+  const lone = fakeCard('c9');
+  lone.setAttribute('draggable', 'true');
+  const box = fakeBox('one', ['c1']);
+  box.children[0].setAttribute('draggable', 'true');
+  const p = wired([el('div', {}, [lone]), box]);
+  p.fire('pointerup', { pointerType: 'mouse', pointerId: 1 });
+  assert.equal(lone.getAttribute('draggable'), 'true');
+  assert.equal(box.children[0].hasAttribute('draggable'), false);
+});
+
+test('a native dragstart on a draggable card outside a card box is left to the page', () => {
+  const lone = fakeCard('c9');
+  lone.setAttribute('draggable', 'true');
+  const free = el('div', {}, [lone]);
+  const p = wired([free], { at: () => lone });
+  const sent = [];
+  p.fire('dragstart', { target: lone, dataTransfer: { setData: (k, v) => sent.push(v) } });
+  assert.equal(p.ctx.kitDrag, null);
+  assert.ok(!lone.classList.contains('dragging'));
+  assert.deepEqual(sent, []);
+  let stopped = 0;
+  p.fire('dragover', { clientX: 1, clientY: 1, preventDefault: () => { stopped++; } });
+  assert.equal(stopped, 0);
+});
+
 // A row as kitRowDress leaves it: grip, fold button, and a ⋯ menu with Move up / Move down.
 function movableRow(id, attrs = {}, kids = []) {
   const up = text('button', { 'data-row-move': '-1' }, 'Move up'), dn = text('button', { 'data-row-move': '1' }, 'Move down');
@@ -1721,4 +1747,129 @@ test('an onLegend hook that detaches the chart and then throws raises no second 
   assert.deepEqual(logged, [['kit hook onLegend failed', boom]]);
   assert.equal(ts.parentNode, null);
   assert.equal(ts.inserted.length, 0);
+});
+
+// A wired jsdom page with one 4-label chart (zoomable unless zoom is false), its svg stubbed to {left: 0, width: 600}.
+function zoomPage(extra = {}) {
+  const p = page(row('a', panel('zc', '')));
+  p.$('zcBody').innerHTML = p.w.tsHtml({ id: 'zc', labels: ['a', 'b', 'c', 'd'], series: [{ name: 'A', values: [1, 2, 3, 4] }], zoom: true, ...extra });
+  const ts = () => p.$('zcBody').querySelector('.ts[data-kit-ts]');
+  const svg = () => { const s = ts().querySelector('svg'); s.getBoundingClientRect = () => ({ left: 0, width: 600 }); return s; };
+  const json = () => JSON.parse(ts().getAttribute('data-kit-ts'));
+  // Fires a pointer event at the chart svg (buttons 1 until pointerup); a missing PointerEvent falls back to a MouseEvent with pointerType set.
+  const ptr = (type, x, kind = 'mouse', button = 0, buttons = type === 'pointerup' ? 0 : 1) => {
+    const init = { bubbles: true, clientX: x, button, buttons, pointerId: 1, pointerType: kind };
+    const ev = p.w.PointerEvent ? new p.w.PointerEvent(type, init) : new p.w.MouseEvent(type, init);
+    if (!p.w.PointerEvent) { Object.defineProperty(ev, 'pointerType', { value: kind }); Object.defineProperty(ev, 'pointerId', { value: 1 }); }
+    svg().dispatchEvent(ev);
+  };
+  const drag = (a, b, kind) => { ptr('pointerdown', a, kind); ptr('pointermove', b, kind); ptr('pointerup', b, kind); };
+  const labels = () => [...p.$('zcBody').querySelectorAll('.ax-x')].map((t) => t.textContent);
+  return { ...p, ts, svg, json, ptr, drag, labels };
+}
+
+test('drag zooms', () => {
+  const p = zoomPage();
+  p.ptr('pointerdown', 180);
+  p.ptr('pointermove', 460);
+  const box = p.svg().querySelector('rect.zb');
+  assert.ok(box, 'the box is drawn');
+  assert.equal(box.getAttribute('y'), '10');
+  assert.equal(box.getAttribute('height'), '188');
+  p.ptr('pointerup', 460);
+  assert.deepEqual(p.json().z, { from: 'b', to: 'd' });
+  assert.deepEqual(p.labels(), ['b', 'c', 'd']);
+  assert.equal(p.d.querySelectorAll('rect.zb').length, 0);
+});
+
+test('short drag does nothing', () => {
+  const p = zoomPage();
+  p.drag(100, 102);
+  assert.equal(p.json().z, undefined);
+});
+
+test('touch does not zoom', () => {
+  const p = zoomPage();
+  p.drag(180, 460, 'touch');
+  assert.equal(p.json().z, undefined);
+  assert.equal(p.d.querySelectorAll('rect.zb').length, 0);
+});
+
+test('non-zoomable chart ignores drags', () => {
+  const p = zoomPage({ zoom: undefined });
+  const before = p.ts();
+  assert.ok(!before.hasAttribute('data-kit-zoom'));
+  p.drag(180, 460);
+  assert.equal(p.ts(), before);
+  assert.equal(p.json().z, undefined);
+  assert.equal(p.d.querySelectorAll('rect.zb').length, 0);
+});
+
+test('escape cancels a drag', () => {
+  const p = zoomPage();
+  p.ptr('pointerdown', 180);
+  p.ptr('pointermove', 460);
+  p.d.dispatchEvent(new p.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(p.d.querySelectorAll('rect.zb').length, 0);
+  p.ptr('pointerup', 460);
+  assert.equal(p.json().z, undefined);
+});
+
+test('reset clears zoom', () => {
+  const p = zoomPage({ z: { from: 'b', to: 'c' } });
+  assert.deepEqual(p.labels(), ['b', 'c']);
+  p.click(p.$('zcBody').querySelector('[data-kit-zoom-reset]'));
+  assert.equal(p.json().z, undefined);
+  assert.deepEqual(p.labels(), ['a', 'b', 'c', 'd']);
+  assert.equal(p.$('zcBody').querySelector('[data-kit-zoom-reset]'), null);
+});
+
+test('hover uses the slice', () => {
+  const p = zoomPage({ z: { from: 'b', to: 'c' } });
+  p.svg().dispatchEvent(new p.w.MouseEvent('mousemove', { bubbles: true, clientX: 10 }));
+  const tip = p.ts().querySelector('.tip');
+  assert.equal(tip.hidden, false);
+  assert.equal(tip.querySelector('.tip-d').textContent, 'b');
+  assert.match(tip.innerHTML, /A<b>2<\/b>/);
+});
+
+test('a move with no button pressed ends the drag', () => {
+  const p = zoomPage();
+  p.ptr('pointerdown', 180);
+  p.ptr('pointermove', 300);
+  assert.ok(p.svg().querySelector('rect.zb'));
+  p.ptr('pointermove', 460, 'mouse', 0, 0);
+  assert.equal(p.d.querySelectorAll('rect.zb').length, 0);
+  p.ptr('pointerup', 460);
+  assert.equal(p.json().z, undefined);
+});
+
+test('an append keeps the hover on the new chart', () => {
+  const p = zoomPage();
+  p.svg().dispatchEvent(new p.w.MouseEvent('mousemove', { bubbles: true, clientX: 300 }));
+  assert.equal(p.ts().querySelector('.tip-d').textContent, 'b');
+  const old = p.ts();
+  assert.equal(p.w.kitTsAppend(p.d, 'zc', 'e', [5]), true);
+  assert.notEqual(p.ts(), old);
+  const tip = p.ts().querySelector('.tip');
+  assert.equal(tip.hidden, false);
+  assert.equal(tip.querySelector('.tip-d').textContent, 'c');
+  assert.equal(p.ts().querySelector('.xh').getAttribute('visibility'), 'visible');
+});
+
+test('reset zoom moves focus to the panel menu', () => {
+  const p = zoomPage({ z: { from: 'b', to: 'c' } });
+  const menu = p.d.querySelector('[data-card="zc"] [data-kit-menu]');
+  assert.ok(menu);
+  p.click(p.$('zcBody').querySelector('[data-kit-zoom-reset]'));
+  assert.equal(p.d.activeElement, menu);
+});
+
+test('reset zoom outside a panel focuses the new chart', () => {
+  const p = page('<div id="bare"></div>');
+  p.$('bare').innerHTML = p.w.tsHtml({ id: 'bz', labels: ['a', 'b', 'c'], series: [{ name: 'A', values: [1, 2, 3] }], zoom: true, z: { from: 'a', to: 'b' } });
+  p.click(p.$('bare').querySelector('[data-kit-zoom-reset]'));
+  const ts = p.$('bare').querySelector('.ts[data-kit-ts]');
+  assert.equal(ts.getAttribute('tabindex'), '-1');
+  assert.equal(p.d.activeElement, ts);
 });

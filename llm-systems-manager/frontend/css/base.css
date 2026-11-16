@@ -1,77 +1,10 @@
-    /* ===== Theme variables — default = current dark palette =====
-       Phase 1 ships the variable layer + picker; dark renders byte-identical
-       to pre-refactor. Other themes are stubs filled in by Phase 2. */
-    :root, :root[data-theme="dark"] {
-      --scheme:        dark;
-      --bg:            #111;
-      --bg-card:       #1a1a1a;
-      --bg-card-alt:   #222;
-      --bg-elev:       #1c1c1c;
-      --bg-tabnav:     #0d0d0d;
-      --border:        #2a2a2a;
-      --border-soft:   #1e1e1e;
-      --border-strong: #333;
-      --fg:            #ddd;
-      --fg-muted:      #888;
-      --fg-dim:        #666;
-      --fg-faint:      #444;
-      --accent:        #7af;
-      --accent-2:      #4e9;
-      --ok:            #0e9;
-      --warn:          #fa7;
-      --crit:          #f55;
-      --note:          #fc0;
-    }
-    :root[data-theme="medium"] {
-      --bg: #1c1c20; --bg-card: #25252b; --bg-card-alt: #2c2c33; --bg-elev: #2a2a30;
-      --bg-tabnav: #18181c; --border: #34343c; --border-soft: #2a2a30; --border-strong: #44444c;
-      --fg: #e8e8ec; --fg-muted: #a0a0aa; --fg-dim: #80808a; --fg-faint: #55555c;
-      --accent: #8cf; --accent-2: #6eb; --ok: #4e9; --warn: #fb8; --crit: #f77; --note: #fd4;
-    }
-    :root[data-theme="light"] {
-      --scheme: light;
-      --bg: #f4f5f7; --bg-card: #ffffff; --bg-card-alt: #f0f1f3; --bg-elev: #e9eaee;
-      --bg-tabnav: #ebecf0; --border: #d4d6dc; --border-soft: #e2e4ea; --border-strong: #c2c4ca;
-      --fg: #1a1d22; --fg-muted: #555a64; --fg-dim: #7a808a; --fg-faint: #a8aeb8;
-      --accent: #0a66c2; --accent-2: #1a8a4e; --ok: #1a8a4e; --warn: #b8650a; --crit: #c0392b; --note: #a07a00;
-    }
-    :root[data-theme="modern"] {
-      --bg: #0b0d16; --bg-card: #131626; --bg-card-alt: #1a1e30; --bg-elev: #181b2c;
-      --bg-tabnav: #07091a; --border: #242a45; --border-soft: #1a1f36; --border-strong: #2e3556;
-      --fg: #eaeaff; --fg-muted: #a0a4d0; --fg-dim: #7176a8; --fg-faint: #4a4f78;
-      --accent: #9a7cff; --accent-2: #2dd4bf; --ok: #2dd4bf; --warn: #f59e0b; --crit: #ef4444; --note: #facc15;
-    }
-    :root[data-theme="slate"] {
-      --bg: #303446; --bg-card: #414559; --bg-card-alt: #51576d; --bg-elev: #414559;
-      --bg-tabnav: #292c3c; --border: #51576d; --border-soft: #414559; --border-strong: #626880;
-      --fg: #c6d0f5; --fg-muted: #a5adce; --fg-dim: #838ba7; --fg-faint: #626880;
-      --accent: #8caaee; --accent-2: #81c8be; --ok: #a6d189; --warn: #ef9f76; --crit: #e78284; --note: #e5c890;
-    }
-    :root[data-theme="enterprise"] {
-      --bg: #0f1218; --bg-card: #161a23; --bg-card-alt: #1c2230; --bg-elev: #1a2030;
-      --bg-tabnav: #0a0d14; --border: #232a3a; --border-soft: #1a2030; --border-strong: #2e3648;
-      --fg: #d8dde8; --fg-muted: #8a93a5; --fg-dim: #5e6878; --fg-faint: #3e4658;
-      --accent: #5b8def; --accent-2: #4a9fc8; --ok: #5fb878; --warn: #d99a3a; --crit: #d9534f; --note: #d9b84f;
-    }
-    :root[data-theme="oled"] {
-      --bg: #000000; --bg-card: #0b0b0c; --bg-card-alt: #131315; --bg-elev: #101012;
-      --bg-tabnav: #000000; --border: #1f1f22; --border-soft: #141416; --border-strong: #2a2a2e;
-      --fg: #f2f2f4; --fg-muted: #a3a3ab; --fg-dim: #6e6e78; --fg-faint: #3c3c44;
-      --accent: #5eb0ff; --accent-2: #35d6a8; --ok: #35d6a8; --warn: #ffb347; --crit: #ff5c5c; --note: #ffd54a;
-    }
-    :root[data-theme="graphite"] {
-      --bg: #1a1816; --bg-card: #221f1c; --bg-card-alt: #2a2622; --bg-elev: #272320;
-      --bg-tabnav: #141210; --border: #332e29; --border-soft: #282420; --border-strong: #433c35;
-      --fg: #ece6de; --fg-muted: #a89f93; --fg-dim: #7a7166; --fg-faint: #4e463f;
-      --accent: #e3a24a; --accent-2: #7cc4a0; --ok: #7cc4a0; --warn: #f0b35a; --crit: #e8695f; --note: #ead27a;
-    }
-    :root[data-theme="frost"] {
-      --scheme: light;
-      --bg: #eef2f7; --bg-card: #ffffff; --bg-card-alt: #e6ecf4; --bg-elev: #e1e8f1;
-      --bg-tabnav: #e4eaf2; --border: #cdd7e4; --border-soft: #dde5ef; --border-strong: #b5c2d3;
-      --fg: #16202c; --fg-muted: #4d5c6e; --fg-dim: #74859a; --fg-faint: #a4b2c2;
-      --accent: #2a6fd6; --accent-2: #0f9d8a; --ok: #1f9a5f; --warn: #c46f0c; --crit: #cc3b30; --note: #a17c00;
-    }
+    /* Manager token names mapped onto the kit's Dark/Light tokens (kit.css loads first). */
+    :root { --scheme: dark;
+      --bg-card: var(--card); --bg-card-alt: var(--pop); --bg-elev: var(--pop); --bg-tabnav: var(--bg);
+      --border-soft: var(--grid); --border-strong: var(--border-2);
+      --fg: var(--text); --fg-muted: var(--text-2); --fg-dim: var(--muted); --fg-faint: #62626b;
+      --accent-2: var(--c7); --ok: var(--good); --crit: var(--bad); --note: var(--c5); }
+    :root[data-theme="light"] { --scheme: light; --fg-faint: #8a919c; --accent-2: #0f766e; }
 
     /* Font stacks — shared by all themes (fonts.css self-hosts IBM Plex) */
     :root {
@@ -94,13 +27,7 @@
     /* Global hidden guard: outranks any class display value */
     [hidden] { display: none !important; }
     body { font-family: var(--font-sans); background: var(--bg); color: var(--fg); }
-    h1 { padding: 10px 20px; font-size: 1em; border-bottom: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; row-gap: 6px; }
-    .site-logo-link { display: flex; align-items: center; gap: 9px; text-decoration: none; color: inherit; flex-shrink: 0; }
-    .site-logo-link:hover .site-title { color: var(--fg); }
-    .site-title { font-family: 'SF Pro Display', 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 0.95em; font-weight: 300; letter-spacing: 0.06em; color: var(--fg-muted); white-space: nowrap; }
     .state-banner { display: flex; align-items: center; flex-shrink: 0; }
-    .header-divider { border: none; border-top: 1px solid var(--border-strong); margin: 0; }
-    .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
     /* Header provider-state banner pill — shares the .status visual language
        (token-driven via color-mix), driven by the parent .state-* class so the
        banner JS (charts.js / lmstudio.js) keeps setting state on the wrapper. */
@@ -163,23 +90,6 @@
     /* Flow engine (#823): 8px row tracks, each card spans the rows its
        content needs (inline grid-row from JS); dense packing closes gaps. */
     .grid.flow { grid-auto-rows: 8px; row-gap: 8px; grid-auto-flow: dense; align-items: start; }
-    /* Desktop header: one line; each provider pill gets at most a third of the free width and ends in an ellipsis. */
-    @media (width > 1200px) {
-      h1 { flex-wrap: nowrap; }
-      .header-right { flex-shrink: 0; }
-      .state-banner { max-width: calc((100vw - 560px) / 3); flex-shrink: 1; min-width: 0; }
-      .state-pill { max-width: 100%; min-width: 0; }
-      .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    }
-    /* Tablet and phone header: logo + controls on the first row, provider pills wrap beneath. */
-    @media (max-width: 1200px) {
-      h1 { row-gap: 0; }
-      h1::after { content: ''; order: 1; flex-basis: 100%; }
-      .header-right { order: 1; }
-      .state-banner { order: 2; margin: 6px 0 0 !important; min-width: 0; }
-      .state-pill { max-width: 100%; min-width: 0; }
-      .state-pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    }
     /* Tablet portrait: at most two columns; multi-column cards take the full row. */
     @media (max-width: 900px) {
       .grid { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)) !important; }
@@ -189,16 +99,10 @@
     @media (max-width: 640px) {
       .grid { grid-template-columns: 1fr !important; gap: 12px; padding: 12px; }
       .grid > .card, .grid > .ov-shell { grid-column: auto !important; }
-      h1 { padding: 8px 12px; }
-      .site-title { display: none; }
-      .header-right { gap: 6px; }
-      /* Tab and sub-tab bars scroll sideways instead of wrapping or pushing the page wider. */
-      .tab-nav, .sub-tab-nav { overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
-      .tab-nav { padding: 0 8px; }
-      .tab-nav::-webkit-scrollbar, .sub-tab-nav::-webkit-scrollbar { display: none; }
-      .tab-btn, .sub-tab-btn { white-space: nowrap; flex: 0 0 auto; }
-      .tab-btn { padding: 10px 12px; }
-      .tab-nav-right { flex: 0 0 auto; }
+      /* Sub-tab bars scroll sideways instead of wrapping or pushing the page wider. */
+      .sub-tab-nav { overflow-x: auto; justify-content: flex-start; scrollbar-width: none; }
+      .sub-tab-nav::-webkit-scrollbar { display: none; }
+      .sub-tab-btn { white-space: nowrap; flex: 0 0 auto; }
       /* Section titles wrap their status pills onto a second line. */
       .llm-section-title { flex-wrap: wrap; row-gap: 6px; }
       .llm-sec-pill { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -310,22 +214,8 @@
     .trending-badge { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; color: var(--accent); font-size: 0.78em; padding: 1px 6px; margin-right: 3px; display: inline-block; margin-bottom: 2px; }
     .trending-dl { color: var(--accent-2); font-size: 0.85em; }
 
-    /* z-index sits above the fixed-position tab panels (events/llmchat/
-       imggen/admin/openclaw, all z-index:10 at top:88px) so the active
-       tab's 2px bottom highlight isn't clipped by the panel above it. */
-    .tab-nav { display: flex; gap: 2px; padding: 0 20px; background: var(--bg-tabnav); border-bottom: 1px solid var(--border-strong); position: relative; z-index: 20; justify-content: center; }
-    /* Events/Admin/Account keep the right corner while the main tabs center;
-       below 1500px the whole bar reverts to left-aligned. */
-    .tab-nav-right { display: flex; gap: 2px; position: absolute; right: 20px; top: 0; bottom: 0; }
-    @media (max-width: 1500px) {
-      .tab-nav { justify-content: flex-start; }
-      .tab-nav-right { position: static; margin-left: auto; }
-    }
-    .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; color: var(--fg-dim); cursor: pointer; font-size: 0.85em; letter-spacing: 0.05em; padding: 10px 18px; text-transform: uppercase; transition: color 0.2s, border-color 0.2s; }
-    .tab-btn:hover { color: var(--fg); }
-    .tab-btn.active { border-bottom-color: var(--accent); color: var(--accent); }
-    /* Status dot to the left of Events/Admin — muted until the first poll resolves. */
-    .tab-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: var(--fg-faint); transition: background 0.3s, box-shadow 0.3s; }
+    /* Status dot on the Events/Admin sidebar items — muted until the first poll resolves. */
+    .tab-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); transition: background 0.3s, box-shadow 0.3s; }
     .tab-dot.ok   { background: var(--ok);   box-shadow: 0 0 6px color-mix(in srgb, var(--ok)   45%, transparent); }
     .tab-dot.alert{ background: var(--crit); box-shadow: 0 0 6px color-mix(in srgb, var(--crit) 50%, transparent); }
     .tab-dot.warn { background: var(--warn); box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent); }
@@ -463,10 +353,10 @@
     .btn-blue-muted { background: color-mix(in srgb, var(--accent) 14%, var(--bg-card)); color: color-mix(in srgb, var(--accent) 65%, var(--fg)); }
     .btn-blue-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 14%, var(--bg-card)), color-mix(in srgb, var(--accent) 24%, var(--bg-card))); color: color-mix(in srgb, var(--accent) 70%, var(--fg)); }
     .btn-blue-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--bg-card)), color-mix(in srgb, var(--accent) 22%, var(--bg-card))); color: color-mix(in srgb, var(--accent) 65%, var(--fg)); }
-    .btn-amber { background: color-mix(in srgb, var(--warn) 18%, var(--bg-card)); color: color-mix(in srgb, var(--warn) 70%, var(--fg)); }
-    .btn-amber-muted { background: color-mix(in srgb, var(--warn) 14%, var(--bg-card)); color: color-mix(in srgb, var(--warn) 65%, var(--fg)); }
-    .btn-amber-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 14%, var(--bg-card)), color-mix(in srgb, var(--warn) 24%, var(--bg-card))); color: color-mix(in srgb, var(--warn) 70%, var(--fg)); }
-    .btn-amber-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 10%, var(--bg-card)), color-mix(in srgb, var(--warn) 22%, var(--bg-card))); color: color-mix(in srgb, var(--warn) 65%, var(--fg)); }
+    .btn-amber { background: color-mix(in srgb, var(--warn) 18%, var(--bg-card)); color: color-mix(in srgb, var(--warn-text) 70%, var(--fg)); }
+    .btn-amber-muted { background: color-mix(in srgb, var(--warn) 14%, var(--bg-card)); color: color-mix(in srgb, var(--warn-text) 65%, var(--fg)); }
+    .btn-amber-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 14%, var(--bg-card)), color-mix(in srgb, var(--warn) 24%, var(--bg-card))); color: color-mix(in srgb, var(--warn-text) 70%, var(--fg)); }
+    .btn-amber-muted-gradient { background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 10%, var(--bg-card)), color-mix(in srgb, var(--warn) 22%, var(--bg-card))); color: color-mix(in srgb, var(--warn-text) 65%, var(--fg)); }
     .btn-gray { background: var(--border); color: var(--fg); }
     .btn-gray-muted { background: var(--border); color: var(--fg); }
     .btn-gray-gradient { background: linear-gradient(135deg, var(--border), var(--border-strong)); color: var(--fg); }
@@ -567,7 +457,7 @@
     .lbi-table th { text-align: left; color: var(--fg-dim); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--bg-card-alt); }
     .lbi-table td { padding: 6px 10px; border-bottom: 1px solid var(--bg-card-alt); vertical-align: top; }
     .lbi-table tr:last-child td { border-bottom: 0; }
-    .lbi-table .mono { font-family: var(--font-mono); overflow-wrap: anywhere; }
+    .lbi-table .m-mono { font-family: var(--font-mono); overflow-wrap: anywhere; }
     .lbi-table .lbi-ok { color: var(--ok); }
     .lbi-table .lbi-err { color: var(--crit); }
     .lbi-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 0.85em; background: var(--accent); color: var(--bg); }

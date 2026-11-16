@@ -173,7 +173,7 @@
   };
   function toggleHtml(on, label, attrs, hint) {
     return `<button type="button" class="mc-toggle${on ? ' on' : ''}" ${attrs} aria-pressed="${on ? 'true' : 'false'}">`
-      + `<span class="track"></span><span class="tlbl">${label}</span>${hint ? `<span class="hint">${hint}</span>` : ''}</button>`;
+      + `<span class="track"></span><span class="tlbl">${label}</span>${hint ? `<span class="m-hint">${hint}</span>` : ''}</button>`;
   }
   function capsHtml(a) {
     const c = ctx();
@@ -380,7 +380,7 @@
         <div class="sub">${showDesc(a) ? `<div class="d">${esc(a.description)}</div>` : ''}<div class="m">${meta}</div></div>
       </div>
       <div class="ag-caps">${capsHtml(a)}</div>
-      <div class="ag-ep"><div class="ip">${esc(ipOf(a))}</div><div class="ver">${ver}</div>${upd}${seen}</div>
+      <div class="ag-ep"><div class="ip">${esc(ipOf(a))}</div><div class="m-ver">${ver}</div>${upd}${seen}</div>
       <div class="ag-act">${actionsHtml(a)}</div>
       ${open ? drawerHtml(a) : ''}
     </div>`;

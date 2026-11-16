@@ -159,7 +159,7 @@
       _byPath = new Map(_entries.map(e => [e.path, e]));
       render();
     } catch (e) {
-      if (body) body.innerHTML = `<div class="empty">Failed to load access settings — ${esc(e.message)}</div>`;
+      if (body) body.innerHTML = `<div class="m-empty">Failed to load access settings — ${esc(e.message)}</div>`;
     } finally { _loading = false; }
   }
 

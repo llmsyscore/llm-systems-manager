@@ -182,7 +182,7 @@
 .ef-sec h4 .rule { flex: 1; height: 1px; background: var(--border-soft); }
 .ef-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 13px 15px; }
 .ef-field label { display: block; font-family: var(--font-sans); font-size: 11.5px; font-weight: 500; color: var(--fg-muted); margin-bottom: 5px; }
-.ef-field label .hint { color: var(--fg-faint); font-weight: 400; }
+.ef-field label .m-hint { color: var(--fg-faint); font-weight: 400; }
 .ef-in { display: flex; align-items: center; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 9px; height: 32px; transition: border-color .12s, box-shadow .12s; }
 .ef-in:hover { border-color: var(--fg-dim); }
 .ef-in:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }

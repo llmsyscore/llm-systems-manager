@@ -408,7 +408,7 @@
     }
     function insHtml(r) {
       const v = TW.insightView(r, c.view, Date.now() / 1000), id = esc(v.id), open = c.openIns.has(v.id);
-      const top = `<div class="top"><span class="rule">${esc(v.rule)}</span>${v.host ? `<span class="host">${esc(v.host)}</span>` : ''}<span class="age">${esc(v.age)}</span></div>`;
+      const top = `<div class="m-top"><span class="rule">${esc(v.rule)}</span>${v.host ? `<span class="host">${esc(v.host)}</span>` : ''}<span class="age">${esc(v.age)}</span></div>`;
       const checks = v.checks.map(k => `<div class="tick${k.ok ? '' : ' bad'}"><span class="k">${k.ok ? '▸' : '✕'}</span>${esc(k.summary || k.name || '')}</div>`).join('');
       const hasDet = !!(v.detail || v.action || v.checks.length || v.auditActor || (v.applied && v.summary));
       const det = hasDet ? `<button type="button" class="lnk" data-ins-det="${id}" aria-expanded="${open}">Details ${open ? '▾' : '▸'}</button>` : '';

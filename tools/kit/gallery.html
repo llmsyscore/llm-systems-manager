@@ -93,6 +93,7 @@ kitConfigure({ prefix: 'gallery' });
   var REQ = [820, 760, 910, 1040, 980, 640, 590, 870, 930, 1010, 1120, 1080, 700, 660, 940, 990, 1150, 1210, 1170, 760, 720, 1030, 1110, 1260, 1340, 1290, 880, 840, 1180, 1250];
   var ERR = [12, 9, 15, 22, 18, 7, 6, 11, 14, 19, 25, 21, 8, 7, 13, 16, 24, 31, 27, 10, 9, 17, 20, 28, 35, 30, 12, 11, 22, 26];
   var MARK = [{ day: '2026-11-12', label: 'Release 3.4.0', release: true }];
+  var LOAD = [62, 68, 71, 77, 83, 91, 108, 96, 88, 79, 72, 86, 93, 81];
   var range = 14;
 
   // Requests per agent per day, for the stacked chart.
@@ -119,6 +120,16 @@ kitConfigure({ prefix: 'gallery' });
     kpiHtml({ id: 'k-model', title: 'Busiest model', value: 'qwen2.5-coder-7b-instruct', sub: '31% of requests' })
   ].join('');
 
+  // Live chart: 20 points a second apart ending now, then one more each second while Live refresh is on.
+  var liveTick = 0;
+  function liveClock(ms) { return new Date(ms).toTimeString().slice(0, 8); }
+  function liveValue(i) { return Math.round(40 + 25 * Math.sin(i / 3) + Math.random() * 10); }
+  function liveBody() {
+    var now = Date.now(), labels = [], values = [];
+    for (liveTick = 0; liveTick < 20; liveTick++) { labels.push(liveClock(now - (19 - liveTick) * 1000)); values.push(liveValue(liveTick)); }
+    return tsHtml({ id: 'live', labels: labels, w: kitWidth('liveBody'), keep: 30, series: [{ name: 'Requests', values: values }] });
+  }
+
   var ts = tsBody();
   $('rowCharts').innerHTML =
     panelHtml('req', 'Requests per day', '<div id="tsBody">' + ts.html + '</div>', { cls: 'span2', note: 'Dashed line: release', table: ts.table }) +
@@ -140,7 +151,13 @@ kitConfigure({ prefix: 'gallery' });
       { kind: 'Alarm', title: 'GPU temperature high', detail: 'tower, 86 °C for 5 minutes', at: '2026-11-14T22:00:00Z' },
       { kind: 'Model', title: 'Model switched', detail: 'vm-02 now runs llama-3.1-8b-instruct', at: '2026-11-13T15:00:00Z' },
       { kind: 'Agent', title: 'Agent added', detail: 'vm-04 joined the fleet', at: '2026-11-10T11:00:00Z' }], '2026-11-15T12:00:00Z')) +
-    panelHtml('stack', 'Requests per day by agent', '<div id="stackBody">' + stackBody() + '</div>', { cls: 'hero', note: 'Stacked' });
+    panelHtml('stack', 'Requests per day by agent', '<div id="stackBody">' + stackBody() + '</div>', { cls: 'hero', note: 'Stacked' }) +
+    panelHtml('limits', 'Load with limits', '<div id="limitsBody">' + tsHtml({ id: 'limits', labels: DAYS.slice(-14), w: kitWidth('limitsBody'), ymax: 100,
+      thresholds: [{ value: 90, label: 'Limit 90%', tone: 'bad' }, { value: 75, label: 'Warning 75%', tone: 'warn' }],
+      series: [{ name: 'Load %', values: LOAD }] }) + '</div>', { note: 'Axis capped at 100' }) +
+    panelHtml('zoom', 'Requests per day, zoomable', '<div id="zoomBody">' + tsHtml({ id: 'zoom', labels: DAYS, w: kitWidth('zoomBody'), zoom: true,
+      series: [{ name: 'Requests', values: REQ }] }) + '</div>', { cls: 'span2', note: 'Drag across the chart to zoom' }) +
+    panelHtml('live', 'Live requests', '<div id="liveBody">' + liveBody() + '</div>', { note: 'A new point every second' });
 
   var MODELS = [
     { label: 'qwen2.5-coder-7b-instruct', v: 14900 }, { label: 'llama-3.1-8b-instruct', v: 11200 }, { label: 'mistral-7b-instruct', v: 8400 },
@@ -244,6 +261,7 @@ kitConfigure({ prefix: 'gallery' });
     kitFill('stackBody', stackBody());
   });
   $('toastBtn').onclick = function() { kitToast('Saved. This message goes away by itself.'); };
+  setInterval(function() { if (live) kitTsAppend(document, 'live', liveClock(Date.now()), [liveValue(liveTick++)]); }, 1000);
 })();
 </script>
 </body>

@@ -73,7 +73,7 @@ def test_unsafe_session_username_falls_back_to_shared(layouts, bad):
 def test_legacy_theme_mapped_per_user(layouts):
     (layouts / "layouts").mkdir()
     (layouts / "layouts" / "carol.json").write_text(json.dumps({"theme": "classic"}))
-    assert _client("carol").get("/api/layout").get_json()["theme"] == "oled"
+    assert _client("carol").get("/api/layout").get_json()["theme"] == "dark"
 
 
 def test_delete_user_layout_removes_only_that_file(layouts):

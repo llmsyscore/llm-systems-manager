@@ -1819,9 +1819,9 @@ function _renderLlamaBuilds(d) {
       : `<span class="lbi-err">${_esc(b.error || 'does not run')}</span>`;
     const act = admin && !b.active && b.ok
       ? `<button type="button" class="mcbtn mcbtn-ghost mcbtn-sm lbi-switch" onclick="switchLlamaBuild(${i})">Activate</button>` : '';
-    return `<tr><td class="mono">${_esc(b.dir || '')}${tag}${note}</td>`
+    return `<tr><td class="m-mono">${_esc(b.dir || '')}${tag}${note}</td>`
       + `<td>${_esc(b.backend || 'Unknown')}</td>`
-      + `<td class="mono">${_esc(_llamaBuildVersion(b))}</td><td>${st}</td><td>${act}</td></tr>`;
+      + `<td class="m-mono">${_esc(_llamaBuildVersion(b))}</td><td>${st}</td><td>${act}</td></tr>`;
   }).join('');
   const more = d.truncated ? '<div class="ledger-empty">More builds were found; only the first 20 are shown.</div>' : '';
   return '<table class="lbi-table"><thead><tr><th>Folder</th><th>Backend</th><th>Version</th><th>Status</th><th></th></tr></thead>'

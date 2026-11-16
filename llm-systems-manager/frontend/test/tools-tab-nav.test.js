@@ -8,10 +8,10 @@ const bootSrc = srcFile('js/boot.js');
 const foundationSrc = srcFile('js/foundation.js');
 const chartsSrc = srcFile('js/charts.js');
 
-const navHtml = blockSrc(indexSrc, '<div class="tab-nav">', '<!-- Dashboard Tab', { includeEnd: false });
+const navHtml = blockSrc(indexSrc, '<aside class="side" id="side"', '</aside>');
 const toolsHtml = blockSrc(indexSrc, '<div id="toolsTab"', '<!-- Admin tab -->', { includeEnd: false });
 
-describe('top-level tab bar (#847)', () => {
+describe('sidebar pages (#847)', () => {
   beforeEach(() => { document.body.innerHTML = navHtml; });
 
   it('has one Tools button and no per-proxy buttons', () => {
@@ -27,7 +27,7 @@ describe('top-level tab bar (#847)', () => {
 
   it('renames Overall and Dashboards', () => {
     expect(document.getElementById('tabBtnOverall').textContent.trim()).toBe('Overall');
-    expect(document.getElementById('tabBtnDashboard').textContent.trim()).toBe('Dashboards');
+    expect(document.querySelector('#side .side-sub').textContent.trim()).toBe('Dashboards');
   });
 });
 
@@ -66,7 +66,7 @@ describe('Tools sub-tabs (#847)', () => {
 describe('switchTab legacy proxy ids (#847)', () => {
   beforeEach(() => {
     document.body.innerHTML = `
-      <button class="tab-btn" onclick="switchTab('tools')">Tools</button>
+      <aside id="side"><button class="nav" id="tabBtnTools" data-tab="tools">Tools</button></aside>
       <div id="overallTab"></div><div id="dashboardTab"></div><div id="llmTab"></div>
       <div id="eventsTab"></div><div id="toolsTab"></div><div id="adminTab"></div>`;
     window._me = { admin_access: true };
@@ -106,9 +106,11 @@ describe('toolsTab is hoisted out of dashboardTab (#847)', () => {
     const hoist = blockSrc(bootSrc, "  ['toolsTab'", '  });', { includeEnd: true });
     const fn = new dom.window.Function('document', hoist);
     fn(doc);
-    expect(doc.getElementById('toolsTab').parentElement).toBe(doc.body);
+    const main = doc.querySelector('.shell > .main');
+    expect(main).toBeTruthy();
+    expect(doc.getElementById('toolsTab').parentElement).toBe(main);
     for (const id of ['eventsTab', 'adminTab']) {
-      expect(doc.getElementById(id).parentElement, id).toBe(doc.body);
+      expect(doc.getElementById(id).parentElement, id).toBe(main);
     }
   });
 });

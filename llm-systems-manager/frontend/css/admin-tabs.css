@@ -66,7 +66,7 @@
 #adminTab .card.collapsed .card-h { border-bottom: 0; }
 #adminTab .card.collapsed .card-b, #adminTab .card.collapsed .card-f { display: none; }
 #adminTab .card-b { padding: 16px; }
-#adminTab .card-b > .empty, #adminTab .card-b .empty { padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
+#adminTab .card-b > .m-empty, #adminTab .card-b .m-empty { padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
 #adminTab .card-b.flush { padding: 0; }
 #adminTab .card-f { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-soft); flex-wrap: wrap; }
 #adminTab .card-f .msg { font-size: 12px; color: var(--fg-dim); }
@@ -90,7 +90,7 @@
 #adminTab .tbl tr:last-child td { border-bottom: 0; }
 #adminTab .tbl tbody tr:hover td { background: color-mix(in srgb, var(--bg-card-alt) 50%, transparent); }
 #adminTab .tbl td.n { color: var(--fg); font-weight: 500; font-family: var(--font-sans); font-size: 12.5px; }
-#adminTab .tbl td.n.mono { font-family: var(--font-mono); font-weight: 500; }
+#adminTab .tbl td.n.m-mono { font-family: var(--font-mono); font-weight: 500; }
 #adminTab .tbl td.n .you { font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-faint); margin-left: 6px; }
 #adminTab .tbl td.t { color: var(--fg-dim); }
 #adminTab .tbl td.t b { color: var(--fg-muted); font-weight: 500; }
@@ -99,7 +99,7 @@
 /* user-row action tips open upward and must escape the clipping td */
 #adminUsersCard .tbl td.r { overflow: visible; }
 #adminUsersCard .act [data-tip]::after { top: auto; bottom: calc(100% + 6px); }
-#adminTab .tbl .empty { padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
+#adminTab .tbl .m-empty { padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; font-family: var(--font-sans); white-space: normal; }
 #adminTab .ledger-f { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border-soft); flex-wrap: wrap; }
 #adminTab .ledger-f .note { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); }
 #adminTab .ledger-f .note b { color: var(--fg-muted); font-weight: 500; }
@@ -247,7 +247,7 @@
 #admin-routing .rt-pp .pm { grid-column: 1; grid-row: 2; display: flex; gap: 10px; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); }
 #admin-routing .rt-pp .pa { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; justify-self: end; }
 #admin-routing .rt-pp .ap-proposal-model, #admin-routing .rt-pp .ap-proposal-agent { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
-#admin-routing .rt-pp.empty { display: block; padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; }
+#admin-routing .rt-pp.m-empty { display: block; padding: 26px 16px; text-align: center; color: var(--fg-dim); font-size: 12.5px; }
 
 /* ── Settings (st-) ────────────────────────────────────────────────── */
 #admin-settings .st-note { font-size: 12px; color: var(--fg-dim); margin: -4px 0 14px; max-width: 78ch; line-height: 1.45; }

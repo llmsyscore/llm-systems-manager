@@ -241,8 +241,8 @@
     const cell = (v, cls) => `<td class="${cls}">${v == null ? '—' : esc(v)}</td>`;
     const tr = (r, mono) => {
       const w = r.key === 'server_cmd' ? ' wrap' : '';
-      return `<tr class="${r.changed ? 'chg' : 'same'}"><td${mono ? ' class="mono"' : ''}>${esc(r.label)}</td>` +
-        cell(r.a, (r.changed ? 'old' : 'mono') + w) + cell(r.b, (r.changed ? 'new' : 'mono') + w) + '</tr>';
+      return `<tr class="${r.changed ? 'chg' : 'same'}"><td${mono ? ' class="m-mono"' : ''}>${esc(r.label)}</td>` +
+        cell(r.a, (r.changed ? 'old' : 'm-mono') + w) + cell(r.b, (r.changed ? 'new' : 'm-mono') + w) + '</tr>';
     };
     const sec = t => `<tr class="sec"><td colspan="3">${esc(t)}</td></tr>`;
     const miss = !d.recorded.a && !d.recorded.b ? 'Neither run recorded its switches.'
@@ -262,7 +262,7 @@
     }
     body += sec('Results') + (d.results.length ? d.results.map(r => {
       const dl = r.pct == null ? '' : ` <span class="tl-dl ${r.tone}">${r.pct >= 0 ? '+' : ''}${Math.round(r.pct)} %</span>`;
-      return `<tr class="same"><td>${esc(r.label)}</td>${cell(r.a, 'mono')}<td class="mono">${r.b == null ? '—' : esc(r.b)}${dl}</td></tr>`;
+      return `<tr class="same"><td>${esc(r.label)}</td>${cell(r.a, 'm-mono')}<td class="m-mono">${r.b == null ? '—' : esc(r.b)}${dl}</td></tr>`;
     }).join('') : '<tr class="same"><td colspan="3" class="ev">No comparable results.</td></tr>');
     return `<div class="tl-diff"><div class="tl-diff-h"><span class="t">Compare · ${esc(toolName(d.tool))} · ${esc(d.model)}</span>` +
       '<span class="lgap"></span><button class="mcbtn mcbtn-ghost mcbtn-sm" type="button" data-diff="clear">Clear</button></div>' +

@@ -19,8 +19,10 @@ function loadSwitchTab() {
 
 beforeEach(() => {
   document.body.innerHTML = `
-    <button class="tab-btn active" onclick="switchTab('admin')">Admin</button>
-    <button class="tab-btn" onclick="switchTab('dashboard')">Dashboard</button>
+    <aside id="side">
+      <button class="nav on" id="tabBtnAdmin" data-tab="admin" aria-current="page">Admin</button>
+      <button class="nav sub" id="subTabBtnDashLlamacpp" data-tab="dashboard" data-sub="llamacpp">llama.cpp</button>
+    </aside>
     <div id="overallTab"></div>
     <div id="dashboardTab"></div>
     <div id="llmTab"></div>

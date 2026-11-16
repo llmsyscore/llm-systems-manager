@@ -1,4 +1,4 @@
-// Panel kit 1.0.0
+// Panel kit 1.1.0
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
@@ -203,32 +203,52 @@ function kpiHtml(o) {
   return panelHtml(o.id, o.title, kpiBody(o), { cls: 'kpi' });
 }
 
+// The [from, to] label indexes of a zoomable chart's zoom when both labels exist and from comes before to, else null.
+// Zoom finds its labels by value, so a zoomable chart needs unique labels.
+function kitTsZ(o) {
+  var z = o && o.zoom ? o.z : null, labels = (o && o.labels) || [];
+  if (!z || typeof z !== 'object') return null;
+  var a = labels.indexOf(z.from), b = labels.indexOf(z.to);
+  return a >= 0 && b > a ? [a, b] : null;
+}
+// The inclusive index range a chart shows: its zoom slice, else every label ({i0: 0, i1: -1} when empty).
+function kitTsView(o) {
+  var z = kitTsZ(o);
+  return z ? { i0: z[0], i1: z[1] } : { i0: 0, i1: ((o && o.labels) || []).length - 1 };
+}
 // Time series: line or stacked bars in an o.w-wide viewBox (default 600), gridlines at 0, half and the top, a legend of series toggles.
 // o.marks ({day, label, release}) on a shown day draw dashed lines; data-kit-ts holds the options for the hover and for kitRefit.
 function tsHtml(o) {
   var id = o.id, labels = o.labels || [], series = o.series || [], stack = o.mode === 'stack';
+  // o.ymax caps the axis, o.thresholds draw labelled lines, o.zoom with a valid o.z shows that slice only; o.keep is for kitTsAppend.
+  var zr = kitTsZ(o), cap = +o.ymax > 0 ? +o.ymax : 0, ext = o.ymax != null || o.thresholds != null || o.zoom != null || o.keep != null;
+  var ths = (Array.isArray(o.thresholds) ? o.thresholds : []).filter(function(h) { return h && typeof h.value === 'number' && isFinite(h.value); });
+  function part(a) { return zr ? a.slice(zr[0], zr[1] + 1) : a; }
+  var shown = part(labels);
   var legend = '<div class="legend">' + series.map(function(s, i) {
     var key = id + '|' + s.name, off = !!KIT_SERIES_OFF[key];
     return '<button type="button" class="chip' + (off ? ' off' : '') + '" data-kit-series="' + kitEsc(key) + '" aria-pressed="' + (off ? 'false' : 'true') + '">' +
-      '<i style="background:' + kitSeriesFill(s, i) + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + kitFmt(kitSum(s.values || [])) + '</span>' +
+      '<i style="background:' + kitSeriesFill(s, i) + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + kitFmt(kitSum(part(s.values || []))) + '</span>' +
       (off ? ' <span class="c-off">hidden</span>' : '') + '</button>';
-  }).join('') + '</div>';
-  var n = labels.length;
+  }).join('') + (zr ? '<button type="button" class="chip zr" data-kit-zoom-reset>Reset zoom</button>' : '') + '</div>';
+  var n = shown.length;
   if (!n) return legend + '<div class="empty">Nothing in this period.</div>';
   var W = +o.w > 0 ? Math.round(+o.w) : 600, H = +o.height || 220, L = 34, R = 8, T = 10, B = 22, iw = W - L - R, ih = H - T - B, step = iw / n;
   var vis = [];
-  series.forEach(function(s, i) { if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i) }); });
+  series.forEach(function(s, i) { if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: part(s.values || []), slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i) }); });
   var top = 1;
   for (var i = 0; i < n; i++) {
     var t = 0;
     for (var k = 0; k < vis.length; k++) { var v = +vis[k].values[i] || 0; t = stack ? t + v : Math.max(t, v); }
     top = Math.max(top, t);
   }
+  if (!cap) ths.forEach(function(h) { top = Math.max(top, h.value); });
   var low = 0;
   if (!stack) vis.forEach(function(s) { for (var c = 0; c < n; c++) low = Math.min(low, +s.values[c] || 0); });
   // Lines with values below zero get a floor of their own nice step below zero; otherwise the axis starts at 0.
-  var ymax = kitNiceMax(top), ylo = low < 0 ? -kitNiceMax(-low) : 0;
-  function y(v) { return T + ih - ((v - ylo) / (ymax - ylo)) * ih; }
+  // With o.ymax the top is exactly that value, and points and bars above it are drawn at the top edge.
+  var ymax = cap || kitNiceMax(top), ylo = low < 0 ? -kitNiceMax(-low) : 0, hi = cap || Infinity;
+  function y(v) { return T + ih - ((Math.min(v, hi) - ylo) / (ymax - ylo)) * ih; }
   function x(j) { return L + step * (j + 0.5); }
   var g = '';
   (ylo < 0 ? [ylo, 0, ymax] : [0, ymax / 2, ymax]).forEach(function(v) {
@@ -238,7 +258,7 @@ function tsHtml(o) {
   });
   // At most 7 day labels, and at most one per 90px of width (at least 2).
   var every = Math.max(Math.ceil(n / 7), Math.ceil(n / Math.max(2, Math.floor(W / 90))));
-  for (var j = 0; j < n; j += every) g += '<text x="' + kitN(x(j)) + '" y="' + (H - 6) + '" text-anchor="middle" class="ax ax-x">' + kitEsc(labels[j]) + '</text>';
+  for (var j = 0; j < n; j += every) g += '<text x="' + kitN(x(j)) + '" y="' + (H - 6) + '" text-anchor="middle" class="ax ax-x">' + kitEsc(shown[j]) + '</text>';
   var marks = '';
   if (stack) {
     var bw = Math.max(3, Math.min(28, step * 0.62));
@@ -247,7 +267,7 @@ function tsHtml(o) {
       for (var q = 0; q < vis.length; q++) if (+vis[q].values[b]) lastK = q;
       for (var m = 0; m < vis.length; m++) {
         var val = +vis[m].values[b] || 0;
-        if (!val) continue;
+        if (!val || acc >= hi) continue;
         var y0 = y(acc) - (acc ? 2 : 0), y1 = y(acc + val), hgt = Math.max(1, y0 - y1), x0 = x(b) - bw / 2;
         acc += val;
         if (m === lastK) {
@@ -269,15 +289,26 @@ function tsHtml(o) {
   }
   var inRange = (o.marks || []).filter(function(mk) { return /^\d{4}-\d{2}-\d{2}$/.test(String(mk.day)) && labels.indexOf(mk.day) >= 0; }), mkLines = '';
   inRange.forEach(function(mk) {
-    var mx = kitN(x(labels.indexOf(mk.day)));
+    var at = shown.indexOf(mk.day);
+    if (at < 0) return;
+    var mx = kitN(x(at));
     mkLines += '<line class="mk" x1="' + mx + '" x2="' + mx + '" y1="' + T + '" y2="' + (T + ih) + '" stroke="' + (mk.release ? 'var(--muted)' : 'var(--c5)') +
       '" stroke-width="1.5" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>';
+  });
+  // Each threshold inside the axis is a dashed line in its tone with its label at the right end, 3px above the line.
+  var thLines = '';
+  ths.forEach(function(h) {
+    if (h.value > ymax || h.value < ylo) return;
+    var ty = kitN(y(h.value)), tone = h.tone === 'bad' ? 'var(--bad)' : h.tone === 'warn' ? 'var(--warn)' : 'var(--muted)';
+    thLines += '<line class="th" x1="' + L + '" x2="' + (W - R) + '" y1="' + ty + '" y2="' + ty + '" stroke="' + tone + '" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>' +
+      '<text x="' + (W - R) + '" y="' + kitN(+ty - 3) + '" text-anchor="end" class="ax th-l">' + kitEsc(h.label) + '</text>';
   });
   var hover = { id: id, labels: labels, mode: stack ? 'stack' : 'line', height: H, w: W, l: L, r: R,
     series: series.map(function(s, i) { return { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined }; }),
     marks: inRange.map(function(mk) { return { day: mk.day, label: String(mk.label || ''), release: !!mk.release }; }) };
-  return legend + '<div class="ts" data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
-    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + kitEsc(series.map(function(s) { return s.name; }).join(', ')) + '">' + g + marks + mkLines +
+  if (ext) { hover.ymax = o.ymax; hover.thresholds = o.thresholds; hover.zoom = o.zoom; hover.z = o.z; hover.keep = o.keep; hover.t = T; hover.b = T + ih; }
+  return legend + '<div class="ts"' + (o.zoom ? ' data-kit-zoom' : '') + ' data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + kitEsc(series.map(function(s) { return s.name; }).join(', ')) + '">' + g + marks + mkLines + thLines +
     '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (T + ih) + '" stroke="var(--text-2)" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/></svg>' +
     '<div class="tip" hidden></div></div>';
 }
@@ -547,13 +578,42 @@ function kitRefit(root) {
   if (KIT_CONF.onRefit) { try { KIT_CONF.onRefit(root); } catch (e) { if (typeof console !== 'undefined') console.error('kit hook onRefit failed', e); } }
 }
 // Replaces one chart and its legend with a fresh draw of its options at width w.
+// A hovered chart is hovered again at the last pointer x; returns the new chart element.
 function kitRedrawTs(ts, o, w) {
-  var body = ts.parentNode;
-  if (ts === kitTsOn) kitTsOn = null;
+  var body = ts.parentNode, hovered = ts === kitTsOn;
+  if (hovered) kitTsOn = null;
   var leg = ts.previousElementSibling;
   if (leg && leg.classList && leg.classList.contains('legend')) body.removeChild(leg);
-  ts.insertAdjacentHTML('beforebegin', tsHtml({ id: o.id, labels: o.labels, series: o.series, mode: o.mode, height: o.height, w: w, marks: o.marks }));
+  ts.insertAdjacentHTML('beforebegin', tsHtml(Object.assign({}, o, { w: w })));
+  var nts = ts.previousElementSibling;
+  // A zoom drag on this chart carries over to the new draw.
+  if (kitZoomDrag && kitZoomDrag.ts === ts) { kitZoomDrag.ts = nts; kitZoomDrag.d = null; kitZoomDrag.box = null; }
   body.removeChild(ts);
+  if (hovered && nts && nts.matches && nts.matches('.ts[data-kit-ts]')) kitTsHover(nts, kitTsX);
+  return nts;
+}
+// Appends a point (label, values[k] to series k, else 0) to the chart under root with that id, trims the front to o.keep (else its prior length),
+// drops o.z when its from label goes, redraws; false when none matches. Needs a chart with a point: re-render an empty one with tsHtml.
+function kitTsAppend(root, id, label, values) {
+  if (!root || !root.querySelectorAll) return false;
+  var list = root.querySelectorAll('.ts[data-kit-ts]');
+  for (var i = 0; i < list.length; i++) {
+    var ts = list[i], o = kitTsData(ts);
+    if (!o || !o.series || String(o.id) !== String(id)) continue;
+    var labels = o.labels = o.labels || [], keep = Math.floor(+o.keep), max = keep > 0 ? keep : labels.length;
+    labels.push(label);
+    o.series.forEach(function(s, k) { (s.values = s.values || []).push(values && values[k] != null ? values[k] : 0); });
+    var cut = Math.max(0, labels.length - max), gone = labels.splice(0, cut);
+    o.series.forEach(function(s) { s.values.splice(0, cut); });
+    if (o.z && gone.indexOf(o.z.from) >= 0) delete o.z;
+    if (ts.parentNode) kitRedrawTs(ts, o, o.w);
+    return true;
+  }
+  return false;
+}
+// The parsed data-kit-ts options of a chart, or null.
+function kitTsData(ts) {
+  try { return JSON.parse(ts.getAttribute('data-kit-ts')); } catch (e) { return null; }
 }
 // Sets the header title of the panel holding a body.
 function kitTitle(bodyId, text) {
@@ -664,6 +724,89 @@ function kitTsOff() {
   if (xh) xh.setAttribute('visibility', 'hidden');
   if (tp) tp.hidden = true;
   kitTsOn = null;
+}
+// The running zoom drag: {ts, pointer, cx (start clientX), d (chart options), box (the drawn rect)}, or null.
+var kitZoomDrag = null;
+// A client x on a chart: its viewBox x clamped to the plot and the label index under it in the shown slice; null without an svg or labels.
+function kitZoomAt(ts, d, clientX) {
+  var svg = ts.querySelector('svg'), v = kitTsView(d), n = v.i1 - v.i0 + 1;
+  if (!svg || n < 1) return null;
+  var rc = svg.getBoundingClientRect(), sc = rc.width ? d.w / rc.width : 1, step = (d.w - d.l - d.r) / n;
+  var x = Math.max(d.l, Math.min(d.w - d.r, (clientX - rc.left) * sc));
+  return { svg: svg, x: x, i: v.i0 + Math.max(0, Math.min(n - 1, Math.floor((x - d.l) / step))) };
+}
+// Ends the zoom drag, removing its box; returns the ended drag or null.
+function kitZoomStop() {
+  var z = kitZoomDrag;
+  kitZoomDrag = null;
+  if (z && z.box && z.box.parentNode) z.box.parentNode.removeChild(z.box);
+  return z;
+}
+// Box-drag zoom on .ts[data-kit-zoom]: a left mouse drag of 4px or more over two or more points zooms to them; touch and pen never start one.
+function kitWireZoom(doc) {
+  doc.addEventListener('pointerdown', function(ev) {
+    var t = ev.target && ev.target.closest ? ev.target : null, svg = t && t.closest('svg'), ts = svg && svg.parentNode;
+    if (!ts || !ts.matches || !ts.matches('.ts[data-kit-zoom]') || ev.pointerType !== 'mouse' || ev.button !== 0) return;
+    kitZoomStop();
+    kitZoomDrag = { ts: ts, pointer: ev.pointerId, cx: ev.clientX, d: null, box: null };
+  });
+  doc.addEventListener('pointermove', function(ev) {
+    var z = kitZoomDrag;
+    if (!z || z.pointer !== ev.pointerId) return;
+    if (ev.buttons === 0) { kitZoomStop(); return; }
+    var d = z.d || (z.d = kitTsData(z.ts)), a = d && d.series && kitZoomAt(z.ts, d, z.cx), b = a && kitZoomAt(z.ts, d, ev.clientX);
+    if (!b) { kitZoomStop(); return; }
+    if (!z.box || z.box.parentNode !== a.svg) {
+      if (z.box && z.box.parentNode) z.box.parentNode.removeChild(z.box);
+      z.box = a.svg.ownerDocument.createElementNS(a.svg.namespaceURI, 'rect');
+      z.box.setAttribute('class', 'zb');
+      a.svg.appendChild(z.box);
+    }
+    z.box.setAttribute('x', kitN(Math.min(a.x, b.x)));
+    z.box.setAttribute('y', kitN(d.t));
+    z.box.setAttribute('width', kitN(Math.abs(b.x - a.x)));
+    z.box.setAttribute('height', kitN(d.b - d.t));
+  });
+  doc.addEventListener('pointerup', function(ev) {
+    var z = kitZoomDrag;
+    if (!z || z.pointer !== ev.pointerId) return;
+    kitZoomStop();
+    var d = z.d || kitTsData(z.ts);
+    if (Math.abs(ev.clientX - z.cx) < 4 || !d || !d.series || !z.ts.parentNode) return;
+    var a = kitZoomAt(z.ts, d, z.cx), b = kitZoomAt(z.ts, d, ev.clientX);
+    if (!a || !b || a.i === b.i) return;
+    d.z = { from: d.labels[Math.min(a.i, b.i)], to: d.labels[Math.max(a.i, b.i)] };
+    z.ts.setAttribute('data-kit-ts', JSON.stringify(d));
+    kitRedrawTs(z.ts, d, d.w);
+  });
+  doc.addEventListener('pointercancel', function(ev) { if (kitZoomDrag && kitZoomDrag.pointer === ev.pointerId) kitZoomStop(); });
+}
+// Last client x of the chart hover, used to hover a redrawn chart again.
+var kitTsX = 0;
+// Chart hover at a client x: crosshair at the nearest label of the shown slice and a tooltip with each shown series, plus the total for stacks.
+function kitTsHover(box, clientX) {
+  var d = box.kitTs;
+  if (!d) { try { d = box.kitTs = JSON.parse(box.getAttribute('data-kit-ts')); } catch (e) { return; } }
+  var svg = box.querySelector('svg'), v = kitTsView(d), n = v.i1 - v.i0 + 1, shown = d.series.filter(function(s) { return !KIT_SERIES_OFF[d.id + '|' + s.name]; });
+  if (!svg || n < 1) return;
+  var rc = svg.getBoundingClientRect(), sc = rc.width ? d.w / rc.width : 1, step = (d.w - d.l - d.r) / n;
+  var i = Math.max(0, Math.min(n - 1, Math.floor(((clientX - rc.left) * sc - d.l) / step))), cx = d.l + step * (i + 0.5), at = v.i0 + i;
+  var xh = svg.querySelector('.xh'), tp = box.querySelector('.tip');
+  kitTsOn = box;
+  kitTsX = clientX;
+  if (xh) { xh.setAttribute('x1', cx); xh.setAttribute('x2', cx); xh.setAttribute('visibility', 'visible'); }
+  if (!tp) return;
+  var tot = 0, rows = shown.map(function(s) {
+    var sv = +s.values[at] || 0;
+    tot += sv;
+    return '<div><i style="background:' + kitSeriesFill(s, 0) + '"></i>' + kitEsc(s.name) + '<b>' + kitFmt(sv) + '</b></div>';
+  }).join('');
+  var mks = (d.marks || []).filter(function(mk) { return mk.day === d.labels[at]; }).map(function(mk) { return '<div class="tip-m">' + kitEsc(mk.label) + '</div>'; }).join('');
+  tp.innerHTML = '<div class="tip-d">' + kitEsc(d.labels[at]) + '</div>' + rows + (d.mode === 'stack' && shown.length > 1 ? '<div class="tip-t">Total<b>' + kitFmt(tot) + '</b></div>' : '') + mks;
+  tp.hidden = false;
+  var px = cx / sc, left = px + 12;
+  if (left + tp.offsetWidth > rc.width) left = px - 12 - tp.offsetWidth;
+  tp.style.left = Math.max(0, left) + 'px';
 }
 // Hides the crosshair when the pointer leaves the window or the window loses focus.
 function kitTsLeave(ev) { if (!ev || !ev.relatedTarget) kitTsOff(); }
@@ -1187,7 +1330,9 @@ function kitWireDrag(doc) {
   });
   doc.addEventListener('pointerup', function(ev) {
     if (kitDrag && kitDrag.pointer === ev.pointerId) kitDragEnd(doc);
-    else if (ev.pointerType === 'mouse' && !kitDrag) Array.prototype.forEach.call(doc.querySelectorAll('[data-card][draggable]'), function(c) { c.removeAttribute('draggable'); });
+    else if (ev.pointerType === 'mouse' && !kitDrag) Array.prototype.forEach.call(doc.querySelectorAll('[data-card][draggable]'), function(c) {
+      if (c.parentNode && c.parentNode.hasAttribute('data-cards')) c.removeAttribute('draggable');
+    });
   });
   doc.addEventListener('pointercancel', function(ev) { if (kitDrag && kitDrag.pointer === ev.pointerId) kitDragEnd(doc); });
   doc.addEventListener('pointermove', function(ev) {
@@ -1198,7 +1343,7 @@ function kitWireDrag(doc) {
   });
   doc.addEventListener('dragstart', function(ev) {
     var card = ev.target && ev.target.closest && ev.target.closest('[data-card][draggable]');
-    if (!card) return;
+    if (!card || !card.parentNode || !card.parentNode.hasAttribute('data-cards')) return;
     kitDragStart(card, null);
     ev.dataTransfer.effectAllowed = 'move';
     ev.dataTransfer.setData('text/plain', card.getAttribute('data-card'));
@@ -1218,7 +1363,7 @@ function kitRankAct(b) {
   li.dispatchEvent(new win.CustomEvent('kit:act', { bubbles: true, detail: { act: act, key: b.getAttribute('data-key'), value: b.getAttribute('data-val') } }));
 }
 // Attaches the delegated listeners for panel menus, table view, Copy data, full size (menu, close button, double-click, Escape),
-// row folds, rank row actions, panel drag, legend chips and chart hover; the page calls it once at boot with its document.
+// row folds, rank row actions, panel drag, legend chips, chart hover and chart zoom; the page calls it once at boot with its document.
 function kitWire(doc) {
   doc.addEventListener('click', function(ev) {
     var t = ev.target && ev.target.closest ? ev.target : null;
@@ -1256,6 +1401,16 @@ function kitWire(doc) {
     if (fold) { kitFoldClick(doc, fold); return; }
     var th = t.closest('th');
     if (th && kitSortClick(doc, th)) return;
+    var zr = t.closest('button[data-kit-zoom-reset]');
+    if (zr) {
+      var zl = zr.closest('.legend'), zts = zl && zl.nextElementSibling, zo = zts && zts.hasAttribute('data-kit-ts') ? kitTsData(zts) : null;
+      if (!zo || !zo.series || !zts.parentNode) return;
+      delete zo.z;
+      // Focus goes to the panel's menu button, else to the new chart.
+      var nts = kitRedrawTs(zts, zo, zo.w), zp = nts && nts.closest && nts.closest('.panel'), zm = zp && zp.querySelector('[data-kit-menu]');
+      if (zm) zm.focus(); else if (nts) { nts.setAttribute('tabindex', '-1'); nts.focus(); }
+      return;
+    }
     var chip = t.closest('button[data-kit-series]');
     if (!chip) return;
     var key = chip.getAttribute('data-kit-series');
@@ -1272,6 +1427,7 @@ function kitWire(doc) {
   });
   doc.addEventListener('keydown', function(ev) {
     if (ev.key !== 'Escape') return;
+    if (kitZoomDrag) { kitZoomStop(); return; }
     var open = Array.prototype.filter.call(doc.querySelectorAll('.p-pop'), function(p) { return !p.hidden; })[0];
     if (!open) {
       var full = doc.querySelectorAll('.panel.full')[0];
@@ -1291,35 +1447,13 @@ function kitWire(doc) {
     kitCloseMenus();
     kitSetFull(panel, true);
   });
-  // Chart hover: crosshair at the nearest label and a tooltip with each shown series, plus the total for stacks.
-  // Over a timeline, the tooltip shows the hovered mark's tip.
+  // Chart hover through kitTsHover; over a timeline, the tooltip shows the hovered mark's tip.
   doc.addEventListener('mousemove', function(ev) {
     var hit = ev.target && ev.target.closest ? ev.target : null;
     var box = hit && hit.closest('.ts[data-kit-ts]'), lanes = hit && !box && hit.closest('.lanes[data-kit-lanes]');
     if ((box || lanes) !== kitTsOn) kitTsOff();
     if (lanes) { kitLaneTip(lanes, ev); return; }
-    if (!box) return;
-    var d = box.kitTs;
-    if (!d) { try { d = box.kitTs = JSON.parse(box.getAttribute('data-kit-ts')); } catch (e) { return; } }
-    var svg = box.querySelector('svg'), n = d.labels.length, shown = d.series.filter(function(s) { return !KIT_SERIES_OFF[d.id + '|' + s.name]; });
-    if (!svg || !n) return;
-    var rc = svg.getBoundingClientRect(), sc = rc.width ? d.w / rc.width : 1, step = (d.w - d.l - d.r) / n;
-    var i = Math.max(0, Math.min(n - 1, Math.floor(((ev.clientX - rc.left) * sc - d.l) / step))), cx = d.l + step * (i + 0.5);
-    var xh = svg.querySelector('.xh'), tp = box.querySelector('.tip');
-    kitTsOn = box;
-    if (xh) { xh.setAttribute('x1', cx); xh.setAttribute('x2', cx); xh.setAttribute('visibility', 'visible'); }
-    if (!tp) return;
-    var tot = 0, rows = shown.map(function(s) {
-      var v = +s.values[i] || 0;
-      tot += v;
-      return '<div><i style="background:' + kitSeriesFill(s, 0) + '"></i>' + kitEsc(s.name) + '<b>' + kitFmt(v) + '</b></div>';
-    }).join('');
-    var mks = (d.marks || []).filter(function(mk) { return mk.day === d.labels[i]; }).map(function(mk) { return '<div class="tip-m">' + kitEsc(mk.label) + '</div>'; }).join('');
-    tp.innerHTML = '<div class="tip-d">' + kitEsc(d.labels[i]) + '</div>' + rows + (d.mode === 'stack' && shown.length > 1 ? '<div class="tip-t">Total<b>' + kitFmt(tot) + '</b></div>' : '') + mks;
-    tp.hidden = false;
-    var px = cx / sc, left = px + 12;
-    if (left + tp.offsetWidth > rc.width) left = px - 12 - tp.offsetWidth;
-    tp.style.left = Math.max(0, left) + 'px';
+    if (box) kitTsHover(box, ev.clientX);
   });
   if (typeof MutationObserver === 'function' && doc.documentElement) {
     // Tables added or removed anywhere get their sort and chart menu through kitTablesIn on their container.
@@ -1345,4 +1479,5 @@ function kitWire(doc) {
     });
   }
   kitWireDrag(doc);
+  kitWireZoom(doc);
 }

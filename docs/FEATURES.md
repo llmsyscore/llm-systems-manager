@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/b2da9caf-9437-4001-acdc-cd12567fa786
 
 <img width="1920" height="1080" alt="Sign-in screen" src="screenshots/login.webp" />
 
-**[▶ Open the screenshot viewer](https://www.llmsyscore.com/#screenshots)** — step through all 30 screens full-size with the arrows.
+**[▶ Open the screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)** — step through all 30 screens full-size with the arrows.
 
 Or open any screen right here:
 
@@ -283,9 +283,9 @@ Pinned cards, layout engine, density, themes and refresh cadence for the page yo
 </details>
 
 <details>
-<summary><b>Themes</b> — nine color themes, seven dark and two light, picked in the settings drawer</summary>
+<summary><b>Themes</b> — Dark and Light, picked in the settings drawer or the sidebar</summary>
 
-Nine color themes, seven dark and two light, picked in the settings drawer: Modern, Dark, Medium, OLED black, Graphite, Slate, Enterprise, Light and Frost.
+Dark and Light themes. The Theme switch at the bottom of the sidebar changes between them, and the settings drawer can follow your system's light or dark setting.
 
 <img width="1920" height="1080" alt="Themes" src="screenshots/themes.webp" />
 </details>

@@ -4,6 +4,7 @@ const VERSION = '__MGR_VERSION__';
 const CACHE = `lsm-companion-${VERSION}`;
 const SHELL = [
   '/companion',
+  '/static/kit/kit.css?v=__MGR_VERSION__',
   '/static/css/base.css?v=__MGR_VERSION__',
   '/static/css/companion.css?v=__MGR_VERSION__',
   '/static/js/lib/settingsdrawer.js?v=__MGR_VERSION__',
