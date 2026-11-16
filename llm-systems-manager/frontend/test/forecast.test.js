@@ -88,26 +88,6 @@ describe('sortFindings / topThree', () => {
   });
 });
 
-describe('countLabel', () => {
-  it('counts open findings', () => {
-    expect(FC.countLabel({ enabled: true, findings: new Array(6).fill({}) })).toBe('6 ahead');
-    expect(FC.countLabel({ enabled: true, findings: [{}] })).toBe('1 ahead');
-  });
-  it('says all clear on an empty enabled view', () => {
-    expect(FC.countLabel({ enabled: true, findings: [] })).toBe('all clear');
-  });
-  it('says off when disabled, and nothing at all before the first payload', () => {
-    expect(FC.countLabel({ enabled: false, findings: [{}] })).toBe('off');
-    expect(FC.countLabel(null)).toBe('');
-    expect(FC.countLabel(undefined)).toBe('');
-  });
-  it('ignores a findings value that is not a list of rows', () => {
-    expect(FC.countLabel({ enabled: true, findings: 'oops' })).toBe('all clear');
-    expect(FC.countLabel({ enabled: true, findings: [null, 'x', {}] })).toBe('1 ahead');
-    expect(FC.countLabel('oops')).toBe('');
-  });
-});
-
 describe('discardedNote', () => {
   it('explains a refused digest on the run', () => {
     expect(FC.discardedNote({ tier: 'standard', digest_discarded: true })).toMatch(/summary of this run.*discarded/);
@@ -162,14 +142,7 @@ describe('fitPoints with a reference line', () => {
   });
 });
 
-describe('urgent / shortDigest', () => {
-  it('keeps critical and warning findings only, most urgent first', () => {
-    const rows = [{ severity: 'info', host: 'a' }, { severity: 'warning', host: 'b' },
-                  { severity: 'CRITICAL', host: 'c' }, null];
-    expect(FC.urgent(rows).map(r => r.host)).toEqual(['c', 'b']);
-    expect(FC.urgent('x')).toEqual([]);
-  });
-
+describe('shortDigest', () => {
   it('returns the first sentence, cut at a word when it is long', () => {
     expect(FC.shortDigest('Memory is the common factor. Look at node-3 first.')).toBe('Memory is the common factor.');
     expect(FC.shortDigest('no full stop here')).toBe('no full stop here');

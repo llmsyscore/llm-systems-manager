@@ -260,6 +260,41 @@ describe('manager shell', () => {
     expect(flat).toContain('html{scroll-padding-top:var(--mc-top,61px);}');
   });
 
+  test('toolbar group shows only on Overall', async () => {
+    const w = await boot();
+    const d = w.document;
+    const bar = d.querySelector('#toolbar .tb-ov');
+    expect(new JSDOM(indexSrc).window.document.querySelector('#toolbar .tb-ov').hidden, 'hidden in the markup').toBe(true);
+    expect(bar.hidden).toBe(false);
+    expect([...bar.querySelectorAll('#ovProv button')].map(b => [b.dataset.ovProv, b.textContent, b.getAttribute('aria-pressed')]))
+      .toEqual([['all', 'All providers', 'true'], ['llama', 'llama.cpp', 'false'], ['lms', 'LM Studio', 'false'], ['vllm', 'vLLM', 'false']]);
+    expect([...bar.querySelectorAll('#ovRange button')].map(b => [b.dataset.ovRange, b.getAttribute('aria-pressed')]))
+      .toEqual([['6', 'false'], ['12', 'false'], ['24', 'true']]);
+    expect(bar.querySelectorAll('input').length).toBe(0);
+    w.mcShellMark('llm');
+    expect(bar.hidden).toBe(true);
+    w.mcShellMark('overall');
+    expect(bar.hidden).toBe(false);
+    w.switchTab('events');
+    expect(bar.hidden).toBe(true);
+    w.switchTab('overall');
+    expect(bar.hidden).toBe(false);
+  });
+
+  test('toolbar group wraps and takes its colours from kit tokens', () => {
+    const flat = shellCss.replace(/\s+/g, '');
+    expect(flat).toContain('.tb-ov{display:flex;flex-wrap:wrap;');
+    expect(flat).toContain('.tb-chips{display:flex;flex-wrap:wrap;');
+    const rules = [...shellCss.matchAll(/^[^{\n]*\.tb-(?:ov|chips?|seg)[^{]*\{([^}]*)\}/gm)].map(m => m[1]);
+    expect(rules.length).toBeGreaterThan(5);
+    for (const body of rules) {
+      expect(body, body).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+      for (const m of body.matchAll(/var\((--[\w-]+)/g)) {
+        expect(['--card', '--text', '--text-2', '--muted', '--border', '--accent', '--hover'], m[1]).toContain(m[1]);
+      }
+    }
+  });
+
   test('kit co-load', () => {
     const srcs = [...indexSrc.matchAll(/<script src="\/static\/((?:kit|js)\/[^"?]+)/g)].map(m => m[1]);
     expect(srcs.indexOf('kit/kit.js')).toBeGreaterThan(-1);

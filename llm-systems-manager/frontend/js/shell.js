@@ -1,4 +1,4 @@
-// Manager shell (#1432): sidebar navigation, toolbar title, and the Sidebar, Theme and Live switches.
+// Manager shell (#1432): sidebar navigation, toolbar title, the Overall filter and range, and the Sidebar, Theme and Live switches.
 (() => {
   const $ = (id) => document.getElementById(id);
   const side = $('side');
@@ -26,7 +26,37 @@
   kitConfigure({ prefix: 'mgr', store: STORE });
   kitWire(document);
 
+  // Overall toolbar group: provider chips and the time range, pressed as window.ovState says.
+  const ovBar = document.querySelector('#toolbar .tb-ov');
+  const OV_PROV_KEY = 'mgr.ovProv', OV_RANGE_KEY = 'mgr.ovRange';
+  function mcShellPaintOv() {
+    if (!ovBar) return;
+    const o = window.ovState || {};
+    ovBar.querySelectorAll('[data-ov-prov]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.ovProv === (o.prov || 'all'))));
+    ovBar.querySelectorAll('[data-ov-range]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.ovRange === (+o.range || 24))));
+  }
+  if (ovBar) {
+    ovBar.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      let run = null;
+      if (b.dataset.ovProv && typeof window.ovSetFilter === 'function') run = window.ovSetFilter(b.dataset.ovProv);
+      else if (b.dataset.ovRange && typeof window.ovSetRange === 'function') run = window.ovSetRange(+b.dataset.ovRange);
+      Promise.resolve(run).catch(() => {});
+    });
+  }
+  // Saved filter and range, each kept only when a toolbar button carries that value.
+  function restoreOv() {
+    const o = window.ovState = window.ovState || { prov: 'all', range: 24 };
+    if (!ovBar) return;
+    const p = STORE.getItem(OV_PROV_KEY), r = STORE.getItem(OV_RANGE_KEY);
+    if ([...ovBar.querySelectorAll('[data-ov-prov]')].some((b) => b.dataset.ovProv === p)) o.prov = p;
+    if ([...ovBar.querySelectorAll('[data-ov-range]')].some((b) => b.dataset.ovRange === r)) o.range = +r;
+    mcShellPaintOv();
+  }
+
   function mcShellMark(tab, sub) {
+    if (ovBar) ovBar.hidden = tab !== 'overall';
     if (tab === 'dashboard' && !sub) sub = dashSub();
     side.querySelectorAll('[data-tab]').forEach((b) => {
       const on = b.dataset.tab === tab && (tab !== 'dashboard' || b.dataset.sub === sub);
@@ -140,8 +170,11 @@
     paintPin();
     mcShellPaintTheme();
     paintLive();
+    restoreOv();
   }
 
+  window.mcShellStore = STORE;
+  window.mcShellPaintOv = mcShellPaintOv;
   window.mcShellMark = mcShellMark;
   window.mcShellTitle = mcShellTitle;
   window.mcShellPaintTheme = mcShellPaintTheme;

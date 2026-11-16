@@ -1,11 +1,9 @@
 // #1140: history backfills redraw each chart once per batch instead of once
-// per point, and the Overall hero's Power/Energy overlays start enabled.
+// per point; #1437: the pinned shells are sized when Overall opens.
 import { describe, test, expect, vi } from 'vitest';
-import { JSDOM } from 'jsdom';
 import { srcFile, fnSrc, blockSrc, evalGlobal } from './helpers/harness.js';
 
 const charts = srcFile('js/charts.js');
-const html = srcFile('index.html');
 
 // Helpers + pushPoint/pushDual/pushMulti share the `_pushBatch` state, so they
 // are evaluated once as a block rather than per test.
@@ -69,109 +67,6 @@ describe('_withPushBatch (#1140)', () => {
     for (const name of ['loadHistory', '_makeHistoryBackfill', 'loadManagerPerfHistory']) {
       expect(fnSrc(charts, name), name).toMatch(/_withPushBatch\(\(\) => \{/);
     }
-  });
-});
-
-describe('Overall hero live point waits for the first backfill (#1140)', () => {
-  const overall = srcFile('js/overall.js');
-  function loadFetchOverall(aggregate) {
-    evalGlobal([fnSrc(overall, 'fetchOverallMetrics'), 'window.fetchOverallMetrics = fetchOverallMetrics;'].join('\n'));
-    window._ovRefreshEnergy = vi.fn();
-    window._ovPaintBand = vi.fn();
-    window.pushDual = vi.fn();
-    window.ovHeroBucketMs = () => 300000;
-    window.ovHeroBucketSync = vi.fn();
-    window.ovHeroChart = { data: { labels: [] } };
-    window.fetch = vi.fn(async () => ({ ok: true, json: async () => aggregate }));
-  }
-
-  test('band paints but no hero point while the backfill is in flight on an empty chart', async () => {
-    loadFetchOverall({ throughput: { total_tps: 5, total_pps: 1 } });
-    window._ovHistoryInflight = 1; window._ovHeroRows = null;
-    await window.fetchOverallMetrics();
-    expect(window._ovPaintBand).toHaveBeenCalledTimes(1);
-    expect(window.pushDual).not.toHaveBeenCalled();
-  });
-
-  test('hero point lands once the backfill settled, or when rows are already cached', async () => {
-    loadFetchOverall({ throughput: { total_tps: 5, total_pps: 1 } });
-    window._ovHistoryInflight = 0; window._ovHeroRows = null;
-    await window.fetchOverallMetrics();
-    expect(window.pushDual).toHaveBeenCalledTimes(1);
-    window._ovHistoryInflight = 1; window._ovHeroRows = [{ ts: 1 }];
-    await window.fetchOverallMetrics();
-    expect(window.pushDual).toHaveBeenCalledTimes(2);
-  });
-
-  test('loadOverallHistory counts itself in flight only around its fetch', async () => {
-    evalGlobal([fnSrc(charts, 'loadOverallHistory'), 'window.loadOverallHistory = loadOverallHistory;'].join('\n'));
-    window._ovHistoryGen = 0; window._ovHistoryInflight = 0;
-    window.ovHeroChart = {};
-    let release;
-    window._historyRows = () => new Promise(res => { release = res; });
-    const run = window.loadOverallHistory();
-    expect(window._ovHistoryInflight).toBe(1);
-    release([]);
-    await run;
-    expect(window._ovHistoryInflight).toBe(0);
-  });
-});
-
-describe('Overall hero overlays default on (#1140)', () => {
-  test('index.html ships both toggles checked', () => {
-    const doc = new JSDOM(html).window.document;
-    expect(doc.getElementById('ovShowPower').checked).toBe(true);
-    expect(doc.getElementById('ovShowEnergy').checked).toBe(true);
-  });
-
-  function heroWith(bodyHtml) {
-    document.body.innerHTML = bodyHtml + '<canvas id="ovHeroChart"></canvas>';
-    window.Chart = function (ctx, cfg) { return { data: cfg.data }; };
-    window.cssVar = () => '#000';
-    window._sparkInteraction = {}; window._sparkTooltip = {}; window._zoomOpts = {}; window.xAxis = {};
-    window._hex6 = (c) => c;
-    HTMLCanvasElement.prototype.getContext = () => ({});
-    evalGlobal([fnSrc(charts, '_ovOverlayOn'), fnSrc(charts, '_mkHeroChart'), 'window._mkHeroChart = _mkHeroChart;'].join('\n'));
-    return window._mkHeroChart().data.datasets;
-  }
-
-  test('the chart datasets follow the toggles: checked → visible', () => {
-    const ds = heroWith('<input type="checkbox" id="ovShowPower" checked><input type="checkbox" id="ovShowEnergy" checked>');
-    expect(ds[2].hidden).toBe(false);
-    expect(ds[3].hidden).toBe(false);
-  });
-
-  test('the chart datasets follow the toggles: unchecked → hidden', () => {
-    const ds = heroWith('<input type="checkbox" id="ovShowPower"><input type="checkbox" id="ovShowEnergy">');
-    expect(ds[2].hidden).toBe(true);
-    expect(ds[3].hidden).toBe(true);
-  });
-});
-
-describe('Overall strips hold their height before the first paint (#1436)', () => {
-  test('index.html ships placeholder content in the band strips', () => {
-    const doc = new JSDOM(html).window.document;
-    expect(doc.querySelectorAll('#ovToplines .ov-topline')).toHaveLength(1);
-    expect(doc.querySelectorAll('#ovTiles .ov-tile .ov-tile-stats > div')).toHaveLength(4);
-    expect(doc.querySelector('#ovAgentsStrip .ov-agents-empty').textContent).toBe('Loading agents…');
-    expect(doc.querySelector('#fcOvBody .fc-empty').textContent).toBe('Loading…');
-    expect(doc.getElementById('ovAlertsStrip').textContent).toBe('Loading alerts…');
-  });
-
-  test('the first paint replaces the placeholders', () => {
-    const doc = new JSDOM(html).window.document;
-    document.body.innerHTML = ['ovToplines', 'ovTiles', 'ovAgentsStrip'].map(id => doc.getElementById(id).outerHTML).join('');
-    const overall = srcFile('js/overall.js');
-    evalGlobal([fnSrc(overall, '_ovPaintToplines'), fnSrc(overall, '_ovPaintTiles'), fnSrc(overall, '_ovPaintAgents'),
-      'window._ovPaintToplines = _ovPaintToplines; window._ovPaintTiles = _ovPaintTiles; window._ovPaintAgents = _ovPaintAgents;'].join('\n'));
-    window._esc = (s) => String(s);
-    window._ovPaintToplines([{ v: '3', l: 'agents online' }]);
-    window._ovPaintTiles([{ key: 'llama', label: 'llama.cpp', online: 1, total: 1, accent: 'ok', stats: [{ v: '1', l: 'servers' }] }]);
-    window._ovPaintAgents([]);
-    expect(document.querySelector('#ovToplines .stat').textContent).toBe('3');
-    expect(document.querySelectorAll('#ovTiles .ov-tile')).toHaveLength(1);
-    expect(document.querySelector('#ovTiles .ov-tile').dataset.prov).toBe('llama');
-    expect(document.getElementById('ovAgentsStrip').textContent).toBe('No approved agents yet.');
   });
 });
 

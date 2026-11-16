@@ -1,4 +1,4 @@
-// #1031: Forecast sub-tab registration, panel + Overall card markup, asset
+// #1031: Forecast sub-tab registration, panel + Overall panel markup, asset
 // tags and cache-busters, and the IIFE/no-innerHTML rules js/forecast.js keeps.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { srcFile, loadSwitchSubTab } from './helpers/harness.js';
@@ -48,14 +48,13 @@ describe('Forecast markup (#1031)', () => {
     }
   });
 
-  it('the Overall page carries a Forecast strip placed after the alerts strip', () => {
-    const strip = document.querySelector('.ov-band > [data-strip="forecast"]');
-    expect(strip).toBeTruthy();
-    expect(strip.dataset.stripAfter).toBe('alerts');
-    expect(strip.querySelector('.ov-strip-handle')).toBeTruthy();
-    for (const id of ['fcOvCount', 'fcOvBody', 'fcOvFoot', 'fcOvView']) {
-      expect(strip.querySelector('#' + id), id).toBeTruthy();
-    }
+  it('the Overall page carries a Forecast panel first in the Watch list row', () => {
+    const row = document.querySelector('#overallTab section.row[data-row="watch"]');
+    expect(row).toBeTruthy();
+    const panel = row.querySelector('.panels > section.panel');
+    expect(panel.dataset.card).toBe('forecast');
+    expect(panel.dataset.title).toBe('Forecast');
+    expect(panel.querySelector('.p-body#ov-b-forecast')).toBeTruthy();
   });
 
   it('the run bar and checks lead, Tower\'s analysis folds away beneath them', () => {
@@ -109,10 +108,10 @@ describe('js/forecast.js scope and escaping rules (#1031)', () => {
 
   it('exposes only the two page hooks', () => {
     expect(pageSrc).toContain('window.forecastLoad');
-    expect(pageSrc).toContain('window.forecastOverallCard');
+    expect(pageSrc).toContain('window.forecastSnapshot');
     // Assignments only — `window.x === y` comparisons are not exports.
     const globals = [...pageSrc.matchAll(/window\.([A-Za-z_$][\w$]*)\s*=(?!=)/g)].map(m => m[1]);
-    expect([...new Set(globals)].sort()).toEqual(['forecastLoad', 'forecastOverallCard']);
+    expect([...new Set(globals)].sort()).toEqual(['forecastLoad', 'forecastSnapshot']);
   });
 
   it('never writes API strings as HTML', () => {
@@ -125,5 +124,22 @@ describe('js/forecast.js scope and escaping rules (#1031)', () => {
     expect(pageSrc).toContain("FC.canOpenThread(f, isAdmin())");
     expect(pageSrc).toContain('window.towerOpenThread(tid)');
     expect(pageSrc).not.toContain('/api/tower/threads');
+  });
+});
+
+describe('forecastSnapshot (#1432)', () => {
+  it('returns the cached payload and refetches it at most once a minute', async () => {
+    document.body.innerHTML = '';
+    const calls = [];
+    window.fetch = async (url) => {
+      calls.push(url);
+      return { ok: true, json: async () => ({ ok: true, enabled: true, findings: [] }) };
+    };
+    (0, eval)(pageSrc);
+    expect(window.forecastSnapshot()).toBeNull();
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+    expect(calls).toEqual(['/api/forecast']);
+    expect(window.forecastSnapshot()).toMatchObject({ ok: true, enabled: true });
+    expect(calls).toHaveLength(1);
   });
 });

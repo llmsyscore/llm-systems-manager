@@ -10,6 +10,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const KIT_SRC = readFileSync(resolve(HERE, '../../kit/kit.js'), 'utf8');
 const KIT_VERSION = readFileSync(resolve(HERE, '../../kit/KIT_VERSION'), 'utf8');
 const TS_10 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.0.json'), 'utf8'));
+const RS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/rank-split-1.1.json'), 'utf8'));
+const TS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.1.json'), 'utf8'));
 // A small WORLD_DOTS of the cloud worlddots.js shape: 8 dots over DE, FR, JP and US (3 dots for US).
 const WORLD_SRC = "var WORLD_DOTS = { w: 60, h: 30, step: 6, codes: ['DE', 'FR', 'JP', 'US'], dots: '1,1,0;2,1,0;3,1,1;7,2,2;8,2,2;5,3,3;6,3,3;6,4,3;' };";
 
@@ -38,7 +40,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.1.0');
+    assert.equal(first, '// Panel kit 1.2.0');
   });
 
   test('coexists with an old copy', () => {
@@ -567,7 +569,7 @@ const LIVE = (extra = {}) => ({ id: 'live', labels: ['a', 'b', 'c'], series: [{ 
 const ZOOM4 = (z) => ({ id: 'z', labels: ['a', 'b', 'c', 'd'], series: [{ name: 'A', values: [1, 2, 3, 4] }], zoom: true, z });
 
 describe('kit 1.1 charts', () => {
-  test('tsHtml 1.0 calls are unchanged in 1.1', () => {
+  test('tsHtml 1.0 and 1.1 calls are unchanged in 1.2', () => {
     const labels = ['2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13'];
     const calls = {
       t1: { id: 't1', labels, series: [{ name: 'A', values: [1, 2, 3, 4] }, { name: 'B', values: [4, 3, 2, 1], color: 'bad' }], marks: [{ day: '2026-11-11', label: 'm' }] },
@@ -576,6 +578,17 @@ describe('kit 1.1 charts', () => {
     };
     assert.deepEqual(Object.keys(TS_10).sort(), Object.keys(calls).sort());
     for (const [name, o] of Object.entries(calls)) assert.equal(kit().tsHtml(o), TS_10[name], name);
+    // 1.1 calls (zoom, keep, thresholds, ymax, slots, empty) without a series legend render as they did before 1.2.
+    const calls11 = {
+      z1: { id: 'z1', labels: ['a', 'b', 'c', 'd'], series: [{ name: 'A', values: [1, 2, 3, 4], slot: 1 }, { name: 'B', values: [4, 3, 0.5, 1], slot: 5 }],
+        zoom: true, z: { from: 'b', to: 'c' }, keep: 288, w: 812, height: 220, thresholds: [{ value: 3, label: 'Three', tone: 'warn' }] },
+      k1: { id: 'k1', labels: ['00:00', '00:05', '00:10'], series: [{ name: 'llama.cpp', values: [1, 2.5, 3], slot: 1 }, { name: 'Prompt (all)', values: [400, 500, 6000], slot: 5 }],
+        keep: 288, zoom: true, w: 640, height: 220 },
+      y1: { id: 'y1', labels: ['x', 'y'], series: [{ name: 'A', values: [50, 150], color: 'bad' }], ymax: 100 },
+      e1: { id: 'e1', labels: [], series: [{ name: 'A <b>', values: [] }], keep: 10, zoom: true },
+    };
+    assert.deepEqual(Object.keys(TS_11).sort(), Object.keys(calls11).sort());
+    for (const [name, o] of Object.entries(calls11)) assert.equal(kit().tsHtml(o), TS_11[name], name);
   });
 
   test('ymax caps the axis', () => {
@@ -666,5 +679,50 @@ describe('kit 1.1 charts', () => {
     assert.match(html, /viewBox="0 0 800 220"/);
     assert.ok(html.includes('class="th"'));
     assert.ok(html.includes('data-kit-zoom-reset'));
+  });
+});
+
+describe('kit 1.2 value formatter', () => {
+  test('rankHtml and splitHtml 1.1 calls are unchanged in 1.2', () => {
+    const rank = {
+      r1: [[{ label: 'alpha', v: 1234.5 }, { label: 'beta', v: 0.4, val: 'b' }, { label: 'gamma <x>', v: 12 }], { dim: 'Host' }],
+      r2: [[{ label: 'a', v: 5 }, { label: 'b', v: 4 }, { label: 'c', v: 3 }], { n: 2, unit: 'Wh', key: 'host' }],
+      r3: [[], {}],
+      r4: [[{ label: 'z', v: 0 }], undefined],
+    };
+    const split = {
+      s1: [[{ label: 'CPU', v: 0.502 }, { label: 'GPU', v: 0 }, { label: 'Neural Engine', v: 0.1 }], { unit: 'W' }],
+      s2: [[{ label: 'a', v: 10 }, { label: 'b', v: 20 }, { label: 'c', v: 30 }, { label: 'd', v: 40 }, { label: 'e', v: 5 }, { label: 'f', v: 6 }], {}],
+      s3: [[{ label: 'Generating', v: 41 }, { label: 'Idle', v: 247 }, { label: 'x', v: 3 }], { slots: { Generating: 2, Idle: 4 }, unit: 'Wh' }],
+      s4: [[], undefined],
+    };
+    assert.deepEqual(Object.keys(RS_11).sort(), Object.keys(rank).concat(Object.keys(split)).sort());
+    const k = kit();
+    for (const [name, a] of Object.entries(rank)) assert.equal(k.rankHtml(a[0], a[1]), RS_11[name], name);
+    for (const [name, a] of Object.entries(split)) assert.equal(k.splitHtml(a[0], a[1]), RS_11[name], name);
+  });
+
+  test('o.fmt writes the rank values and the more line, escaped', () => {
+    const fmt = (v) => v.toFixed(1) + ' <W>';
+    const out = kit().rankHtml([{ label: 'a', v: 11 }, { label: 'b', v: 0.5 }, { label: 'c', v: 0.25 }], { n: 2, unit: 'W', fmt });
+    assert.deepEqual([...out.matchAll(/class="r-val">([^<]*)</g)].map((m) => m[1]), ['11.0 &lt;W&gt;', '0.5 &lt;W&gt;']);
+    assert.match(out, /<div class="r-more">1 more · 0\.3 &lt;W&gt;<\/div>/);
+  });
+
+  test('a series legend text replaces the chip sum, escaped, and survives redraw and append', () => {
+    const o = { id: 'lg', labels: ['a', 'b'], series: [{ name: 'A', values: [1, 2], legend: '12.4k <tokens>' }, { name: 'B', values: [3, 4] }], keep: 3, zoom: true };
+    const out = kit().tsHtml(o);
+    assert.deepEqual([...out.matchAll(/class="c-v">([^<]*)</g)].map((m) => m[1]), ['12.4k &lt;tokens&gt;', '7']);
+    assert.equal(tsJson(out).series[0].legend, '12.4k <tokens>');
+    assert.equal('legend' in tsJson(out).series[1], false);
+    const w = liveDom(o);
+    w.kitTsAppend(w.document, 'lg', 'c', [5, 6]);
+    assert.deepEqual([...w.document.querySelectorAll('.legend .c-v')].map((e) => e.textContent), ['12.4k <tokens>', '13']);
+  });
+
+  test('o.fmt writes the split chip values and bar titles', () => {
+    const out = kit().splitHtml([{ label: 'CPU', v: 0.502 }, { label: 'GPU', v: 0 }], { unit: 'W', fmt: (v) => v.toFixed(1) + ' W' });
+    assert.deepEqual([...out.matchAll(/class="c-v">([^<]*)</g)].map((m) => m[1]), ['0.5 W', '0.0 W']);
+    assert.match(out, /title="CPU: 0\.5 W"/);
   });
 });

@@ -1,6 +1,6 @@
 // js/lib/settingsdrawer.js — presets per column count, theme catalog +
 // legacy migration, and the per-page drawer scope (#817).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -214,5 +214,98 @@ describe('card label maps cover their grids', () => {
       const ids = [...doc.getElementById(gid).querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
       for (const id of ids) expect(labels, `${gid} ${id} missing from ${name}`).toContain(id);
     }
+  });
+});
+
+describe('Overall drawer cards section (#1432)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
+  const fn = (name) => {
+    const m = src.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    expect(m, name).not.toBeNull();
+    return m[0];
+  };
+  const overallTab = new JSDOM(html).window.document.getElementById('overallTab').outerHTML;
+
+  // The real drawer chips, row list, row toggle and click binding on the real #overallTab rows.
+  function setup(saved) {
+    document.body.innerHTML = overallTab + '<div id="settingsOverlay"><section id="sdCards"></section></div>';
+    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_ovRows'), fn('_applyRowsHidden'), fn('toggleOverallRow'), fn('_sdBind'),
+      'window._sdChip = _sdChip; window._sdRenderCards = _sdRenderCards; window._ovRows = _ovRows;',
+      'window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow; window._sdBind = _sdBind;'].join('\n'));
+    window._sdBound = false;
+    window._activeTab = 'overall';
+    window.layout = { overallBorrowed: ['gpu'], ...saved };
+    window._esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    window._cardLabel = (id) => id;
+    window.CARD_LABELS = { gpu: 'GPU' };
+    window.CARD_LABELS_LMS = {};
+    window.CARD_LABELS_VLLM = {};
+    window.CARD_LABELS_MANAGER = {};
+    window.saveLayout = vi.fn();
+    window._sdRerenderCards = () => window._sdRenderCards({ kind: 'cards' });
+    window._sdBind();
+    window._sdRenderCards({ kind: 'cards' });
+    return document.getElementById('sdCards');
+  }
+  const chips = (el) => [...el.querySelectorAll('[data-sd="row"]')].map(b => [b.dataset.id, b.textContent, b.getAttribute('aria-pressed')]);
+
+  it('lists the pinned cards and no longer offers the old band sections', () => {
+    const el = setup({});
+    expect(el.textContent).toContain('Pinned from other pages');
+    expect(el.querySelector('[data-sd="pin"][data-id="gpu"]').getAttribute('aria-pressed')).toBe('true');
+    expect(el.querySelector('[data-sd="strip"]')).toBeNull();
+  });
+
+  it('settings drawer lists the six rows and hides one', () => {
+    document.body.innerHTML = '';
+    const el0 = setup({});
+    // A dressed fold button carries the kit's chevron; the chip label leaves it out.
+    document.querySelector('#overallTab section.row[data-row="fleet"] button[data-row-fold]')
+      .insertAdjacentHTML('afterbegin', '<span class="chev" aria-hidden="true">▾</span>');
+    window._sdRenderCards({ kind: 'cards' });
+    expect(el0.textContent).toContain('Sections on this page');
+    expect(el0.textContent).toContain('6 of 6 shown');
+    expect(chips(el0)).toEqual([
+      ['fleet', 'Fleet', 'true'], ['throughput', 'Throughput', 'true'], ['servers', 'LLM servers', 'true'],
+      ['power', 'Power and energy', 'true'], ['watch', 'Watch list', 'true'], ['pinned', 'Pinned', 'true'],
+    ]);
+    el0.querySelector('[data-sd="row"][data-id="power"]').click();
+    expect(window.layout.overallRowsHidden).toEqual(['power']);
+    expect(document.querySelector('#overallTab section.row[data-row="power"]').hidden).toBe(true);
+    expect(document.querySelector('#overallTab section.row[data-row="watch"]').hidden).toBe(false);
+    expect(window.saveLayout).toHaveBeenCalledTimes(1);
+    expect(el0.textContent).toContain('5 of 6 shown');
+    expect(el0.querySelector('[data-sd="row"][data-id="power"]').getAttribute('aria-pressed')).toBe('false');
+    el0.querySelector('[data-sd="row"][data-id="power"]').click();
+    expect(window.layout.overallRowsHidden).toEqual([]);
+    expect(document.querySelector('#overallTab section.row[data-row="power"]').hidden).toBe(false);
+
+    // A saved list applies on load and keeps only ids of rows on the page.
+    const el = setup({ overallRowsHidden: ['pinned', 'gone'] });
+    window._applyRowsHidden();
+    expect(document.querySelector('#overallTab section.row[data-row="pinned"]').hidden).toBe(true);
+    expect(chips(el).find(c => c[0] === 'pinned')[2]).toBe('false');
+    el.querySelector('[data-sd="row"][data-id="fleet"]').click();
+    expect(window.layout.overallRowsHidden).toEqual(['pinned', 'fleet']);
+    expect(el.querySelectorAll('input[type="checkbox"]').length).toBe(0);
+  });
+
+  it('hiding or showing a row from the drawer refreshes the rows\' Move up and Move down', () => {
+    document.body.innerHTML = '';
+    (0, eval)(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'kit', 'kit.js'), 'utf8'));
+    const el = setup({});
+    const tab = document.getElementById('overallTab');
+    window.kitRowDress(tab);
+    window.kitRowMenus(tab);
+    const move = (row, dir) => tab.querySelector(`section.row[data-row="${row}"] button[data-row-move="${dir}"]`).disabled;
+    expect(move('fleet', -1)).toBe(true);
+    expect(move('throughput', -1)).toBe(false);
+    el.querySelector('[data-sd="row"][data-id="fleet"]').click();
+    expect(move('throughput', -1)).toBe(true);
+    el.querySelector('[data-sd="row"][data-id="pinned"]').click();
+    expect(move('watch', 1)).toBe(true);
+    el.querySelector('[data-sd="row"][data-id="fleet"]').click();
+    expect(move('fleet', -1)).toBe(true);
+    expect(move('throughput', -1)).toBe(false);
   });
 });

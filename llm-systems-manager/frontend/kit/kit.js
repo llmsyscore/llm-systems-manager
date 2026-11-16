@@ -1,4 +1,4 @@
-// Panel kit 1.1.0
+// Panel kit 1.2.0
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
@@ -225,10 +225,11 @@ function tsHtml(o) {
   var ths = (Array.isArray(o.thresholds) ? o.thresholds : []).filter(function(h) { return h && typeof h.value === 'number' && isFinite(h.value); });
   function part(a) { return zr ? a.slice(zr[0], zr[1] + 1) : a; }
   var shown = part(labels);
+  // A series' legend text, when set, shows in its chip in place of the summed values.
   var legend = '<div class="legend">' + series.map(function(s, i) {
     var key = id + '|' + s.name, off = !!KIT_SERIES_OFF[key];
     return '<button type="button" class="chip' + (off ? ' off' : '') + '" data-kit-series="' + kitEsc(key) + '" aria-pressed="' + (off ? 'false' : 'true') + '">' +
-      '<i style="background:' + kitSeriesFill(s, i) + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + kitFmt(kitSum(part(s.values || []))) + '</span>' +
+      '<i style="background:' + kitSeriesFill(s, i) + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + (typeof s.legend === 'string' ? kitEsc(s.legend) : kitFmt(kitSum(part(s.values || [])))) + '</span>' +
       (off ? ' <span class="c-off">hidden</span>' : '') + '</button>';
   }).join('') + (zr ? '<button type="button" class="chip zr" data-kit-zoom-reset>Reset zoom</button>' : '') + '</div>';
   var n = shown.length;
@@ -304,7 +305,7 @@ function tsHtml(o) {
       '<text x="' + (W - R) + '" y="' + kitN(+ty - 3) + '" text-anchor="end" class="ax th-l">' + kitEsc(h.label) + '</text>';
   });
   var hover = { id: id, labels: labels, mode: stack ? 'stack' : 'line', height: H, w: W, l: L, r: R,
-    series: series.map(function(s, i) { return { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined }; }),
+    series: series.map(function(s, i) { return { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined, legend: typeof s.legend === 'string' ? s.legend : undefined }; }),
     marks: inRange.map(function(mk) { return { day: mk.day, label: String(mk.label || ''), release: !!mk.release }; }) };
   if (ext) { hover.ymax = o.ymax; hover.thresholds = o.thresholds; hover.zoom = o.zoom; hover.z = o.z; hover.keep = o.keep; hover.t = T; hover.b = T + ih; }
   return legend + '<div class="ts"' + (o.zoom ? ' data-kit-zoom' : '') + ' data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
@@ -361,11 +362,11 @@ function lanesHtml(o) {
 var KIT_ICONS = { only: 'M2 3h12l-4.5 5.2V13l-3-1.5V8.2z', out: 'M8 1.8a6.2 6.2 0 1 0 0 12.4A6.2 6.2 0 0 0 8 1.8zM3.6 3.6l8.8 8.8', copy: 'M5 5h8v8H5zM3 11V3h8' };
 var KIT_ACT_WORDS = { only: 'Only show', out: 'Leave out', copy: 'Copy' };
 // Ranked list of the top n rows with bars and row actions; a row's filter value is row.val, else its label.
-// Only show and Leave out appear only when o.key names a filter; Copy always does.
+// Only show and Leave out appear only when o.key names a filter; Copy always does; o.fmt(v) formats values, else kitFmt.
 function rankHtml(rows, o) {
   o = o || {};
   rows = rows || [];
-  var n = o.n || 8, list = rows.slice(0, n);
+  var n = o.n || 8, list = rows.slice(0, n), fmt = typeof o.fmt === 'function' ? o.fmt : null;
   if (!list.length) return '<div class="empty">Nothing in this period.</div>';
   var mx = Math.max.apply(null, [0].concat(list.map(function(r) { return +r.v || 0; })));
   var items = list.map(function(r) {
@@ -376,18 +377,18 @@ function rankHtml(rows, o) {
     }).join('');
     return '<li><span class="r-lab" title="' + kitEsc(r.label) + '">' + kitEsc(r.label) + '</span>' +
       '<span class="r-bar"><i style="width:' + kitN(mx ? ((+r.v || 0) / mx) * 100 : 0) + '%"></i></span>' +
-      '<span class="r-val">' + kitFmt(r.v) + '</span><span class="r-act">' + acts + '</span></li>';
+      '<span class="r-val">' + (fmt ? kitEsc(fmt(r.v)) : kitFmt(r.v)) + '</span><span class="r-act">' + acts + '</span></li>';
   }).join('');
   var out = '<ol class="rank"' + (o.dim ? ' aria-label="' + kitEsc(o.dim) + '"' : '') + '>' + items + '</ol>';
   if (rows.length > n) {
     var rest = kitSum(rows.slice(n).map(function(r) { return r.v; }));
-    out += '<div class="r-more">' + (rows.length - n) + ' more · ' + kitFmt(rest) + (o.unit ? ' ' + kitEsc(o.unit) : '') + '</div>';
+    out += '<div class="r-more">' + (rows.length - n) + ' more · ' + (fmt ? kitEsc(fmt(rest)) : kitFmt(rest) + (o.unit ? ' ' + kitEsc(o.unit) : '')) + '</div>';
   }
   return out;
 }
 
 // Split bar: the top 4 rows and Other as one 10px bar, then chips with value and share.
-// With o.slots ({label: 1..4}) only those labels keep their own slot and colour; every other label folds into Other.
+// With o.slots ({label: 1..4}) only those labels keep their slot and colour, the rest fold into Other; o.fmt(v) writes the values.
 function splitHtml(rows, o) {
   o = o || {};
   rows = rows || [];
@@ -406,13 +407,13 @@ function splitHtml(rows, o) {
   if (rest) top.push({ label: 'Other', v: rest, s: 5 });
   var t = kitSum(top.map(function(r) { return r.v; }));
   if (!t) return '<div class="empty">Nothing in this period.</div>';
-  var unit = o.unit ? ' ' + o.unit : '';
+  var unit = o.unit ? ' ' + o.unit : '', fmt = typeof o.fmt === 'function' ? o.fmt : null;
   var bar = top.map(function(r) {
-    return '<i style="flex:' + r.v + ';background:var(--s' + r.s + ')" title="' + kitEsc(r.label + ': ' + kitFmt(r.v) + unit) + '"></i>';
+    return '<i style="flex:' + r.v + ';background:var(--s' + r.s + ')" title="' + kitEsc(r.label + ': ' + (fmt ? fmt(r.v) : kitFmt(r.v) + unit)) + '"></i>';
   }).join('');
   var legend = top.map(function(r) {
     return '<span class="chip static"><i style="background:var(--s' + r.s + ')"></i>' + kitEsc(r.label) +
-      ' <span class="c-v">' + kitFmt(r.v) + '</span> <span class="c-pc">' + Math.round((r.v / t) * 100) + '%</span></span>';
+      ' <span class="c-v">' + (fmt ? kitEsc(fmt(r.v)) : kitFmt(r.v)) + '</span> <span class="c-pc">' + Math.round((r.v / t) * 100) + '%</span></span>';
   }).join('');
   return '<div class="sbar" aria-hidden="true">' + bar + '</div><div class="legend stacked">' + legend + '</div>';
 }

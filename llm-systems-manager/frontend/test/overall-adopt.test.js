@@ -23,10 +23,10 @@ function loadAdoption() {
     'window._ovAdopted = new Set(); window._ovHomeMarks = {};',
     fnSrc('_homeCardEl'), fnSrc('_returnOneAdopted'),
     fnSrc('adoptPinnedCards'), fnSrc('returnPinnedCards'),
-    fnSrc('_ovPinned'), fnSrc('_applyBandOrder'), fnSrc('_applyBandHidden'),
+    fnSrc('_ovPinned'),
     'window._homeCardEl = _homeCardEl; window._returnOneAdopted = _returnOneAdopted;',
     'window.adoptPinnedCards = adoptPinnedCards; window.returnPinnedCards = returnPinnedCards;',
-    'window._ovPinned = _ovPinned; window._applyBandOrder = _applyBandOrder; window._applyBandHidden = _applyBandHidden;',
+    'window._ovPinned = _ovPinned;',
   ].join('\n');
   (0, eval)(src);
 }
@@ -43,17 +43,14 @@ beforeEach(() => {
       </div>
     </div>
     <div id="overallTab">
-      <div class="ov-band">
-        <section data-strip="hero"></section>
-        <section data-strip="tiles"></section>
-        <section data-strip="agents"></section>
-        <section data-strip="alerts"></section>
-      </div>
-      <div class="grid" id="overallGrid">
-        <div class="card ov-shell" data-card="ov-borrow-gpu"></div>
-        <div class="card ov-shell" data-card="ov-borrow-mgr-agents"></div>
-        <div class="card ov-shell" data-card="ov-borrow-lms-power"></div>
-      </div>
+      <section class="row" data-row="pinned" data-kit-nosort>
+        <button type="button" class="row-hd" data-row-fold>Pinned</button>
+        <div class="grid" id="overallGrid">
+          <div class="card ov-shell" data-card="ov-borrow-gpu"></div>
+          <div class="card ov-shell" data-card="ov-borrow-mgr-agents"></div>
+          <div class="card ov-shell" data-card="ov-borrow-lms-power"></div>
+        </div>
+      </section>
     </div>`;
   window.layout = { overallBorrowed: ['gpu', 'mgr-agents', 'lms-power'] };
   window._ensureSizeBtn = () => {};
@@ -179,58 +176,85 @@ describe('_ensureSizeBtn on shells', () => {
   });
 });
 
-describe('_applyBandOrder', () => {
-  const order = () => [...document.querySelector('.ov-band').children].map(s => s.dataset.strip);
+describe('hidden Pinned row (#1432)', () => {
+  // The real row helpers next to the adoption helpers; saveLayout and the relayout and backfill hooks are stubbed.
+  function loadRows() {
+    (0, eval)([fnSrc('_ovRows'), fnSrc('_applyRowsHidden'), fnSrc('toggleOverallRow'), fnSrc('_ovBackfillPinnedProviders'),
+      'window._ovRows = _ovRows; window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow;',
+      'window._ovBackfillPinnedProviders = _ovBackfillPinnedProviders;'].join('\n'));
+    window.saveLayout = () => {};
+    window._relayoutGridCards = () => {};
+    window.CARD_LABELS = { gpu: 'GPU' };
+    window.CARD_LABELS_LMS = {};
+    window.CARD_LABELS_VLLM = {};
+    window.CARD_LABELS_MANAGER = { 'mgr-agents': 'Agents' };
+    window._activeTab = 'overall';
+  }
+  const home = (id) => document.querySelector(`#cardGrid [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
+  const inShell = (id) => document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"] [data-card="${id}"]`);
 
-  it('reorders strips per layout.overallBandOrder', () => {
-    window.layout.overallBandOrder = ['alerts', 'agents', 'tiles', 'hero'];
-    _applyBandOrder();
-    expect(order()).toEqual(['alerts', 'agents', 'tiles', 'hero']);
+  it('adopts nothing while hidden, returns adopted cards on hide and adopts again on show', () => {
+    loadRows();
+    window.layout.overallRowsHidden = ['pinned'];
+    adoptPinnedCards();
+    expect(home('gpu')).toBeTruthy();
+    expect(inShell('gpu')).toBeNull();
+    expect(window._ovAdopted.size).toBe(0);
+    expect(window._ovPinned('mgr-agents')).toBe(false);
+
+    window.toggleOverallRow('pinned', true);
+    expect(window.layout.overallRowsHidden).toEqual([]);
+    expect(inShell('gpu')).toBeTruthy();
+    expect(inShell('mgr-agents')).toBeTruthy();
+    expect(window._ovPinned('mgr-agents')).toBe(true);
+
+    window.toggleOverallRow('pinned', false);
+    expect(document.querySelector('section.row[data-row="pinned"]').hidden).toBe(true);
+    expect(home('gpu')).toBeTruthy();
+    expect(home('mgr-agents')).toBeTruthy();
+    expect(inShell('gpu')).toBeNull();
+    expect(window._ovAdopted.size).toBe(0);
   });
 
-  it('tolerates unknown ids and appends missing strips in current order', () => {
-    window.layout.overallBandOrder = ['agents', 'bogus', 'hero'];
-    _applyBandOrder();
-    expect(order()).toEqual(['agents', 'hero', 'tiles', 'alerts']);
-  });
-
-  it('places a strip missing from the saved order after its data-strip-after strip', () => {
-    const band = document.querySelector('.ov-band');
-    const extra = document.createElement('section');
-    extra.dataset.strip = 'forecast';
-    extra.dataset.stripAfter = 'alerts';
-    band.insertBefore(extra, band.children[1]);
-    window.layout.overallBandOrder = ['alerts', 'hero', 'tiles', 'agents'];
-    _applyBandOrder();
-    expect(order()).toEqual(['alerts', 'forecast', 'hero', 'tiles', 'agents']);
-    extra.remove();
-  });
-
-  it('no-ops without a saved order or without the band', () => {
-    delete window.layout.overallBandOrder;
-    _applyBandOrder();
-    expect(order()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
-    document.querySelector('.ov-band').remove();
-    window.layout.overallBandOrder = ['hero'];
-    expect(() => _applyBandOrder()).not.toThrow();
+  it('showing the row on another page adopts nothing until Overall is entered', () => {
+    loadRows();
+    window.layout.overallRowsHidden = ['pinned'];
+    window._activeTab = 'dashboard';
+    window.toggleOverallRow('pinned', true);
+    expect(inShell('gpu')).toBeNull();
+    expect(home('gpu')).toBeTruthy();
+    window._activeTab = 'overall';
+    adoptPinnedCards();
+    expect(inShell('gpu')).toBeTruthy();
   });
 });
 
-describe('_applyBandHidden', () => {
-  const shown = () => [...document.querySelector('.ov-band').children].filter(s => !s.hidden).map(s => s.dataset.strip);
+describe('Pinned row empty sentence (#1432)', () => {
+  // The real pin add and remove with the sentence sync; layout saving, sizing and flow hooks are stubbed.
+  function loadPins() {
+    (0, eval)([fnSrc('_ovPinNoneSync'), fnSrc('addBorrowedCard'), fnSrc('removeBorrowedCard'),
+      'window._ovPinNoneSync = _ovPinNoneSync; window.addBorrowedCard = addBorrowedCard; window.removeBorrowedCard = removeBorrowedCard;'].join('\n'));
+    window.saveLayout = () => {};
+    window._applyCardSize = () => {};
+    window._defaultCardSize = () => 'm';
+    window._sizeMapFor = () => ({});
+    window._activeTab = 'overall';
+    document.querySelector('section.row[data-row="pinned"]').insertAdjacentHTML('beforeend',
+      '<div class="ov-empty ov-none" id="ovPinNone" hidden>Nothing pinned yet.</div>');
+  }
 
-  it('hides the listed strips and shows them again once they leave the list', () => {
-    window.layout.overallBandHidden = ['tiles', 'bogus'];
-    _applyBandHidden();
-    expect(shown()).toEqual(['hero', 'agents', 'alerts']);
-    window.layout.overallBandHidden = [];
-    _applyBandHidden();
-    expect(shown()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
-  });
-
-  it('shows everything when the layout has no list', () => {
-    delete window.layout.overallBandHidden;
-    expect(() => _applyBandHidden()).not.toThrow();
-    expect(shown()).toEqual(['hero', 'tiles', 'agents', 'alerts']);
+  it('shows when the last pin goes and hides when a card is pinned again', () => {
+    loadPins();
+    window._ovPinNoneSync();
+    const none = document.getElementById('ovPinNone');
+    expect(none.hidden).toBe(true);
+    adoptPinnedCards();
+    ['gpu', 'mgr-agents', 'lms-power'].forEach(id => window.removeBorrowedCard(id));
+    expect(window.layout.overallBorrowed).toEqual([]);
+    expect(none.hidden).toBe(false);
+    expect(document.querySelector('#cardGrid [data-card="gpu"]')).toBeTruthy();
+    window.addBorrowedCard('gpu');
+    expect(none.hidden).toBe(true);
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeTruthy();
   });
 });

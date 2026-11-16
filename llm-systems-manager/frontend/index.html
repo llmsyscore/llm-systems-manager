@@ -148,6 +148,19 @@ Backend API endpoints consumed:
       </div>
     </div>
     <div class="tb-right">
+      <div class="tb-ov" hidden>
+        <div class="tb-chips" id="ovProv" role="group" aria-label="Provider">
+          <button type="button" class="tb-chip" data-ov-prov="all" aria-pressed="true">All providers</button>
+          <button type="button" class="tb-chip" data-ov-prov="llama" aria-pressed="false">llama.cpp</button>
+          <button type="button" class="tb-chip" data-ov-prov="lms" aria-pressed="false">LM Studio</button>
+          <button type="button" class="tb-chip" data-ov-prov="vllm" aria-pressed="false">vLLM</button>
+        </div>
+        <div class="tb-seg" id="ovRange" role="group" aria-label="Time range">
+          <button type="button" data-ov-range="6" aria-pressed="false">6 h</button>
+          <button type="button" data-ov-range="12" aria-pressed="false">12 h</button>
+          <button type="button" data-ov-range="24" aria-pressed="true">24 h</button>
+        </div>
+      </div>
       <button type="button" class="sw-btn" id="liveBtn" role="switch" aria-checked="true"><span class="sw"></span><span class="sw-t" id="liveT">Live: On</span></button>
       <button type="button" class="hdr-badge" id="intervalBadge" onclick="openSettings('refresh')" title="Refresh cadence · open settings"><span class="dot"></span><b>—</b></button>
       <button type="button" class="hdr-cog" id="settingsCog" onclick="openSettings()" title="Settings" aria-label="Settings" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
@@ -1983,69 +1996,56 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 
 <!-- Overall Tab -->
 <div id="overallTab" style="display:none;">
-  <div class="ov-band">
-    <section class="ov-hero" data-strip="hero" aria-label="Fleet throughput, last 24 hours">
-      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="ov-hero-head">
-        <span class="ov-eyebrow">Last 24 Hours</span>
-        <div class="ov-bucket">
-          <span class="ov-eyebrow">Resolution</span>
-          <select id="ovHeroBucket" class="ov-bucket-sel" onchange="ovHeroBucketChange(this)"
-                  aria-label="Chart resolution">
-            <option value="60000">1m</option>
-            <option value="300000">5m</option>
-            <option value="900000">15m</option>
-            <option value="3600000">1h</option>
-          </select>
-        </div>
-        <div class="legend-row ov-hero-legend">
-          <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
-          <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-          <label class="ov-ovl mc-toggle mc-ckt"><input type="checkbox" role="switch" id="ovShowPower" checked onchange="ovToggleOverlay()"><span class="track"></span><span class="tlbl"><span class="legend-dot" style="background:var(--accent-2)"></span>Power W</span></label>
-          <label class="ov-ovl mc-toggle mc-ckt"><input type="checkbox" role="switch" id="ovShowEnergy" checked onchange="ovToggleOverlay()"><span class="track"></span><span class="tlbl"><span class="legend-dot" style="background:var(--note)"></span>Energy Wh/h</span></label>
-        </div>
-        <span class="ov-updated" id="overallLastUpdate">—</span>
-      </div>
-      <div class="ov-toplines" id="ovToplines"><div class="ov-topline" aria-hidden="true"><div class="stat">—</div><div class="sub">&nbsp;</div></div></div>
-      <div class="ov-hero-chart"><canvas id="ovHeroChart" role="img"
-           aria-label="Fleet token throughput, last 24 hours"></canvas></div>
-    </section>
-    <!-- Forecast strip (#1031) — filled by window.forecastOverallCard() -->
-    <section class="fc-ov" data-strip="forecast" data-strip-after="alerts" aria-label="Forecast">
-      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="fc-ov-head">
-        <span class="ov-eyebrow">Forecast</span>
-        <span class="fc-ov-count" id="fcOvCount"></span>
-        <span class="fc-ov-foot" id="fcOvFoot"></span>
-        <button type="button" class="fc-link" id="fcOvView" hidden>View all</button>
-      </div>
-      <div id="fcOvBody"><div class="fc-empty">Loading…</div></div>
-    </section>
-    <section class="ov-tiles-strip" data-strip="tiles" aria-label="Providers">
-      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="ov-tiles" id="ovTiles"><!-- Placeholder tile: holds the strip's height until the first paint. -->
-        <div class="ov-tile" aria-hidden="true">
-          <div class="ov-tile-head"><span class="ov-eyebrow">&nbsp;</span><span class="ov-tile-online">&nbsp;</span></div>
-          <div class="ov-tile-stats">
-            <div><div class="stat">—</div><div class="sub">&nbsp;</div><div class="ov-tile-peak">&nbsp;</div></div>
-            <div><div class="stat">—</div><div class="sub">&nbsp;</div><div class="ov-tile-peak">&nbsp;</div></div>
-            <div><div class="stat">—</div><div class="sub">&nbsp;</div></div>
-            <div><div class="stat">—</div><div class="sub">&nbsp;</div></div>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section class="ov-agents" data-strip="agents" aria-label="Agents">
-      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <span class="ov-eyebrow">Agents</span>
-      <div class="ov-agent-rows" id="ovAgentsStrip"><div class="ov-agents-empty">Loading agents…</div></div>
-    </section>
-    <section class="ov-alerts-strip" data-strip="alerts" aria-label="Active alerts">
-      <span class="ov-strip-handle" title="Drag to reorder">⠿</span>
-      <div class="ov-alerts" id="ovAlertsStrip"><span>Loading alerts…</span></div>
-    </section>
-  </div>
-  <div class="grid" id="overallGrid"></div>
+  <section class="row" data-row="fleet">
+    <button type="button" class="row-hd" data-row-fold>Fleet</button>
+    <div class="panels kpis">
+      <section class="panel kpi" data-card="k-agents" data-title="Hosts online"><div class="p-body" id="ov-b-k-agents"></div></section>
+      <section class="panel kpi" data-card="k-tok" data-title="Tokens"><div class="p-body" id="ov-b-k-tok"></div></section>
+      <section class="panel kpi" data-card="k-peak" data-title="Peak speed"><div class="p-body" id="ov-b-k-peak"></div></section>
+      <section class="panel kpi" data-card="k-pow" data-title="Fleet power"><div class="p-body" id="ov-b-k-pow"></div></section>
+      <section class="panel kpi" data-card="k-en" data-title="Energy"><div class="p-body" id="ov-b-k-en"></div></section>
+      <section class="panel kpi" data-card="k-save" data-title="Saved vs cloud"><div class="p-body" id="ov-b-k-save"></div></section>
+    </div>
+  </section>
+  <section class="row" data-row="throughput">
+    <button type="button" class="row-hd" data-row-fold>Throughput</button>
+    <div class="panels">
+      <section class="panel hero" data-card="tp" data-title="Token throughput" data-kit-table><div class="p-body" id="ov-b-tp"></div></section>
+    </div>
+  </section>
+  <section class="row" data-row="servers">
+    <button type="button" class="row-hd" data-row-fold>LLM servers</button>
+    <div class="panels">
+      <section class="panel" data-card="srv-llama" data-title="llama.cpp server" data-kit-table><div class="p-body" id="ov-b-srv-llama"></div></section>
+      <section class="panel" data-card="srv-lms" data-title="LM Studio server" data-kit-table><div class="p-body" id="ov-b-srv-lms"></div></section>
+      <section class="panel" data-card="srv-vllm" data-title="vLLM server" data-kit-table><div class="p-body" id="ov-b-srv-vllm"></div></section>
+      <div class="ov-empty ov-none" id="ov-srv-none" hidden>No LLM servers reported yet.</div>
+    </div>
+  </section>
+  <section class="row" data-row="power">
+    <button type="button" class="row-hd" data-row-fold>Power and energy</button>
+    <div class="panels">
+      <section class="panel span2" data-card="energy7" data-title="Energy per hour" data-note="7 days · Wh" data-kit-table><div class="p-body" id="ov-b-energy7"></div></section>
+      <section class="panel" data-card="energy-hosts" data-title="Energy by host" data-note="7 days · Wh" data-kit-table><div class="p-body" id="ov-b-energy-hosts"></div></section>
+      <section class="panel" data-card="energy-split" data-title="Where the energy went" data-note="24 h · Wh" data-kit-table><div class="p-body" id="ov-b-energy-split"></div></section>
+      <section class="panel" data-card="power-now" data-title="Power now" data-kit-table><div class="p-body" id="ov-b-power-now"></div></section>
+      <section class="panel" data-card="hosts-tokens" data-title="Hosts by tokens" data-note="24 h" data-kit-table><div class="p-body" id="ov-b-hosts-tokens"></div></section>
+    </div>
+  </section>
+  <section class="row" data-row="watch">
+    <button type="button" class="row-hd" data-row-fold>Watch list</button>
+    <div class="panels">
+      <section class="panel" data-card="forecast" data-title="Forecast" data-kit-table><div class="p-body" id="ov-b-forecast"></div></section>
+      <section class="panel" data-card="tower" data-title="Tower" data-kit-table><div class="p-body" id="ov-b-tower"></div></section>
+      <section class="panel" data-card="alerts" data-title="Active alerts" data-kit-table><div class="p-body" id="ov-b-alerts"></div></section>
+      <section class="panel hero" data-card="hosts" data-title="Hosts" data-kit-table><div class="p-body" id="ov-b-hosts"></div></section>
+    </div>
+  </section>
+  <section class="row" data-row="pinned" data-kit-nosort>
+    <button type="button" class="row-hd" data-row-fold>Pinned</button>
+    <div class="grid" id="overallGrid"></div>
+    <div class="ov-empty ov-none" id="ovPinNone" hidden>Nothing pinned yet. Pin a card from any dashboard in Settings › Pinned from other pages.</div>
+  </section>
 </div>
 
 <!-- LLM Control Tab — with sub-tabs -->

@@ -238,7 +238,7 @@ async function _toolsLoadFrame(sub) {
 function _rebackfillActiveView() {
   const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
   if (_activeTab === 'overall') {
-    run(typeof loadOverallHistory !== 'undefined' ? loadOverallHistory : null);
+    run(typeof ovLoad !== 'undefined' ? ovLoad : null);
     // Adopted pinned cards re-backfill their home providers too (#565).
     run(typeof _ovBackfillPinnedProviders !== 'undefined' ? _ovBackfillPinnedProviders : null);
     return;
