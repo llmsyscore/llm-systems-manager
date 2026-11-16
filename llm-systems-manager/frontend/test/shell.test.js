@@ -6,7 +6,10 @@ import { Script, createContext } from 'node:vm';
 import { srcFile, blockSrc } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
-const bodyHtml = indexSrc.match(/<body>([\s\S]*)<\/body>/)[1].replace(/<script[\s\S]*?<\/script>/g, '');
+// The body markup with its script elements removed through a parsed DOM.
+const bodyDoc = new JSDOM(indexSrc).window.document;
+bodyDoc.querySelectorAll('body script').forEach(s => s.remove());
+const bodyHtml = bodyDoc.body.innerHTML;
 const SCRIPTS = ['kit/kit.js', 'js/lib/settingsdrawer.js', 'js/foundation.js', 'js/boot.js', 'js/shell.js'].map(srcFile);
 const chartsSrc = srcFile('js/charts.js');
 const shellCss = srcFile('css/shell.css');

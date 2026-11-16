@@ -6,7 +6,10 @@ import { srcFile } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
 const slice = (a, b) => indexSrc.slice(indexSrc.indexOf(a), indexSrc.indexOf(b, indexSrc.indexOf(a)));
-const HEADER = slice('<!-- kit shell -->', '<!-- /kit shell -->').replace(/<script[\s\S]*?<\/script>/g, '') + '</div></div>';
+// The kit shell markup with its script elements removed through a parsed DOM.
+const shellDoc = new JSDOM(`<body>${slice('<!-- kit shell -->', '<!-- /kit shell -->')}</body>`).window.document;
+shellDoc.querySelectorAll('script').forEach(s => s.remove());
+const HEADER = shellDoc.body.innerHTML;
 const DRAWER = slice('<div class="tower-overlay" id="towerOverlay"', '<!-- /tower -->');
 
 const _windows = [];
