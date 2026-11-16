@@ -57,11 +57,6 @@ function topThree(rows) {
   return sortFindings(rows).slice(0, 3);
 }
 
-// Overall strip rows: critical and warning findings only, most urgent first.
-function urgent(rows) {
-  return sortFindings(rows).filter(r => ['critical', 'warning'].includes(String(r.severity || '').toLowerCase()));
-}
-
 // First sentence of Tower's digest, cut at a word boundary to `max` characters.
 function shortDigest(text, max) {
   const cap = Number(max) > 0 ? Number(max) : 160;
@@ -72,15 +67,6 @@ function shortDigest(text, max) {
   if (first.length <= cap) return first;
   const cut = first.slice(0, cap - 1);
   return (cut.includes(' ') ? cut.slice(0, cut.lastIndexOf(' ')) : cut) + '…';
-}
-
-// Header count of the Overall strip; blank until the first payload arrives.
-function countLabel(view) {
-  if (!isObj(view)) return '';
-  const v = view;
-  if (!v.enabled) return 'off';
-  const n = list(v.findings).filter(isObj).length;
-  return n ? n + ' ahead' : 'all clear';
 }
 
 // ── list view: facets, filter, sort, pages ──
@@ -412,7 +398,7 @@ function chartScale(points, fit, threshold) {
   return { xMin: Math.min(...xs), xMax: Math.max(...xs), yMin, yMax: hi + pad };
 }
 
-return { sevLabel, verifiedLabel, sortFindings, topThree, urgent, shortDigest, countLabel, summary, checkState,
+return { sevLabel, verifiedLabel, sortFindings, topThree, shortDigest, summary, checkState,
          facets, filterFindings, sortBy, paginate, whenText, horizon, groupRows, resolvedTabs, goTarget, askText, askRunText,
          whenLabel, dateLabel, rateLabel, splitCause, towerLine, digestNote, discardedNote, canOpenThread, seriesFresh, elapsedLabel, runStatus,
          facts, clearedLabel, fitPoints, chartScale, SEV, VERIFIED, MONTHS };

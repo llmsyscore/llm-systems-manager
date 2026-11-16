@@ -1,102 +1,66 @@
-/* Overall-tab fleet band (#565). Theme tokens only — all 7 themes. */
-.ov-band { padding: 12px 20px 4px; display: flex; flex-direction: column; gap: 14px; }
-.ov-band > section { position: relative; }
-/* Overlaid at top center — takes no layout space and never shifts content. */
-.ov-strip-handle {
-  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-  cursor: grab; color: var(--fg-faint); font-size: 0.8em; line-height: 1;
-  padding: 1px 10px; user-select: none; z-index: 3; opacity: 0.6;
-}
-.ov-strip-handle:hover { color: var(--fg-muted); opacity: 1; }
-.ov-eyebrow {
-  font-size: clamp(0.58em, 0.8vw, 0.68em); text-transform: uppercase;
-  letter-spacing: 0.12em; color: var(--fg-dim); white-space: nowrap;
-}
+/* Overall page (#1432): kit rows and panels, then the pinned-card grid (#565). Kit colour tokens only. */
+#overallTab { padding: 12px 16px 0; }
 
-/* Hero: topline stats above a full-width 24h throughput chart. */
-.ov-hero {
-  border: 1px solid var(--border); border-left: 3px solid var(--border);
-  border-radius: 8px; padding: 14px 16px 10px;
-  background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
+/* Panel parts the kit has no class for: empty sentence, hint, key-value list, state pills, labels, model and host lists. */
+.ov-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.ov-hint { font-size: 0.76rem; color: var(--muted); margin: 4px 0 0; }
+.ov-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 13px; }
+.ov-kv dt { color: var(--muted); max-width: 11em; overflow-wrap: anywhere; }
+.ov-kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.ov-kv dd.ov-bad { color: var(--bad-text); }
+.ov-lab { font-size: 11.5px; color: var(--muted); }
+.ov-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-pill {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 9px;
+  border-radius: 10px; border: 1px solid var(--border-2); color: var(--text-2); white-space: nowrap;
 }
-.ov-hero-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 10px; flex-wrap: wrap; }
-.ov-hero-legend { margin-bottom: 0; margin-left: auto; }
-.ov-updated { font-size: 0.72em; color: var(--fg-dim); white-space: nowrap; }
-.ov-toplines { display: flex; flex-wrap: wrap; gap: 8px 34px; margin-bottom: 10px; }
-.ov-topline .stat { font-size: 1.45em; margin-bottom: 1px; }
-.ov-hero-chart { position: relative; height: 250px; }
-.ov-ovl { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.ov-ovl.mc-toggle { height: auto; gap: 6px; }
-.ov-ovl .track { transform: scale(.8); }
-.ov-ovl .tlbl { display: inline-flex; align-items: center; gap: 4px; font-size: inherit; }
-.ov-bucket { display: inline-flex; flex-direction: column; gap: 3px; }
-.ov-bucket-sel {
-  font-size: 0.72em; padding: 1px 4px; border-radius: 5px;
-  background: var(--bg-card-alt); color: var(--fg-dim);
-  border: 1px solid var(--border); cursor: pointer;
+.ov-pill.ok { color: var(--good-text); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.ov-pill.sl { color: var(--s4); border-color: color-mix(in srgb, var(--s4) 45%, transparent); }
+.ov-pill.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.ov-pill.bad { color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+.ov-pill.off { color: var(--muted); }
+.ov-models, .ov-hosts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; font-size: 13px; }
+.ov-models { gap: 6px; }
+.ov-models li { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ov-m { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-m small { color: var(--muted); font-size: 11.5px; margin-left: 6px; }
+.ov-act { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.ov-hosts li {
+  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 10px; align-items: baseline;
+  padding: 7px 0; border-top: 1px solid var(--border);
 }
+.ov-hosts li:first-child { border-top: 0; }
+.ov-hosts li.off { opacity: 0.55; }
+.ov-h { min-width: 0; }
+.ov-h small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--s5); align-self: center; }
+.ov-dot.ok { background: var(--good); }
+.ov-age { font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Panel headers stay on one line: a long note truncates (full text in its tooltip) before the title or the ⋯ menu move. */
+#overallTab .panel > .p-hd { flex-wrap: nowrap; }
+#overallTab .panel:not(.kpi) > .p-hd > .p-title { flex: none; }
+#overallTab .panel > .p-hd > .p-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "N more" under a capped list, and the empty sentences of the LLM servers and Pinned rows. */
+.ov-more { font-size: 12px; color: var(--muted); padding: 4px 0; }
+.panels > .ov-none { grid-column: 1 / -1; }
+.row[data-row] > .ov-none { flex: 1 1 100%; min-width: 0; }
+.row.folded > .ov-none { display: none; }
+/* Open Events / Open Forecast: a plain text button in the accent colour. */
+.ov-link { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
+.ov-link:hover, .ov-link:focus-visible { text-decoration: underline; }
+/* Power now: only the sparkline of the kit's KPI body. */
+.ov-spark .k-row, .ov-spark .k-sub { display: none; }
 
-/* Provider tiles: same severity grammar as dashboard cards (left rail). */
-.ov-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-.ov-tile {
-  border: 1px solid var(--border); border-left: 3px solid var(--border);
-  border-radius: 8px; padding: 12px 14px;
-  background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
-  transition: border-color 0.4s;
-}
-.ov-tile.ov-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
-.ov-tile.ov-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-.ov-tile.ov-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
-.ov-tile-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
-.ov-tile-head .ov-eyebrow { color: var(--fg-muted); }
-.ov-tile-online { font-size: 0.72em; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
-.ov-tile-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
-.ov-tile-stats > div { min-width: 0; }
-.ov-tile-stats .stat { font-size: 1.15em; margin-bottom: 0; }
-.ov-tile-peak { font-size: 0.68em; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* Agents strip: dense host rows; hostnames in the machine's own type. */
-.ov-agents { display: flex; flex-direction: column; gap: 6px; }
-.ov-agent-rows { display: flex; flex-direction: column; }
-.ov-agent-row {
-  display: flex; align-items: center; gap: 10px; padding: 5px 10px;
-  border-bottom: 1px solid var(--border-soft); font-size: 0.82em;
-}
-.ov-agent-row:last-child { border-bottom: none; }
-.ov-agent-row.ov-agent-off { opacity: 0.55; }
-.ov-agent-host {
-  font-family: var(--font-mono);
-  color: var(--fg); flex: 0 0 240px; overflow-wrap: anywhere;
-}
-.ov-agent-provs { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--fg-muted); min-width: 0; }
-.ov-agent-prov { overflow-wrap: anywhere; }
-.ov-agent-prov b { color: var(--fg-dim); font-weight: 600; margin-right: 5px; }
-.ov-agent-age { margin-left: auto; color: var(--fg-dim); font-size: 0.9em; white-space: nowrap; }
-.ov-agents-empty { color: var(--fg-dim); font-size: 0.82em; padding: 4px 10px; }
-
-/* Alerts strip: quiet single line when calm, severity-tinted when firing. */
-.ov-alerts {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
-  border: 1px solid var(--border-soft); border-left: 3px solid var(--border);
-  border-radius: 6px; padding: 6px 12px; font-size: 0.8em; color: var(--fg-dim);
-}
-.ov-alerts.ov-alerts-warning  { border-left-color: var(--warn); color: var(--fg-muted); }
-.ov-alerts.ov-alerts-critical { border-left-color: var(--crit); color: var(--fg-muted); }
-.ov-alerts a { color: var(--accent); text-decoration: none; cursor: pointer; }
-.ov-alerts a:hover { text-decoration: underline; }
-.ov-alert-count b { color: var(--fg); }
+/* Pinned row: the card grid fills the row and folds with it. */
+.row[data-row] > #overallGrid { flex: 1 1 100%; min-width: 0; padding: 0 0 16px; }
+.row.folded > #overallGrid { display: none; }
 
 /* Pinned-card shells: transparent grid items; the adopted card is the chrome. */
 #overallGrid .card.ov-shell { padding: 0; border: none; background: none; }
 .ov-shell > .card { height: 100%; }
 .ov-shell > .card > .card-size-btn { display: none; }
 .ov-missing {
-  color: var(--fg-dim); font-size: 0.8em; font-style: italic;
+  color: var(--muted); font-size: 0.8em; font-style: italic;
   border: 1px dashed var(--border); border-radius: 8px;
   display: flex; align-items: center; justify-content: center; min-height: 120px;
-}
-
-@media (max-width: 700px) {
-  .ov-agent-host { flex-basis: 130px; }
-  .ov-hero-chart { height: 190px; }
 }

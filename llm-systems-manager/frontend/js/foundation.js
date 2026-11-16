@@ -207,6 +207,7 @@ const CARD_LABELS = {
 let layout = { order: [], hidden: [] };
 
 async function loadLayout() {
+  let bandMapped = false;
   try {
     layout = await fetch('/api/layout').then(r => r.json());
     SettingsLib.applyFreshDefaults(layout);
@@ -223,10 +224,11 @@ async function loadLayout() {
     if (!layout.managerOrder)    layout.managerOrder    = [];
     if (!layout.overallBorrowed) layout.overallBorrowed = [];
     if (!layout.overallOrder)    layout.overallOrder    = [];
-    if (!Array.isArray(layout.overallBandHidden)) layout.overallBandHidden = [];
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
     if (!layout.rolePreset || typeof layout.rolePreset !== 'object') layout.rolePreset = {};
     _migrateLegacyCardIds(layout);
+    // Old Overall band keys become row ids once; the layout is saved below when they did.
+    bandMapped = typeof OV !== 'undefined' && OV.mapLegacyBand(layout).changed;
     _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
     _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
@@ -238,8 +240,8 @@ async function loadLayout() {
   applyAllGridCols();
   if (typeof applyDensity === 'function') applyDensity(layout && layout.density, false);
   if (typeof applyLayoutEngine === 'function') applyLayoutEngine(layout && layout.layoutEngine, false);
-  // Saves the mapped name once when the stored theme was a legacy or unknown one.
-  if (rawTheme && rawTheme !== layout.theme) saveLayout();
+  // Saves once when the stored theme was a legacy or unknown one, or old band keys were mapped.
+  if ((rawTheme && rawTheme !== layout.theme) || bandMapped) saveLayout();
 }
 
 // kraken → aio: existing saved layouts written before the rename still carry
@@ -805,9 +807,7 @@ function applyLayout() {
     c.style.display = hiddenMgr.includes(c.dataset.card) ? 'none' : '';
   });
 
-  // Fleet-band strip order (#565) and visibility
-  _applyBandOrder();
-  _applyBandHidden();
+  _applyRowsHidden();
 
   // Recreate pinned-card shells in overallGrid
   const overallGrid = document.getElementById('overallGrid');
@@ -833,6 +833,7 @@ function applyLayout() {
     }
     // Adopt into the fresh shells when the Overall tab is showing
     if (_activeTab === 'overall' && typeof adoptPinnedCards === 'function') adoptPinnedCards();
+    if (typeof _ovPinNoneSync === 'function') _ovPinNoneSync();
   }
   if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
 }
@@ -876,9 +877,10 @@ async function saveLayout() {
 const _ovHomeMarks = {};
 window._ovAdopted = new Set();
 
+// True when the card is pinned to Overall and the Pinned row is not hidden.
 function _ovPinned(id) {
   const lay = (typeof layout !== 'undefined' && layout) || window.layout;
-  return !!(lay && (lay.overallBorrowed || []).includes(id));
+  return !!(lay && (lay.overallBorrowed || []).includes(id) && !(lay.overallRowsHidden || []).includes('pinned'));
 }
 
 function _homeCardEl(id) {
@@ -889,6 +891,8 @@ function _homeCardEl(id) {
 
 function adoptPinnedCards() {
   const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  // A hidden Pinned row adopts nothing: its cards stay on, or go back to, their home pages.
+  if (((lay && lay.overallRowsHidden) || []).includes('pinned')) { returnPinnedCards(); return; }
   ((lay && lay.overallBorrowed) || []).forEach(id => {
     const shell = document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"]`);
     if (!shell || _ovAdopted.has(id)) return;
@@ -935,43 +939,45 @@ function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
 }
 
-// Overall page sections the layout drawer can hide, by data-strip id.
-const BAND_LABELS = { hero: 'Fleet throughput', alerts: 'Active alerts', forecast: 'Forecast', tiles: 'Providers', agents: 'Agents' };
-
-// Hides the fleet-band strips listed in layout.overallBandHidden.
-function _applyBandHidden() {
-  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
-  const hidden = (lay && lay.overallBandHidden) || [];
-  document.querySelectorAll('.ov-band > [data-strip]').forEach(s => { s.hidden = hidden.includes(s.dataset.strip); });
+// Overall rows as [id, label] in page order; the label is the row's fold button text without its chevron.
+function _ovRows() {
+  return [...document.querySelectorAll('#overallTab section.row[data-row]')].map(r => {
+    const b = r.querySelector('button[data-row-fold]');
+    const label = b ? [...b.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim() : '';
+    return [r.dataset.row, label || r.dataset.row];
+  });
 }
 
-function toggleBandStrip(id, on) {
-  const hidden = new Set(layout.overallBandHidden || []);
+// Hides the Overall rows listed in layout.overallRowsHidden and refreshes the rows' Move up / Move down state.
+function _applyRowsHidden() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const hidden = (lay && lay.overallRowsHidden) || [];
+  document.querySelectorAll('#overallTab section.row[data-row]').forEach(r => { r.hidden = hidden.includes(r.dataset.row); });
+  const tab = document.getElementById('overallTab');
+  if (tab && typeof kitRowMenus === 'function') kitRowMenus(tab);
+}
+
+// Shows the Pinned row's empty sentence while no card is pinned to Overall.
+function _ovPinNoneSync() {
+  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
+  const el = document.getElementById('ovPinNone');
+  if (el) el.hidden = ((lay && lay.overallBorrowed) || []).length > 0;
+}
+
+// Shows or hides one Overall row, keeping only ids of rows on the page, and saves the layout.
+// On Overall, hiding the Pinned row returns its cards home and showing it adopts them again.
+function toggleOverallRow(id, on) {
+  const hidden = new Set(layout.overallRowsHidden || []);
   if (on) hidden.delete(id); else hidden.add(id);
-  layout.overallBandHidden = [...hidden].filter(x => x in BAND_LABELS);
-  _applyBandHidden();
+  const ids = _ovRows().map(r => r[0]);
+  layout.overallRowsHidden = [...hidden].filter(x => ids.includes(x));
+  _applyRowsHidden();
+  if (id === 'pinned' && _activeTab === 'overall' && typeof adoptPinnedCards === 'function') {
+    adoptPinnedCards();
+    if (on && typeof _relayoutGridCards === 'function') _relayoutGridCards(document.getElementById('overallGrid'));
+    if (on && typeof _ovBackfillPinnedProviders === 'function') _ovBackfillPinnedProviders();
+  }
   saveLayout();
-}
-
-// Reorder the fleet-band strips per layout.overallBandOrder (#565). Unknown ids are
-// skipped; a strip missing from the saved order follows its data-strip-after strip, else appends.
-function _applyBandOrder() {
-  const lay = (typeof layout !== 'undefined' && layout) || window.layout;
-  const band = document.querySelector('.ov-band');
-  const saved = (lay && lay.overallBandOrder) || [];
-  if (!band || !saved.length) return;
-  const all = [...band.children].filter(s => s.dataset && s.dataset.strip);
-  const ordered = [];
-  saved.forEach(id => {
-    const s = all.find(x => x.dataset.strip === id);
-    if (s) ordered.push(s);
-  });
-  all.forEach(s => {
-    if (ordered.includes(s)) return;
-    const after = ordered.findIndex(x => x.dataset.strip === s.dataset.stripAfter);
-    if (after >= 0) ordered.splice(after + 1, 0, s); else ordered.push(s);
-  });
-  ordered.forEach(s => band.appendChild(s));
 }
 
 // Backfill home-provider chart history + kick the manager one-shots for
@@ -980,7 +986,7 @@ function _applyBandOrder() {
 function _ovBackfillPinnedProviders() {
   const lay = (typeof layout !== 'undefined' && layout) || window.layout;
   const b = (lay && lay.overallBorrowed) || [];
-  if (!b.length) return;
+  if (!b.length || ((lay && lay.overallRowsHidden) || []).includes('pinned')) return;
   const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
   const hasIn = map => b.some(id => map && map[id] !== undefined);
   if (hasIn(CARD_LABELS))         run(window.loadHistory);
@@ -1009,6 +1015,7 @@ function addBorrowedCard(cardId) {
   const saved = (layout.cardSizes || {})['ov-borrow-' + cardId];
   _applyCardSize(shell, saved || _defaultCardSize(cardId));
   if (_activeTab === 'overall') adoptPinnedCards();
+  if (typeof _ovPinNoneSync === 'function') _ovPinNoneSync();
   saveLayout();
 }
 
@@ -1020,6 +1027,7 @@ function removeBorrowedCard(cardId) {
   if (shell) { if (typeof _flowUnobserve === 'function') _flowUnobserve(shell); shell.remove(); }
   // Also prune from saved order
   layout.overallOrder = (layout.overallOrder || []).filter(id => id !== 'ov-borrow-' + cardId);
+  if (typeof _ovPinNoneSync === 'function') _ovPinNoneSync();
   saveLayout();
 }
 
@@ -1240,11 +1248,11 @@ function _sdRenderCards(scope) {
       return `<div class="microlbl">${_esc(g)} <span class="cnt">${on}/${ids.length}</span></div>
         <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), borrowed.includes(id), 'pin')).join('')}</div>`;
     }).join('');
-    const off = layout.overallBandHidden || [];
-    const strips = Object.keys(BAND_LABELS).filter(id => document.querySelector(`.ov-band > [data-strip="${id}"]`));
+    const off = layout.overallRowsHidden || [];
+    const rows = _ovRows();
     el.innerHTML = `
-      <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${strips.filter(id => !off.includes(id)).length} of ${strips.length} shown</span></div>
-      <div class="sd-chips">${strips.map(id => _sdChip(id, BAND_LABELS[id], !off.includes(id), 'strip')).join('')}</div>
+      <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${rows.filter(r => !off.includes(r[0])).length} of ${rows.length} shown</span></div>
+      <div class="sd-chips">${rows.map(r => _sdChip(r[0], r[1], !off.includes(r[0]), 'row')).join('')}</div>
       <div class="sd-sh"><h3>Pinned from other pages</h3><span class="meta">${borrowed.length} pinned</span></div>
       <div class="help" style="margin-top:0;">Pin any Dashboard card here. Pinned cards leave their home page while Overall is open.</div>
       ${inner}
@@ -1440,8 +1448,8 @@ function _sdBind() {
     if (kind === 'card') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       toggleCard(t.dataset.id, on); _sdRerenderCards();
-    } else if (kind === 'strip') {
-      toggleBandStrip(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
+    } else if (kind === 'row') {
+      toggleOverallRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
     } else if (kind === 'pin') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       if (on) addBorrowedCard(t.dataset.id); else removeBorrowedCard(t.dataset.id);
@@ -1589,7 +1597,7 @@ async function resetCurrentTabLayout() {
   delete layout[scope.cols];
   if (layout.rolePreset) delete layout.rolePreset[_sdScope().key];
   if (scope.borrowed) layout[scope.borrowed] = [];
-  if (_activeTab === 'overall') layout.overallBandHidden = [];
+  if (_activeTab === 'overall') layout.overallRowsHidden = [];
   // Drop cardSizes entries for ids in this tab's label map; the Overall
   // tab's sizes live under ov-borrow-* shell keys instead.
   if (layout.cardSizes) {
@@ -1643,8 +1651,8 @@ function switchTab(tab) {
   const cg = document.getElementById('cardGrid');
   if (cg && !cg.closest('#dashboardTab')) cg.style.display = 'none';
 
-  // Overall entry paints the fleet band at once and re-backfills the hero
-  // chart alongside it — it takes no live points while hidden (#506, #1140).
+  // Overall entry paints the live panels at once and seeds history and energy
+  // alongside them; nothing on it fetches or redraws while hidden (#506, #1140, #1439).
   if (tab === 'overall')    {
     document.getElementById('overallTab').style.display = '';
     if (typeof adoptPinnedCards === 'function') adoptPinnedCards();
@@ -1652,7 +1660,7 @@ function switchTab(tab) {
     if (typeof _relayoutGridCards === 'function') _relayoutGridCards(document.getElementById('overallGrid'));
     _ovBackfillPinnedProviders();
     fetchOverallMetrics();
-    if (typeof loadOverallHistory === 'function') loadOverallHistory().catch(() => {});
+    if (typeof ovLoad === 'function') ovLoad().catch(() => {});
   }
   if (tab === 'dashboard')  { document.getElementById('dashboardTab').style.display  = '';   }
   if (tab === 'events')     {

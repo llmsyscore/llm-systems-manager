@@ -35,18 +35,6 @@ function initSortable() {
       saveLayout();
     },
   });
-  // Fleet-band strips drag as whole units (#565).
-  const band = document.querySelector('.ov-band');
-  if (band) {
-    Sortable.create(band, {
-      handle: '.ov-strip-handle', animation: 150, ghostClass: 'sortable-ghost',
-      onEnd: () => {
-        layout.overallBandOrder = [...band.children]
-          .map(s => s.dataset && s.dataset.strip).filter(Boolean);
-        saveLayout();
-      },
-    });
-  }
   const lmsGrid = document.getElementById('lmsCardGrid');
   if (lmsGrid) {
     Sortable.create(lmsGrid, {
@@ -421,7 +409,7 @@ function _crEsc(s) {
 // card, above the plot, so it never covers any data point.
 function _readoutTooltip(ctx) {
   const { chart, tooltip } = ctx;
-  const host = chart.canvas.closest('.card, .ov-band > section') || chart.canvas.parentElement;
+  const host = chart.canvas.closest('.card') || chart.canvas.parentElement;
   if (!host) return;
   let el = host.querySelector(':scope > .chart-readout');
   if (!el) {
@@ -606,60 +594,6 @@ function mkDualChart(id, l1, c1, l2, c2) {
     }
   });
 }
-
-// Expand a 3-digit hex token to 6 digits so an alpha byte can be appended.
-function _hex6(c) {
-  const m = String(c || '').trim().match(/^#([0-9a-fA-F]{3})$/);
-  return m ? '#' + [...m[1]].map(ch => ch + ch).join('') : String(c || '').trim();
-}
-
-// Reads a hero overlay toggle's current checked state.
-function _ovOverlayOn(id) {
-  return !!document.getElementById(id)?.checked;
-}
-
-// Overall-tab hero: cross-provider 24h throughput. Gen keeps the fleet
-// accent with a soft area fill; prompt rides as a plain line (#565).
-function _mkHeroChart() {
-  const canvas = document.getElementById('ovHeroChart');
-  if (!canvas) return null;
-  const genColor = cssVar('--accent'), promptColor = cssVar('--warn');
-  return new Chart(canvas.getContext('2d'), {
-    type: 'line',
-    data: { labels: [], datasets: [
-      { label: 'Gen t/s', data: [], borderColor: genColor, borderWidth: 2,
-        pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: 'origin',
-        backgroundColor: (ctx) => {
-          const { chartArea, ctx: c } = ctx.chart;
-          if (!chartArea) return 'transparent';
-          try {
-            const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-            g.addColorStop(0, _hex6(genColor) + '2e');
-            g.addColorStop(1, _hex6(genColor) + '00');
-            return g;
-          } catch (_) { return 'transparent'; }
-        } },
-      { label: 'Prompt t/s', data: [], borderColor: promptColor, borderWidth: 1.5,
-        pointRadius: 0, pointHoverRadius: 4, tension: 0.25, fill: false },
-      { label: 'Power W', data: [], borderColor: cssVar('--accent-2'),
-        borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, pointHoverRadius: 4,
-        tension: 0.25, fill: false, hidden: !_ovOverlayOn('ovShowPower'), yAxisID: 'y1', spanGaps: true },
-      { label: 'Energy Wh/h', data: [], borderColor: cssVar('--note'),
-        borderWidth: 1.5, borderDash: [2, 3], pointRadius: 0, pointHoverRadius: 4,
-        stepped: true, fill: false, hidden: !_ovOverlayOn('ovShowEnergy'), yAxisID: 'y1', spanGaps: true },
-    ]},
-    options: { animation: false, responsive: true, maintainAspectRatio: false,
-      interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-      scales: { x: xAxis,
-        y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } },
-        y1: { display: 'auto', position: 'right', beginAtZero: true,
-              ticks: { color: cssVar('--fg-muted'), font: { size: 10 } },
-              grid: { display: false } } }
-    }
-  });
-}
-const ovHeroChart = _mkHeroChart();
 
 const cpuChart      = mkChart('cpuChart',      'CPU %',       '#e05');
 const ramChart      = mkChart('ramChart',      'RAM %',       '#05e');
@@ -1563,70 +1497,6 @@ const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
         && r.disk_root_pct != null)
       pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
   });
-
-// Last-fetched hero history + hourly-energy rows; _ovHeroRender re-buckets
-// from these without refetching.
-let _ovHeroRows = null;
-let _ovEnergyRows = null;
-let _ovHistoryGen = 0;
-let _ovHistoryInflight = 0;
-
-// Backfill the Overall-tab hero (cross-provider Gen / Prompt totals) from
-// fleet=all history. Called only from Overall-tab entry and refocus (#506).
-async function loadOverallHistory() {
-  if (typeof ovHeroChart === 'undefined' || !ovHeroChart) return;
-  const gen = ++_ovHistoryGen;
-  _ovHistoryInflight++;
-  let rows;
-  try {
-    rows = await _historyRows('/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
-  } finally { _ovHistoryInflight--; }
-  if (gen !== _ovHistoryGen) return;  // only the newest in-flight call paints
-  if (!rows || !rows.length) return;
-  _ovHeroRows = rows;
-  _ovHeroRender();
-  _ovLoadEnergyOverlay();
-}
-
-// Repaint the hero from the cached rows at the current bucket width.
-// Overlay datasets fill here only; live polls advance just gen/prompt.
-function _ovHeroRender() {
-  if (typeof ovHeroChart === 'undefined' || !ovHeroChart || !_ovHeroRows) return;
-  _withPushBatch(() => {
-    _clearChart(ovHeroChart);  // discard any racing live point (#137)
-    const bucketMs = ovHeroBucketMs();
-    const l = ovHeroChart.data.labels;
-    const d0 = ovHeroChart.data.datasets[0].data, d1 = ovHeroChart.data.datasets[1].data;
-    const dsPower = ovHeroChart.data.datasets[2];
-    for (const p of OV.heroSeries(_ovHeroRows, bucketMs).slice(-MAX_POINTS)) {
-      if (p.gen == null && p.prompt == null && p.power == null) continue;
-      l.push(new Date(p.ts));
-      d0.push(p.gen || 0);
-      d1.push(p.prompt || 0);
-      if (dsPower) dsPower.data.push(p.power != null ? p.power : null);
-    }
-    _ovRenderEnergyOverlay();
-  });
-}
-
-// Fetches /api/energy/hourly into the cache, then paints the overlay.
-async function _ovLoadEnergyOverlay() {
-  try {
-    const d = await fetch('/api/energy/hourly?hours=24').then(r => r.json());
-    if (!d.ok) return;
-    _ovEnergyRows = d.rows;
-    _ovRenderEnergyOverlay();
-    if (ovHeroChart) _redrawChart(ovHeroChart);
-  } catch (_) {}
-}
-
-// Maps the cached hourly-energy rows onto the hero's current labels.
-function _ovRenderEnergyOverlay() {
-  if (!ovHeroChart || !ovHeroChart.data.datasets[3] || !_ovEnergyRows) return;
-  const labels = ovHeroChart.data.labels.map(t => t.getTime());
-  ovHeroChart.data.datasets[3].data = OV.energySeries(_ovEnergyRows, labels);
-}
-
 
 // ---------------------------------------------------------------------------
 // Main fetch

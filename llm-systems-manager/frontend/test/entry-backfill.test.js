@@ -4,10 +4,12 @@
 import { describe, test, expect, vi } from 'vitest';
 import { srcFile, fnSrc, evalGlobal, loadSwitchSubTab as loadSharedSwitchSubTab, flush as tick } from './helpers/harness.js';
 import LMPeaks from '../js/lib/peaks.js';
+import OV from '../js/lib/overall-view.js';
 
 const boot = srcFile('js/boot.js');
 const foundation = srcFile('js/foundation.js');
 const overall = srcFile('js/overall.js');
+const kit = srcFile('kit/kit.js');
 const charts = srcFile('js/charts.js');
 
 function loadSwitchSubTab() {
@@ -90,7 +92,7 @@ describe('Overall tab entry (#506)', () => {
     window.stopLmsLogRefresh = vi.fn();
     window._ovBackfillPinnedProviders = vi.fn();
     const order = [];
-    window.loadOverallHistory = vi.fn(() => { order.push('backfill'); return Promise.reject(new Error('ae down')); });
+    window.ovLoad = vi.fn(() => { order.push('backfill'); return Promise.reject(new Error('ae down')); });
     window.fetchOverallMetrics = vi.fn(() => order.push('live'));
 
     switchTab('overall');
@@ -110,7 +112,7 @@ describe('Overall tab entry (#506)', () => {
     window.stopPerfRefresh = vi.fn();
     window.stopLmsLogRefresh = vi.fn();
     window._ovBackfillPinnedProviders = vi.fn();
-    window.loadOverallHistory = vi.fn(() => Promise.resolve());
+    window.ovLoad = vi.fn(() => Promise.resolve());
     window.fetchOverallMetrics = vi.fn();
 
     switchTab('overall');
@@ -118,21 +120,22 @@ describe('Overall tab entry (#506)', () => {
     switchTab('overall');
     await tick();
 
-    expect(window.loadOverallHistory).toHaveBeenCalledTimes(2);
+    expect(window.ovLoad).toHaveBeenCalledTimes(2);
   });
 
-  test('fetchOverallMetrics no longer backfills on the live path', async () => {
-    const code = [fnSrc(overall, 'fetchOverallMetrics'), 'window.fetchOverallMetrics = fetchOverallMetrics;'].join('\n');
-    evalGlobal(code);
-    window._ovRefreshEnergy = vi.fn();
-    window._ovPaintBand = vi.fn();
+  test('fetchOverallMetrics never fetches history on the live path', async () => {
+    document.body.innerHTML = '<div id="overallTab"></div>';
+    window._activeTab = 'overall';
+    window.OV = OV;
+    evalGlobal(kit);
+    evalGlobal(overall);
     window.fetch = vi.fn(async () => ({ ok: false }));
-    window.loadOverallHistory = vi.fn();
 
     await window.fetchOverallMetrics();
 
-    expect(window.loadOverallHistory).not.toHaveBeenCalled();
-    expect(window._ovPaintBand).toHaveBeenCalledTimes(1);
+    const urls = window.fetch.mock.calls.map(c => c[0]);
+    expect(urls).toContain('/api/fleet/llama/aggregate');
+    expect(urls.some(u => u.startsWith('/api/history'))).toBe(false);
   });
 });
 
@@ -260,23 +263,7 @@ describe('history-backfill callers route through _historyRows, not raw fetch (#5
     expect(window.fetch).not.toHaveBeenCalled();
   });
 
-  test('loadOverallHistory', async () => {
-    const code = [fnSrc(charts, 'loadOverallHistory'), 'window.loadOverallHistory = loadOverallHistory;'].join('\n');
-    evalGlobal(code);
-    window._ovHistoryGen = 0;
-    window._ovHistoryInflight = 0;
-    window.ovHeroChart = {};   // truthy: past the early-return guard
-    window._historyRows = vi.fn(async () => []);
-    window.fetch = vi.fn();
-
-    await window.loadOverallHistory();
-
-    expect(window._historyRows).toHaveBeenCalledWith(
-      '/api/history?since_minutes=1440&max_rows=1440&fleet=all', 'Overall fleet');
-    expect(window.fetch).not.toHaveBeenCalled();
-  });
-
-  test.each(['loadHistory', '_makeHistoryBackfill', 'loadOverallHistory'])(
+  test.each(['loadHistory', '_makeHistoryBackfill'])(
     '%s body has no direct fetch call', (name) => {
       // wiring (unexecutable): absence must hold in branches no test drives.
       const body = fnSrc(charts, name);

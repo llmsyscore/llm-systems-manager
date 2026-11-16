@@ -3,6 +3,8 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import OV from '../js/lib/overall-view.js';
+// Sets window.LMPeaks, which charts.js's history backfill reads.
+import '../js/lib/peaks.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -180,37 +182,48 @@ describe('boot.js', () => {
 // ---------------------------------------------------------------------------
 describe('overall.js', () => {
   const overall = src('js/overall.js');
+  const tabHtml = new JSDOM(src('index.html')).window.document.getElementById('overallTab').outerHTML;
+  const VLLM_AGG = {
+    agent_count_online: 2, agent_count_total: 3, server_on_count: 1, active_model_count: 1,
+    active_models: ['org/served-model'], requests_running_total: 4, requests_waiting_total: 1, max_kv_cache_pct: 42,
+    agents: [{ agent_id: 'v1', online: true, age_s: 1.5 }], throughput: { total_tps: 7, total_pps: 2 },
+  };
 
-  test('fetches the vllm fleet aggregate and hands it to the paint step', async () => {
-    evalGlobal(fnSrc('fetchOverallMetrics', overall) + '\nwindow.fetchOverallMetrics = fetchOverallMetrics;');
+  // The Overall page with the real overall.js; only the vllm aggregate answers.
+  async function paintWith(caps) {
+    document.body.innerHTML = tabHtml;
+    document.getElementById('overallTab').style.display = '';
+    window._activeTab = 'overall';
+    window.OV = OV;
+    window._pollCfg = { agents: caps };
+    window._agentsByProvider = { llama: [], lms: [], vllm: [{ agent_id: 'v1', hostname: 'vllm-host' }] };
+    window._activeAlerts = [];
+    evalGlobal(src('kit/kit.js'));
+    evalGlobal(overall);
     const fetchCalls = [];
-    window._ovRefreshEnergy = () => {};
-    window._ovPaintBand = (llama, lms, vllm) => { window.__paintedVllm = vllm; };
     window.fetch = async (url) => {
       fetchCalls.push(url);
-      const body = url.includes('/vllm/') ? { throughput: { total_tps: 7 } } : {};
-      return { ok: true, json: async () => body };
+      return { ok: true, json: async () => (url.includes('/vllm/') ? JSON.parse(JSON.stringify(VLLM_AGG)) : {}) };
     };
     await window.fetchOverallMetrics();
+    return fetchCalls;
+  }
+
+  test('fetches the vllm fleet aggregate and paints the vLLM server panel from it', async () => {
+    const fetchCalls = await paintWith({ vllm_present: true });
     expect(fetchCalls).toContain('/api/fleet/vllm/aggregate');
-    expect(window.__paintedVllm).toEqual({ throughput: { total_tps: 7 } });
+    const body = document.getElementById('ov-b-srv-vllm');
+    expect(body.closest('.panel').hidden).toBe(false);
+    expect(body.textContent).toContain('Server on');
+    expect(body.textContent).toContain('4 running · 1 waiting');
+    expect(body.textContent).toContain('42% full');
+    expect(body.textContent).toContain('served-model');
+    expect(document.querySelector('[data-card="srv-vllm"] .p-note').textContent).toBe('2 of 3 hosts online');
   });
 
-  // #565: tiles render through the OV transforms in the fleet band.
-  test('_ovPaintTiles renders the vllm tile built by OV.tiles', () => {
-    document.body.innerHTML = '<div id="ovTiles"></div>';
-    evalGlobal(fnSrc('_ovPaintTiles', overall) + '\nwindow._ovPaintTiles = _ovPaintTiles;');
-    const vllmAgg = {
-      agent_count_online: 2, agent_count_total: 3,
-      requests_running_total: 4, max_kv_cache_pct: 42,
-      throughput: { total_tps: 12.3, total_pps: 4.5 },
-    };
-    const tiles = OV.tiles(null, null, vllmAgg, {}, Date.now());
-    window._ovPaintTiles(tiles);
-    const tile = document.querySelector('#ovTiles [data-prov="vllm"]');
-    expect(tile).toBeTruthy();
-    expect(tile.textContent).toContain('2/3 online');
-    expect(tile.textContent).toContain('42%');
+  test('leaves the vLLM panel out while no agent reports vLLM', async () => {
+    await paintWith({});
+    expect(document.querySelector('[data-card="srv-vllm"]').hidden).toBe(true);
   });
 });
 

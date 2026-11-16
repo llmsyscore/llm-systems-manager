@@ -1,4 +1,4 @@
-// Forecast (#1031) — Dashboard › Forecast sub-tab and the Overall page strip.
+// Forecast (#1031) — Dashboard › Forecast sub-tab and the payload snapshot for the Overall page.
 // Pure helpers live in js/lib/forecast.js (window.FC); every API string is written with textContent only.
 (function () {
   'use strict';
@@ -6,8 +6,7 @@
   const POLL_MS = 60000;          // idle cadence while the panel is on screen
   const RUN_POLL_MS = 3000;       // cadence while a run is in flight
   const DONE_FLASH_MS = 12000;    // how long the strip keeps the finished note
-  const OV_STALE_MS = 60000;      // Overall strip refetch age
-  const OV_MAX = 6;               // findings listed on the Overall strip
+  const OV_STALE_MS = 60000;      // Overall snapshot refetch age
   const AE_SINCE_MAX_MIN = 43200; // alarm engine history ceiling (30 days)
   const SERIES_POINTS = 400;
   const PER_PAGE = 8;             // rows per page in every list
@@ -94,7 +93,6 @@
       }
       _fetchedAt = Date.now();
       paintPanel();
-      paintOverall();
     })().finally(() => { _inflight = null; });
     return _inflight;
   }
@@ -880,95 +878,17 @@
     paintList();
   }
 
-  // ── Overall strip ──
-  function ovList(rows) {
-    const ul = mk('ul', 'fc-ov-list');
-    rows.forEach(f => {
-      const li = document.createElement('li');
-      const s = FC.sevLabel(f.severity);
-      li.append(mk('span', 'fc-pill fc-' + s.cls, s.short));
-      li.title = (f.host ? f.host + ' — ' : '') + (f.summary || '');
-      const txt = mk('span', 'fc-ov-text');
-      txt.append(mk('span', 'fc-host', f.host || '—'),
-                 document.createTextNode(' — ' + (f.summary || '')));
-      li.append(txt);
-      ul.append(li);
-    });
-    return ul;
-  }
-
-  function paintOverall() {
-    const count = byId('fcOvCount');
-    const body = byId('fcOvBody');
-    const foot = byId('fcOvFoot');
-    if (!count || !body || !foot) return;
-    const v = _view;
-    const viewBtn = byId('fcOvView');
-    wipe(body);
-    wipe(foot);
-    count.textContent = _error && !v ? 'unavailable' : FC.countLabel(v);
-    const open = v && v.enabled ? (v.findings || []) : [];
-    const urgent = FC.urgent(open);
-    const rows = urgent.slice(0, OV_MAX);
-    const strip = body.closest('.fc-ov');
-    if (strip) {
-      const cls = rows.length ? FC.sevLabel(rows[0].severity).cls : 'info';
-      strip.classList.toggle('fc-ov-crit', cls === 'crit');
-      strip.classList.toggle('fc-ov-warn', cls === 'warn');
-    }
-    if (viewBtn) {
-      viewBtn.hidden = !open.length;
-      if (!viewBtn._fcBound) {
-        viewBtn._fcBound = true;
-        viewBtn.addEventListener('click', () => {
-          if (typeof switchTab === 'function') switchTab('dashboard');
-          if (typeof switchSubTab === 'function') switchSubTab('dashboard', 'forecast');
-        });
-      }
-    }
-    if (!v) { body.append(mk('div', 'fc-empty', _error || 'Loading…')); return; }
-    if (!v.enabled) {
-      body.append(mk('div', 'fc-empty', OFF_TEXT));
-      if (isAdmin()) foot.append(settingsButton());
-      return;
-    }
-    if (!rows.length) {
-      const notes = open.length;
-      body.append(mk('div', 'fc-empty', notes
-        ? 'No warnings. ' + notes + (notes === 1 ? ' note' : ' notes') + ' on the Forecast page.'
-        : allClearText()));
-      foot.append(mk('span', null, 'Next run ' + (FC.whenLabel(v.next_run, Date.now()) || '—')));
-      return;
-    }
-    const brief = FC.shortDigest(v.digest);
-    if (brief) body.append(mk('div', 'fc-ov-digest', 'Tower: ' + brief));
-    body.append(ovList(rows));
-    if (urgent.length > rows.length) {
-      body.append(mk('div', 'fc-ov-more', 'and ' + (urgent.length - rows.length) + ' more'));
-    }
-    const last = FC.whenLabel(v.last_run, Date.now());
-    const next = FC.whenLabel(v.next_run, Date.now());
-    foot.append(mk('span', null, 'Last run ' + (last || '—')
-      + (next ? ' · next ' + next.toLowerCase() : '')));
-  }
-
   // ── entry points ──
   // Sub-tab entry: paint what we have, refresh, and start the poll.
   function forecastLoad() {
     paintPanel();
-    paintOverall();
     refresh().then(schedule, schedule);
   }
 
-  // Overall band repaint: render from cache, refetching at most once a minute.
-  function forecastOverallCard() {
-    const strip = document.querySelector('.fc-ov');
-    if (strip && strip.hidden) return;
-    paintOverall();
-    if (_inflight) return;
-    if (Date.now() - _fetchedAt < OV_STALE_MS) return;
-    if (window.LivePause && LivePause.on && _view) return;
-    refresh();
+  // Overall's Forecast panel: the cached /api/forecast payload, refetched at most once a minute.
+  function forecastSnapshot() {
+    if (!_inflight && Date.now() - _fetchedAt >= OV_STALE_MS && !(window.LivePause && LivePause.on && _view)) refresh();
+    return _view;
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -976,5 +896,5 @@
   });
 
   window.forecastLoad = forecastLoad;
-  window.forecastOverallCard = forecastOverallCard;
+  window.forecastSnapshot = forecastSnapshot;
 })();

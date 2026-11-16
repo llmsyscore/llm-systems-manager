@@ -1,4 +1,4 @@
-// #565: pure view-model transforms for the Overall-tab fleet band.
+// #565: pure view-model transforms for the Overall page (agent rows, alerts).
 // Fixtures captured from the live dev manager 2026-08-17 (trimmed); the
 // alerts fixture is source-derived from models/alert.py to_dict (none active).
 import { describe, it, expect } from 'vitest';
@@ -75,16 +75,6 @@ const BY_PROVIDER = {
   ],
 };
 
-// /api/history?since_minutes=1440&max_rows=180&fleet=all (two real rows;
-// vllm fields absent on dev because its server is off — absence is the shape)
-const HISTORY_ROWS = [
-  { cpu_total: 2.598977, disk_root_pct: 49.9, gpu_power: 16.77, gpu_temp: 50.0,
-    llama_pps: 4.25, llama_tps: 10.5, lms_pps: 0.5, lms_tps: 1.5,
-    ram_percent: 89.0, ts: '2026-08-16T19:20:00+00:00' },
-  { cpu_total: 3.384727, disk_root_pct: 49.9,
-    ram_percent: 77.5, ts: '2026-08-16T19:10:00+00:00' },
-];
-
 // source-derived: models/alert.py to_dict() (no active alerts on dev)
 const ALERTS = [
   { alert_id: 'a1', rule_name: 'GPU temp high', severity: 'critical',
@@ -97,70 +87,6 @@ const ALERTS = [
     status: 'active', message: 'disk 60 > 50', source_host: 'agent-llama',
     created_at: '2026-08-17T09:00:00+00:00' },
 ];
-
-// /api/energy/summary?days=1 (totals block trimmed to consumed fields)
-const ENERGY = {
-  ok: true,
-  totals: { kwh: 1.448, cost_usd: 0.22, has_power: true, avg_watts: 31.3 },
-};
-
-describe('OV.heroSeries', () => {
-  it('sums present provider fields null-safely', () => {
-    const out = OV.heroSeries(HISTORY_ROWS);
-    expect(out).toHaveLength(2);
-    expect(out[0]).toMatchObject({ ts: '2026-08-16T19:20:00+00:00', gen: 12.0, prompt: 4.75 });
-  });
-  it('keeps gaps when no provider reported', () => {
-    const out = OV.heroSeries(HISTORY_ROWS);
-    expect(out[1].gen).toBeNull();
-    expect(out[1].prompt).toBeNull();
-  });
-  it('tolerates empty/undefined rows', () => {
-    expect(OV.heroSeries([])).toEqual([]);
-    expect(OV.heroSeries(null)).toEqual([]);
-  });
-});
-
-describe('OV.tiles', () => {
-  it('returns off tiles with em-dash stats when all aggregates are null', () => {
-    const tiles = OV.tiles(null, null, null);
-    expect(tiles.map(t => t.key)).toEqual(['llama', 'lms', 'vllm']);
-    expect(tiles.every(t => t.accent === 'off')).toBe(true);
-    expect(tiles.every(t => t.online === 0 && t.total === 0)).toBe(true);
-  });
-  it('llama: online but none awake → warn; awake → ok; hot GPU → crit', () => {
-    expect(OV.tiles(LLAMA_AGG, null, null)[0].accent).toBe('warn');
-    const awake = { ...LLAMA_AGG, awake_agent_count: 1 };
-    expect(OV.tiles(awake, null, null)[0].accent).toBe('ok');
-    const hot = { ...LLAMA_AGG, gpu: { ...LLAMA_AGG.gpu, max_temp_c: 86 } };
-    expect(OV.tiles(hot, null, null)[0].accent).toBe('crit');
-    const soc = { ...LLAMA_AGG, gpu: { ...LLAMA_AGG.gpu, thermal_crit_count: 1 } };
-    expect(OV.tiles(soc, null, null)[0].accent).toBe('crit');
-  });
-  it('lms/vllm: gpu block hot or SoC thermal pressure → crit', () => {
-    const lmsHot = { ...LMS_AGG, gpu: { max_temp_c: 90, thermal_crit_count: 0 } };
-    expect(OV.tiles(null, lmsHot, null)[1].accent).toBe('crit');
-    const vllmSoc = { ...VLLM_AGG, gpu: { max_temp_c: 40, thermal_crit_count: 2 } };
-    expect(OV.tiles(null, null, vllmSoc)[2].accent).toBe('crit');
-    expect(OV.tiles(null, LMS_AGG, VLLM_AGG)[1].accent).not.toBe('crit');
-  });
-  it('lms: online without busy processes → warn; busy → ok', () => {
-    expect(OV.tiles(null, LMS_AGG, null)[1].accent).toBe('warn');
-    const busy = { ...LMS_AGG, busy_process_count_total: 2 };
-    expect(OV.tiles(null, busy, null)[1].accent).toBe('ok');
-  });
-  it('vllm: requests running → ok', () => {
-    expect(OV.tiles(null, null, VLLM_AGG)[2].accent).toBe('warn');
-    const busy = { ...VLLM_AGG, requests_running_total: 3 };
-    expect(OV.tiles(null, null, busy)[2].accent).toBe('ok');
-  });
-  it('carries online/total and string stats', () => {
-    const t = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG);
-    expect(t[0].online).toBe(2);
-    expect(t[0].total).toBe(2);
-    expect(t[1].stats.every(s => typeof s.v === 'string' && typeof s.l === 'string')).toBe(true);
-  });
-});
 
 describe('OV.agentRows', () => {
   it('joins hostnames and merges multi-provider agents into one row', () => {
@@ -201,92 +127,6 @@ describe('OV.alertsSummary', () => {
   it('worst=warning when no critical; tolerates null input', () => {
     expect(OV.alertsSummary(ALERTS.slice(1)).worst).toBe('warning');
     expect(OV.alertsSummary(null).total).toBe(0);
-  });
-});
-
-describe('OV.energyChip', () => {
-  it('formats kwh + cost from a real summary', () => {
-    const c = OV.energyChip(ENERGY);
-    expect(c.kwh).toBe('1.4 kWh');
-    expect(c.cost).toBe('$0.22');
-  });
-  it('null when summary missing, not ok, or unmetered', () => {
-    expect(OV.energyChip(null)).toBeNull();
-    expect(OV.energyChip({ ok: false })).toBeNull();
-    expect(OV.energyChip({ ok: true, totals: { has_power: false } })).toBeNull();
-  });
-});
-
-describe('OV.toplines', () => {
-  it('returns 4 string stats from live aggregates', () => {
-    const t = OV.toplines(LLAMA_AGG, LMS_AGG, VLLM_AGG, ENERGY);
-    expect(t).toHaveLength(4);
-    expect(t.every(s => typeof s.v === 'string' && typeof s.l === 'string')).toBe(true);
-    expect(t[0].v).toBe('6');            // 2 + 3 + 1 agents online
-    expect(t[3].v).toBe('1.4 kWh · $0.22');
-  });
-  it('fleet power sums provider gpu blocks when rows carry no watts (legacy vllm field as fallback)', () => {
-    const lms = { ...LMS_AGG, gpu: { total_power_watts: 30 } };
-    const vllm = { ...VLLM_AGG, gpu: { total_power_watts: 120 }, total_gpu_power_watts: 999 };
-    expect(OV.toplines(LLAMA_AGG, lms, vllm, null)[2].v).toBe('170 W');
-    const legacy = { ...VLLM_AGG, total_gpu_power_watts: 5 };
-    delete legacy.gpu;
-    expect(OV.toplines(null, null, legacy, null)[2].v).toBe('5 W');
-  });
-  it('fleet power counts a dual-provider host once via per-row power_watts', () => {
-    const rows = (id, w, online = true) => [{ agent_id: id, online, power_watts: w }];
-    const llama = { ...LLAMA_AGG, gpu: { total_power_watts: 200 }, agents: rows('h1', 200) };
-    const lms = { ...LMS_AGG, gpu: { total_power_watts: 230 },
-      agents: [...rows('h1', 200), ...rows('h2', 30), ...rows('h3', 999, false)] };
-    const vllm = { ...VLLM_AGG, gpu: { total_power_watts: 0 }, agents: [{ agent_id: 'h4', online: true, power_watts: null }] };
-    expect(OV.fleetWatts([llama, lms, vllm])).toBe(230);
-    expect(OV.toplines(llama, lms, vllm, null)[2].v).toBe('230 W');
-  });
-  it('em-dashes when everything is down', () => {
-    const t = OV.toplines(null, null, null, null);
-    expect(t[0].v).toBe('0');
-    expect(t[2].v).toBe('—');
-    expect(t[3].v).toBe('—');
-  });
-});
-
-describe('OV.heroSeries with a bucket width (#576)', () => {
-  const rows = [
-    { ts: '2026-08-16T19:00:30+00:00', llama_tps: 2, llama_pps: 1 },
-    { ts: '2026-08-16T19:03:00+00:00', llama_tps: 60, llama_pps: 20 },
-    { ts: '2026-08-16T19:07:30+00:00', llama_tps: 5, llama_pps: 2 },
-    { ts: '2026-08-16T19:09:00+00:00', llama_tps: 9, vllm_tps: 1, llama_pps: 3 },
-    { ts: '2026-08-16T19:12:00+00:00' },
-  ];
-  it('keeps the peak provider-sum inside each bucket', () => {
-    const out = OV.heroSeries(rows, 480000);
-    expect(out).toHaveLength(3);
-    expect(out[0].gen).toBe(60);
-    expect(out[0].prompt).toBe(20);
-    expect(out[1].gen).toBe(10);
-    expect(out[1].prompt).toBe(3);
-  });
-  it('a bucket with no reporting rows stays null', () => {
-    const out = OV.heroSeries(rows, 480000);
-    expect(out[2].gen).toBeNull();
-    expect(out[2].prompt).toBeNull();
-  });
-  it('bucket timestamps land on the bucket grid', () => {
-    const out = OV.heroSeries(rows, 480000);
-    expect(new Date(out[0].ts).getTime() % 480000).toBe(0);
-    expect(new Date(out[1].ts).getTime()).toBeGreaterThan(new Date(out[0].ts).getTime());
-  });
-});
-
-describe('OV.heroSeries junk timestamps (#576)', () => {
-  it('skips rows whose ts cannot be bucketed', () => {
-    const out = OV.heroSeries([
-      { ts: 'not-a-date', llama_tps: 50 },
-      { ts: '2026-08-16T19:03:00+00:00', llama_tps: 7 },
-      { llama_tps: 9 },
-    ], 480000);
-    expect(out).toHaveLength(1);
-    expect(out[0].gen).toBe(7);
   });
 });
 
@@ -342,99 +182,6 @@ describe('OV.agentRows lms state prefix (#571)', () => {
       server_on: true, busy_process_count: 1, loaded_model_count: 1,
       loaded_models: ['qwen3-30b'] }] }, null], {});
     expect(rows[0].provs[0].detail).toBe('busy · qwen3-30b');
-  });
-});
-
-describe('OV.heroSeries power overlay (#577)', () => {
-  const rows = [
-    { ts: '2026-08-16T19:00:00+00:00', llama_tps: 1, psu_in: 220, gpu_power: 90 },
-    { ts: '2026-08-16T19:03:00+00:00', llama_tps: 1, gpu_power: 120 },
-    { ts: '2026-08-16T19:09:00+00:00', llama_tps: 1 },
-  ];
-  it('takes the larger of wall/gpu sums, keeps the bucket peak', () => {
-    const out = OV.heroSeries(rows, 480000);
-    expect(out[0].power).toBe(220);
-    expect(out[1].power).toBeNull();
-    expect(OV.heroSeries([
-      { ts: '2026-08-16T19:00:00+00:00', psu_in: 100, gpu_power: 300 },
-    ])[0].power).toBe(300);
-  });
-  it('unbucketed rows carry power too', () => {
-    expect(OV.heroSeries(rows)[1].power).toBe(120);
-  });
-});
-
-describe('OV.energySeries (#577)', () => {
-  it('maps chart labels onto their hourly Wh bucket', () => {
-    const hourly = [
-      { hour_ts: 360000, energy_wh: 50 },
-      { hour_ts: 363600, energy_wh: 20 },
-    ];
-    const labels = [360000000, 360480000, 363660000, 367200000];
-    expect(OV.energySeries(hourly, labels)).toEqual([50, 50, 20, null]);
-  });
-  it('degrades to empty on junk input', () => {
-    expect(OV.energySeries(null, [1])).toEqual([null]);
-    expect(OV.energySeries([], [])).toEqual([]);
-  });
-});
-
-describe('OV.tiles unified layout + peaks (#591)', () => {
-  const NOW = Date.UTC(2026, 7, 21, 18, 0, 0);
-  const rs = (v, mode, peak) => ({ v, mode, peak });
-  const PEAKS = {
-    llama: { gen: rs(51.3, 'live', { v: 51.3, t: NOW - 3 * 60000 }),
-             prompt: rs(452.5, 'live', { v: 452.5, t: NOW - 3 * 60000 }) },
-    lms: { gen: rs(null, '60\u2011min avg', null), prompt: rs(null, '60\u2011min avg', null) },
-    vllm: { gen: rs(12, 'live', { v: 12, t: NOW - 90000 }), prompt: rs(null, '60\u2011min avg', null) },
-  };
-
-  it('every tile leads with prompt then gen t/s', () => {
-    for (const t of OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW)) {
-      expect(t.stats[0].l).toMatch(/^prompt t\/s · (live|60\u2011min avg)$/);
-      expect(t.stats[1].l).toMatch(/^gen t\/s · (live|60\u2011min avg)$/);
-      expect(t.stats).toHaveLength(4);
-    }
-  });
-
-  it('renders rateStat cells: live value, window average, or — (#739)', () => {
-    const win = { llama: { gen: rs(42, 'live', { v: 51.3, t: NOW - 3 * 60000 }),
-                           prompt: rs(300, '60\u2011min avg', { v: 452.5, t: NOW - 60000 }) } };
-    const [llama] = OV.tiles(null, null, null, win, NOW);
-    expect(llama.stats[1]).toEqual({ v: '42.0', l: 'gen t/s · live', p: 'peak 51.3 · 3m ago' });
-    expect(llama.stats[0]).toEqual({ v: '300.0', l: 'prompt t/s · 60\u2011min avg', p: 'peak 452.5 · 1m ago' });
-    const [idle] = OV.tiles(null, null, null, {}, NOW);
-    expect(idle.stats[0]).toEqual({ v: '—', l: 'prompt t/s · 60\u2011min avg', p: null });
-  });
-
-  it('renders peak sub-lines with value and age', () => {
-    const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
-    expect(llama.stats[1].p).toBe('peak 51.3 · 3m ago');
-    expect(llama.stats[0].p).toBe('peak 452.5 · 3m ago');
-    expect(vllm.stats[1].p).toBe('peak 12.0 · 1m ago');
-    expect(lms.stats[0].p).toBeNull();
-    expect(vllm.stats[0].p).toBeNull();
-  });
-
-  it('provider-specific stats carry no peak field', () => {
-    const [llama, lms, vllm] = OV.tiles(LLAMA_AGG, LMS_AGG, VLLM_AGG, PEAKS, NOW);
-    expect(llama.stats[2].p).toBeUndefined();
-    expect(lms.stats[2].l).toBe('servers');
-    expect(lms.stats[3].l).toBe('models');
-    expect(vllm.stats[2].l).toBe('requests');
-    expect(vllm.stats[3].l).toBe('kv cache');
-  });
-
-  it('missing peaks argument keeps tiles renderable', () => {
-    const [llama] = OV.tiles(LLAMA_AGG, null, null);
-    expect(llama.stats[0].p).toBeNull();
-  });
-
-  it('lms tile reads its gateway throughput block', () => {
-    const withTp = { ...LMS_AGG, throughput: { total_tps: 7.5, total_pps: 30.2 } };
-    const [, lms] = OV.tiles(null, withTp, null, {}, NOW);
-    expect(lms.stats[0]).toEqual({ v: '30.2', l: 'prompt t/s · live', p: null });
-    expect(lms.stats[1].v).toBe('7.5');
   });
 });
 
