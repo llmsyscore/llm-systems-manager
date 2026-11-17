@@ -125,7 +125,7 @@ describe('CView.glance', () => {
 
   it('input power falls back to the energy accumulator when no sample has watts', () => {
     const g = CView.glance({ energy: { totals: { avg_watts: 118.4 } } });
-    expect(g.power[0]).toMatchObject({ v: '118', sub: 'fleet avg · this window' });
+    expect(g.power[0]).toMatchObject({ v: '118', sub: 'all-hosts average · this window' });
   });
 
   it('degrades to dashes/idle on an empty payload without throwing', () => {

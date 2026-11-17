@@ -194,6 +194,62 @@ describe('Tower drawer', () => {
     expect(w.document.querySelectorAll('#twBody .snap.hchart').length).toBe(1);
   });
 
+  test('Tower off for operators hides both the toolbar button and the sidebar item; admins see both dimmed', async () => {
+    let w = boot({ ok: true, enabled: false, admin: false });
+    await w.towerRefreshState(); await flush();
+    expect(w.document.getElementById('towerBtn').hidden).toBe(true);
+    expect(w.document.getElementById('towerNav').hidden).toBe(true);
+    w = boot({ ok: true, enabled: false, admin: true });
+    await w.towerRefreshState(); await flush();
+    for (const id of ['towerBtn', 'towerNav']) {
+      expect(w.document.getElementById(id).hidden, id).toBe(false);
+      expect(w.document.getElementById(id).classList.contains('off'), id).toBe(true);
+    }
+  });
+
+  test('a reply badge shows on both the toolbar button and the sidebar item', async () => {
+    const w = await ready(ENABLED);
+    await ask(w, 'why is box red?');
+    w.towerClose();
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    for (const [b, n] of [['towerBtn', 'towerBadge'], ['towerNav', 'towerNavBadge']]) {
+      expect(w.document.getElementById(b).classList.contains('unread'), b).toBe(true);
+      expect(w.document.getElementById(n).hidden, n).toBe(false);
+      expect(w.document.getElementById(n).textContent, n).toBe('1');
+    }
+    w.towerOpen(); await flush();
+    for (const n of ['towerBadge', 'towerNavBadge']) expect(w.document.getElementById(n).hidden, n).toBe(true);
+  });
+
+  test('opening from the sidebar item marks both buttons open; closing focuses the sidebar item', async () => {
+    const w = boot(ENABLED);
+    await w.towerRefreshState(); await flush();
+    for (const id of ['towerBtn', 'towerNav']) expect(w.document.getElementById(id).getAttribute('aria-expanded'), id).toBe('false');
+    w.document.getElementById('towerNav').click(); await flush();
+    expect(w.document.getElementById('towerOverlay').classList.contains('open')).toBe(true);
+    for (const id of ['towerBtn', 'towerNav']) {
+      expect(w.document.getElementById(id).classList.contains('open'), id).toBe(true);
+      expect(w.document.getElementById(id).getAttribute('aria-expanded'), id).toBe('true');
+    }
+    w.towerClose();
+    for (const id of ['towerBtn', 'towerNav']) {
+      expect(w.document.getElementById(id).classList.contains('open'), id).toBe(false);
+      expect(w.document.getElementById(id).getAttribute('aria-expanded'), id).toBe('false');
+    }
+    expect(w.document.activeElement.id).toBe('towerNav');
+    w.towerOpen(); await flush();
+    w.towerClose();
+    expect(w.document.activeElement.id).toBe('towerBtn');
+  });
+
+  test('streaming marks both buttons', async () => {
+    const w = await ready(ENABLED);
+    await ask(w, 'why is box red?');
+    for (const id of ['towerBtn', 'towerNav']) expect(w.document.getElementById(id).classList.contains('streaming'), id).toBe(true);
+    w.__sse.onEvent({ event: 'done', ok: true, calls: 0 });
+    for (const id of ['towerBtn', 'towerNav']) expect(w.document.getElementById(id).classList.contains('streaming'), id).toBe(false);
+  });
+
   test('closing hands focus back to the header button', async () => {
     const w = await ready(ENABLED);
     w.towerClose();
@@ -1419,5 +1475,44 @@ describe('timers (#1029)', () => {
     ]);
     expect(w.document.querySelector('#twBody .log .snap svg')).not.toBeNull();
     expect(w.document.querySelector('#twBody .tick').textContent).toContain('timer · RAM on box · 3 ticks');
+  });
+});
+
+describe('Tower drawer width', () => {
+  const width = (w) => w.document.documentElement.style.getPropertyValue('--tw-w');
+  const setWidth = (w, px) => { Object.defineProperty(w, 'innerWidth', { value: px, configurable: true }); w.dispatchEvent(new w.Event('resize')); };
+  const drag = (w, x) => {
+    const grip = w.document.getElementById('twGrip');
+    grip.dispatchEvent(new w.MouseEvent('pointerdown', { bubbles: true, clientX: x }));
+    w.document.dispatchEvent(new w.MouseEvent('pointermove', { bubbles: true, clientX: x }));
+    w.document.dispatchEvent(new w.MouseEvent('pointerup', { bubbles: true, clientX: x }));
+  };
+
+  test('drags up to the larger of 560 px and half the window, never under 360 px', async () => {
+    const w = await ready(ENABLED);
+    setWidth(w, 1600);
+    expect(width(w)).toBe('400px');
+    drag(w, 900);
+    expect(width(w)).toBe('700px');
+    drag(w, 200);
+    expect(width(w)).toBe('800px');
+    expect(JSON.parse(w.localStorage.getItem('lsm.tower')).width).toBe(800);
+    drag(w, 1500);
+    expect(width(w)).toBe('360px');
+    setWidth(w, 600);
+    drag(w, 0);
+    expect(width(w)).toBe('552px');
+    setWidth(w, 380);
+    expect(width(w)).toBe('360px');
+  });
+
+  test('a saved width wider than the cap of a smaller window is clamped on load and on resize', async () => {
+    const w = await ready(ENABLED, { stored: { width: 900 } });
+    setWidth(w, 1024);
+    expect(width(w)).toBe('560px');
+    setWidth(w, 1400);
+    expect(width(w)).toBe('700px');
+    setWidth(w, 2000);
+    expect(width(w)).toBe('900px');
   });
 });

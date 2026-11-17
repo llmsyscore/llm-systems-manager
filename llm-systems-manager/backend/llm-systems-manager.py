@@ -22,6 +22,7 @@ Local endpoints served:
     GET  /                              — frontend index.html
     GET  /api/metrics                   — latest full system snapshot
     GET  /api/history                   — scalar time-series (proxies alarm engine / InfluxDB)
+    GET  /api/history/hosts             — every host's history for a few fields, keyed by hostname
     GET  /api/alert                     — current alert flags
     GET  /api/config                    — dynamic poll interval
     GET  /api/llama-state               — llama server state + model + port
@@ -182,7 +183,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.16-1"
+__version__ = "v2026.11.16-4"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1335,8 +1336,8 @@ _history_scoped_lock = _threading.Lock()
 
 
 def _history_scoped(scope: tuple, since_minutes: int, limit: int,
-                    builder, ttl: float = _HISTORY_SCOPED_TTL_S):
-    """TTL-cached wrapper for a scoped (agent/fleet) history build."""
+                    builder, ttl: float = _HISTORY_SCOPED_TTL_S, keep=None):
+    """TTL-cached wrapper for a scoped (agent/fleet) history build; a result keep() rejects is not cached."""
     key = (scope, since_minutes, limit)
     now_ts = time.time()
     with _history_scoped_lock:
@@ -1344,6 +1345,8 @@ def _history_scoped(scope: tuple, since_minutes: int, limit: int,
         if cached and (now_ts - cached[0]) < ttl:
             return cached[1]
     rows = builder()
+    if keep is not None and not keep(rows):
+        return rows
     with _history_scoped_lock:
         _history_scoped_cache[key] = (now_ts, rows)
         # Bound the cache — at most ~16 distinct scope/window combos.
@@ -1957,6 +1960,98 @@ def get_history():
     if limit and len(rows) > limit:
         rows = rows[-limit:]
     return jsonify(_thin_history_rows(rows, max_rows))
+
+# /api/history/hosts: the fields it accepts, its default set (the All hosts charts) and the most per request.
+_HISTORY_HOSTS_FIELDS = {f: (s, n) for s, n, f in _HISTORY_LEGACY_FIELD_MAP}
+_HISTORY_HOSTS_DEFAULT = ("cpu_total", "ram_percent", "disk_root_pct", "net_recv", "io_write")
+_HISTORY_HOSTS_MAX_FIELDS = 8
+
+
+def _approved_hostnames() -> "set[str]":
+    """Hostnames of approved agents in the registry."""
+    data = agent_registry.load_agents()
+    return {(a.get("hostname") or "").strip()
+            for a in (data.get("agents") or {}).values()
+            if a.get("status") == "approved" and (a.get("hostname") or "").strip()}
+
+
+def _build_hosts_history(fields: "tuple[str, ...]", since_minutes: int, limit: int,
+                         hostnames: "set[str]") -> dict:
+    """One alarm-engine read per field across every host, split into per-host rows sorted by ts and
+    kept for the given hostnames: {"hosts": {hostname: rows}, "failed": [fields whose read failed]}."""
+    if not _alarm_engine_url:
+        return {"hosts": {}, "failed": []}
+    base = _alarm_engine_url.rstrip("/")
+    futures = [
+        _history_pool.submit(_fetch_history_series, base, *_HISTORY_HOSTS_FIELDS[f], f,
+                             since_minutes, limit)
+        for f in fields
+    ]
+    _HISTORY_REQ_RATE.add(len(futures))
+    by_host: "dict[str, dict[str, dict]]" = {}
+    failed: "list[str]" = []
+    for fut in futures:
+        field, points = fut.result()
+        if points is None:
+            failed.append(field)
+            continue
+        for p in points:
+            ts, host = p.get("timestamp"), p.get("hostname")
+            if not ts or host not in hostnames:
+                continue
+            by_host.setdefault(host, {}).setdefault(ts, {"ts": ts})[field] = p.get("value")
+    return {"hosts": {h: sorted(rows.values(), key=lambda r: r["ts"]) for h, rows in by_host.items()},
+            "failed": failed}
+
+
+@app.route("/api/history/hosts")
+def get_history_hosts():
+    """Approved hosts' history for up to 8 fields as {"hosts": {hostname: rows}}, thinned per host;
+    one alarm-engine read per field, cached unless a read failed (listed in "failed")."""
+    raw = flask_request.args.get("fields")
+    if raw is None:
+        fields = list(_HISTORY_HOSTS_DEFAULT)
+    else:
+        fields = list(dict.fromkeys(f.strip() for f in raw.split(",") if f.strip()))
+    if not fields or len(fields) > _HISTORY_HOSTS_MAX_FIELDS:
+        return jsonify({"ok": False, "error": f"fields: 1 to {_HISTORY_HOSTS_MAX_FIELDS} names"}), 400
+    unknown = [f for f in fields if f not in _HISTORY_HOSTS_FIELDS]
+    if unknown:
+        return jsonify({"ok": False, "error": "unknown field: " + ", ".join(unknown)}), 400
+    try:
+        since_minutes = int(flask_request.args.get("since_minutes", HISTORY_WINDOW_MINUTES))
+    except (TypeError, ValueError):
+        since_minutes = HISTORY_WINDOW_MINUTES
+    try:
+        limit = int(flask_request.args.get("limit", 0))
+    except (TypeError, ValueError):
+        limit = 0
+    try:
+        max_rows = int(flask_request.args.get("max_rows", _HISTORY_MAX_ROWS))
+    except (TypeError, ValueError):
+        max_rows = _HISTORY_MAX_ROWS
+    if since_minutes < 1:
+        since_minutes = HISTORY_WINDOW_MINUTES
+    if limit < 0:
+        limit = 0
+    if max_rows < 0:
+        max_rows = _HISTORY_MAX_ROWS
+    if not _alarm_engine_url:
+        return jsonify({"hosts": {}})
+    fetch_since = min(since_minutes, 43200)
+    names = _approved_hostnames()
+    # Each read covers every host, so the per-series limit scales with the approved host count.
+    fetch_limit = min(10000, (min(limit, 10000) if limit > 0 else HISTORY_FETCH_LIMIT) * max(1, len(names)))
+    key = tuple(fields)
+    got = _history_scoped(("hosts", key), fetch_since, fetch_limit,
+                          lambda: _build_hosts_history(key, fetch_since, fetch_limit, names),
+                          keep=lambda r: not r["failed"])
+    out = {"hosts": {h: _thin_history_rows(rows[-limit:] if limit else rows, max_rows)
+                     for h, rows in got["hosts"].items()}}
+    if got["failed"]:
+        out["failed"] = got["failed"]
+    return jsonify(out)
+
 
 @app.route("/api/llama-state")
 def get_llama_state():
@@ -3380,6 +3475,46 @@ def agents_list_by_provider():
             })
         out[prov] = rows
     return jsonify(out)
+
+
+@app.route("/api/agents/hosts", methods=["GET"])
+def agents_hosts():
+    """Non-admin list of every approved host with its providers and liveness, for any signed-in
+    user; includes hosts without an LLM server. Online when any bucket is within its threshold."""
+    agents_map = agent_registry.load_agents().get("agents") or {}
+    names = providers.names()
+    specs = {p: providers.get(p) for p in names}
+    now = time.time()
+    rows = []
+    for aid, a in agents_map.items():
+        if a.get("status") != "approved":
+            continue
+        caps = a.get("capabilities") or {}
+        prov_list = [p for p in names
+                     if specs[p] and caps.get(specs[p].capability_key)]
+        if not prov_list and not caps.get("sysperf"):
+            continue
+        newest = 0.0
+        online = False
+        for bucket in [*names, SYSTEM_PROVIDER]:
+            wrap = provider_state.STORE.get(bucket, aid) or {}
+            seen = float(wrap.get("last_seen") or 0)
+            if not seen:
+                continue
+            newest = max(newest, seen)
+            spec = specs.get(bucket)
+            threshold = spec.online_threshold_s if spec else 30.0
+            if (now - seen) < threshold:
+                online = True
+        rows.append({
+            "agent_id": aid,
+            "hostname": a.get("hostname"),
+            "providers": prov_list,
+            "online": online,
+            "age_s": round(now - newest, 1) if newest else None,
+        })
+    rows.sort(key=lambda r: (r["hostname"] is None, (r["hostname"] or "").lower()))
+    return jsonify({"hosts": rows})
 
 
 @app.route("/api/agents/metrics", methods=["GET"])

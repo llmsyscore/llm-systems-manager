@@ -41,10 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---------------------------------------------------------------------------
 // Sub-tab switching
 // ---------------------------------------------------------------------------
-const _subTabState = { dashboard: 'llamacpp', llm: 'llamacpp', admin: 'agents', tools: 'openclaw' };
+const _subTabState = { dashboard: 'all', llm: 'llamacpp', admin: 'agents', tools: 'openclaw' };
 
 const _SUB_TAB_MAP = {
-  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['llamacpp','lmstudio','vllm','energy','openclaw','manager','forecast'] },
+  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['all','llamacpp','lmstudio','vllm','energy','openclaw','manager','forecast'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','jobs','routing','settings'] },
   tools:     { tabId: 'toolsTab',     prefix: 'tools', subs: ['openclaw','llmchat','imggen'] },
@@ -121,6 +121,12 @@ function switchSubTab(parent, sub) {
   }
   if (parent === 'dashboard' && sub === 'openclaw') {
     fetchOpenclawAnalytics();
+  }
+  // All hosts starts its fetches and minute poll on entry; any other Dashboards page stops the poll.
+  if (parent === 'dashboard' && sub === 'all') {
+    if (typeof ahEnter === 'function') ahEnter();
+  } else if (parent === 'dashboard' && typeof ahLeave === 'function') {
+    ahLeave();
   }
   // Tools launcher refreshes tool stats + ledger on entry (#769).
   if (parent === 'llm' && sub === 'tools'
@@ -249,6 +255,7 @@ function _rebackfillActiveView() {
   else if (sub === 'lmstudio')  run(typeof loadLmsHistory !== 'undefined' ? loadLmsHistory : null);
   else if (sub === 'vllm')      run(typeof loadVllmHistory !== 'undefined' ? loadVllmHistory : null);
   else if (sub === 'manager')   run(typeof loadManagerPerfHistory !== 'undefined' ? loadManagerPerfHistory : null);
+  else if (sub === 'all')       run(typeof ahRefresh !== 'undefined' ? ahRefresh : null);
 }
 
 // Boot

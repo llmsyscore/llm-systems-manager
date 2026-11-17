@@ -1301,7 +1301,7 @@
       const blob = new Blob([JSON.stringify(_fleetJob, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = `bench-fleet-${id}.json`;
+      a.download = `bench-hosts-${id}.json`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 200);

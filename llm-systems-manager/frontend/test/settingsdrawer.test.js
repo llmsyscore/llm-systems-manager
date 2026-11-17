@@ -76,7 +76,7 @@ describe('settingsScope', () => {
   it('card pages get the card sections with their layout keys', () => {
     expect(L.settingsScope('overall')).toMatchObject({ kind: 'cards', cols: 'overallCols', grid: 'overallGrid', borrowed: 'overallBorrowed' });
     expect(L.settingsScope('dashboard', 'llamacpp')).toMatchObject({ kind: 'cards', hidden: 'hidden', cols: 'cols', grid: 'cardGrid' });
-    expect(L.settingsScope('dashboard', undefined).key).toBe('dashboard/llamacpp');
+    expect(L.settingsScope('dashboard', undefined).key).toBe('dashboard/all');
     expect(L.settingsScope('dashboard', 'vllm').label).toBe('Dashboards · vLLM');
     expect(L.settingsScope('dashboard', 'manager').cols).toBe('managerCols');
   });
@@ -88,6 +88,11 @@ describe('settingsScope', () => {
     expect(L.settingsScope('tools').label).toBe('Tools');
     expect(L.settingsScope('dashboard', 'energy')).toMatchObject({ kind: 'none', label: 'Dashboards · Energy' });
     expect(L.settingsScope('dashboard', 'openclaw').kind).toBe('none');
+  });
+
+  it('All hosts gets its rows with their layout key', () => {
+    expect(L.settingsScope('dashboard', 'all')).toMatchObject({ kind: 'rows', key: 'dashboard/all', label: 'Dashboards · All hosts',
+      rowsHidden: 'allHostsRowsHidden', root: 'dash-all' });
   });
 });
 
@@ -229,8 +234,8 @@ describe('Overall drawer cards section (#1432)', () => {
   // The real drawer chips, row list, row toggle and click binding on the real #overallTab rows.
   function setup(saved) {
     document.body.innerHTML = overallTab + '<div id="settingsOverlay"><section id="sdCards"></section></div>';
-    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_ovRows'), fn('_applyRowsHidden'), fn('toggleOverallRow'), fn('_sdBind'),
-      'window._sdChip = _sdChip; window._sdRenderCards = _sdRenderCards; window._ovRows = _ovRows;',
+    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_kitRows'), fn('_applyRowsHidden'), fn('toggleOverallRow'), fn('_sdBind'),
+      'window._sdChip = _sdChip; window._sdRenderCards = _sdRenderCards; window._kitRows = _kitRows;',
       'window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow; window._sdBind = _sdBind;'].join('\n'));
     window._sdBound = false;
     window._activeTab = 'overall';
@@ -266,7 +271,7 @@ describe('Overall drawer cards section (#1432)', () => {
     expect(el0.textContent).toContain('Sections on this page');
     expect(el0.textContent).toContain('6 of 6 shown');
     expect(chips(el0)).toEqual([
-      ['fleet', 'Fleet', 'true'], ['throughput', 'Throughput', 'true'], ['servers', 'LLM servers', 'true'],
+      ['fleet', 'At a glance', 'true'], ['throughput', 'Throughput', 'true'], ['servers', 'LLM servers', 'true'],
       ['power', 'Power and energy', 'true'], ['watch', 'Watch list', 'true'], ['pinned', 'Pinned', 'true'],
     ]);
     el0.querySelector('[data-sd="row"][data-id="power"]').click();
@@ -307,5 +312,78 @@ describe('Overall drawer cards section (#1432)', () => {
     el.querySelector('[data-sd="row"][data-id="fleet"]').click();
     expect(move('fleet', -1)).toBe(true);
     expect(move('throughput', -1)).toBe(false);
+  });
+});
+
+describe('All hosts drawer sections (#1432)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
+  const fn = (name) => {
+    const m = src.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    expect(m, name).not.toBeNull();
+    return m[0];
+  };
+  const page = new JSDOM(html).window.document.getElementById('dash-all').outerHTML;
+
+  it('lists the two All hosts rows and hides one', () => {
+    document.body.innerHTML = page + '<div id="settingsOverlay"><section id="sdCards"></section></div>';
+    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_kitRows'), fn('_applyRowsHidden'), fn('toggleAllHostsRow'), fn('_sdBind'),
+      'window._sdRenderCards = _sdRenderCards; window._applyRowsHidden = _applyRowsHidden; window._sdBind = _sdBind;'].join('\n'));
+    window._sdBound = false;
+    window._activeTab = 'dashboard';
+    window.layout = {};
+    window._esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    window.saveLayout = vi.fn();
+    const scope = L.settingsScope('dashboard', 'all');
+    window._sdRerenderCards = () => window._sdRenderCards(scope);
+    window._sdBind();
+    window._sdRenderCards(scope);
+    const el = document.getElementById('sdCards');
+    const chips = () => [...el.querySelectorAll('[data-sd="ahrow"]')].map(b => [b.dataset.id, b.textContent, b.getAttribute('aria-pressed')]);
+    expect(el.textContent).toContain('Sections on this page');
+    expect(el.textContent).toContain('2 of 2 shown');
+    expect(chips()).toEqual([['ah-now', 'Right now', 'true'], ['ah-cmp', 'Compare over time', 'true']]);
+    el.querySelector('[data-sd="ahrow"][data-id="ah-cmp"]').click();
+    expect(window.layout.allHostsRowsHidden).toEqual(['ah-cmp']);
+    expect(document.querySelector('#dash-all section.row[data-row="ah-cmp"]').hidden).toBe(true);
+    expect(document.querySelector('#dash-all section.row[data-row="ah-now"]').hidden).toBe(false);
+    expect(window.saveLayout).toHaveBeenCalledTimes(1);
+    expect(el.textContent).toContain('1 of 2 shown');
+    el.querySelector('[data-sd="ahrow"][data-id="ah-cmp"]').click();
+    expect(window.layout.allHostsRowsHidden).toEqual([]);
+    expect(document.querySelector('#dash-all section.row[data-row="ah-cmp"]').hidden).toBe(false);
+    window.layout = { allHostsRowsHidden: ['ah-now', 'gone'] };
+    window._applyRowsHidden();
+    expect(document.querySelector('#dash-all section.row[data-row="ah-now"]').hidden).toBe(true);
+    expect(el.querySelectorAll('input[type="checkbox"]').length).toBe(0);
+  });
+});
+
+describe('Dashboards · Forecast drawer (#1432)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
+  const fn = (name) => {
+    const m = src.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    expect(m, name).not.toBeNull();
+    return m[0];
+  };
+  const dash = new JSDOM(html).window.document.getElementById('dashboardTab').outerHTML;
+
+  it('shows the no-cards notice, not All hosts sections or llama.cpp cards', () => {
+    expect(L.settingsScope('dashboard', 'forecast')).toMatchObject({ kind: 'none', key: 'dashboard/forecast' });
+    document.body.innerHTML = dash + '<section id="sdNoCards" hidden></section><section id="sdCards"></section><section id="sdLayout"></section>';
+    document.querySelectorAll('#dashboardTab .sub-tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('dash-forecast').classList.add('active');
+    (0, eval)([fn('_getDashSubTab'), fn('_sdScope'), fn('renderSettingsPanel'),
+      'window._getDashSubTab = _getDashSubTab; window.renderSettingsPanel = renderSettingsPanel;'].join('\n'));
+    window.SettingsLib = L;
+    window._activeTab = 'dashboard';
+    window._sdRenderCards = vi.fn();
+    window._sdRenderLayout = vi.fn();
+    for (const n of ['_sdRenderAccount', '_sdRenderHeader', '_sdRenderAppearance', '_sdRenderRefresh']) window[n] = vi.fn();
+    expect(window._getDashSubTab()).toBe('forecast');
+    window.renderSettingsPanel();
+    expect(document.getElementById('sdNoCards').hidden).toBe(false);
+    expect(document.getElementById('sdCards').hidden).toBe(true);
+    expect(document.getElementById('sdLayout').hidden).toBe(true);
+    expect(window._sdRenderCards).not.toHaveBeenCalled();
   });
 });
