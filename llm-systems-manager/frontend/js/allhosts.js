@@ -6,7 +6,6 @@
   const POLL_MS = 60000, LIVE_MIN = 5, REUSE_MS = 10 * 60000, FULL_RETRY_MS = 5 * 60000, BAD_PCT = 85;
   const PROVIDER_FOR = { llamacpp: 'llama', lmstudio: 'lms', vllm: 'vllm' };
   const HIDDEN_NOTE = "Some hosts hidden · click a host's chip to show it";
-  const HIST_FIELDS = 'cpu_total,ram_percent,disk_root_pct,net_recv,io_write';
 
   // Time range of the page.
   window.ahState = window.ahState || { range: 24 };
