@@ -1,6 +1,7 @@
+  /* Toasts start 12px below the sticky toolbar, whose height shell.js keeps in --mc-top. */
   #alarmToastContainer {
     position: fixed;
-    top: 24px;
+    top: calc(var(--mc-top, 61px) + 12px);
     right: 24px;
     z-index: 99999;
     display: flex;

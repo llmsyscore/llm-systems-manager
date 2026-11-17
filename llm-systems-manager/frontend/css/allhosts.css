@@ -1,0 +1,40 @@
+/* Dashboards · All hosts (#1432): page padding, full-width panels and the Right now table with value bars. */
+#dash-all { padding: 12px 16px 0; }
+.panels > .panel.full-w { grid-column: 1 / -1; }
+/* Panel headers stay on one line: a long note is cut with an ellipsis and keeps clear of the corner size button. */
+#dash-all .panel > .p-hd { flex-wrap: nowrap; }
+#dash-all .panel > .p-hd > .p-title { flex: none; }
+#dash-all .panel > .p-hd > .p-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 24px; }
+/* Right now: a fixed-layout table that scrolls sideways only as a fallback. */
+.ah-scroll { overflow-x: auto; }
+.ah-now { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.ah-now th:first-child { width: 32%; }
+.ah-now th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.ah-now td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.ah-now tr:last-child td { border-bottom: 0; }
+.ah-now tr.go { cursor: pointer; }
+.ah-now tr.go:hover { background: var(--hover); }
+/* Host cell: dot and name on one line with an ellipsis, notes on a muted line below. */
+.ah-host { overflow: hidden; }
+.ah-h, .ah-go { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.ah-go { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
+.ah-go:hover .ah-name, .ah-go:focus-visible .ah-name { text-decoration: underline; }
+.ah-host .ov-dot { flex: none; margin-right: 8px; }
+.ah-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ah-sub { color: var(--muted); font-size: 11.5px; padding-left: 15px; line-height: 1.35; }
+.ah-sub { display: flex; flex-wrap: wrap; column-gap: 8px; }
+.ah-sub > span { white-space: nowrap; }
+/* Value cells: a bar that shrinks with the column and the value beside it. */
+.ah-v { white-space: nowrap; }
+.ah-bar { display: inline-block; width: calc(100% - 52px); min-width: 12px; max-width: 140px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; vertical-align: middle; margin-right: 8px; }
+.ah-bar i { display: block; height: 100%; background: var(--s1); border-radius: 2px; }
+.ah-v.bad .ah-bar i { background: var(--bad); }
+.ah-v.bad .ah-t { color: var(--bad-text); }
+.ah-t { font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  #dash-all { padding: 8px 8px 0; }
+  .ah-now { font-size: 12.5px; }
+  .ah-now th, .ah-now td { padding: 6px 4px; }
+  .ah-now th:first-child { width: 34%; }
+  .ah-bar { width: calc(100% - 40px); margin-right: 4px; }
+}

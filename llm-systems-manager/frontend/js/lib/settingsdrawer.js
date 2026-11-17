@@ -177,15 +177,20 @@
     'dashboard/vllm':     { label: 'Dashboards · vLLM',      hidden: 'vllmHidden',    cols: 'vllmCols',    order: 'vllmOrder',    grid: 'vllmCardGrid' },
     'dashboard/manager':  { label: 'Dashboards · Manager',   hidden: 'managerHidden', cols: 'managerCols', order: 'managerOrder', grid: 'managerCardGrid' },
   };
+  // Kit pages whose drawer lists only their rows: the layout key of the hidden row ids and the page root.
+  const ROW_PAGES = {
+    'dashboard/all': { label: 'Dashboards · All hosts', rowsHidden: 'allHostsRowsHidden', root: 'dash-all' },
+  };
   const PAGE_LABELS = {
     dashboard: 'Dashboards', llm: 'LLM Control', events: 'Events', tools: 'Tools', admin: 'Admin',
   };
   const SUB_LABELS = { energy: 'Energy', openclaw: 'OpenClaw' };
 
   function settingsScope(activeTab, dashSub) {
-    const key = activeTab === 'dashboard' ? `dashboard/${dashSub || 'llamacpp'}` : activeTab;
+    const key = activeTab === 'dashboard' ? `dashboard/${dashSub || 'all'}` : activeTab;
     const page = CARD_PAGES[key];
     if (page) return { kind: 'cards', key, ...page };
+    if (ROW_PAGES[key]) return { kind: 'rows', key, ...ROW_PAGES[key] };
     let label = PAGE_LABELS[activeTab] || activeTab;
     if (activeTab === 'dashboard' && SUB_LABELS[dashSub]) label = `Dashboards · ${SUB_LABELS[dashSub]}`;
     return { kind: 'none', key, label };
@@ -206,7 +211,7 @@
     FRESH_DEFAULTS, isFreshLayout, applyFreshDefaults,
     CARD_ROLES, ROLES, roleOf, HERO_CARDS, ROLE_PRESETS, DEFAULT_ROLE_PRESET, normalizeRolePreset, roleWidth, flowSpan,
     THEMES, THEME_IDS, DEFAULT_THEME, LEGACY_THEMES, SYSTEM_LIGHT_THEME, normalizeTheme, effectiveTheme,
-    CARD_PAGES, settingsScope, INTERVAL_MIN, INTERVAL_MAX, INTERVAL_CHIPS, clampInterval,
+    CARD_PAGES, ROW_PAGES, settingsScope, INTERVAL_MIN, INTERVAL_MAX, INTERVAL_CHIPS, clampInterval,
   };
   if (typeof window !== 'undefined') window.SettingsLib = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

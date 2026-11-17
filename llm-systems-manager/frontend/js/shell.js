@@ -1,4 +1,5 @@
-// Manager shell (#1432): sidebar navigation, toolbar title, the Overall filter and range, and the Sidebar, Theme and Live switches.
+// Manager shell (#1432): sidebar navigation, toolbar title, the Overall filter and range, the All hosts range,
+// and the Sidebar, Theme and Live switches.
 (() => {
   const $ = (id) => document.getElementById(id);
   const side = $('side');
@@ -55,9 +56,33 @@
     mcShellPaintOv();
   }
 
+  // All hosts toolbar group: the time range, pressed as window.ahState says.
+  const ahBar = document.querySelector('#toolbar .tb-ah');
+  const AH_RANGE_KEY = 'mgr.ahRange';
+  function mcShellPaintAh() {
+    if (!ahBar) return;
+    const r = +(window.ahState || {}).range || 24;
+    ahBar.querySelectorAll('[data-ah-range]').forEach((b) => b.setAttribute('aria-pressed', String(+b.dataset.ahRange === r)));
+  }
+  if (ahBar) {
+    ahBar.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-ah-range]');
+      if (b && typeof window.ahSetRange === 'function') Promise.resolve(window.ahSetRange(+b.dataset.ahRange)).catch(() => {});
+    });
+  }
+  // Saved All hosts range, kept only when a toolbar button carries that value.
+  function restoreAh() {
+    const o = window.ahState = window.ahState || { range: 24 };
+    if (!ahBar) return;
+    const r = STORE.getItem(AH_RANGE_KEY);
+    if ([...ahBar.querySelectorAll('[data-ah-range]')].some((b) => b.dataset.ahRange === r)) o.range = +r;
+    mcShellPaintAh();
+  }
+
   function mcShellMark(tab, sub) {
     if (ovBar) ovBar.hidden = tab !== 'overall';
     if (tab === 'dashboard' && !sub) sub = dashSub();
+    if (ahBar) ahBar.hidden = !(tab === 'dashboard' && sub === 'all');
     side.querySelectorAll('[data-tab]').forEach((b) => {
       const on = b.dataset.tab === tab && (tab !== 'dashboard' || b.dataset.sub === sub);
       b.classList.toggle('on', on);
@@ -87,7 +112,7 @@
   }
   $('navOpen').onclick = () => setNavOpen(!side.classList.contains('open'));
   side.addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-tab],#towerBtn');
+    const b = e.target.closest('button[data-tab],#towerNav');
     if (!b) return;
     if (b.dataset.tab) {
       if (b.dataset.sub && typeof _subTabState !== 'undefined') _subTabState.dashboard = b.dataset.sub;
@@ -171,10 +196,12 @@
     mcShellPaintTheme();
     paintLive();
     restoreOv();
+    restoreAh();
   }
 
   window.mcShellStore = STORE;
   window.mcShellPaintOv = mcShellPaintOv;
+  window.mcShellPaintAh = mcShellPaintAh;
   window.mcShellMark = mcShellMark;
   window.mcShellTitle = mcShellTitle;
   window.mcShellPaintTheme = mcShellPaintTheme;

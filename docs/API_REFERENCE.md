@@ -67,6 +67,20 @@ Returns historical time-series data used to draw dashboard charts. The time wind
 
 ---
 
+### `GET /api/history/hosts`
+Returns history for every host at once, one list of rows per host name. The Dashboards › All hosts page uses it.
+
+**Parameters:**
+- `?fields=<name,name,…>` — up to 8 history field names, such as `cpu_total`, `ram_percent`, `disk_root_pct`, `net_recv` or `io_write` (these five are the default). An unknown name, or more than 8, returns `400`.
+- `?since_minutes=<n>` — how far back to read.
+- `?max_rows=<n>` — the most rows per host; longer lists are thinned evenly, keeping the first and last row.
+
+**Response:** `{"hosts": {"<hostname>": [{"ts": "<ISO time>", "<field>": <value>, …}, …]}}`, rows oldest first. `{"hosts": {}}` when no alarm engine is set up.
+
+**Access:** any signed-in user. Agent tokens are not accepted.
+
+---
+
 ### `GET /api/alert`
 Returns the current active alert count and the highest severity level in effect. Used by the dashboard header to show the alert badge.
 
@@ -882,6 +896,13 @@ Registers a new agent with the Manager. Called automatically by the agent on fir
 
 ### `GET /api/agents/list-by-provider`
 Returns agents grouped by provider type (llama, lms, vllm). Available to all authenticated users, including operators, so the agent picker in the dashboard works regardless of role.
+
+---
+
+### `GET /api/agents/hosts`
+Lists every approved host, including hosts without an LLM server, with its providers, whether it is online and the seconds since it last reported. Available to all signed-in users, including operators.
+
+**Response:** `{"hosts": [{"agent_id", "hostname", "providers": [...], "online": true|false, "age_s": <seconds>|null}, …]}`, sorted by host name.
 
 ---
 

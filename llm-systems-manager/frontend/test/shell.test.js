@@ -61,9 +61,9 @@ async function boot(saved = { theme: 'dark' }, before = null) {
 
 const MOVED = {
   side: ['tabBtnOverall', 'tabBtnLlmControl', 'tabBtnTools', 'tabBtnEvents', 'tabBtnAdmin',
-    'subTabBtnDashLlamacpp', 'subTabBtnDashLmstudio', 'subTabBtnDashVllm', 'subTabBtnDashEnergy', 'subTabBtnOpenclaw',
-    'subTabBtnDashManager', 'subTabBtnDashForecast', 'towerBtn', 'towerBadge', 'tabDotEvents', 'tabDotAdmin'],
-  toolbar: ['serverStateBanner', 'lmsStateBanner', 'vllmStateBanner', 'intervalBadge', 'settingsCog', 'backToCompanion'],
+    'subTabBtnDashAll', 'subTabBtnDashLlamacpp', 'subTabBtnDashLmstudio', 'subTabBtnDashVllm', 'subTabBtnDashEnergy', 'subTabBtnOpenclaw',
+    'subTabBtnDashManager', 'subTabBtnDashForecast', 'towerNav', 'towerNavBadge', 'tabDotEvents', 'tabDotAdmin'],
+  toolbar: ['serverStateBanner', 'lmsStateBanner', 'vllmStateBanner', 'towerBtn', 'towerBadge', 'intervalBadge', 'settingsCog', 'backToCompanion'],
 };
 
 describe('manager shell', () => {
@@ -154,6 +154,46 @@ describe('manager shell', () => {
     _windows.push(dom.window);
     expect(dom.window.mcShellInit).toBeUndefined();
     expect(dom.window.document.getElementById('side').classList.contains('collapsed')).toBe(true);
+  });
+
+  test('Tower button sits in the toolbar right group before Live; the sidebar keeps a Tower item', () => {
+    const doc = new JSDOM(indexSrc, { url: 'http://localhost/' }).window.document;
+    const btn = doc.getElementById('towerBtn');
+    expect(btn.parentElement.classList.contains('tb-right')).toBe(true);
+    expect(btn.nextElementSibling.id).toBe('liveBtn');
+    expect(btn.className).toBe('tb-tower');
+    expect(btn.hidden).toBe(true);
+    expect(btn.getAttribute('onclick')).toBe('towerToggle()');
+    expect(btn.getAttribute('title')).toBe('Tower (Alt+T)');
+    expect(btn.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(btn.querySelector('svg')).toBeTruthy();
+    expect(btn.querySelector('.tb-tower-lab').textContent).toBe('Tower');
+    expect(btn.querySelector('#towerBadge.n').hidden).toBe(true);
+    expect(btn.querySelector('#towerBadge').hasAttribute('aria-hidden')).toBe(false);
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    const nav = doc.getElementById('towerNav');
+    expect(nav.classList.contains('nav')).toBe(true);
+    expect(nav.hidden).toBe(true);
+    expect(nav.getAttribute('onclick')).toBe('towerToggle()');
+    expect(nav.querySelector('svg')).toBeTruthy();
+    expect(nav.querySelector('.side-lab').textContent).toBe('Tower');
+    expect(nav.querySelector('#towerNavBadge.n').hidden).toBe(true);
+    expect(nav.querySelector('#towerNavBadge').getAttribute('aria-hidden')).toBe('true');
+    expect(nav.getAttribute('aria-expanded')).toBe('false');
+    const flat = shellCss.replace(/\s+/g, '');
+    expect(flat).toContain('@media(max-width:600px){.tb-tower{padding:08px;}.tb-tower.tb-tower-lab{display:none;}}');
+  });
+
+  test('phone-width Tower item click closes the overlay', async () => {
+    const w = await boot(undefined, (win) => { win.towerToggle = () => { win.__toggled = (win.__toggled || 0) + 1; }; });
+    const d = w.document;
+    w.innerWidth = 420;
+    d.getElementById('navOpen').click();
+    d.getElementById('towerNav').hidden = false;
+    d.getElementById('towerNav').click();
+    expect(w.__toggled).toBe(1);
+    expect(d.getElementById('side').classList.contains('open')).toBe(false);
+    expect(d.activeElement.id).toBe('navOpen');
   });
 
   test('phone-width item click closes the overlay and focuses the menu button', async () => {
@@ -281,9 +321,60 @@ describe('manager shell', () => {
     expect(bar.hidden).toBe(false);
   });
 
+  test('All hosts range group shows only on Dashboards · All hosts', async () => {
+    const w = await boot({ theme: 'dark', kit: { 'mgr.ahRange': '12' } });
+    const d = w.document;
+    const bar = d.querySelector('#toolbar .tb-ah');
+    const pressed = () => [...bar.querySelectorAll('[data-ah-range]')].map(b => [b.dataset.ahRange, b.getAttribute('aria-pressed')]);
+    expect(new JSDOM(indexSrc).window.document.querySelector('#toolbar .tb-ah').hidden, 'hidden in the markup').toBe(true);
+    expect(bar.hidden).toBe(true);
+    expect(w.ahState.range).toBe(12);
+    expect(pressed()).toEqual([['6', 'false'], ['12', 'true'], ['24', 'false']]);
+    d.getElementById('subTabBtnDashAll').click();
+    expect(bar.hidden).toBe(false);
+    expect(d.getElementById('dash-all').classList.contains('active')).toBe(true);
+    expect(d.getElementById('pageTitle').textContent).toBe('Dashboards · All hosts');
+    const got = [];
+    w.ahSetRange = (n) => { got.push(n); };
+    bar.querySelector('[data-ah-range="6"]').click();
+    expect(got).toEqual([6]);
+    expect(bar.querySelectorAll('input').length).toBe(0);
+    d.getElementById('subTabBtnDashEnergy').click();
+    expect(bar.hidden).toBe(true);
+    w.switchTab('dashboard');
+    w.switchSubTab('dashboard', 'all');
+    expect(bar.hidden).toBe(false);
+    w.switchTab('overall');
+    expect(bar.hidden).toBe(true);
+  });
+
+  test('no user-visible "fleet" in the dashboard and companion markup', () => {
+    for (const file of ['index.html', 'companion.html']) {
+      const doc = new JSDOM(srcFile(file)).window.document;
+      const walker = doc.createTreeWalker(doc.body, 4);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.parentElement && n.parentElement.closest('script,style')) continue;
+        expect(n.textContent, file + ' text').not.toMatch(/fleet/i);
+      }
+      for (const el of doc.querySelectorAll('[title],[data-title],[aria-label],[placeholder],[data-note]')) {
+        for (const a of ['title', 'data-title', 'aria-label', 'placeholder', 'data-note']) {
+          expect(el.getAttribute(a) || '', `${file} ${a}`).not.toMatch(/fleet/i);
+        }
+      }
+    }
+  });
+
+  test('toasts start below the sticky toolbar', () => {
+    const flat = srcFile('css/toasts.css').replace(/\s+/g, '');
+    expect(flat).toContain('#alarmToastContainer{position:fixed;top:calc(var(--mc-top,61px)+12px);');
+  });
+
   test('toolbar group wraps and takes its colours from kit tokens', () => {
     const flat = shellCss.replace(/\s+/g, '');
     expect(flat).toContain('.tb-ov{display:flex;flex-wrap:wrap;');
+    expect(flat).toContain('.tb-ah{display:flex;flex-wrap:wrap;');
+    expect(flat).toContain('@media(max-width:600px){#toolbar.tb-right{gap:6px;}#toolbar#liveT{display:none;}#toolbar.tb-ov{flex-basis:100%;}');
+    expect(new JSDOM(indexSrc).window.document.getElementById('liveBtn').getAttribute('aria-label')).toBe('Live updates');
     expect(flat).toContain('.tb-chips{display:flex;flex-wrap:wrap;');
     const rules = [...shellCss.matchAll(/^[^{\n]*\.tb-(?:ov|chips?|seg)[^{]*\{([^}]*)\}/gm)].map(m => m[1]);
     expect(rules.length).toBeGreaterThan(5);

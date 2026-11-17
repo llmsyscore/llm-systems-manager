@@ -179,8 +179,8 @@ describe('_ensureSizeBtn on shells', () => {
 describe('hidden Pinned row (#1432)', () => {
   // The real row helpers next to the adoption helpers; saveLayout and the relayout and backfill hooks are stubbed.
   function loadRows() {
-    (0, eval)([fnSrc('_ovRows'), fnSrc('_applyRowsHidden'), fnSrc('toggleOverallRow'), fnSrc('_ovBackfillPinnedProviders'),
-      'window._ovRows = _ovRows; window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow;',
+    (0, eval)([fnSrc('_kitRows'), fnSrc('_applyRowsHidden'), fnSrc('toggleOverallRow'), fnSrc('_ovBackfillPinnedProviders'),
+      'window._kitRows = _kitRows; window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow;',
       'window._ovBackfillPinnedProviders = _ovBackfillPinnedProviders;'].join('\n'));
     window.saveLayout = () => {};
     window._relayoutGridCards = () => {};

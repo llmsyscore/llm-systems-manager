@@ -395,7 +395,7 @@ def _operator_denied(path: str) -> bool:
     """True when an operator-role session must be blocked from `path`. Carve-outs
     (picker list, agent infra) are allowed; agent infra reaches the gate as
     open paths and never gets here, but list-by-provider is explicitly allowed."""
-    if path == "/api/agents/list-by-provider":
+    if path in ("/api/agents/list-by-provider", "/api/agents/hosts"):
         return False
     if path == "/api/admin/telemetry" and flask_request.method == "GET":
         return False  # operators read the report switches; the route strips the payload

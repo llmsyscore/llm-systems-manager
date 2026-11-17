@@ -12,7 +12,12 @@
   let _readOnly = false;   // the open conversation belongs to Forecast: shown, never continued
   let _timers = [], _timersAt = 0, _timerPoll = null, _timerTick = null, _timersBusy = false, _reports = [];
   let _checkPoll = 0;
+  let _clicked = null, _returnTo = null;
   const _bootS = Date.now() / 1000;
+  // The toolbar Tower button and the sidebar Tower item that are on the page.
+  const _towerBtns = () => [$('towerBtn'), $('towerNav')].filter(Boolean);
+  // Remembers which Tower button was clicked so closing can return focus to it.
+  document.addEventListener('click', e => { _clicked = (e.target.closest && e.target.closest('#towerBtn,#towerNav')) || null; }, true);
 
   function loadPrefs() { try { _prefs = { ..._prefs, ...(JSON.parse(localStorage.getItem(KEY) || '{}')) }; } catch (_) { /* fresh */ } }
   function savePrefs() { try { localStorage.setItem(KEY, JSON.stringify(_prefs)); } catch (_) { /* private mode */ } }
@@ -38,10 +43,9 @@
     _view = TW.stateView(_api);
     clearTimeout(_checkPoll);
     if (_view.check && _view.check.grade === 'pending') _checkPoll = setTimeout(towerRefreshState, 8000);
-    const btn = $('towerBtn');
-    if (!btn) return;
-    btn.hidden = _view.off && !_view.admin;
-    btn.classList.toggle('off', _view.off);
+    const btns = _towerBtns();
+    if (!btns.length) return;
+    for (const b of btns) { b.hidden = _view.off && !_view.admin; b.classList.toggle('off', _view.off); }
     if (_view.off && !_view.admin && isOpen()) towerClose();
     paintHeader();
     paintBadge();
@@ -141,10 +145,11 @@
 
   // Badge = replies that landed while closed + new insights while closed; the glow follows replies only.
   function paintBadge() {
-    const btn = $('towerBtn'), badge = $('towerBadge');
     const n = _unread + (isOpen() ? 0 : _insightsNew);
-    btn?.classList.toggle('unread', _unread > 0);
-    if (badge) { badge.textContent = n ? String(n) : ''; badge.hidden = !n; }
+    for (const b of _towerBtns()) b.classList.toggle('unread', _unread > 0);
+    for (const badge of [$('towerBadge'), $('towerNavBadge')]) {
+      if (badge) { badge.textContent = n ? String(n) : ''; badge.hidden = !n; }
+    }
   }
   function markUnread() { _unread += 1; paintBadge(); }
   function clearUnread() { _unread = 0; paintBadge(); }
@@ -152,7 +157,8 @@
   function towerOpen() {
     const ov = $('towerOverlay'); if (!ov) return;
     ov.classList.add('open');
-    $('towerBtn')?.classList.add('open');
+    _returnTo = _clicked; _clicked = null;
+    for (const b of _towerBtns()) { b.classList.add('open'); b.setAttribute('aria-expanded', 'true'); }
     if (_insightsNew) _tab = 'ins';
     clearUnread();
     document.addEventListener('keydown', onKey);
@@ -163,11 +169,15 @@
   }
   function towerClose(opts) {
     $('towerOverlay')?.classList.remove('open');
-    $('towerBtn')?.classList.remove('open');
+    for (const b of _towerBtns()) { b.classList.remove('open'); b.setAttribute('aria-expanded', 'false'); }
     document.body.classList.remove('tw-docked', 'tw-lock');
     _prefs.open = false; savePrefs();
+    const back = _returnTo; _returnTo = null; _clicked = null;
+    if (opts && opts.returnFocus === false) return;
+    // Focus goes to the button that opened the drawer, else the toolbar button.
+    if (back && !back.hidden) back.focus({ preventScroll: true });
     const btn = $('towerBtn');
-    if (btn && !btn.hidden && !(opts && opts.returnFocus === false)) btn.focus({ preventScroll: true });
+    if (btn && !btn.hidden && (!back || document.activeElement !== back)) btn.focus({ preventScroll: true });
   }
   // Width of the page's vertical scrollbar (0 for overlay scrollbars); measured only while the page can scroll.
   let _sbw = 0;
@@ -177,13 +187,19 @@
     _sbw = Number.isFinite(w) ? Math.max(0, Math.min(30, w)) : 0;
     return _sbw;
   }
+  // Drawer width in px: 400 when unset; at most the larger of 560 and half the window, never wider than the
+  // window minus 48 px, and never under 360.
+  function drawerWidth(w) {
+    const iw = window.innerWidth || 0, max = Math.min(iw - 48, Math.max(560, Math.floor(iw * 0.5)));
+    return Math.max(360, Math.min(max, typeof w === 'number' && Number.isFinite(w) ? w : 400));
+  }
   // Overlay locks the page behind the drawer; docked insets the drawer by the scrollbar width (#988).
   function applyDock() {
     const open = isOpen(), docked = !!_prefs.pinned && open;
     document.documentElement.style.setProperty('--tw-sbw', measureScrollbar() + 'px');
     document.body.classList.toggle('tw-docked', docked);
     document.body.classList.toggle('tw-lock', open && !docked);
-    document.documentElement.style.setProperty('--tw-w', Math.max(360, Math.min(560, _prefs.width || 400)) + 'px');
+    document.documentElement.style.setProperty('--tw-w', drawerWidth(_prefs.width) + 'px');
     $('twPin')?.classList.toggle('on', !!_prefs.pinned);
     $('twPin')?.setAttribute('aria-pressed', String(!!_prefs.pinned));
   }
@@ -580,7 +596,7 @@
       sendBtn.setAttribute('aria-label', busy ? 'Stop' : 'Send');
     }
     $('towerAside')?.classList.toggle('streaming', busy);
-    $('towerBtn')?.classList.toggle('streaming', busy);
+    for (const b of _towerBtns()) b.classList.toggle('streaming', busy);
     paintTitle();
   }
 
@@ -879,7 +895,7 @@
       ev.preventDefault();
       try { grip.setPointerCapture(ev.pointerId); } catch (_) { /* no capture */ }
       document.body.style.userSelect = 'none';
-      const move = e => { _prefs.width = Math.max(360, Math.min(560, window.innerWidth - e.clientX)); applyDock(); };
+      const move = e => { _prefs.width = drawerWidth(window.innerWidth - e.clientX); applyDock(); };
       const up = () => {
         document.body.style.userSelect = '';
         try { grip.releasePointerCapture(ev.pointerId); } catch (_) { /* already released */ }

@@ -939,22 +939,27 @@ function returnPinnedCards() {
   [..._ovAdopted].forEach(_returnOneAdopted);
 }
 
-// Overall rows as [id, label] in page order; the label is the row's fold button text without its chevron.
-function _ovRows() {
-  return [...document.querySelectorAll('#overallTab section.row[data-row]')].map(r => {
+// A kit page's rows as [id, label] in page order; the label is the row's fold button text without its chevron.
+function _kitRows(rootId) {
+  return [...document.querySelectorAll(`#${rootId} section.row[data-row]`)].map(r => {
     const b = r.querySelector('button[data-row-fold]');
     const label = b ? [...b.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim() : '';
     return [r.dataset.row, label || r.dataset.row];
   });
 }
 
-// Hides the Overall rows listed in layout.overallRowsHidden and refreshes the rows' Move up / Move down state.
+// Hides the Overall and All hosts rows listed in layout.overallRowsHidden and layout.allHostsRowsHidden
+// and refreshes the rows' Move up / Move down state.
 function _applyRowsHidden() {
   const lay = (typeof layout !== 'undefined' && layout) || window.layout;
   const hidden = (lay && lay.overallRowsHidden) || [];
   document.querySelectorAll('#overallTab section.row[data-row]').forEach(r => { r.hidden = hidden.includes(r.dataset.row); });
   const tab = document.getElementById('overallTab');
   if (tab && typeof kitRowMenus === 'function') kitRowMenus(tab);
+  const ahHidden = (lay && lay.allHostsRowsHidden) || [];
+  document.querySelectorAll('#dash-all section.row[data-row]').forEach(r => { r.hidden = ahHidden.includes(r.dataset.row); });
+  const ah = document.getElementById('dash-all');
+  if (ah && typeof kitRowMenus === 'function') kitRowMenus(ah);
 }
 
 // Shows the Pinned row's empty sentence while no card is pinned to Overall.
@@ -969,7 +974,7 @@ function _ovPinNoneSync() {
 function toggleOverallRow(id, on) {
   const hidden = new Set(layout.overallRowsHidden || []);
   if (on) hidden.delete(id); else hidden.add(id);
-  const ids = _ovRows().map(r => r[0]);
+  const ids = _kitRows('overallTab').map(r => r[0]);
   layout.overallRowsHidden = [...hidden].filter(x => ids.includes(x));
   _applyRowsHidden();
   if (id === 'pinned' && _activeTab === 'overall' && typeof adoptPinnedCards === 'function') {
@@ -977,6 +982,16 @@ function toggleOverallRow(id, on) {
     if (on && typeof _relayoutGridCards === 'function') _relayoutGridCards(document.getElementById('overallGrid'));
     if (on && typeof _ovBackfillPinnedProviders === 'function') _ovBackfillPinnedProviders();
   }
+  saveLayout();
+}
+
+// Shows or hides one All hosts row, keeping only ids of rows on the page, and saves the layout.
+function toggleAllHostsRow(id, on) {
+  const hidden = new Set(layout.allHostsRowsHidden || []);
+  if (on) hidden.delete(id); else hidden.add(id);
+  const ids = _kitRows('dash-all').map(r => r[0]);
+  layout.allHostsRowsHidden = [...hidden].filter(x => ids.includes(x));
+  _applyRowsHidden();
   saveLayout();
 }
 
@@ -1106,13 +1121,16 @@ function toggleCard(cardId, visible) {
 
 // ── Settings drawer ─────────────────────────────────────────────────
 function _getDashSubTab() {
-  // Returns the active Dashboard sub-tab id. Defaults to llamacpp.
+  // Returns the active Dashboard sub-tab id. Defaults to all.
+  if (document.getElementById('dash-all')?.classList.contains('active'))      return 'all';
+  if (document.getElementById('dash-llamacpp')?.classList.contains('active')) return 'llamacpp';
   if (document.getElementById('dash-lmstudio')?.classList.contains('active')) return 'lmstudio';
   if (document.getElementById('dash-vllm')?.classList.contains('active'))     return 'vllm';
   if (document.getElementById('dash-manager')?.classList.contains('active'))  return 'manager';
   if (document.getElementById('dash-energy')?.classList.contains('active'))   return 'energy';
   if (document.getElementById('dash-openclaw')?.classList.contains('active')) return 'openclaw';
-  return 'llamacpp';
+  if (document.getElementById('dash-forecast')?.classList.contains('active')) return 'forecast';
+  return 'all';
 }
 
 function _sdScope() {
@@ -1212,6 +1230,11 @@ function _sdRenderHeader(scope) {
   scope = scope || _sdScope();
   const sum = document.getElementById('settingsSum');
   if (!sum) return;
+  if (scope.kind === 'rows') {
+    const off = layout[scope.rowsHidden] || [], rows = _kitRows(scope.root);
+    sum.innerHTML = `<b>${_esc(scope.label)}</b> · ${rows.filter(r => !off.includes(r[0])).length} of ${rows.length} sections shown`;
+    return;
+  }
   if (scope.kind !== 'cards') { sum.innerHTML = `<b>${_esc(scope.label)}</b> · no cards on this page`; return; }
   const cols = SettingsLib.normalizeCols(layout[scope.cols] || 3);
   const preset = _sdCurrentPreset(scope, cols);
@@ -1236,6 +1259,14 @@ function _sdChip(id, label, on, kind) {
 function _sdRenderCards(scope) {
   scope = scope || _sdScope();
   const el = document.getElementById('sdCards');
+  if (el && scope.kind === 'rows') {
+    const off = layout[scope.rowsHidden] || [], rows = _kitRows(scope.root);
+    el.innerHTML = `
+      <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${rows.filter(r => !off.includes(r[0])).length} of ${rows.length} shown</span>
+        <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's sections, order and chart defaults">⟲ Reset this page</button></span></div>
+      <div class="sd-chips">${rows.map(r => _sdChip(r[0], r[1], !off.includes(r[0]), 'ahrow')).join('')}</div>`;
+    return;
+  }
   if (!el || scope.kind !== 'cards') return;
   if (_activeTab === 'overall') {
     const borrowed = layout.overallBorrowed || [];
@@ -1249,7 +1280,7 @@ function _sdRenderCards(scope) {
         <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), borrowed.includes(id), 'pin')).join('')}</div>`;
     }).join('');
     const off = layout.overallRowsHidden || [];
-    const rows = _ovRows();
+    const rows = _kitRows('overallTab');
     el.innerHTML = `
       <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${rows.filter(r => !off.includes(r[0])).length} of ${rows.length} shown</span></div>
       <div class="sd-chips">${rows.map(r => _sdChip(r[0], r[1], !off.includes(r[0]), 'row')).join('')}</div>
@@ -1413,16 +1444,17 @@ function _renderIntervalBadge() {
 
 function renderSettingsPanel() {
   const scope = _sdScope();
-  const has = scope.kind === 'cards';
+  const has = scope.kind === 'cards', rows = scope.kind === 'rows';
   const none = document.getElementById('sdNoCards');
   const cards = document.getElementById('sdCards');
   const lay = document.getElementById('sdLayout');
-  if (none) none.hidden = has;
-  if (cards) cards.hidden = !has;
+  if (none) none.hidden = has || rows;
+  if (cards) cards.hidden = !(has || rows);
   if (lay) lay.hidden = !has;
   _sdRenderAccount();
   _sdRenderHeader(scope);
   if (has) { _sdRenderCards(scope); _sdRenderLayout(scope); }
+  else if (rows) _sdRenderCards(scope);
   _sdRenderAppearance();
   _sdRenderRefresh();
 }
@@ -1450,6 +1482,8 @@ function _sdBind() {
       toggleCard(t.dataset.id, on); _sdRerenderCards();
     } else if (kind === 'row') {
       toggleOverallRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
+    } else if (kind === 'ahrow') {
+      toggleAllHostsRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
     } else if (kind === 'pin') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       if (on) addBorrowedCard(t.dataset.id); else removeBorrowedCard(t.dataset.id);
@@ -1556,6 +1590,25 @@ function applyAllGridCols() {
   });
 }
 
+// Resets Dashboards · All hosts only: shows every row, restores the kit row and panel order,
+// and brings back the busiest-five chart default; other pages keep their layout.
+async function _ahResetLayout() {
+  const ok = await _themedConfirm({
+    title:        'Reset this page back to default?',
+    bodyHtml:     'This shows every section again, restores the section and panel order, and shows the five busiest hosts on each chart. Other pages are unaffected.',
+    confirmLabel: 'Reset',
+    cancelLabel:  'Cancel',
+  });
+  if (!ok) return;
+  layout.allHostsRowsHidden = [];
+  const root = document.getElementById('dash-all');
+  if (root && typeof kitLayoutReset === 'function') kitLayoutReset('allhosts', root, window.mcShellStore);
+  _applyRowsHidden();
+  if (typeof ahResetChoices === 'function') ahResetChoices();
+  saveLayout();
+  if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+}
+
 // Reset only the active tab's layout keys back to defaults. Other tabs
 // keep their order/visibility/size/columns. Card sizes are cleared just
 // for the IDs that belong to the active tab (looked up via the right
@@ -1568,6 +1621,7 @@ async function resetCurrentTabLayout() {
     map = {};
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
+    if (sub === 'all') { await _ahResetLayout(); return; }
     if (sub === 'lmstudio') {
       scope = { hidden: 'lmsHidden', order: 'lmsOrder', cols: 'lmsCols' };
       map = CARD_LABELS_LMS;
@@ -1577,9 +1631,11 @@ async function resetCurrentTabLayout() {
     } else if (sub === 'manager') {
       scope = { hidden: 'managerHidden', order: 'managerOrder', cols: 'managerCols' };
       map = CARD_LABELS_MANAGER;
-    } else {
+    } else if (sub === 'llamacpp') {
       scope = { hidden: 'hidden', order: 'order', cols: 'cols' };
       map = CARD_LABELS;
+    } else {
+      return;
     }
   } else {
     return;
@@ -1663,6 +1719,10 @@ function switchTab(tab) {
     if (typeof ovLoad === 'function') ovLoad().catch(() => {});
   }
   if (tab === 'dashboard')  { document.getElementById('dashboardTab').style.display  = '';   }
+  // All hosts fetches and polls only while Dashboards shows it.
+  if (tab === 'dashboard' && typeof _subTabState !== 'undefined' && _subTabState.dashboard === 'all') {
+    if (typeof ahEnter === 'function') ahEnter();
+  } else if (typeof ahLeave === 'function') ahLeave();
   if (tab === 'events')     {
     document.getElementById('eventsTab').style.display = '';
     _ensureAlarmIframeLoaded();

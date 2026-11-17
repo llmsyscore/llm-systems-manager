@@ -292,6 +292,7 @@ class TestOperatorDenyMatcher:
 
     @pytest.mark.parametrize("path", [
         "/api/me", "/api/account/password", "/api/agents/list-by-provider",
+        "/api/agents/hosts",
         "/api/metrics", "/api/llm/models", "/api/lmstudio/metrics",
         "/api/alarm/alerts/", "/api/history",
     ])

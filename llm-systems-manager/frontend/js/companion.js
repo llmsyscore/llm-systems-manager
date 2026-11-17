@@ -835,7 +835,7 @@
         const ok = e.target.closest('[data-approve]');
         if (ok) {
           return sheet.confirm('Approve agent',
-            'Issue a token and admit this agent to the fleet.', 'Approve', false,
+            'Issue a token and add this host to the manager.', 'Approve', false,
             () => this.act('approve', () => jfetch(
               `/api/agents/${encodeURIComponent(ok.dataset.approve)}/approve`, { method: 'POST' })));
         }

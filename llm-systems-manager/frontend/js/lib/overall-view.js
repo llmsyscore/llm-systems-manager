@@ -422,7 +422,7 @@ function fleetKpis(input) {
     { id: 'k-peak', title: 'Peak speed', value: peak != null ? peak.toFixed(1) : null, unit: 't/s',
       sub: `highest combined rate in a ${rangeBucketMs(rangeH) / 60000} min slot · last ${rangeH} h`, delta: null,
       spark: genSums.length ? genSums : null },
-    { id: 'k-pow', title: 'Fleet power', value: watts != null ? watts.toFixed(1) : null, unit: 'W',
+    { id: 'k-pow', title: 'Total power', value: watts != null ? watts.toFixed(1) : null, unit: 'W',
       sub: 'now · GPU and Mac power only', delta: null,
       spark: powerSpark.length ? powerSpark : null },
     { id: 'k-en', title: 'Energy', value: kwh != null ? kwh.toFixed(2) : null, unit: 'kWh',

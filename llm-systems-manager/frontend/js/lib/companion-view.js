@@ -248,7 +248,7 @@
     const srcs = [...new Set([...perHost.values()].map((x) => x.src))].join(' + ');
     const wattsSub = liveW != null
       ? srcs + ' · ' + perHost.size + (perHost.size === 1 ? ' host' : ' hosts')
-      : (fleetW != null ? 'fleet avg · this window' : 'no telemetry');
+      : (fleetW != null ? 'all-hosts average · this window' : 'no telemetry');
 
     // Cross-provider totals — the aggregate the provider rows break down.
     const gr = lms.gateway_rates || {};
@@ -266,7 +266,7 @@
     // LM Studio reports no request or queue counters of its own, so its share
     // comes from the manager gateway's in-flight tally — which sees only
     // gateway-routed traffic. Name the providers actually counted rather than
-    // letting a 0 read as "the fleet is idle".
+    // letting a 0 read as "all hosts are idle".
     const lmsInflight = num(lms.gateway_inflight);
     const inflight = total([llamaBusy, vllm.requests_running, lmsInflight]);
     const queued = total([lm.requests_deferred, vllm.requests_waiting]);
