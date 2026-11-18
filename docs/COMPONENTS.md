@@ -154,7 +154,7 @@ The Alarm Engine runs as a completely standalone service with its own process, i
 - Evaluates every incoming measurement against all active alarm rules
 - Manages the full alert lifecycle: triggering, acknowledging, and resolving alerts
 - Sends notifications via email, HTTP webhook, Discord, SMS, and in-dashboard pop-ups when alerts trigger or clear
-- Streams live alert events to the browser via WebSocket so the Events tab updates instantly
+- Streams live alert events to the browser via WebSocket so the Events and metrics tab updates instantly
 - Provides historical metric data to the Manager for dashboard charts
 - Stores alarm rules, notification channel configurations, and delivery history in a local database
 
@@ -197,7 +197,7 @@ The Alarm Engine can send alert notifications through five channels, each config
 
 Each channel can be enabled or disabled independently, and each alarm rule can specify which channels to use. The engine records every delivery attempt — including failures — so operators can confirm notifications were sent.
 
-Channels and policies are configured in the dashboard's **Events** tab under **Settings › Notifications** (the alarm console's own settings page): its **Channels** section holds the email, webhook, Discord, SMS and toast definitions, and its **Policies** section decides which alerts route to which channels, with dwell and cooldown. Nothing about notifications is configured under the Admin tab; the installer only pre-fills the SMTP account.
+Channels and policies are configured in the dashboard's **Events and metrics** tab under **Settings › Notifications** (the alarm console's own settings page): its **Channels** section holds the email, webhook, Discord, SMS and toast definitions, and its **Policies** section decides which alerts route to which channels, with dwell and cooldown. Nothing about notifications is configured under the Admin tab; the installer only pre-fills the SMTP account.
 
 ### Dependencies
 

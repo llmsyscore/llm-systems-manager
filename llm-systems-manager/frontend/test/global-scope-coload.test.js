@@ -51,7 +51,7 @@ describe('classic-script global scope', () => {
   // Control: proves the harness actually detects the failure it guards against.
   it('detects a duplicate top-level declaration (control)', () => {
     const charts = readFileSync(resolve(ROOT, 'js/charts.js'), 'utf8');
-    expect(() => parseTogether([charts, 'const fmt = 1;']))
+    expect(() => parseTogether([charts, 'const lastNonZero = 1;']))
       .toThrow(/already been declared/);
   });
 });

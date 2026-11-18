@@ -34,9 +34,11 @@ function loadAdoption() {
 beforeEach(() => {
   document.body.innerHTML = `
     <div id="dashboardTab">
-      <div class="grid" id="cardGrid">
-        <div class="card" data-card="gpu"><h3>GPU</h3><div class="chart-wrap"><canvas id="gpuChart"></canvas></div></div>
-        <div class="card" data-card="cpu-overall"><h3>CPU</h3></div>
+      <div class="hp-root" id="hp-llama" data-hp-page="llama">
+        <section class="row" data-row="llama-gpu"><div class="panels">
+          <section class="panel" data-card="llama-gpu-busy"><div class="p-body" id="hp-b-llama-gpu-busy"><div class="ts" id="hp-llama-gpu-busy"></div></div></section>
+          <section class="panel" data-card="llama-cpu-mem"><div class="p-body"></div></section>
+        </div></section>
       </div>
       <div class="grid" id="managerCardGrid">
         <div class="card" data-card="mgr-agents"><h3>Agents</h3></div>
@@ -46,13 +48,13 @@ beforeEach(() => {
       <section class="row" data-row="pinned" data-kit-nosort>
         <button type="button" class="row-hd" data-row-fold>Pinned</button>
         <div class="grid" id="overallGrid">
-          <div class="card ov-shell" data-card="ov-borrow-gpu"></div>
+          <div class="card ov-shell" data-card="ov-borrow-llama-gpu-busy"></div>
           <div class="card ov-shell" data-card="ov-borrow-mgr-agents"></div>
-          <div class="card ov-shell" data-card="ov-borrow-lms-power"></div>
+          <div class="card ov-shell" data-card="ov-borrow-lms-mac-power"></div>
         </div>
       </section>
     </div>`;
-  window.layout = { overallBorrowed: ['gpu', 'mgr-agents', 'lms-power'] };
+  window.layout = { overallBorrowed: ['llama-gpu-busy', 'mgr-agents', 'lms-mac-power'] };
   window._ensureSizeBtn = () => {};
   window._resizeChartsIn = () => {};
   window._applyHiddenForGrid = () => {};
@@ -62,26 +64,26 @@ beforeEach(() => {
 describe('adoptPinnedCards', () => {
   it('moves the real node into its shell', () => {
     adoptPinnedCards();
-    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-gpu"]');
-    expect(shell.querySelector('[data-card="gpu"]')).toBeTruthy();
-    expect(document.querySelector('#cardGrid [data-card="gpu"]')).toBeNull();
-    // Canvas travels with the card.
-    expect(shell.querySelector('#gpuChart')).toBeTruthy();
+    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"]');
+    expect(shell.querySelector('[data-card="llama-gpu-busy"]')).toBeTruthy();
+    expect(document.querySelector('#hp-llama [data-card="llama-gpu-busy"]')).toBeNull();
+    // The chart holder travels with the panel.
+    expect(shell.querySelector('#hp-llama-gpu-busy')).toBeTruthy();
   });
 
   it('renders the ov-missing note when the home card does not exist', () => {
     adoptPinnedCards();
-    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-lms-power"]');
+    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-lms-mac-power"]');
     expect(shell.querySelector('.ov-missing')).toBeTruthy();
-    expect(window._ovAdopted.has('lms-power')).toBe(false);
+    expect(window._ovAdopted.has('lms-mac-power')).toBe(false);
   });
 
   it('is idempotent — double adopt keeps one card and one home marker', () => {
     adoptPinnedCards();
     adoptPinnedCards();
-    expect(document.querySelectorAll('[data-card="gpu"]').length).toBe(1);
-    const marks = [...document.getElementById('cardGrid').childNodes]
-      .filter(n => n.nodeType === 8 && n.textContent.includes('ov-home:gpu'));
+    expect(document.querySelectorAll('[data-card="llama-gpu-busy"]').length).toBe(1);
+    const marks = [...document.querySelector('#hp-llama .panels').childNodes]
+      .filter(n => n.nodeType === 8 && n.textContent.includes('ov-home:llama-gpu-busy'));
     expect(marks.length).toBe(1);
   });
 });
@@ -90,10 +92,10 @@ describe('returnPinnedCards', () => {
   it('restores the exact home position (before its old next sibling)', () => {
     adoptPinnedCards();
     returnPinnedCards();
-    const grid = document.getElementById('cardGrid');
-    const cards = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-    expect(cards).toEqual(['gpu', 'cpu-overall']);
-    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeNull();
+    const grid = document.querySelector('#hp-llama .panels');
+    const cards = [...grid.querySelectorAll('.panel')].map(c => c.dataset.card);
+    expect(cards).toEqual(['llama-gpu-busy', 'llama-cpu-mem']);
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeNull();
     // No leftover comment markers.
     const marks = [...grid.childNodes].filter(n => n.nodeType === 8);
     expect(marks.length).toBe(0);
@@ -103,16 +105,16 @@ describe('returnPinnedCards', () => {
     adoptPinnedCards();
     returnPinnedCards();
     adoptPinnedCards();
-    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeTruthy();
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeTruthy();
     returnPinnedCards();
-    expect(document.querySelector('#cardGrid [data-card="gpu"]')).toBeTruthy();
+    expect(document.querySelector('#hp-llama [data-card="llama-gpu-busy"]')).toBeTruthy();
   });
 
   it('double return is a no-op', () => {
     adoptPinnedCards();
     returnPinnedCards();
     returnPinnedCards();
-    expect(document.querySelectorAll('[data-card="gpu"]').length).toBe(1);
+    expect(document.querySelectorAll('[data-card="llama-gpu-busy"]').length).toBe(1);
     expect(window._ovAdopted.size).toBe(0);
   });
 });
@@ -124,7 +126,7 @@ describe('_returnOneAdopted', () => {
     expect(document.querySelector('#managerCardGrid [data-card="mgr-agents"]')).toBeTruthy();
     expect(window._ovAdopted.has('mgr-agents')).toBe(false);
     // The other adopted card is untouched.
-    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeTruthy();
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeTruthy();
   });
 });
 
@@ -139,33 +141,38 @@ describe('_ovPinned', () => {
 
 describe('adoption visibility (hidden-at-home cards)', () => {
   it('clears a stale home display:none so the pinned card shows on Overall', () => {
-    const gpu = document.querySelector('#cardGrid [data-card="gpu"]');
+    const gpu = document.querySelector('#hp-llama [data-card="llama-gpu-busy"]');
     gpu.style.display = 'none';
     adoptPinnedCards();
-    const adopted = document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]');
+    const adopted = document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]');
     expect(adopted).toBeTruthy();
     expect(adopted.style.display).toBe('');
   });
 
-  it('re-applies the home grid hidden state on return', () => {
-    const gpu = document.querySelector('#cardGrid [data-card="gpu"]');
-    gpu.style.display = 'none';
-    const calls = [];
+  it('re-applies the Manager grid hidden state and size on return; a host page panel keeps the kit layout', () => {
+    const calls = [], sized = [];
     window._applyHiddenForGrid = (gridId, key) => calls.push([gridId, key]);
+    window._applyCardSize = (card, size) => sized.push([card.dataset.card, size]);
+    window._sizeMapFor = () => ({ 'mgr-agents': '2x1' });
+    window._defaultCardSize = () => 'auto';
     adoptPinnedCards();
     returnPinnedCards();
-    expect(calls).toContainEqual(['cardGrid', 'hidden']);
-    expect(calls).toContainEqual(['managerCardGrid', 'managerHidden']);
+    expect(calls).toEqual([['managerCardGrid', 'managerHidden']]);
+    expect(sized).toEqual([['mgr-agents', '2x1']]);
+    const panel = document.querySelector('#hp-llama [data-card="llama-gpu-busy"]');
+    expect(panel.dataset.size).toBeUndefined();
+    expect([...panel.classList].some(c => c.startsWith('size-'))).toBe(false);
+    ['_applyCardSize', '_sizeMapFor', '_defaultCardSize'].forEach(k => { delete window[k]; });
   });
 });
 
 describe('_ensureSizeBtn on shells', () => {
   it('gives the shell its own direct-child button even when the adopted card has one', () => {
     (0, eval)(fnSrc('_ensureSizeBtn', charts) + '\nwindow._ensureSizeBtn = _ensureSizeBtn;');
-    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-gpu"]');
+    const shell = document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"]');
     const inner = document.createElement('div');
     inner.className = 'card';
-    inner.dataset.card = 'gpu';
+    inner.dataset.card = 'llama-gpu-busy';
     const innerBtn = document.createElement('button');
     innerBtn.className = 'card-size-btn';
     inner.appendChild(innerBtn);
@@ -184,35 +191,35 @@ describe('hidden Pinned row (#1432)', () => {
       'window._ovBackfillPinnedProviders = _ovBackfillPinnedProviders;'].join('\n'));
     window.saveLayout = () => {};
     window._relayoutGridCards = () => {};
-    window.CARD_LABELS = { gpu: 'GPU' };
+    window.CARD_LABELS = { 'llama-gpu-busy': 'GPU busy and memory' };
     window.CARD_LABELS_LMS = {};
     window.CARD_LABELS_VLLM = {};
     window.CARD_LABELS_MANAGER = { 'mgr-agents': 'Agents' };
     window._activeTab = 'overall';
   }
-  const home = (id) => document.querySelector(`#cardGrid [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
+  const home = (id) => document.querySelector(`#hp-llama [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
   const inShell = (id) => document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"] [data-card="${id}"]`);
 
   it('adopts nothing while hidden, returns adopted cards on hide and adopts again on show', () => {
     loadRows();
     window.layout.overallRowsHidden = ['pinned'];
     adoptPinnedCards();
-    expect(home('gpu')).toBeTruthy();
-    expect(inShell('gpu')).toBeNull();
+    expect(home('llama-gpu-busy')).toBeTruthy();
+    expect(inShell('llama-gpu-busy')).toBeNull();
     expect(window._ovAdopted.size).toBe(0);
     expect(window._ovPinned('mgr-agents')).toBe(false);
 
     window.toggleOverallRow('pinned', true);
     expect(window.layout.overallRowsHidden).toEqual([]);
-    expect(inShell('gpu')).toBeTruthy();
+    expect(inShell('llama-gpu-busy')).toBeTruthy();
     expect(inShell('mgr-agents')).toBeTruthy();
     expect(window._ovPinned('mgr-agents')).toBe(true);
 
     window.toggleOverallRow('pinned', false);
     expect(document.querySelector('section.row[data-row="pinned"]').hidden).toBe(true);
-    expect(home('gpu')).toBeTruthy();
+    expect(home('llama-gpu-busy')).toBeTruthy();
     expect(home('mgr-agents')).toBeTruthy();
-    expect(inShell('gpu')).toBeNull();
+    expect(inShell('llama-gpu-busy')).toBeNull();
     expect(window._ovAdopted.size).toBe(0);
   });
 
@@ -221,11 +228,11 @@ describe('hidden Pinned row (#1432)', () => {
     window.layout.overallRowsHidden = ['pinned'];
     window._activeTab = 'dashboard';
     window.toggleOverallRow('pinned', true);
-    expect(inShell('gpu')).toBeNull();
-    expect(home('gpu')).toBeTruthy();
+    expect(inShell('llama-gpu-busy')).toBeNull();
+    expect(home('llama-gpu-busy')).toBeTruthy();
     window._activeTab = 'overall';
     adoptPinnedCards();
-    expect(inShell('gpu')).toBeTruthy();
+    expect(inShell('llama-gpu-busy')).toBeTruthy();
   });
 });
 
@@ -249,12 +256,12 @@ describe('Pinned row empty sentence (#1432)', () => {
     const none = document.getElementById('ovPinNone');
     expect(none.hidden).toBe(true);
     adoptPinnedCards();
-    ['gpu', 'mgr-agents', 'lms-power'].forEach(id => window.removeBorrowedCard(id));
+    ['llama-gpu-busy', 'mgr-agents', 'lms-mac-power'].forEach(id => window.removeBorrowedCard(id));
     expect(window.layout.overallBorrowed).toEqual([]);
     expect(none.hidden).toBe(false);
-    expect(document.querySelector('#cardGrid [data-card="gpu"]')).toBeTruthy();
-    window.addBorrowedCard('gpu');
+    expect(document.querySelector('#hp-llama [data-card="llama-gpu-busy"]')).toBeTruthy();
+    window.addBorrowedCard('llama-gpu-busy');
     expect(none.hidden).toBe(true);
-    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeTruthy();
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeTruthy();
   });
 });

@@ -1555,7 +1555,7 @@ def test_recent_runs_passes_run_id_and_host_through():
 def test_help_notes_point_notification_setup_at_the_events_tab():
     for topic in ("email notification setting", "channel", "policy"):
         note = tt.default_help(topic)
-        assert "Events tab › Settings › Notifications" in note
+        assert "Events and metrics tab › Settings › Notifications" in note
         assert "Admin" not in note.replace("lives under Admin", "")
     assert "Channels section" in tt.default_help("channel") and "Policies section" in tt.default_help("policy")
     assert (tt.DOCS_ROOT / "docs" / "COMPONENTS.md").read_text().count("**Settings › Notifications**") == 1

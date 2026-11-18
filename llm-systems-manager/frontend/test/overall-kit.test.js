@@ -349,9 +349,9 @@ describe('Pinned row and hidden tab (#1432)', () => {
   test('pinned row keeps adoption', async () => {
     load();
     document.body.insertAdjacentHTML('afterbegin',
-      '<div class="grid" id="cardGrid"><div class="card" data-card="gpu"><h3>GPU</h3></div></div>');
-    document.getElementById('overallGrid').innerHTML = '<div class="card ov-shell" data-card="ov-borrow-gpu"></div>';
-    window.layout = { overallBorrowed: ['gpu'] };
+      '<div class="hp-root" id="hp-llama"><section class="panel" data-card="llama-gpu-busy"><div class="p-body"></div></section></div>');
+    document.getElementById('overallGrid').innerHTML = '<div class="card ov-shell" data-card="ov-borrow-llama-gpu-busy"></div>';
+    window.layout = { overallBorrowed: ['llama-gpu-busy'] };
     window._ovAdopted = new Set();
     window._ovHomeMarks = {};
     window._ensureSizeBtn = () => {};
@@ -366,8 +366,8 @@ describe('Pinned row and hidden tab (#1432)', () => {
     expect([...document.querySelectorAll('#overallTab > section.row')].map(r => r.dataset.row))
       .toEqual(['fleet', 'throughput', 'servers', 'power', 'watch', 'pinned']);
     window.adoptPinnedCards();
-    expect(document.querySelector('#overallGrid [data-card="ov-borrow-gpu"] [data-card="gpu"]')).toBeTruthy();
-    expect(document.querySelector('#cardGrid [data-card="gpu"]')).toBeNull();
+    expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeTruthy();
+    expect(document.querySelector('#hp-llama [data-card="llama-gpu-busy"]')).toBeNull();
   });
 
   test('hidden tab does not fetch', async () => {
@@ -433,7 +433,7 @@ describe('Overall final fixes (#1432)', () => {
     expect(document.querySelector('[data-card="srv-llama"] .p-note').textContent).toBe('llm-systems-agent-llama · 1 of 2 awake');
     expect(document.querySelector('[data-card="srv-lms"] .p-note').textContent).toBe('llm-systems-lmstudio · 2 of 2 hosts online');
     expect(document.querySelector('[data-card="srv-lms"] .p-note').title).toBe('llm-systems-lmstudio · 2 of 2 hosts online');
-    expect(document.querySelector('[data-card="energy7"] .p-note').title).toBe('7 days · Wh');
+    expect(document.querySelector('[data-card="energy7"] .p-note').title).toBe('7 days · Wh per 3 hours');
     expect(text('ov-b-srv-llama')).toContain('SpeedNow 0.0 t/s · prompt 0.0 t/s');
     delete window._selectedAgents;
   });

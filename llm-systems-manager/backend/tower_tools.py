@@ -284,13 +284,13 @@ _HELP = {
     "report card": "Report Card is a standardized bench producing TTFT, tok/s, VRAM, watts and $/Mtok.",
     "profiles": "Model profiles are saved llama-server flag sets per host and model (LLM Control tab); "
                 "the active one is applied when the model loads.",
-    "notification": "Alert notifications are configured in the Events tab › Settings › Notifications (the alarm console's "
+    "notification": "Alert notifications are configured in the Events and metrics tab › Settings › Notifications (the alarm console's "
                     "own settings page): the Channels section holds email, webhook, Discord, SMS and toast; the Policies "
                     "section decides which alerts go to which channel, with dwell and cooldown. Nothing about notifications "
                     "lives under Admin.",
-    "channel": "Notification channels (email, webhook, Discord, SMS, toast) are managed in the Events tab › Settings › "
+    "channel": "Notification channels (email, webhook, Discord, SMS, toast) are managed in the Events and metrics tab › Settings › "
                "Notifications, Channels section; each channel is enabled separately and must be routed by a policy to send anything.",
-    "policy": "Notification policies live in the Events tab › Settings › Notifications, Policies section: which rules or "
+    "policy": "Notification policies live in the Events and metrics tab › Settings › Notifications, Policies section: which rules or "
               "severities route to which channels, dwell time before the first message and cooldown between repeats.",
 }
 

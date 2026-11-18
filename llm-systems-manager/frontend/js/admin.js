@@ -721,6 +721,7 @@ function _jumpToDashboard(agentId, provider) {
   }
   const spec = _adminProviders.find(p => p.name === provider);
   const sub = (spec && spec.sub_tab) || provider;
+  if (typeof _subTabState !== 'undefined') _subTabState.dashboard = sub;
   if (typeof switchTab === 'function') switchTab('dashboard');
   if (typeof switchSubTab === 'function') switchSubTab('dashboard', sub);
 }

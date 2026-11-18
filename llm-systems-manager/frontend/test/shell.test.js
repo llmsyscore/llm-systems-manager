@@ -3,7 +3,7 @@
 import { describe, test, expect, afterEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { Script, createContext } from 'node:vm';
-import { srcFile, blockSrc } from './helpers/harness.js';
+import { srcFile, blockSrc, fnSrc } from './helpers/harness.js';
 
 const indexSrc = srcFile('index.html');
 // The body markup with its script elements removed through a parsed DOM.
@@ -15,8 +15,8 @@ const chartsSrc = srcFile('js/charts.js');
 const shellCss = srcFile('css/shell.css');
 
 // Boot-time functions that live in scripts this harness does not load.
-const STUBS = ['loadBenchmarkData', 'renderModelCards', 'initSortable', 'syncInterval', 'loadHistory', 'loadLmsHistory',
-  'loadVllmHistory', 'loadManagerPerfHistory', 'checkConfig', 'pollServerState', 'fetchMetrics', 'startFetching',
+const STUBS = ['loadBenchmarkData', 'renderModelCards', 'initSortable', 'syncInterval', 'loadHistory',
+  'loadManagerPerfHistory', 'checkConfig', 'pollServerState', 'fetchMetrics', 'startFetching',
   'fetchLMStudioMetrics', 'fetchVllmMetrics', 'fetchServicesAndInflux', 'fetchManagerAgentsCard', 'fetchManagerStreamsCard',
   'refreshTabIndicators', 'refreshAlarmRules', 'fetchOverallMetrics', 'refreshLLMTab', 'loadHFTrending', 'startPerfRefresh',
   '_initLLMSections', 'startLogStream', 'adminLoadAgents', 'adminLoadHealth', 'adminAuthLoad', 'adminStartAutoRefresh',
@@ -100,6 +100,47 @@ describe('manager shell', () => {
     expect(on.map(b => b.id)).toEqual(['subTabBtnDashEnergy']);
     expect(d.querySelectorAll('#side [aria-current="page"]').length).toBe(1);
     expect(d.getElementById('pageTitle').textContent).toBe('Dashboards · Energy');
+  });
+
+  test('the Host page marks All hosts in the sidebar', async () => {
+    const w = await boot();
+    const d = w.document;
+    w.switchTab('dashboard');
+    w.switchSubTab('dashboard', 'host');
+    const on = [...d.querySelectorAll('#side [data-tab].on')].map(b => b.id);
+    expect(on).toEqual(['subTabBtnDashAll']);
+    expect(d.getElementById('subTabBtnDashAll').getAttribute('aria-current')).toBe('page');
+    expect(d.getElementById('pageTitle').textContent).toBe('Dashboards · Host');
+    w.switchSubTab('dashboard', 'lmstudio');
+    expect([...d.querySelectorAll('#side [data-tab].on')].map(b => b.id)).toEqual(['subTabBtnDashLmstudio']);
+  });
+
+  test('full-size panels on every page redraw their charts to fit', async () => {
+    const w = await boot();
+    expect(w.KIT_CONF.fullRedraw).toBe(true);
+    expect(w.KIT_CONF.prefix).toBe('mgr');
+  });
+
+  test('opening a Dashboards page from Overall or Admin enters only that page, never the one shown last', async () => {
+    const w = await boot();
+    const d = w.document;
+    const entered = [];
+    w.hpEnter = (page) => { entered.push(page); };
+    w.hpLeave = () => {};
+    w.switchTab('dashboard');
+    w.switchSubTab('dashboard', 'llamacpp');
+    w.switchTab('overall');
+    entered.length = 0;
+    d.getElementById('subTabBtnDashLmstudio').click();
+    expect(entered).toEqual(['lms', 'lms']);
+    w.switchTab('overall');
+    entered.length = 0;
+    const admin = srcFile('js/admin.js');
+    const inject = (code) => { const s = d.createElement('script'); s.textContent = code; d.head.appendChild(s); };
+    inject("var _adminProviders = [{ name: 'vllm', sub_tab: 'vllm' }];\n" + fnSrc(admin, '_jumpToDashboard'));
+    w._jumpToDashboard('agent-1', 'vllm');
+    expect(entered).toEqual(['vllm', 'vllm']);
+    expect(d.getElementById('dash-vllm').classList.contains('active')).toBe(true);
   });
 
   test('sidebar click switches', async () => {
@@ -321,7 +362,7 @@ describe('manager shell', () => {
     expect(bar.hidden).toBe(false);
   });
 
-  test('All hosts range group shows only on Dashboards · All hosts', async () => {
+  test('All hosts range group shows on Dashboards · All hosts and the host pages', async () => {
     const w = await boot({ theme: 'dark', kit: { 'mgr.ahRange': '12' } });
     const d = w.document;
     const bar = d.querySelector('#toolbar .tb-ah');
@@ -336,9 +377,15 @@ describe('manager shell', () => {
     expect(d.getElementById('pageTitle').textContent).toBe('Dashboards · All hosts');
     const got = [];
     w.ahSetRange = (n) => { got.push(n); };
+    w.hpRender = () => { got.push('render'); };
     bar.querySelector('[data-ah-range="6"]').click();
-    expect(got).toEqual([6]);
+    expect(got).toEqual([6, 'render']);
     expect(bar.querySelectorAll('input').length).toBe(0);
+    for (const sub of ['llamacpp', 'lmstudio', 'vllm', 'host']) {
+      w.switchSubTab('dashboard', sub);
+      expect(bar.hidden, sub).toBe(false);
+    }
+    expect(d.getElementById('pageTitle').textContent).toBe('Dashboards · Host');
     d.getElementById('subTabBtnDashEnergy').click();
     expect(bar.hidden).toBe(true);
     w.switchTab('dashboard');

@@ -1,0 +1,94 @@
+{
+ "calls": {
+  "gaps": {
+   "id": "g1",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e"
+   ],
+   "series": [
+    {
+     "name": "A",
+     "values": [
+      1,
+      null,
+      3,
+      4,
+      null
+     ],
+     "slot": 1
+    },
+    {
+     "name": "B",
+     "values": [
+      null,
+      2,
+      null,
+      null,
+      5
+     ],
+     "slot": 2,
+     "legend": "7 t"
+    }
+   ],
+   "w": 600,
+   "height": 170,
+   "gaps": "break",
+   "zoom": true,
+   "keep": 5
+  },
+  "thr": {
+   "id": "t1",
+   "labels": [
+    "a",
+    "b",
+    "c"
+   ],
+   "series": [
+    {
+     "name": "CPU %",
+     "values": [
+      10,
+      95,
+      50
+     ]
+    }
+   ],
+   "w": 480,
+   "height": 170,
+   "ymax": 100,
+   "thresholds": [
+    {
+     "value": 90,
+     "label": "warn 90%",
+     "tone": "warn"
+    }
+   ],
+   "gaps": "break"
+  },
+  "plain": {
+   "id": "p1",
+   "labels": [
+    "a",
+    "b"
+   ],
+   "series": [
+    {
+     "name": "A",
+     "values": [
+      3,
+      4
+     ]
+    }
+   ]
+  }
+ },
+ "out": {
+  "gaps": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"g1|A\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>A <span class=\"c-v\">8</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"g1|B\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>B <span class=\"c-v\">7 t</span></button></div><div class=\"ts\" data-kit-zoom data-kit-ts=\"{&quot;id&quot;:&quot;g1&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:170,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;A&quot;,&quot;values&quot;:[1,null,3,4,null],&quot;slot&quot;:1},{&quot;name&quot;:&quot;B&quot;,&quot;values&quot;:[null,2,null,null,5],&quot;slot&quot;:2,&quot;legend&quot;:&quot;7 t&quot;}],&quot;marks&quot;:[],&quot;zoom&quot;:true,&quot;keep&quot;:5,&quot;gaps&quot;:&quot;break&quot;,&quot;t&quot;:10,&quot;b&quot;:148}\"><svg viewBox=\"0 0 600 170\" width=\"100%\" role=\"img\" aria-label=\"A, B\"><line x1=\"34\" x2=\"592\" y1=\"148\" y2=\"148\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"151.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"79\" y2=\"79\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"82.5\" text-anchor=\"end\" class=\"ax\">3</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">5</text><text x=\"89.8\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"201.4\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"313\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"424.6\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"536.2\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><path d=\"M89.8 120.4h0M313 65.2L424.6 37.6\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"424.6\" cy=\"37.6\" r=\"3\" fill=\"var(--s1)\" stroke=\"var(--card)\" stroke-width=\"2\"/><path d=\"M201.4 92.8h0M536.2 10h0\" fill=\"none\" stroke=\"var(--s2)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"536.2\" cy=\"10\" r=\"3\" fill=\"var(--s2)\" stroke=\"var(--card)\" stroke-width=\"2\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"148\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "thr": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"t1|CPU %\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>CPU % <span class=\"c-v\">155</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;t1&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:170,&quot;w&quot;:480,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;CPU %&quot;,&quot;values&quot;:[10,95,50],&quot;slot&quot;:1}],&quot;marks&quot;:[],&quot;ymax&quot;:100,&quot;thresholds&quot;:[{&quot;value&quot;:90,&quot;label&quot;:&quot;warn 90%&quot;,&quot;tone&quot;:&quot;warn&quot;}],&quot;gaps&quot;:&quot;break&quot;,&quot;t&quot;:10,&quot;b&quot;:148}\"><svg viewBox=\"0 0 480 170\" width=\"100%\" role=\"img\" aria-label=\"CPU %\"><line x1=\"34\" x2=\"472\" y1=\"148\" y2=\"148\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"151.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"472\" y1=\"79\" y2=\"79\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"82.5\" text-anchor=\"end\" class=\"ax\">50</text><line x1=\"34\" x2=\"472\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">100</text><text x=\"107\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"253\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"399\" y=\"164\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><path d=\"M107 134.2L253 16.9L399 79\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"399\" cy=\"79\" r=\"3\" fill=\"var(--s1)\" stroke=\"var(--card)\" stroke-width=\"2\"/><line class=\"th\" x1=\"34\" x2=\"472\" y1=\"23.8\" y2=\"23.8\" stroke=\"var(--warn)\" stroke-dasharray=\"6 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"472\" y=\"20.8\" text-anchor=\"end\" class=\"ax th-l\">warn 90%</text><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"148\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "plain": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p1|A\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>A <span class=\"c-v\">7</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p1&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;A&quot;,&quot;values&quot;:[3,4],&quot;slot&quot;:1}],&quot;marks&quot;:[]}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"A\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">2</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">4</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><path d=\"M173.5 57L452.5 10\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"452.5\" cy=\"10\" r=\"3\" fill=\"var(--s1)\" stroke=\"var(--card)\" stroke-width=\"2\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>"
+ }
+}

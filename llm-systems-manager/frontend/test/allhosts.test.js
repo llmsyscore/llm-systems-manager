@@ -131,11 +131,20 @@ describe('All hosts page (#1432)', () => {
     expect(window._selectAgent).toHaveBeenLastCalledWith('lms', ID_LMS);
     expect(window.switchSubTab).toHaveBeenLastCalledWith('dashboard', 'lmstudio');
     const bare = rowOf('llm-systems-agent-bare');
-    expect(bare.querySelector('button')).toBeNull();
-    expect(bare.textContent).toContain('No LLM server');
+    expect(bare.querySelector('button.ah-go')).toBeNull();
     expect(bare.textContent).toContain('offline');
     bare.click();
     expect(window.switchSubTab).toHaveBeenCalledTimes(2);
+    // A host with no LLM server opens the host page with that host picked.
+    const open = bare.querySelector('button[data-ah-host]');
+    expect(open.textContent).toBe('No LLM server · open host');
+    window.hpSetHost = vi.fn();
+    open.click();
+    expect(window.hpSetHost).toHaveBeenCalledWith('host', ID_SYS);
+    expect(window.switchSubTab).toHaveBeenLastCalledWith('dashboard', 'host');
+    expect(window.hpSetHost.mock.invocationCallOrder[0]).toBeLessThan(window.switchSubTab.mock.invocationCallOrder[2]);
+    expect(window._selectAgent).toHaveBeenCalledTimes(2);
+    delete window.hpSetHost;
     expect(document.getElementById('dash-all').getAttribute('data-kit-page')).toBe('allhosts');
     expect(document.querySelector('[data-card="ah-now"] .p-note').textContent).toBe('click a host to open it');
     expect(document.querySelector('[data-card="ah-now"] .p-note').title).toBe('click a host to open it');
@@ -228,6 +237,20 @@ describe('All hosts page (#1432)', () => {
     const again = historyCalls(calls.slice(before));
     expect(again).toEqual(['/api/history/hosts?since_minutes=360&max_rows=1080', '/api/history/hosts?since_minutes=5']);
     expect(window.kitTsData(document.querySelector('#ah-b-cpu .ts[data-kit-ts]')).labels).toHaveLength(360);
+  });
+
+  test('compare charts break a line where a host has no data instead of dropping it to 0', async () => {
+    load();
+    stubFetch(THREE, { [ID_LLAMA]: 30, [ID_LMS]: 20, [ID_SYS]: 5 });
+    await window.ahEnter();
+    await settle();
+    const ts = document.querySelector('#ah-b-cpu .ts[data-kit-ts]');
+    expect(window.kitTsData(ts).gaps).toBe('break');
+    // Most of the day has no rows: no line point sits on the 0 gridline.
+    const zeroY = ts.querySelector('svg line').getAttribute('y1');
+    const ys = [...ts.querySelectorAll('path[fill="none"]')].flatMap(p => [...p.getAttribute('d').matchAll(/[ML][\d.]+ ([\d.]+)/g)].map(m => m[1]));
+    expect(ys.length).toBeGreaterThan(0);
+    expect(ys).not.toContain(zeroY);
   });
 
   test('a quiet host first seen later in the visit starts hidden too', async () => {

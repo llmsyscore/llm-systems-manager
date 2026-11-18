@@ -7,113 +7,9 @@ let _lmsMetrics = {};
 // Keep the @quant suffix so q4_k_m != iq4_xs.
 function normId(id) { return (id || '').replace(/[\/\-]/g, '_').toLowerCase(); }
 
-const lmsRamChartCtx = document.getElementById('lmsRamChart')?.getContext('2d');
-const lmsRamChart = lmsRamChartCtx ? new Chart(lmsRamChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'RAM %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-const lmsCpuChartCtx = document.getElementById('lmsCpuChart')?.getContext('2d');
-const lmsCpuChart = lmsCpuChartCtx ? new Chart(lmsCpuChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'CPU %', data: [], borderColor: '#e05', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-const lmsNetChartCtx = document.getElementById('lmsNetChart')?.getContext('2d');
-const lmsNetChart = lmsNetChartCtx ? new Chart(lmsNetChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Out', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'In',  data: [], borderColor: '#4e9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const lmsTpsChartCtx = document.getElementById('lmsTpsChart')?.getContext('2d');
-const lmsTpsChart = lmsTpsChartCtx ? new Chart(lmsTpsChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Gen t/s',    data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'Prompt t/s', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const lmsIoChartCtx = document.getElementById('lmsIoChart')?.getContext('2d');
-const lmsIoChart = lmsIoChartCtx ? new Chart(lmsIoChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Read',  data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'Write', data: [], borderColor: '#f7a', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const lmsGpuChartCtx = document.getElementById('lmsGpuChart')?.getContext('2d');
-const lmsGpuChart = lmsGpuChartCtx ? new Chart(lmsGpuChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'GPU busy %', data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-const lmsDiskUsageChartCtx = document.getElementById('lmsDiskUsageChart')?.getContext('2d');
-const lmsDiskUsageChart = lmsDiskUsageChartCtx ? new Chart(lmsDiskUsageChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-function _fmtBytes(b) {
-  if (!b) return '—';
-  if (b > 1e9) return (b / 1e9).toFixed(1) + ' GB';
-  return (b / 1e6).toFixed(0) + ' MB';
-}
-
 function _setEl(id, val) {
   const el = document.getElementById(id);
   if (el) el.textContent = val ?? '—';
-}
-
-// Server card Gen/Prompt tokens/s tiles: the live rate while traffic flows,
-// else the 60-min mean of active samples; the 60-min peak alongside (#736).
-const _LMS_TILE_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
-// [tracker key, tile id, label, gateway_rates field, history row field, window key]
-const _LMS_RATE_TILES = [
-  ['tps', 'lms-tps', 'Gen tokens/s', 'gen_tps', 'lms_tps', 'gen'],
-  ['pps', 'lms-pps', 'Prompt tokens/s', 'prompt_tps', 'lms_pps', 'prompt'],
-];
-const _lmsTiles = {
-  tps: LMPeaks.makeTracker(_LMS_TILE_WINDOW_MS),
-  pps: LMPeaks.makeTracker(_LMS_TILE_WINDOW_MS),
-};
-let _lmsTilesLastTs = null;
-
-function _lmsTilesReset() {
-  for (const [key] of _LMS_RATE_TILES) _lmsTiles[key].reset();
-  _lmsTilesLastTs = null;
-}
-
-// History row → the trackers; clock maps the row's ts onto the browser clock.
-function _lmsSeedTileRow(r, clock) {
-  const t = clock ? clock(r.ts) : new Date(r.ts).getTime();
-  if (!(t >= Date.now() - _LMS_TILE_WINDOW_MS)) return;
-  for (const [key, , , , rowField] of _LMS_RATE_TILES)
-    if (r[rowField] != null) _lmsTiles[key].push(t, r[rowField]);
-}
-
-// Each gateway sample (keyed by its ts) enters the trackers once, browser-stamped;
-// an offline agent's last rates never count as live. win = server window (#745).
-function _renderLmsRateTiles(gr, now, online = true, win = null) {
-  const at = now == null ? Date.now() : now;
-  const fresh = online && gr && gr.ts && gr.ts !== _lmsTilesLastTs;
-  if (fresh) _lmsTilesLastTs = gr.ts;
-  for (const [key, id, name, field, , winKey] of _LMS_RATE_TILES) {
-    const live = online && gr ? gr[field] : null;
-    if (fresh && live != null) _lmsTiles[key].push(at, live);
-    _setRateTile(id, fmtRateTile(live, _lmsTiles[key], name, at, win && win[winKey]));
-  }
 }
 
 // True when an LM Studio SUB-tab is the active view (the only place the LMS
@@ -125,10 +21,10 @@ function _lmsLogViewActive() {
   const ls = _subTabState && _subTabState['llm'];
   return (t === 'dashboard' && ds === 'lmstudio') || (t === 'llm' && ls === 'lmstudio');
 }
-// Metrics also feed the LLM Overall tab's mirrored LMS cards, so they're
-// needed there too — the log panel is not, hence the separate predicate.
+// Full metrics feed LLM Control · LM Studio and Overall; on Dashboards · LM Studio the host
+// page polls its own data, so there only the header pill is kept current (light fetch).
 function _lmsMetricsViewActive() {
-  return _activeTab === 'overall' || _lmsLogViewActive();
+  return _activeTab === 'overall' || (_activeTab === 'llm' && !!_subTabState && _subTabState.llm === 'lmstudio');
 }
 
 // Header LMS state pill from a /api/lmstudio/metrics payload.
@@ -158,7 +54,7 @@ function _updateLmsHeaderPill(d) {
 let _lmsPillTick = 0;
 async function fetchLMStudioMetrics() {
   if (document.hidden) return;
-  // Full render only on an LMS view (LLM Overall, Dashboard/LMS, LLM Control/LMS);
+  // Full render only on Overall and LLM Control · LM Studio;
   // off-view only the header pill is kept current, on every 5th tick.
   const pillOnly = !_lmsMetricsViewActive();
   _lmsPillTick = (_lmsPillTick + 1) % 5;
@@ -178,142 +74,9 @@ async function fetchLMStudioMetrics() {
       await lmsLoadTuned();
     }
 
-    const sys    = d.system || {};
     const ps     = d.ps || [];
     const models = d.models || [];
-    const ram    = sys.ram || {};
-    const net    = sys.net || {};
-    const cpu    = sys.cpu_per_core || [];
     const online = d.agent_online === true;
-    const ts     = d.ts ? new Date(d.ts) : new Date();
-
-    // Active model — from ps output (most reliable for status); falls back
-    // to an idle-loaded row so the server card still shows model info.
-    const activePs = ps.find(p => p.status && !['IDLE','STOPPED'].includes(p.status));
-    const loadedPs = ps.find(p => p.status && p.status !== 'STOPPED') || null;
-    const activeData = activePs || d.active || loadedPs || null;
-
-    // Agent badge updates — LMS-scoped only. Earlier this used a blanket
-    // .agent-badge selector, which also stomped llama-side badges
-    // (ov-llama-badge, llamaCtrlBadge) every 6s and caused them to
-    // flicker between the LMS-shaped text and the llama text written by
-    // pollServerState.
-    ['lms-dash-badge'].forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.className = `status ${online ? 'status--ok' : 'status--crit'}`;
-      el.innerHTML = '<span class="status__dot"></span>' + (online ? 'online' : 'offline');
-    });
-
-    // ---- LM Studio Dashboard sub-tab ----
-    // Server card — model info (always repainted so unloads clear the tiles)
-    _setEl('lms-active-model',    activeData ? (activeData.identifier || activeData.model || '—')
-                                             : (online ? 'no model loaded' : '—'));
-    _setEl('lms-active-status',   activeData?.status || '—');
-    _setEl('lms-active-size',     activeData?.size   || '—');
-    _setEl('lms-active-ctx',      activeData?.context ? activeData.context.toLocaleString() : '—');
-    _setEl('lms-active-parallel', activeData?.parallel ?? '—');
-    _setEl('lms-active-quant',    activeData?.quant || '—');
-    _setEl('lms-active-port',     d.server?.port ?? '—');
-
-    // Server card — gateway-counted token throughput (#502). Rates come from
-    // the manager's AE pusher so tiles + chart match the alarm engine series.
-    const gt = d.gateway_tokens || null;
-    const gr = d.gateway_rates || null;
-    _renderLmsRateTiles(gr, undefined, online, d.throughput_window || null);
-    _setEl('lms-gen-tokens',    gt && gt.gen    != null ? Number(gt.gen).toLocaleString()    : '—');
-    _setEl('lms-prompt-tokens', gt && gt.prompt != null ? Number(gt.prompt).toLocaleString() : '—');
-    if (lmsTpsChart && gr && gr.gen_tps != null)
-      pushDual(lmsTpsChart, gr.ts ? new Date(gr.ts) : ts, gr.gen_tps, gr.prompt_tps, GW_RATE_BUCKET_MS);
-
-    // CPU
-    _setEl('lms-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');
-    if (sys.cpu_temp_c != null) _setEl('lms-cpu-temp', sys.cpu_temp_c.toFixed(1) + '°C');
-    if (sys.cpu_governor) _setEl('lms-cpu-governor', sys.cpu_governor);
-    if (lmsCpuChart && sys.cpu_total != null) pushPoint(lmsCpuChart, ts, sys.cpu_total);
-    if (cpu.length && document.getElementById('lmsCoreGrid')) {
-      document.getElementById('lmsCoreGrid').innerHTML = cpu.map((pct, i) => {
-        const glowClass = pct >= 90 ? ' crit' : pct >= 70 ? ' warn' : '';
-        const col = pct >= 90 ? 'color:var(--crit)' : pct >= 70 ? 'color:var(--note)' : '';
-        return `<div class="core${glowClass}"><div class="sub">C${i}</div><div class="pct" style="${col}">${pct.toFixed(0)}%</div></div>`;
-      }).join('');
-    }
-
-    // RAM
-    const ramPct = ram.percent != null ? ram.percent.toFixed(1) + '%' : '—';
-    _setEl('lms-ram-pct',  ramPct);
-    _setEl('lms-ram-sub',  ram.used_bytes ? _fmtBytes(ram.used_bytes) + ' used / ' + _fmtBytes(ram.total_bytes) + ' total' : '—');
-    _setEl('lms-ram-cached',  ram.cached_bytes  != null ? _fmtBytes(ram.cached_bytes)  : '—');
-    _setEl('lms-ram-buffers', ram.buffers_bytes != null ? _fmtBytes(ram.buffers_bytes) : '—');
-    _setEl('lms-swap-used', sys.swap?.used_bytes != null ? _fmtBytes(sys.swap.used_bytes) : '—');
-    _setEl('lms-swap-free', sys.swap?.free_bytes != null ? _fmtBytes(sys.swap.free_bytes) : '—');
-    if (lmsRamChart && ram.percent != null) pushPoint(lmsRamChart, ts, ram.percent);
-
-    // Network
-    const mbSent = net.bytes_sent_per_sec != null ? (net.bytes_sent_per_sec / 1048576).toFixed(2) : '—';
-    const mbRecv = net.bytes_recv_per_sec != null ? (net.bytes_recv_per_sec / 1048576).toFixed(2) : '—';
-    _setEl('lms-net-sent', mbSent);
-    _setEl('lms-net-recv', mbRecv);
-    if (lmsNetChart && net.bytes_sent_per_sec != null) {
-      pushDual(lmsNetChart, ts, net.bytes_sent_per_sec / 1048576, net.bytes_recv_per_sec / 1048576);
-    }
-
-    // Disk
-    const diskEl = document.getElementById('lmsDiskList');
-    if (diskEl && sys.disk) {
-      diskEl.innerHTML = sys.disk
-        .filter(d => d.mountpoint && d.total_bytes > 1e8)
-        .map(d => {
-          const fillColor = d.percent > 90 ? 'var(--crit)' : d.percent > 75 ? 'var(--warn)' : 'var(--accent-2)';
-          return `<div class="disk-row">
-            <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${_esc(d.mountpoint)}</span>
-            <div class="disk-bar"><div class="disk-fill" style="width:${Number(d.percent)}%;background:${fillColor};"></div></div>
-            <span>${d.percent.toFixed(1)}%</span>
-          </div>`;
-        }).join('');
-      const lmsRoot = sys.disk.find(dk => dk.mountpoint === '/');
-      if (lmsDiskUsageChart && lmsRoot && lmsRoot.percent != null)
-        pushPoint(lmsDiskUsageChart, ts, lmsRoot.percent);
-    }
-
-    // Disk IO
-    const dio = sys.disk_io || {};
-    const ioR = (dio.read_bytes_per_sec  || 0) / 1048576;
-    const ioW = (dio.write_bytes_per_sec || 0) / 1048576;
-    _setEl('lms-io-read',  dio.read_bytes_per_sec  != null ? ioR.toFixed(2) : '—');
-    _setEl('lms-io-write', dio.write_bytes_per_sec != null ? ioW.toFixed(2) : '—');
-    if (lmsIoChart && dio.read_bytes_per_sec != null) pushDual(lmsIoChart, ts, ioR, ioW);
-
-    // powermetrics card — fed by this payload's mac_power block (#502)
-    _renderLmsPowerCard(d, online, ts);
-
-    // Model list — use ps for status, models for IDs
-    const modelListEl = document.getElementById('lmsDashModelList');
-    if (modelListEl) {
-      const displayModels = models.filter(m => !m.id.toLowerCase().includes('embed'));
-      const psOnly2 = ps.filter(p => {
-        const pn = normId(p.identifier || p.model);
-        return !displayModels.some(m => normId(m.id) === pn) &&
-               !(p.identifier || p.model || '').toLowerCase().includes('embed');
-      });
-      const listRows = [
-        ...displayModels.map(m => {
-          const pr = ps.find(p => normId(p.identifier || p.model) === normId(m.id));
-          return { name: m.id, status: pr?.status || 'IDLE', size: pr?.size || '' };
-        }),
-        ...psOnly2.map(p => ({ name: p.model || p.identifier, status: p.status || 'IDLE', size: p.size || '' })),
-      ];
-      modelListEl.innerHTML = listRows.map(r => {
-        const st  = (r.status || 'IDLE').toUpperCase();
-        const isOn = !['IDLE','STOPPED',''].includes(st);
-        const col  = isOn ? 'var(--ok)' : 'var(--fg-dim)';
-        const extra = r.size ? ` · ${r.size}` : '';
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--bg-card);">
-          <span style="font-size:0.82em;color:var(--fg);font-family:monospace;word-break:break-all;">${_esc(r.name)}</span>
-          <span style="font-size:0.75em;color:${col};white-space:nowrap;margin-left:8px;">${_esc(st)}${_esc(extra)}</span>
-        </div>`;
-      }).join('') || '<div style="color:var(--fg-dim);font-size:0.85em;">No models</div>';
-    }
 
     // LLM Control — LMS model cards
     renderLMSModelCards(ps, models);
@@ -333,75 +96,11 @@ async function fetchLMStudioMetrics() {
     });
 
     _updateLmsHeaderPill(d);
-
-    // Overall tab is fleet-aggregated (PR4) — driven by fetchOverallMetrics
-    // (kicked from fetchMetrics while the tab is visible), not this per-agent
-    // LMS payload.
-
-    // ---- LMS Dashboard card accent borders ----
-    // lms-models: server running = ok, no models but online = warn, offline = off
-    _dashSetStatus('lms-models', !online ? 'dash-off' : (models && models.length > 0 ? 'dash-ok' : 'dash-warn'));
-    // lms-active: active model processing = ok, loaded/idle = warn, none = off
-    _dashSetStatus('lms-active', !online ? 'dash-off' : (activeData
-      ? (['IDLE',''].includes((activeData.status || '').toUpperCase()) ? 'dash-warn' : 'dash-ok')
-      : 'dash-off'));
-    // lms-cpu: cpu_total thresholds
-    {
-      const _lct = sys.cpu_total;
-      _dashSetStatus('lms-cpu', !online ? 'dash-off' : (_lct != null ? (_lct >= 90 ? 'dash-crit' : _lct >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
-    }
-    // lms-ram: ram.percent thresholds
-    {
-      const _lrp = ram.percent;
-      _dashSetStatus('lms-ram', !online ? 'dash-off' : (_lrp != null ? (_lrp >= 90 ? 'dash-crit' : _lrp >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
-    }
-    // lms-network / lms-disk / lms-io: ok when data present
-    _dashSetStatus('lms-network', !online ? 'dash-off' : (sys.net ? 'dash-ok' : 'dash-off'));
-    _dashSetStatus('lms-disk',    !online ? 'dash-off' : (sys.disk ? 'dash-ok' : 'dash-off'));
-    _dashSetStatus('lms-io',      !online ? 'dash-off' : (sys.disk_io ? 'dash-ok' : 'dash-off'));
-
   } catch(e) {
     console.warn('fetchLMStudioMetrics:', e);
   } finally {
     _release(_lk);
   }
-}
-
-// powermetrics card painter — reads the mac_power block from the 6s metrics
-// payload (#502). Badge shows "no data" when the agent is offline or non-Mac.
-function _renderLmsPowerCard(d, online, ts) {
-  const mac = (online && d.mac_power && typeof d.mac_power === 'object') ? d.mac_power : null;
-  const has = !!(mac && Object.keys(mac).length);
-  const v = k => (has && mac[k] != null) ? mac[k] : null;
-  const fmtW = k => v(k) != null ? v(k).toFixed(2) + ' W' : '—';
-  _setEl('mpSocW',   fmtW('soc_total_w'));
-  _setEl('mpCpuPkg', fmtW('cpu_package_w'));
-  _setEl('mpGpuW',   fmtW('gpu_w'));
-  _setEl('mpAneW',   fmtW('ane_w'));
-  const tpN = v('thermal_pressure_n');
-  _setEl('mpThermal', tpN == null ? '—' : ['Nominal','Fair','Serious','Critical'][Math.round(tpN)] || '—');
-  const gbusy = v('gpu_busy_pct');
-  _setEl('mpGpuBusyVal', gbusy != null ? gbusy.toFixed(1) + '%' : '—');
-  if (lmsGpuChart && gbusy != null) pushPoint(lmsGpuChart, ts || new Date(), gbusy);
-  const pfreq = v('pcore_freq_mhz'), putil = v('pcore_util_pct');
-  const efreq = v('ecore_freq_mhz'), eutil = v('ecore_util_pct');
-  _setEl('mpPcore', pfreq == null && putil == null ? '—'
-    : `${pfreq != null ? Math.round(pfreq) + ' MHz' : '—'}${putil != null ? ' · ' + putil.toFixed(0) + '%' : ''}`);
-  _setEl('mpEcore', efreq == null && eutil == null ? '—'
-    : `${efreq != null ? Math.round(efreq) + ' MHz' : '—'}${eutil != null ? ' · ' + eutil.toFixed(0) + '%' : ''}`);
-  const gfreq = v('gpu_freq_mhz');
-  _setEl('mpGpuClock', gfreq != null ? Math.round(gfreq) + ' MHz' : '—');
-  const nin = v('net_in_pkts_s'), nout = v('net_out_pkts_s');
-  _setEl('mpNet', nin == null && nout == null ? '—'
-    : `${nin != null ? Math.round(nin) : '—'} in / ${nout != null ? Math.round(nout) : '—'} out`);
-  const badge = document.getElementById('lms-power-badge');
-  if (badge) {
-    if (!has) { badge.className = 'status status--muted'; badge.textContent = 'no data'; }
-    else { badge.className = 'status status--ok'; badge.innerHTML = '<span class="status__dot"></span>live'; }
-  }
-  _dashSetStatus('lms-power', !has ? 'dash-off'
-    : (tpN != null && tpN >= 2) ? 'dash-crit'
-    : (tpN != null && tpN >= 1) ? 'dash-warn' : 'dash-ok');
 }
 
 function onLmsModelSortChange(v) {

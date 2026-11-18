@@ -183,7 +183,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.16-4"
+__version__ = "v2026.11.17-3"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -1173,10 +1173,8 @@ def index():
     with best_effort("index: session user"):
         tower.session_user(_flask_session)   # one id per bypass session before any parallel API call
     visible = agent_registry.approved_agent_caps()
-    # Inject agent ids into the page so client code can scope alarm-engine
-    # catalog/history reads by agent (resolved to a host server-side), never
-    # by a browser-held hostname. json.dumps + `</` → `<\/` keeps weird
-    # values from breaking out of the inline script block.
+    # Inject the manager's agent id so client code scopes alarm-engine catalog reads by agent,
+    # never by a browser-held hostname; json.dumps + `</` → `<\/` keeps values inside the script.
     _safe_js = safe_js
     # Same alarm-engine WS URL the AE iframe gets via _inject_alarm_ws_url —
     # the manager frontend's toast bus needs it too, otherwise it falls back
@@ -1184,8 +1182,6 @@ def index():
     # (because the AE then only speaks wss with an internal-CA cert).
     globals_js = (
         f"window.__MGR_AGENT={_safe_js(agent_registry.self_agent_id())};"
-        f"window.__LMS_AGENT={_safe_js(agent_registry.default_agent_id_for('lms'))};"
-        f"window.__VLLM_AGENT={_safe_js(agent_registry.default_agent_id_for('vllm'))};"
         f"window.__AE_WS_URL__={_safe_js(proxies.ae_ws_url_for_browser())};"
     )
     html = html.replace("</head>", f"<script>{globals_js}</script>\n</head>", 1)
@@ -3515,6 +3511,52 @@ def agents_hosts():
         })
     rows.sort(key=lambda r: (r["hostname"] is None, (r["hostname"] or "").lower()))
     return jsonify({"hosts": rows})
+
+
+@app.route("/api/agents/<agent_id>/system", methods=["GET"])
+def agents_system_sample(agent_id):
+    """Non-admin live system sample of one approved host, for any signed-in user."""
+    a = (agent_registry.load_agents().get("agents") or {}).get(agent_id)
+    if not a or a.get("status") != "approved":
+        return jsonify({"ok": False, "error": "unknown host"}), 404
+    now = time.time()
+    newest, online, sample, sample_seen = 0.0, False, {}, 0.0
+    for bucket in [SYSTEM_PROVIDER, *providers.names()]:
+        wrap = provider_state.STORE.get(bucket, agent_id) or {}
+        seen = float(wrap.get("last_seen") or 0)
+        if not seen:
+            continue
+        newest = max(newest, seen)
+        spec = providers.get(bucket) if bucket != SYSTEM_PROVIDER else None
+        if (now - seen) < (spec.online_threshold_s if spec else 30.0):
+            online = True
+        got = _system_sample_of(bucket, wrap.get("sample"))
+        if got and seen > sample_seen:
+            sample, sample_seen = got, seen
+    return jsonify({
+        "agent_id": agent_id,
+        "hostname": a.get("hostname"),
+        "online": online,
+        "age_s": round(now - newest, 1) if newest else None,
+        "sample": sample,
+    })
+
+
+def _system_sample_of(bucket, sample):
+    """The system sample a bucket carries: system and llama samples as they are, the system block of lms/vllm."""
+    if not isinstance(sample, dict) or not sample:
+        return {}
+    if bucket in (SYSTEM_PROVIDER, "llama"):
+        return sample
+    block = sample.get("system")
+    if not isinstance(block, dict) or not block:
+        return {}
+    out = dict(block)
+    if sample.get("mac_power") and "mac_power" not in out:
+        out["mac_power"] = sample["mac_power"]
+    if sample.get("ts") is not None and "ts" not in out:
+        out["ts"] = sample["ts"]
+    return out
 
 
 @app.route("/api/agents/metrics", methods=["GET"])

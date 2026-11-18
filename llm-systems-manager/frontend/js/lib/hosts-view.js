@@ -146,5 +146,5 @@ function fmtRate(v) {
   return (i ? r.toFixed(1) : String(r)) + ' ' + u[i];
 }
 
-return { METRICS, shortName, hostList, nowRows, compare, mergeRows, fmtPct, fmtRate };
+return { METRICS, shortName, hostList, nowRows, compare, mergeRows, fmtPct, fmtRate, holdShortGaps: _holdShortGaps };
 });

@@ -9,6 +9,7 @@ import { JSDOM } from 'jsdom';
 
 const require = createRequire(import.meta.url);
 const L = require('../js/lib/settingsdrawer.js');
+const HP = require('../js/lib/host-view.js');
 
 describe('layout presets', () => {
   it('every preset only uses sizes that fit its column count', () => {
@@ -75,10 +76,15 @@ describe('themes', () => {
 describe('settingsScope', () => {
   it('card pages get the card sections with their layout keys', () => {
     expect(L.settingsScope('overall')).toMatchObject({ kind: 'cards', cols: 'overallCols', grid: 'overallGrid', borrowed: 'overallBorrowed' });
-    expect(L.settingsScope('dashboard', 'llamacpp')).toMatchObject({ kind: 'cards', hidden: 'hidden', cols: 'cols', grid: 'cardGrid' });
     expect(L.settingsScope('dashboard', undefined).key).toBe('dashboard/all');
-    expect(L.settingsScope('dashboard', 'vllm').label).toBe('Dashboards · vLLM');
-    expect(L.settingsScope('dashboard', 'manager').cols).toBe('managerCols');
+    expect(L.settingsScope('dashboard', 'manager')).toMatchObject({ kind: 'cards', cols: 'managerCols', grid: 'managerCardGrid' });
+    expect(Object.keys(L.CARD_PAGES)).toEqual(['overall', 'dashboard/manager']);
+  });
+
+  it('host pages get their rows with their layout key and root (#1432)', () => {
+    expect(L.settingsScope('dashboard', 'llamacpp')).toMatchObject({ kind: 'rows', rowsHidden: 'llamaRowsHidden', root: 'hp-llama' });
+    expect(L.settingsScope('dashboard', 'vllm')).toMatchObject({ kind: 'rows', label: 'Dashboards · vLLM', rowsHidden: 'vllmRowsHidden', root: 'hp-vllm' });
+    expect(L.settingsScope('dashboard', 'host')).toMatchObject({ kind: 'rows', label: 'Dashboards · Host', root: 'hp-host' });
   });
 
   it('proxy tabs, control tabs and non-card dashboard sub-tabs get no card sections', () => {
@@ -110,9 +116,9 @@ describe('interval helpers', () => {
 const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.html'), 'utf8');
 
 describe('flow engine (#823)', () => {
-  const gridIds = ['cardGrid', 'lmsCardGrid', 'vllmCardGrid', 'managerCardGrid'];
+  const gridIds = ['managerCardGrid'];
 
-  it('every card in the four dashboard grids has a declared role', () => {
+  it('every card in the Manager grid has a declared role', () => {
     const doc = new JSDOM(html).window.document;
     for (const gid of gridIds) {
       const grid = doc.getElementById(gid);
@@ -125,10 +131,35 @@ describe('flow engine (#823)', () => {
   });
 
   it('roleOf resolves pinned shells to their home card and unknown ids to stats', () => {
-    expect(L.roleOf('gpu')).toBe('chart');
-    expect(L.roleOf('ov-borrow-smart-device')).toBe('table');
+    expect(L.roleOf('mgr-perf')).toBe('chart');
+    expect(L.roleOf('ov-borrow-services')).toBe('table');
     expect(L.roleOf('nope')).toBe('stats');
     expect(L.roleOf(undefined)).toBe('stats');
+  });
+
+  it('old provider card ids carry no role any more (#1432)', () => {
+    for (const id of ['gpu', 'cpu-overall', 'smart-device', 'lms-power', 'vllm-throughput']) expect(L.CARD_ROLES[id], id).toBeUndefined();
+  });
+
+  it('host page panels take their role from their kind (#1432)', () => {
+    window.HP = HP;
+    try {
+      for (const page of Object.keys(HP.PAGES)) {
+        for (const p of HP.panelsFor(page)) {
+          expect(L.roleOf(page + '-' + p.name), page + '-' + p.name).toBe(L.KIND_ROLES[p.kind]);
+          expect(L.roleOf('ov-borrow-' + page + '-' + p.name)).toBe(L.KIND_ROLES[p.kind]);
+        }
+      }
+      expect(L.roleOf('llama-cpu-mem')).toBe('chart');
+      expect(L.roleOf('llama-details')).toBe('table');
+      expect(L.roleOf('lms-models')).toBe('table');
+      expect(L.roleOf('vllm-disk')).toBe('table');
+      expect(L.roleOf('lms-mac-power')).toBe('table');
+      expect(L.roleOf('host-fans')).toBe('table');
+      expect(L.roleOf('llama-tiles')).toBe('stats');
+      expect(L.roleOf('llama-nope')).toBe('stats');
+      for (const r of Object.values(L.KIND_ROLES)) expect(L.ROLES).toContain(r);
+    } finally { delete window.HP; }
   });
 
   it('hero cards exist and belong to their page', () => {
@@ -201,11 +232,22 @@ describe('fresh-install defaults (#823)', () => {
       expect(JSON.stringify(lay)).toBe(before);
     }
     expect(L.isFreshLayout({ order: [], cardSizes: {} })).toBe(true);
+    // A layout already moved to the host pages keeps its engine and density even with no card state left.
+    expect(L.isFreshLayout({ hostPageMapped: 1 })).toBe(false);
+  });
+
+  it('a hidden host page panel is saved card state; an empty list is not', () => {
+    for (const k of ['llamaPanelsHidden', 'lmsPanelsHidden', 'vllmPanelsHidden', 'hostPanelsHidden']) {
+      const lay = { [k]: ['x-net'] };
+      expect(L.isFreshLayout(lay), k).toBe(false);
+      expect(L.applyFreshDefaults(lay), k).toBe(false);
+      expect(L.isFreshLayout({ [k]: [] }), k).toBe(true);
+    }
   });
 });
 
 describe('card label maps cover their grids', () => {
-  it('every card in each dashboard grid has a CARD_LABELS_* entry', () => {
+  it('every card in the Manager grid has a CARD_LABELS_MANAGER entry', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
     const keysOf = (name) => {
       const m = src.match(new RegExp(`const ${name} = \\{([\\s\\S]*?)\\n\\};`));
@@ -213,7 +255,7 @@ describe('card label maps cover their grids', () => {
       return [...m[1].matchAll(/^\s*'([^']+)':/gm)].map(x => x[1]);
     };
     const doc = new JSDOM(html).window.document;
-    const pairs = { cardGrid: 'CARD_LABELS', lmsCardGrid: 'CARD_LABELS_LMS', vllmCardGrid: 'CARD_LABELS_VLLM', managerCardGrid: 'CARD_LABELS_MANAGER' };
+    const pairs = { managerCardGrid: 'CARD_LABELS_MANAGER' };
     for (const [gid, name] of Object.entries(pairs)) {
       const labels = keysOf(name);
       const ids = [...doc.getElementById(gid).querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
@@ -239,12 +281,14 @@ describe('Overall drawer cards section (#1432)', () => {
       'window._applyRowsHidden = _applyRowsHidden; window.toggleOverallRow = toggleOverallRow; window._sdBind = _sdBind;'].join('\n'));
     window._sdBound = false;
     window._activeTab = 'overall';
-    window.layout = { overallBorrowed: ['gpu'], ...saved };
+    window.layout = { overallBorrowed: ['llama-gpu-busy'], ...saved };
     window._esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
     window._cardLabel = (id) => id;
-    window.CARD_LABELS = { gpu: 'GPU' };
+    window._hostPanelLabels = () => {};
+    window.CARD_LABELS = { 'llama-gpu-busy': 'GPU busy and memory' };
     window.CARD_LABELS_LMS = {};
     window.CARD_LABELS_VLLM = {};
+    window.CARD_LABELS_HOST = {};
     window.CARD_LABELS_MANAGER = {};
     window.saveLayout = vi.fn();
     window._sdRerenderCards = () => window._sdRenderCards({ kind: 'cards' });
@@ -254,10 +298,25 @@ describe('Overall drawer cards section (#1432)', () => {
   }
   const chips = (el) => [...el.querySelectorAll('[data-sd="row"]')].map(b => [b.dataset.id, b.textContent, b.getAttribute('aria-pressed')]);
 
+  it('lists a Host group for the host page panels, next to the provider groups', () => {
+    const el = setup({ overallBorrowed: ['host-cpu-mem'] });
+    window.CARD_LABELS_HOST = { 'host-tiles': 'Host', 'host-cpu-mem': 'CPU and memory' };
+    window._sdRenderCards({ kind: 'cards' });
+    const groups = [...el.querySelectorAll('.microlbl')].map(g => g.firstChild.textContent.trim());
+    expect(groups).toEqual(['llama.cpp', 'LM Studio', 'vLLM', 'Host', 'Manager']);
+    const chip = el.querySelector('[data-sd="pin"][data-id="host-cpu-mem"]');
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+    expect(el.querySelector('[data-sd="pin"][data-id="host-tiles"]').getAttribute('aria-pressed')).toBe('false');
+    window.addBorrowedCard = vi.fn();
+    el.querySelector('[data-sd="pin"][data-id="host-tiles"]').click();
+    expect(window.addBorrowedCard).toHaveBeenCalledWith('host-tiles');
+    delete window.addBorrowedCard;
+  });
+
   it('lists the pinned cards and no longer offers the old band sections', () => {
     const el = setup({});
     expect(el.textContent).toContain('Pinned from other pages');
-    expect(el.querySelector('[data-sd="pin"][data-id="gpu"]').getAttribute('aria-pressed')).toBe('true');
+    expect(el.querySelector('[data-sd="pin"][data-id="llama-gpu-busy"]').getAttribute('aria-pressed')).toBe('true');
     expect(el.querySelector('[data-sd="strip"]')).toBeNull();
   });
 
@@ -326,7 +385,7 @@ describe('All hosts drawer sections (#1432)', () => {
 
   it('lists the two All hosts rows and hides one', () => {
     document.body.innerHTML = page + '<div id="settingsOverlay"><section id="sdCards"></section></div>';
-    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_kitRows'), fn('_applyRowsHidden'), fn('toggleAllHostsRow'), fn('_sdBind'),
+    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_sdHostPanels'), fn('_kitRows'), fn('_applyRowsHidden'), fn('toggleAllHostsRow'), fn('_sdBind'),
       'window._sdRenderCards = _sdRenderCards; window._applyRowsHidden = _applyRowsHidden; window._sdBind = _sdBind;'].join('\n'));
     window._sdBound = false;
     window._activeTab = 'dashboard';
@@ -355,6 +414,52 @@ describe('All hosts drawer sections (#1432)', () => {
     window._applyRowsHidden();
     expect(document.querySelector('#dash-all section.row[data-row="ah-now"]').hidden).toBe(true);
     expect(el.querySelectorAll('input[type="checkbox"]').length).toBe(0);
+  });
+});
+
+describe('Host page drawer sections (#1432)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
+  const fn = (name) => {
+    const m = src.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    expect(m, name).not.toBeNull();
+    return m[0];
+  };
+  // The llama.cpp page root as js/hostpage.js builds it, with two of its rows.
+  const page = '<div id="dash-llamacpp" class="sub-tab-panel active"><div class="hp-root" id="hp-llama" data-hp-page="llama">'
+    + '<section class="row" data-row="llama-gpu"><button type="button" class="row-hd" data-row-fold>GPU</button></section>'
+    + '<section class="row" data-row="llama-hw"><button type="button" class="row-hd" data-row-fold>Power hardware</button></section></div></div>';
+
+  it('lists the page rows, hides one under its own layout key and repaints the page', () => {
+    document.body.innerHTML = page + '<div id="settingsOverlay"><section id="sdCards"></section></div>';
+    (0, eval)([fn('_sdChip'), fn('_sdRenderCards'), fn('_sdHostPanels'), fn('_kitRows'), fn('_getDashSubTab'), fn('_sdScope'), fn('toggleHostPageRow'), fn('_sdBind'),
+      'window._sdRenderCards = _sdRenderCards; window._sdBind = _sdBind; window.toggleHostPageRow = toggleHostPageRow;'].join('\n'));
+    // The panel chips are covered in hostpage-fixes.test.js; this page has no panel labels.
+    window._sdCardMap = () => ({});
+    window.SettingsLib = L;
+    window._sdBound = false;
+    window._activeTab = 'dashboard';
+    window.layout = {};
+    window._esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    window.saveLayout = vi.fn();
+    window.hpRender = vi.fn();
+    const scope = L.settingsScope('dashboard', 'llamacpp');
+    window._sdRerenderCards = () => window._sdRenderCards(scope);
+    window._sdBind();
+    window._sdRenderCards(scope);
+    const el = document.getElementById('sdCards');
+    const chips = () => [...el.querySelectorAll('[data-sd="hprow"]')].map(b => [b.dataset.id, b.textContent, b.getAttribute('aria-pressed')]);
+    expect(chips()).toEqual([['llama-gpu', 'GPU', 'true'], ['llama-hw', 'Power hardware', 'true']]);
+    expect(el.querySelector('[data-sd="ahrow"]')).toBeNull();
+    el.querySelector('[data-sd="hprow"][data-id="llama-hw"]').click();
+    expect(window.layout.llamaRowsHidden).toEqual(['llama-hw']);
+    expect(document.querySelector('#hp-llama section.row[data-row="llama-hw"]').hidden).toBe(true);
+    expect(window.hpRender).toHaveBeenCalledTimes(1);
+    expect(window.saveLayout).toHaveBeenCalledTimes(1);
+    expect(el.textContent).toContain('1 of 2 shown');
+    el.querySelector('[data-sd="hprow"][data-id="llama-hw"]').click();
+    expect(window.layout.llamaRowsHidden).toEqual([]);
+    expect(document.querySelector('#hp-llama section.row[data-row="llama-hw"]').hidden).toBe(false);
+    ['hpRender', '_sdRerenderCards', '_sdCardMap'].forEach(k => { delete window[k]; });
   });
 });
 

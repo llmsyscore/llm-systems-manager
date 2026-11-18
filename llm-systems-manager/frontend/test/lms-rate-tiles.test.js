@@ -1,97 +1,104 @@
-// #736: LMS Server card Gen/Prompt tokens/s tiles — live while active, the
-// 60-min active-sample mean otherwise, the 60-min peak always. Real source in jsdom.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fnSrc, srcFile, blockSrc } from './helpers/harness.js';
+// #736, #1432: LM Studio Gen/Prompt tokens/s on the host page — live while active, the 60-min
+// active-sample mean otherwise, the 60-min peak always. Real host-view.js tiles/details with real LMPeaks trackers.
+import { describe, it, expect } from 'vitest';
+import HP from '../js/lib/host-view.js';
 import LMPeaks from '../js/lib/peaks.js';
 
-const src = srcFile('js/lmstudio.js');
-const chartsSrc = srcFile('js/charts.js');
-const fn = (name) => {
-  const m = fnSrc(src, name);
-  expect(m, `${name} not found`).toBeTruthy();
-  return m;
-};
 const T0 = Date.UTC(2026, 7, 29, 20, 0, 0);
 const MIN = 60000;
-const $ = (id) => document.getElementById(id);
+const AVG = '60‑min avg';
+// A rate with no value reads a dash alone, with no mode or peak.
+const DASH_ONLY = '—';
 
-beforeEach(() => {
-  document.body.innerHTML = '<div class="val" id="lms-pps">—</div><div class="lbl" id="lms-pps-lbl">Prompt tokens/s</div>'
-    + '<div class="val" id="lms-tps">—</div><div class="lbl" id="lms-tps-lbl">Gen tokens/s</div>';
-  window.LMPeaks = LMPeaks;
-  window._peakSpan = (v, t) => `(peak ${v} @${t})`;
-  window._setLivePeak = (id, html) => { $(id).innerHTML = html; };
-  const consts = blockSrc(src, 'const _LMS_TILE_WINDOW_MS', 'let _lmsTilesLastTs = null;')
-    .replace(/^(const|let) /gm, 'window.');
-  (0, eval)([consts, fn('_setEl'), fn('_lmsTilesReset'), fn('_lmsSeedTileRow'), fnSrc(chartsSrc, 'fmtRateTile'), fnSrc(chartsSrc, '_setRateTile'),
-             fn('_renderLmsRateTiles'), 'window._render = _renderLmsRateTiles; window._seed = _lmsSeedTileRow;',
-             'window._reset = _lmsTilesReset;'].join('\n'));
-  window._reset();
-});
+// A page's tracker pair, fed the way js/hostpage.js feeds it (one push per live sample).
+function page() {
+  const peaks = { tps: LMPeaks.makeTracker(LMPeaks.RATE_WINDOW_MS), pps: LMPeaks.makeTracker(LMPeaks.RATE_WINDOW_MS) };
+  const sample = (gen, prompt, online = true) => ({ agent_online: online, gateway_rates: gen == null ? undefined : { gen_tps: gen, prompt_tps: prompt } });
+  return {
+    peaks,
+    push(at, gen, prompt) { peaks.tps.push(at, gen); peaks.pps.push(at, prompt); },
+    // [Gen text, Prompt text] from the Server details panel, and the Gen tokens/s tile.
+    read(at, gen, prompt, online = true) {
+      const live = sample(gen, prompt, online), inf = { live, peaks, now: at };
+      const d = HP.details('lms', 'details', HP.normalize(live, { page: 'lms' }), inf, online);
+      const tile = HP.tiles('lms', HP.normalize(live, { page: 'lms' }), inf, online).find(t => t.label === 'Gen tokens/s');
+      return { gen: d.find(r => r[0] === 'Gen tokens/s')[1], prompt: d.find(r => r[0] === 'Prompt tokens/s')[1], tile };
+    },
+  };
+}
 
-afterEach(() => vi.restoreAllMocks());
-
-const gr = (ts, gen, prompt) => ({ ts: new Date(ts).toISOString(), gen_tps: gen, prompt_tps: prompt });
-
-describe('LMS rate tiles (#736)', () => {
-  it('shows the live rate with its label while traffic flows', () => {
-    window._render(gr(T0, 42.5, 900), T0);
-    expect($('lms-tps').innerHTML).toBe(`42.5 (peak 42.5 @${T0})`);
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · live');
-    expect($('lms-pps-lbl').textContent).toBe('Prompt tokens/s · live');
+describe('LM Studio rate lines (#736)', () => {
+  it('shows the live rate with its mode and peak while traffic flows', () => {
+    const p = page();
+    p.push(T0, 42.5, 900);
+    const r = p.read(T0, 42.5, 900);
+    expect(r.gen).toBe('42.5 · live · peak 42.5 · 0s ago');
+    expect(r.prompt).toBe('900.0 · live · peak 900.0 · 0s ago');
+    expect(r.tile).toMatchObject({ value: '42.5', sub: 'live · peak 42.5 · 0s ago' });
   });
+
   it('switches to the 60-min average of active samples when the rate drops to 0', () => {
-    window._render(gr(T0, 10, 100), T0);
-    window._render(gr(T0 + 15000, 30, 300), T0 + 15000);
-    window._render(gr(T0 + 30000, 0, 0), T0 + 30000);
-    expect($('lms-tps').innerHTML).toBe(`20.0 (peak 30.0 @${T0 + 15000})`);
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · 60\u2011min avg');
-    expect($('lms-pps').innerHTML).toBe(`200.0 (peak 300.0 @${T0 + 15000})`);
+    const p = page();
+    p.push(T0, 10, 100);
+    p.push(T0 + 15000, 30, 300);
+    p.push(T0 + 30000, 0, 0);
+    const r = p.read(T0 + 30000, 0, 0);
+    expect(r.gen).toBe(`20.0 · ${AVG} · peak 30.0 · 15s ago`);
+    expect(r.prompt).toBe(`200.0 · ${AVG} · peak 300.0 · 15s ago`);
+    expect(r.tile).toMatchObject({ value: '20.0', sub: `${AVG} · peak 30.0 · 15s ago` });
   });
-  it('tiles are independent: gen idle while prompt is live', () => {
-    window._render(gr(T0, 0, 500), T0);
-    expect($('lms-tps').innerHTML).toBe('—');
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · 60\u2011min avg');
-    expect($('lms-pps-lbl').textContent).toBe('Prompt tokens/s · live');
+
+  it('gen and prompt are independent: gen idle while prompt is live', () => {
+    const p = page();
+    p.push(T0, 0, 500);
+    const r = p.read(T0, 0, 500);
+    expect(r.gen).toBe(DASH_ONLY);
+    expect(r.prompt).toBe('500.0 · live · peak 500.0 · 0s ago');
   });
-  it('re-polls of the same gateway sample enter the trackers once', () => {
-    window._render(gr(T0, 10, 10), T0);
-    window._render(gr(T0, 10, 10), T0 + 5000);
-    window._render(gr(T0 + 15000, 30, 30), T0 + 15000);
-    window._render(gr(T0 + 30000, 0, 0), T0 + 30000);
-    expect($('lms-tps').innerHTML.startsWith('20.0 ')).toBe(true);   // not (10+10+30)/3
-  });
+
   it('samples age out after 60 minutes; no data at all reads —', () => {
-    window._render(gr(T0, 50, 50), T0);
-    window._render(gr(T0 + 61 * MIN, 0, 0), T0 + 61 * MIN);
-    expect($('lms-tps').innerHTML).toBe('—');
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · 60\u2011min avg');
-    window._render(null, T0 + 62 * MIN);
-    expect($('lms-pps').innerHTML).toBe('—');
+    const p = page();
+    p.push(T0, 50, 50);
+    p.push(T0 + 61 * MIN, 0, 0);
+    expect(p.read(T0 + 61 * MIN, 0, 0).gen).toBe(DASH_ONLY);
+    expect(p.read(T0 + 62 * MIN, null, null).prompt).toBe(DASH_ONLY);
   });
+
   it('no gateway sample at all falls back to the window average', () => {
-    window._render(gr(T0, 40, 400), T0);
-    window._render(null, T0 + 15000);
-    expect($('lms-tps').innerHTML).toBe(`40.0 (peak 40.0 @${T0})`);
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · 60\u2011min avg');
+    const p = page();
+    p.push(T0, 40, 400);
+    expect(p.read(T0 + 15000, null, null).gen).toBe(`40.0 · ${AVG} · peak 40.0 · 15s ago`);
   });
-  it('an offline agent is never live: its last rates read as the window average', () => {
-    window._render(gr(T0, 40, 400), T0);
-    window._render(gr(T0 + 15000, 40, 400), T0 + 15000, false);
-    expect($('lms-tps').innerHTML).toBe(`40.0 (peak 40.0 @${T0})`);   // sample not re-counted
-    expect($('lms-tps-lbl').textContent).toBe('Gen tokens/s · 60\u2011min avg');
+
+  it('an offline host shows dashes, not its last rates', () => {
+    const p = page();
+    p.push(T0, 40, 400);
+    const r = p.read(T0 + 15000, 40, 400, false);
+    expect(r.gen).toBe('—');
+    expect(r.prompt).toBe('—');
+    expect(r.tile.value).toBe('—');
   });
+
   it('history rows seed the window through the row clock and reset clears it', () => {
-    vi.spyOn(Date, 'now').mockReturnValue(T0);
-    const clock = (ts) => new Date(ts).getTime() + 1000;
-    window._seed({ ts: new Date(T0 - 90 * MIN).toISOString(), lms_tps: 999, lms_pps: 999 }, clock);  // outside the window
-    window._seed({ ts: new Date(T0 - 10 * MIN).toISOString(), lms_tps: 80, lms_pps: 0 }, clock);
-    window._seed({ ts: new Date(T0 - 5 * MIN).toISOString(), lms_tps: 0, lms_pps: 640 }, clock);
-    window._render(gr(T0, 0, 0), T0);
-    expect($('lms-tps').innerHTML).toBe(`80.0 (peak 80.0 @${T0 - 10 * MIN + 1000})`);
-    expect($('lms-pps').innerHTML).toBe(`640.0 (peak 640.0 @${T0 - 5 * MIN + 1000})`);
-    window._reset();
-    window._render(gr(T0 + 15000, 0, 0), T0 + 15000);
-    expect($('lms-tps').innerHTML).toBe('—');
+    const p = page();
+    const rows = [{ ts: new Date(T0 - 90 * MIN).toISOString(), lms_tps: 999, lms_pps: 999 },
+      { ts: new Date(T0 - 10 * MIN).toISOString(), lms_tps: 80, lms_pps: 0 },
+      { ts: new Date(T0 - 5 * MIN).toISOString(), lms_tps: 0, lms_pps: 640 }];
+    const clock = LMPeaks.rowClock(rows, T0);
+    rows.forEach(r => { p.peaks.tps.push(clock(r.ts), r.lms_tps); p.peaks.pps.push(clock(r.ts), r.lms_pps); });
+    const r = p.read(T0, 0, 0);
+    expect(r.gen).toBe(`80.0 · ${AVG} · peak 80.0 · 10m ago`);
+    expect(r.prompt).toBe(`640.0 · ${AVG} · peak 640.0 · 5m ago`);
+    p.peaks.tps.reset();
+    expect(p.read(T0 + 15000, 0, 0).gen).toBe(DASH_ONLY);
+  });
+
+  it('a server window wins over the browser tracker', () => {
+    const p = page();
+    p.push(T0, 5, 5);
+    const live = { agent_online: true, gateway_rates: { gen_tps: 0, prompt_tps: 0 },
+      throughput_window: { gen: { avg: 33, peak: { v: 70, ts: new Date(T0 - 2 * MIN).toISOString() } } } };
+    const d = HP.details('lms', 'details', HP.normalize(live, { page: 'lms' }), { live, peaks: p.peaks, now: T0 }, true);
+    expect(d.find(r => r[0] === 'Gen tokens/s')[1]).toBe(`33.0 · ${AVG} · peak 70.0 · 2m ago`);
   });
 });

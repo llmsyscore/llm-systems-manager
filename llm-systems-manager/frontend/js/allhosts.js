@@ -76,12 +76,12 @@
     return '<td class="ah-v' + (v >= BAD_PCT ? ' bad' : '') + '"><span class="ah-bar"><i style="width:' + w.toFixed(1)
       + '%"></i></span><span class="ah-t">' + esc(HV.fmtPct(v)) + '</span></td>';
   }
-  // Host cell: dot and name on one line (cut with an ellipsis), then "offline" and "No LLM server" on a muted line.
+  // Host cell: dot and name on one line (cut with an ellipsis), then "offline" and the open-host button on a muted line.
   function hostCell(r) {
     const dot = '<span class="ov-dot' + (r.online ? ' ok' : '') + '"></span>';
     const name = '<span class="ah-name" title="' + esc(r.name) + '">' + esc(r.name) + '</span>';
     const notes = (r.online ? [] : ['<span class="ah-off">offline</span>'])
-      .concat(r.page ? [] : ['<span class="ah-none">No LLM server</span>']);
+      .concat(r.page ? [] : ['<button type="button" class="ah-none" data-ah-host="' + esc(r.id) + '">No LLM server · open host</button>']);
     const line = r.page
       ? '<button type="button" class="ah-go" data-ah-go="' + esc(r.id) + '">' + dot + name + '</button>'
       : '<span class="ah-h">' + dot + name + '</span>';
@@ -154,7 +154,7 @@
       for (let i = n - k; i < n; i++) kitTsAppend(body, cid, c.labels[i], series.map(s => s.values[i]));
       S.last[id] = null;
     } else {
-      const opts = { id: cid, labels: c.labels, series, zoom: true, keep: c.labels.length, w: kitWidth(id), height: 170 };
+      const opts = { id: cid, labels: c.labels, series, zoom: true, keep: c.labels.length, w: kitWidth(id), height: 170, gaps: 'break' };
       if (m.ymax) opts.ymax = m.ymax;
       const z = was && was.z, a = z ? c.labels.indexOf(z.from) : -1;
       if (a >= 0 && c.labels.indexOf(z.to) > a) opts.z = { from: z.from, to: z.to };
@@ -189,13 +189,20 @@
     });
   }
 
-  // A host row with an LLM server opens that provider's page with the host picked; a legend chip is remembered as a choice.
+  // A host row with an LLM server opens that provider's page with the host picked, a host with none opens the host page;
+  // a legend chip is remembered as a choice.
   function onClick(ev) {
     const t = ev.target && ev.target.closest ? ev.target : null;
     const chip = t && t.closest('button[data-kit-series]');
     if (chip) {
       S.chosen.add(chip.getAttribute('data-kit-series'));
       setTimeout(paintNotes, 0);
+      return;
+    }
+    const open = t && t.closest('button[data-ah-host]');
+    if (open) {
+      if (typeof hpSetHost === 'function') hpSetHost('host', open.getAttribute('data-ah-host'));
+      if (typeof switchSubTab === 'function') switchSubTab('dashboard', 'host');
       return;
     }
     const tr = t && t.closest('tr[data-ah-page]');

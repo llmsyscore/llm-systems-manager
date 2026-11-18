@@ -5,9 +5,6 @@
 // selection exists (single-agent installs) → byte-identical behavior.
 window._agentsByProvider = window._agentsByProvider || { llama: [], lms: [], vllm: [] };
 window._selectedAgents   = window._selectedAgents   || { llama: null, lms: null, vllm: null };
-// Last selection each provider's grid was rendered for, so the 30s picker poll
-// only re-applies per-agent layout when the selection actually changed.
-let _appliedAgentSel = { llama: undefined, lms: undefined, vllm: undefined };
 
 function _selectedAgent(provider) {
   return (window._selectedAgents && window._selectedAgents[provider]) || null;
@@ -152,27 +149,18 @@ function _actionRelease(key) { _actionInflight.delete(key); }
 
 let _activeTab = 'overall';   // tracks which top-level tab is visible
 
-const CARD_LABELS_LMS = {
-  'lms-models':  'LM Studio Models',
-  'lms-active':  'LM Studio Server',
-  'lms-cpu':     'LM Studio CPU',
-  'lms-ram':     'LM Studio RAM',
-  'lms-network': 'LM Studio Network',
-  'lms-disk':    'LM Studio Disk',
-  'lms-io':      'LM Studio Disk IO',
-  'lms-power':   'LM Studio powermetrics',
-};
-const CARD_LABELS_VLLM = {
-  'vllm-server':     'vLLM Server',
-  'vllm-requests':   'vLLM Requests',
-  'vllm-kv':         'vLLM KV Cache',
-  'vllm-throughput': 'vLLM Throughput',
-  'vllm-cpu':        'vLLM CPU',
-  'vllm-ram':        'vLLM RAM',
-  'vllm-network':    'vLLM Network',
-  'vllm-disk':       'vLLM Disk',
-  'vllm-io':         'vLLM Disk IO',
-};
+// Host page panel ids and titles of the llama.cpp, LM Studio, vLLM and Host pages, filled by
+// _hostPanelLabels() from HP.panelsFor once js/lib/host-view.js has loaded.
+const CARD_LABELS = {};
+const CARD_LABELS_LMS = {};
+const CARD_LABELS_VLLM = {};
+const CARD_LABELS_HOST = {};
+function _hostPanelLabels() {
+  if (typeof HP === 'undefined' || Object.keys(CARD_LABELS).length) return;
+  [[CARD_LABELS, 'llama'], [CARD_LABELS_LMS, 'lms'], [CARD_LABELS_VLLM, 'vllm'], [CARD_LABELS_HOST, 'host']].forEach(([map, page]) => {
+    HP.panelsFor(page).forEach(p => { map[page + '-' + p.name] = p.title; });
+  });
+}
 const CARD_LABELS_MANAGER = {
   'services':         'Services',
   'influxdb':         'InfluxDB',
@@ -186,53 +174,31 @@ const CARD_LABELS_MANAGER = {
   'mgr-perf':         'Manager Perf',
   'ae-perf':          'Alarm Engine + Influx Perf',
 };
-const CARD_LABELS = {
-  'llama-server':    'Llama server',
-  'llama-throughput':'Llama throughput',
-  'gpu':             'GPU',
-  'cpu-overall':     'CPU',
-  'ram':             'RAM',
-  'network':         'Network',
-  'disk-usage':      'Disk usage',
-  'disk-io':         'Disk IO',
-  'ups':             'UPS',
-  'aio':             'AIO',
-  'psu':             'Corsair PSU',
-  'smart-device':    'NZXT Smart Device',
-};
-
 // ---------------------------------------------------------------------------
 // Layout persistence
 // ---------------------------------------------------------------------------
-let layout = { order: [], hidden: [] };
+let layout = {};
 
 async function loadLayout() {
-  let bandMapped = false;
+  let bandMapped = false, hostMapped = false;
+  _hostPanelLabels();
   try {
     layout = await fetch('/api/layout').then(r => r.json());
     SettingsLib.applyFreshDefaults(layout);
-    if (!layout.order)           layout.order           = [];
-    if (!layout.hidden)          layout.hidden          = [];
+    _migrateLegacyCardIds(layout);
+    // Old provider card ids become host page panel ids once; the layout is saved below when they did.
+    hostMapped = typeof HP !== 'undefined' && HP.mapLegacyLayout(layout, Object.keys(CARD_LABELS_MANAGER)).changed;
     if (!layout.hiddenOverall)   layout.hiddenOverall   = [];
-    if (!layout.lmsHidden)       layout.lmsHidden       = [];
-    if (!layout.vllmHidden)      layout.vllmHidden      = [];
-    if (!layout.vllmOrder)       layout.vllmOrder       = [];
     if (!layout.managerHidden)   layout.managerHidden   = [];
-    if (!layout.hiddenByAgent || typeof layout.hiddenByAgent !== 'object') layout.hiddenByAgent = {};
-    if (!layout.orderByAgent || typeof layout.orderByAgent !== 'object') layout.orderByAgent = {};
-    if (!layout.sizesByAgent || typeof layout.sizesByAgent !== 'object') layout.sizesByAgent = {};
     if (!layout.managerOrder)    layout.managerOrder    = [];
     if (!layout.overallBorrowed) layout.overallBorrowed = [];
     if (!layout.overallOrder)    layout.overallOrder    = [];
     if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
     if (!layout.rolePreset || typeof layout.rolePreset !== 'object') layout.rolePreset = {};
-    _migrateLegacyCardIds(layout);
     // Old Overall band keys become row ids once; the layout is saved below when they did.
     bandMapped = typeof OV !== 'undefined' && OV.mapLegacyBand(layout).changed;
-    _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
-    _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
     if (layout.managerOrder) applyManagerLayout(layout.managerOrder);
-  } catch(e) {}
+  } catch(e) { console.warn('layout load failed', e); }
   const rawTheme = layout && layout.theme;
   if (rawTheme) layout.theme = SettingsLib.normalizeTheme(rawTheme);
   applyTheme(layout && layout.theme, false);
@@ -240,8 +206,8 @@ async function loadLayout() {
   applyAllGridCols();
   if (typeof applyDensity === 'function') applyDensity(layout && layout.density, false);
   if (typeof applyLayoutEngine === 'function') applyLayoutEngine(layout && layout.layoutEngine, false);
-  // Saves once when the stored theme was a legacy or unknown one, or old band keys were mapped.
-  if ((rawTheme && rawTheme !== layout.theme) || bandMapped) saveLayout();
+  // Saves once when the stored theme was a legacy or unknown one, or old band or card keys were mapped.
+  if ((rawTheme && rawTheme !== layout.theme) || bandMapped || hostMapped) saveLayout();
 }
 
 // kraken → aio: existing saved layouts written before the rename still carry
@@ -266,7 +232,7 @@ function _migrateLegacyCardIds(lay) {
       }
     }
   };
-  // Per-agent buckets: byAgent[provider][agentId] = [cardId...] or {cardId:size}.
+  // Per-host hidden lists: byAgent[provider][agentId] = [cardId...].
   const eachAgent = (bucket, fn) => {
     if (!bucket || typeof bucket !== 'object') return;
     for (const prov in bucket) {
@@ -274,33 +240,26 @@ function _migrateLegacyCardIds(lay) {
       if (byAgent && typeof byAgent === 'object') for (const aid in byAgent) fn(byAgent[aid]);
     }
   };
-  swap(lay.order); swap(lay.hidden);
-  swap(lay.lmsOrder); swap(lay.lmsHidden);
+  swap(lay.hidden);
   swap(lay.managerOrder); swap(lay.managerHidden);
   swap(lay.overallOrder); swap(lay.overallBorrowed); swap(lay.hiddenOverall);
   eachAgent(lay.hiddenByAgent, swap);
-  eachAgent(lay.orderByAgent, swap);
-  eachAgent(lay.sizesByAgent, swapKeys);
   swapKeys(lay.cardSizes);
 }
 
-// Live hardware-name registry. _setCardTitle() in charts.js updates this on
-// every fetchMetrics() tick so renderSettingsPanel() can show the same
-// agent-reported name the card title shows. Keyed by data-card id.
-window._hardwareNames = window._hardwareNames || {};
 function _cardLabel(id, map) {
-  return (window._hardwareNames && window._hardwareNames[id]) || (map && map[id]) || id;
+  return (map && map[id]) || id;
 }
 
 // ── Multi-agent picker (PR3) ────────────────────────────────────────
-// Picker chip-rows live in 4 sub-panels (dash-llamacpp/dash-lmstudio/
-// llm-llamacpp/llm-lmstudio). They auto-hide when a provider has ≤1 agent so
+// Picker chip-rows live in the LLM Control sub-panels (llm-llamacpp/
+// llm-lmstudio/llm-vllm). They auto-hide when a provider has ≤1 agent so
 // single-host installs see no UI change. Selection persists in layout and is
 // restored on load. Maps provider → container element id.
 const _AGENT_PICKER_CONTAINERS = {
-  llama: ['agentPickerDashLlama', 'agentPickerCtrlLlama'],
-  lms:   ['agentPickerDashLms', 'agentPickerCtrlLms'],
-  vllm:  ['agentPickerDashVllm', 'agentPickerCtrlVllm'],
+  llama: ['agentPickerCtrlLlama'],
+  lms:   ['agentPickerCtrlLms'],
+  vllm:  ['agentPickerCtrlVllm'],
 };
 
 // Primary (is_default) agent first; stable backend order for the rest.
@@ -337,14 +296,6 @@ async function _loadAgentsByProvider() {
       }
     });
     _renderAgentPickers();
-    // Re-apply a provider's per-agent order/visibility/sizes only when its
-    // selection changed (first resolve or a deleted-agent fallback).
-    if (typeof _applyAgentGrid === 'function') {
-      ['llama', 'lms', 'vllm'].forEach(prov => {
-        const sel = _selectedAgent(prov);
-        if (sel !== _appliedAgentSel[prov]) { _appliedAgentSel[prov] = sel; _applyAgentGrid(prov); }
-      });
-    }
   } catch (_) {}
 }
 
@@ -376,10 +327,6 @@ function _selectAgent(provider, agentId) {
   if (!provider) return;
   if (_selectedAgent(provider) === agentId) return;
   window._selectedAgents[provider] = agentId;
-  // Apply the new selection's per-agent order/visibility/sizes BEFORE saving, so
-  // saveLayout() captures the new agent's card order, not the old grid's.
-  _applyAgentGrid(provider);
-  _appliedAgentSel[provider] = agentId;
   // Persist into layout — saveLayout() self-coalesces concurrent calls, so a
   // rapid chip-switch makes one POST, not one per click.
   if (typeof layout === 'object' && layout) {
@@ -391,16 +338,10 @@ function _selectAgent(provider, agentId) {
       && document.getElementById('settingsOverlay')?.classList.contains('open')) renderSettingsPanel();
   // Reset the editor/download/cache/build panels before loading the new agent.
   if (typeof resetLLMControlPanels === 'function') resetLLMControlPanels();
-  // Clear the disk-usage bar list (guarded render keeps its last value when a
-  // sample lacks disk, so it'd otherwise show the previous agent's mounts) (#121).
-  const _clearBars = (id) => { const el = document.getElementById(id); if (el) el.innerHTML = ''; };
   // Re-pull everything for the newly-selected agent.
   if (provider === 'llama') {
-    _clearBars('diskList');
-    // Charts are per-agent: loadHistory() clears + backfills this agent's
-    // history (runs synchronously up to its fetch, so the old agent's lines
-    // clear at once); resume live points only after the backfill so they
-    // don't interleave out of order (#121).
+    // loadHistory() resets and reseeds this agent's rate peaks (the reset runs
+    // before its fetch); live samples resume after it so they land in order (#121).
     if (typeof loadHistory === 'function') {
       loadHistory().finally(() => { if (typeof fetchMetrics === 'function') fetchMetrics(); });
     } else if (typeof fetchMetrics === 'function') {
@@ -432,15 +373,7 @@ function _selectAgent(provider, agentId) {
         && ((typeof _termSid !== 'undefined' && _termSid)
             || (typeof _termOpen !== 'undefined' && _termOpen))) closeTerminal();
   } else if (provider === 'lms') {
-    _clearBars('lmsDiskList');
-    // loadLmsHistory reads the picker selection (_selectedAgent('lms')) and
-    // backfills that agent's host server-side via /api/history?agent= — no
-    // hostname needed here (#140). Resume live only after, like llama (#121).
-    if (typeof loadLmsHistory === 'function') {
-      loadLmsHistory().finally(() => { if (typeof fetchLMStudioMetrics === 'function') fetchLMStudioMetrics(); });
-    } else if (typeof fetchLMStudioMetrics === 'function') {
-      fetchLMStudioMetrics();
-    }
+    if (typeof fetchLMStudioMetrics === 'function') fetchLMStudioMetrics();
     if (typeof _lmsLogOpen !== 'undefined' && _lmsLogOpen
         && typeof startLmsLogRefresh === 'function') startLmsLogRefresh();
     if (typeof closeLmsTerminal === 'function') {
@@ -449,15 +382,7 @@ function _selectAgent(provider, agentId) {
           || (_lp && _lp.style.display !== 'none')) closeLmsTerminal();
     }
   } else if (provider === 'vllm') {
-    _clearBars('vllmDiskList');
-    // Backfill the new agent's history, then resume the live poll (#358) —
-    // same shape as the LMS branch above.
-    if (typeof loadVllmHistory === 'function') {
-      loadVllmHistory().finally(() => { if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics(); });
-    } else {
-      if (typeof _resetVllmCharts === 'function') _resetVllmCharts();
-      if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
-    }
+    if (typeof fetchVllmMetrics === 'function') fetchVllmMetrics();
     if (typeof loadVllmBenchData === 'function') loadVllmBenchData();
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen
         && typeof startVllmLogRefresh === 'function') startVllmLogRefresh();
@@ -613,6 +538,57 @@ function focusAlarmAlert(id) {
   setTimeout(() => iframe.removeEventListener('load', post), 15000);
 }
 
+// Opens Events and metrics on Metrics with one host's metric picked; a console not loaded yet gets ?metric= on its URL.
+function focusAlarmMetric(host, source, name) {
+  if (!source || !name) return;
+  const iframe = document.getElementById('alarmEngineIframe');
+  const booted = !!(iframe && iframe.getAttribute('src'));
+  if (iframe && !booted) {
+    const theme = (document.documentElement.dataset.theme || '').trim();
+    const q = new URLSearchParams();
+    if (/^[a-z][a-z0-9-]{0,31}$/.test(theme)) q.set('theme', theme);
+    q.set('metric', (host || '*') + '|' + source + '/' + name);
+    iframe.setAttribute('src', '/alarm/?' + q.toString());
+  }
+  if (typeof switchTab === 'function') switchTab('events');
+  if (!iframe || !booted) return;
+  const post = () => { try { iframe.contentWindow?.postMessage({ type: 'open_metric', host: host || '', source, name }, window.location.origin); } catch (_) {} };
+  post();
+  iframe.addEventListener('load', post, { once: true });
+  setTimeout(() => iframe.removeEventListener('load', post), 15000);
+}
+
+// Keeps the window on the same panel while content under root changes height or width: the first shown panel
+// in view is noted on scroll and after each correction, and a size change of root scrolls back by its move.
+function keepPlace(root, sel) {
+  if (!root || root._keepPlace || typeof ResizeObserver !== 'function') return;
+  let at = null, due = false;
+  const note = () => {
+    at = null;
+    if (!(window.scrollY > 0) || !root.clientWidth) return;
+    for (const p of root.querySelectorAll(sel)) {
+      const r = p.getBoundingClientRect();
+      if (!p.classList.contains('full') && r.height && r.bottom > 0) { at = { el: p, top: r.top, w: root.clientWidth }; return; }
+    }
+  };
+  // A scroll while root's width differs from the noted one comes from a resize and keeps the old place.
+  const onScroll = () => {
+    if (due) return;
+    due = true;
+    requestAnimationFrame(() => { due = false; if (!(at && at.el.isConnected && at.w !== root.clientWidth)) note(); });
+  };
+  const ro = new ResizeObserver(() => {
+    if (at && at.el.isConnected) {
+      const r = at.el.getBoundingClientRect();
+      if (r.height && Math.abs(r.top - at.top) >= 1) window.scrollBy(0, r.top - at.top);
+    }
+    note();
+  });
+  ro.observe(root);
+  window.addEventListener('scroll', onScroll, { passive: true });
+  root._keepPlace = { ro, onScroll, note };
+}
+
 // Resolve a CSS theme token (e.g. '--accent') to its computed string — for
 // canvas contexts (Chart.js) that can't consume var() directly.
 function cssVar(name, fallback) {
@@ -693,17 +669,11 @@ _themeChartDefaults();
 // Chrome colours the charts are built with at load; _retintCharts compares against it.
 let _chartTint = ['--fg-muted', '--border-soft', '--bg-card', '--fg', '--fg-muted', '--border'].map(v => cssVar(v)).join('|');
 
-// Effective hidden-card list for a surface — per-agent for the llama.cpp/LMS
-// dashboards, global elsewhere. Falls back to the global list if the lib is absent.
+// The hidden-card list saved under a layout key, created empty when missing.
 function _hiddenList(hiddenKey) {
-  const lib = window.LMLayout;
-  if (!lib) {
-    if (!Array.isArray(layout[hiddenKey])) layout[hiddenKey] = [];
-    return layout[hiddenKey];
-  }
-  const prov = lib.PER_AGENT_HIDDEN[hiddenKey] || null;
-  const agentId = prov ? _selectedAgent(prov) : null;
-  return lib.resolveHiddenList(layout, hiddenKey, agentId);
+  if (window.LMLayout) return window.LMLayout.resolveHiddenList(layout, hiddenKey);
+  if (!Array.isArray(layout[hiddenKey])) layout[hiddenKey] = [];
+  return layout[hiddenKey];
 }
 
 // Apply a grid's card visibility from its (possibly per-agent) hidden list.
@@ -717,89 +687,18 @@ function _applyHiddenForGrid(gridId, hiddenKey) {
   if (typeof _flushDirtyCharts === 'function') _flushDirtyCharts();
 }
 
-// Effective card-order list for a surface — per-agent for llama.cpp/LMS, global
-// elsewhere. Falls back to the global list if the lib is absent.
-function _orderList(orderKey) {
-  const lib = window.LMLayout;
-  if (!lib) {
-    if (!Array.isArray(layout[orderKey])) layout[orderKey] = [];
-    return layout[orderKey];
-  }
-  const prov = lib.PER_AGENT_ORDER[orderKey] || null;
-  const agentId = prov ? _selectedAgent(prov) : null;
-  return lib.resolveOrderList(layout, orderKey, agentId);
-}
-
-// Reorder a grid's cards by its (possibly per-agent) order list.
-function _applyOrderForGrid(gridId, orderKey) {
-  const grid = document.getElementById(gridId);
-  if (!grid) return;
-  const order = _orderList(orderKey);
-  if (!order || !order.length) return;
-  const cards = [...grid.querySelectorAll('.card')];
-  const ordered = [];
-  order.forEach(id => { const c = cards.find(c => c.dataset.card === id); if (c) ordered.push(c); });
-  cards.forEach(c => { if (!ordered.includes(c)) ordered.push(c); });
-  ordered.forEach(c => grid.appendChild(c));
-}
-
-// Provider owning a per-agent surface card id, else null (global surfaces).
-function _perAgentProviderForCard(cardId) {
-  if (CARD_LABELS[cardId]) return 'llama';
-  if (CARD_LABELS_LMS[cardId]) return 'lms';
-  if (CARD_LABELS_VLLM[cardId]) return 'vllm';
-  return null;
-}
-
-// cardId->size map holding this card's size — per-agent for llama.cpp/LMS cards,
-// global cardSizes otherwise (or when the lib/agent is absent).
-function _sizeMapFor(cardId) {
-  const lib = window.LMLayout;
-  const prov = _perAgentProviderForCard(cardId);
-  const agentId = prov ? _selectedAgent(prov) : null;
-  if (lib && prov && agentId) {
-    const seedIds = prov === 'llama' ? Object.keys(CARD_LABELS)
-                  : prov === 'vllm' ? Object.keys(CARD_LABELS_VLLM)
-                  : Object.keys(CARD_LABELS_LMS);
-    return lib.resolveSizeMap(layout, prov, agentId, seedIds);
-  }
+// cardId->size map holding every card's size (the global cardSizes).
+function _sizeMapFor(_cardId) {
   if (!layout.cardSizes || typeof layout.cardSizes !== 'object') layout.cardSizes = {};
   return layout.cardSizes;
 }
 
-// Re-apply order, visibility, and sizes for a provider's per-agent grid.
-function _applyAgentGrid(provider) {
-  if (provider === 'llama') {
-    _applyOrderForGrid('cardGrid', 'order');
-    _applyHiddenForGrid('cardGrid', 'hidden');
-  } else if (provider === 'lms') {
-    _applyOrderForGrid('lmsCardGrid', 'lmsOrder');
-    _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
-  } else if (provider === 'vllm') {
-    _applyOrderForGrid('vllmCardGrid', 'vllmOrder');
-    _applyHiddenForGrid('vllmCardGrid', 'vllmHidden');
-  }
-  if (typeof initCardResize === 'function') initCardResize();
-}
-
 function applyLayout() {
-  // Apply order — Dashboard/llama.cpp cards (per selected agent)
-  _applyOrderForGrid('cardGrid', 'order');
-
-  // Apply visibility — Dashboard/llama.cpp cards (per selected agent)
-  _applyHiddenForGrid('cardGrid', 'hidden');
-
   // Apply visibility — LLM Overall cards
   const hiddenOv = layout.hiddenOverall || [];
   document.querySelectorAll('#overallGrid .card').forEach(c => {
     c.style.display = hiddenOv.includes(c.dataset.card) ? 'none' : '';
   });
-
-  // Apply visibility — LMS dashboard cards (per selected agent)
-  _applyHiddenForGrid('lmsCardGrid', 'lmsHidden');
-
-  // Apply visibility — vLLM dashboard cards (per selected agent)
-  _applyHiddenForGrid('vllmCardGrid', 'vllmHidden');
 
   // Apply visibility — Manager dashboard cards
   const hiddenMgr = layout.managerHidden || [];
@@ -839,8 +738,7 @@ function applyLayout() {
 }
 
 // Serialize layout POSTs so rapid drag-drops can't race. Multiple calls while
-// a POST is in flight collapse into a single trailing save that captures the
-// final DOM order.
+// a POST is in flight collapse into a single trailing save of the layout as it is then.
 let _layoutInFlight = null;
 let _layoutPending  = false;
 async function saveLayout() {
@@ -849,10 +747,6 @@ async function saveLayout() {
     try {
       do {
         _layoutPending = false;
-        const grid = document.getElementById('cardGrid');
-        const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-        const ol = _orderList('order');
-        ol.splice(0, ol.length, ...ids);
         try {
           await fetch('/api/layout', {
             method: 'POST',
@@ -884,9 +778,7 @@ function _ovPinned(id) {
 }
 
 function _homeCardEl(id) {
-  return document.querySelector(
-    `#cardGrid [data-card="${id}"], #lmsCardGrid [data-card="${id}"], ` +
-    `#vllmCardGrid [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
+  return document.querySelector(`#managerCardGrid [data-card="${id}"], .hp-root [data-card="${id}"]`);
 }
 
 function adoptPinnedCards() {
@@ -909,6 +801,7 @@ function adoptPinnedCards() {
     // A pinned card is always visible on Overall — clear any hidden-at-home
     // inline display; the home state is re-applied on return.
     home.style.display = '';
+    if (home.hidden) home.hidden = false;
     _ensureSizeBtn(shell);
     _ovAdopted.add(id);
   });
@@ -922,14 +815,11 @@ function _returnOneAdopted(id) {
   const mark = _ovHomeMarks[id];
   if (card && mark && mark.parentNode) {
     mark.parentNode.replaceChild(card, mark);
-    // Re-apply the home grid's hidden state (adoption cleared it).
-    const keys = { cardGrid: 'hidden', lmsCardGrid: 'lmsHidden',
-                   vllmCardGrid: 'vllmHidden', managerCardGrid: 'managerHidden' };
-    const grid = card.closest('.grid');
-    if (grid && keys[grid.id] && typeof _applyHiddenForGrid === 'function') {
-      _applyHiddenForGrid(grid.id, keys[grid.id]);
-    }
-    if (typeof _applyCardSize === 'function') _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
+    // A Manager card gets its grid's hidden state (adoption cleared it) and size back;
+    // a host page panel keeps the kit's own layout.
+    const grid = card.closest('#managerCardGrid');
+    if (grid && typeof _applyHiddenForGrid === 'function') _applyHiddenForGrid(grid.id, 'managerHidden');
+    if (!card.closest('.hp-root') && typeof _applyCardSize === 'function') _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
   } else if (mark && mark.parentNode) mark.remove();
   delete _ovHomeMarks[id];
   _ovAdopted.delete(id);
@@ -995,6 +885,22 @@ function toggleAllHostsRow(id, on) {
   saveLayout();
 }
 
+// Shows or hides one row of the shown host page, keeping only ids of rows on the page, and saves the layout.
+function toggleHostPageRow(id, on) {
+  const scope = _sdScope();
+  const root = scope.kind === 'rows' && scope.key !== 'dashboard/all' && document.getElementById(scope.root);
+  if (!root) return;
+  const hidden = new Set(layout[scope.rowsHidden] || []);
+  if (on) hidden.delete(id); else hidden.add(id);
+  const ids = _kitRows(scope.root).map(r => r[0]);
+  layout[scope.rowsHidden] = [...hidden].filter(x => ids.includes(x));
+  const row = root.querySelector(`section.row[data-row="${id}"]`);
+  if (row) row.hidden = !on;
+  if (typeof kitRowMenus === 'function') kitRowMenus(root);
+  if (typeof hpRender === 'function') hpRender();
+  saveLayout();
+}
+
 // Backfill home-provider chart history + kick the manager one-shots for
 // pinned cards, so adopted cards are live even if their home dashboard was
 // never visited this session (#565, #506 pattern).
@@ -1004,9 +910,12 @@ function _ovBackfillPinnedProviders() {
   if (!b.length || ((lay && lay.overallRowsHidden) || []).includes('pinned')) return;
   const run = fn => { if (typeof fn === 'function') Promise.resolve(fn()).catch(() => {}); };
   const hasIn = map => b.some(id => map && map[id] !== undefined);
-  if (hasIn(CARD_LABELS))         run(window.loadHistory);
-  if (hasIn(CARD_LABELS_LMS))     run(window.loadLmsHistory);
-  if (hasIn(CARD_LABELS_VLLM))    run(window.loadVllmHistory);
+  // Host page panels are filled by their page renderer, which keeps polling while Overall shows them.
+  const hpPinned = typeof hpPagePanelIds === 'function' && b.some(id => {
+    const m = /^(llama|lms|vllm|host)-/.exec(id);
+    return !!m && hpPagePanelIds(m[1]).includes(id);
+  });
+  if (hpPinned) run(window.hpPaintPinned);
   if (hasIn(CARD_LABELS_MANAGER)) {
     run(window.loadManagerPerfHistory);
     run(window.fetchServicesAndInflux);
@@ -1030,6 +939,10 @@ function addBorrowedCard(cardId) {
   const saved = (layout.cardSizes || {})['ov-borrow-' + cardId];
   _applyCardSize(shell, saved || _defaultCardSize(cardId));
   if (_activeTab === 'overall') adoptPinnedCards();
+  // A host page panel pinned while Overall shows starts its page's poll and paints at once.
+  const hpPage = (/^(llama|lms|vllm|host)-/.exec(cardId) || [])[1];
+  if (_activeTab === 'overall' && hpPage && typeof hpPagePanelIds === 'function' && hpPagePanelIds(hpPage).includes(cardId)
+      && typeof hpPaintPinned === 'function') Promise.resolve(hpPaintPinned()).catch(() => {});
   if (typeof _ovPinNoneSync === 'function') _ovPinNoneSync();
   saveLayout();
 }
@@ -1060,17 +973,9 @@ function _makeLayoutSaver(gridId, orderKey) {
           const grid = document.getElementById(gridId);
           if (!grid) return;
           const ids = [...grid.querySelectorAll('.card')].map(c => c.dataset.card);
-          // Per-agent keys (LMLayout.PER_AGENT_ORDER) write through
-          // _orderList() and persist layout.orderByAgent too.
-          const perAgent = !!(window.LMLayout && window.LMLayout.PER_AGENT_ORDER[orderKey]);
-          if (perAgent) {
-            const ol = _orderList(orderKey);
-            ol.splice(0, ol.length, ...ids);
-          }
           try {
             const current = await fetch('/api/layout').then(r => r.json());
-            current[orderKey] = perAgent ? layout[orderKey] : ids;
-            if (perAgent) current.orderByAgent = layout.orderByAgent;
+            current[orderKey] = ids;
             await fetch('/api/layout', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(current),
@@ -1085,9 +990,7 @@ function _makeLayoutSaver(gridId, orderKey) {
   };
 }
 
-// LMS / vLLM / Manager dashboard card-order persistence.
-const saveLmsLayout     = _makeLayoutSaver('lmsCardGrid', 'lmsOrder');
-const saveVllmLayout    = _makeLayoutSaver('vllmCardGrid', 'vllmOrder');
+// Manager dashboard card-order persistence.
 const saveManagerLayout = _makeLayoutSaver('managerCardGrid', 'managerOrder');
 
 function applyManagerLayout(savedOrder) {
@@ -1104,12 +1007,26 @@ function applyManagerLayout(savedOrder) {
 // Settings panel — compact chips + grid layout selector
 // ---------------------------------------------------------------------------
 
+// Host page panel ids of a page and their titles: {page, map}, or null for other ids.
+function _hpPanelMap(id) {
+  _hostPanelLabels();
+  const page = (/^(llama|lms|vllm|host)-/.exec(String(id)) || [])[1];
+  const map = { llama: CARD_LABELS, lms: CARD_LABELS_LMS, vllm: CARD_LABELS_VLLM, host: CARD_LABELS_HOST }[page];
+  return map && map[id] !== undefined && typeof HP !== 'undefined' ? { page, map } : null;
+}
+
 function toggleCard(cardId, visible) {
-  let hiddenKey = 'hidden';
-  if (CARD_LABELS_LMS[cardId]) hiddenKey = 'lmsHidden';
-  else if (CARD_LABELS_VLLM[cardId]) hiddenKey = 'vllmHidden';
-  else if (CARD_LABELS_MANAGER[cardId]) hiddenKey = 'managerHidden';
-  const list = _hiddenList(hiddenKey);
+  const hp = _hpPanelMap(cardId);
+  if (hp) {
+    const list = _hiddenList(HP.HIDDEN_KEYS[hp.page]), idx = list.indexOf(cardId);
+    if (visible) { if (idx !== -1) list.splice(idx, 1); }
+    else if (idx === -1) list.push(cardId);
+    if (typeof hpRender === 'function') hpRender();
+    saveLayout();
+    return;
+  }
+  if (!CARD_LABELS_MANAGER[cardId]) return;
+  const list = _hiddenList('managerHidden');
   const idx = list.indexOf(cardId);
   if (visible) { if (idx !== -1) list.splice(idx, 1); }
   else if (idx === -1) { list.push(cardId); }
@@ -1126,6 +1043,7 @@ function _getDashSubTab() {
   if (document.getElementById('dash-llamacpp')?.classList.contains('active')) return 'llamacpp';
   if (document.getElementById('dash-lmstudio')?.classList.contains('active')) return 'lmstudio';
   if (document.getElementById('dash-vllm')?.classList.contains('active'))     return 'vllm';
+  if (document.getElementById('dash-host')?.classList.contains('active'))     return 'host';
   if (document.getElementById('dash-manager')?.classList.contains('active'))  return 'manager';
   if (document.getElementById('dash-energy')?.classList.contains('active'))   return 'energy';
   if (document.getElementById('dash-openclaw')?.classList.contains('active')) return 'openclaw';
@@ -1248,8 +1166,9 @@ function _sdRenderHeader(scope) {
 }
 
 function _sdCardMap(scope) {
-  return { 'dashboard/llamacpp': CARD_LABELS, 'dashboard/lmstudio': CARD_LABELS_LMS,
-           'dashboard/vllm': CARD_LABELS_VLLM, 'dashboard/manager': CARD_LABELS_MANAGER }[scope.key] || {};
+  _hostPanelLabels();
+  return { 'dashboard/manager': CARD_LABELS_MANAGER, 'dashboard/llamacpp': CARD_LABELS, 'dashboard/lmstudio': CARD_LABELS_LMS,
+           'dashboard/vllm': CARD_LABELS_VLLM, 'dashboard/host': CARD_LABELS_HOST }[scope.key] || {};
 }
 
 function _sdChip(id, label, on, kind) {
@@ -1264,14 +1183,16 @@ function _sdRenderCards(scope) {
     el.innerHTML = `
       <div class="sd-sh"><h3>Sections on this page</h3><span class="meta">${rows.filter(r => !off.includes(r[0])).length} of ${rows.length} shown</span>
         <span class="act"><button type="button" class="sd-btn warn" data-sd="reset" title="Restore this page's sections, order and chart defaults">⟲ Reset this page</button></span></div>
-      <div class="sd-chips">${rows.map(r => _sdChip(r[0], r[1], !off.includes(r[0]), 'ahrow')).join('')}</div>`;
+      <div class="sd-chips">${rows.map(r => _sdChip(r[0], r[1], !off.includes(r[0]), scope.key === 'dashboard/all' ? 'ahrow' : 'hprow')).join('')}</div>${_sdHostPanels(scope)}`;
     return;
   }
   if (!el || scope.kind !== 'cards') return;
   if (_activeTab === 'overall') {
+    _hostPanelLabels();
     const borrowed = layout.overallBorrowed || [];
     const groups = [
-      ['llama.cpp', CARD_LABELS], ['LM Studio', CARD_LABELS_LMS], ['vLLM', CARD_LABELS_VLLM], ['Manager', CARD_LABELS_MANAGER],
+      ['llama.cpp', CARD_LABELS], ['LM Studio', CARD_LABELS_LMS], ['vLLM', CARD_LABELS_VLLM], ['Host', CARD_LABELS_HOST],
+      ['Manager', CARD_LABELS_MANAGER],
     ];
     const inner = groups.map(([g, map]) => {
       const ids = Object.keys(map);
@@ -1299,6 +1220,18 @@ function _sdRenderCards(scope) {
       <span class="act"><button type="button" class="lnk" data-sd="show-all">Show all</button><button type="button" class="lnk" data-sd="hide-all">Hide all</button></span></div>
     <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), !hidden.includes(id), 'card')).join('')}</div>
     <div class="help">Drag a card to reorder it. The ⤢ button on a card cycles its size.</div>`;
+}
+
+// A host page's panel chips: each panel shows or hides on this page; a panel pinned to Overall still shows there.
+function _sdHostPanels(scope) {
+  const map = scope.panelsHidden ? _sdCardMap(scope) : {}, ids = Object.keys(map);
+  if (!ids.length) return '';
+  const hidden = layout[scope.panelsHidden] || [], shown = ids.filter(id => !hidden.includes(id)).length;
+  return `
+      <div class="sd-sh"><h3>Panels on this page</h3><span class="meta">${shown} of ${ids.length} shown</span>
+        <span class="act"><button type="button" class="lnk" data-sd="show-all">Show all</button><button type="button" class="lnk" data-sd="hide-all">Hide all</button></span></div>
+      <div class="sd-chips">${ids.map(id => _sdChip(id, _cardLabel(id, map), !hidden.includes(id), 'card')).join('')}</div>
+      <div class="help">A hidden panel still shows on Overall while it is pinned there.</div>`;
 }
 
 function _sdRenderLayout(scope) {
@@ -1459,9 +1392,17 @@ function renderSettingsPanel() {
   _sdRenderRefresh();
 }
 
+// Shows or hides every card of the page; a host page writes its panel list once, then repaints and saves.
 function _sdSetAllCards(visible) {
   const scope = _sdScope();
-  if (scope.kind !== 'cards' || _activeTab === 'overall') return;
+  if (_activeTab === 'overall') return;
+  if (scope.panelsHidden) {
+    layout[scope.panelsHidden] = visible ? [] : Object.keys(_sdCardMap(scope));
+    if (typeof hpRender === 'function') hpRender();
+    saveLayout();
+    return;
+  }
+  if (scope.kind !== 'cards') return;
   Object.keys(_sdCardMap(scope)).forEach(id => toggleCard(id, visible));
 }
 
@@ -1484,6 +1425,8 @@ function _sdBind() {
       toggleOverallRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
     } else if (kind === 'ahrow') {
       toggleAllHostsRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
+    } else if (kind === 'hprow') {
+      toggleHostPageRow(t.dataset.id, t.getAttribute('aria-pressed') !== 'true'); _sdRerenderCards();
     } else if (kind === 'pin') {
       const on = t.getAttribute('aria-pressed') !== 'true';
       if (on) addBorrowedCard(t.dataset.id); else removeBorrowedCard(t.dataset.id);
@@ -1609,6 +1552,29 @@ async function _ahResetLayout() {
   if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
 }
 
+// Resets the shown host page only: shows every row and panel and restores the kit row and panel order;
+// other pages keep their layout.
+async function _hpResetLayout() {
+  const scope = _sdScope();
+  const root = scope.kind === 'rows' && document.getElementById(scope.root);
+  if (!root) return;
+  const ok = await _themedConfirm({
+    title:        'Reset this page back to default?',
+    bodyHtml:     'This shows every section and panel again and restores the section and panel order. Other pages are unaffected.',
+    confirmLabel: 'Reset',
+    cancelLabel:  'Cancel',
+  });
+  if (!ok) return;
+  layout[scope.rowsHidden] = [];
+  if (scope.panelsHidden) layout[scope.panelsHidden] = [];
+  if (typeof kitLayoutReset === 'function') kitLayoutReset('host-' + root.dataset.hpPage, root, window.mcShellStore);
+  root.querySelectorAll('section.row[data-row]').forEach(r => { r.hidden = false; });
+  if (typeof hpResetFolds === 'function') hpResetFolds(root.dataset.hpPage);
+  if (typeof hpRender === 'function') hpRender();
+  saveLayout();
+  if (typeof renderSettingsPanel === 'function') renderSettingsPanel();
+}
+
 // Reset only the active tab's layout keys back to defaults. Other tabs
 // keep their order/visibility/size/columns. Card sizes are cleared just
 // for the IDs that belong to the active tab (looked up via the right
@@ -1622,18 +1588,10 @@ async function resetCurrentTabLayout() {
   } else if (_activeTab === 'dashboard') {
     const sub = _getDashSubTab();
     if (sub === 'all') { await _ahResetLayout(); return; }
-    if (sub === 'lmstudio') {
-      scope = { hidden: 'lmsHidden', order: 'lmsOrder', cols: 'lmsCols' };
-      map = CARD_LABELS_LMS;
-    } else if (sub === 'vllm') {
-      scope = { hidden: 'vllmHidden', order: 'vllmOrder', cols: 'vllmCols' };
-      map = CARD_LABELS_VLLM;
-    } else if (sub === 'manager') {
+    if (['llamacpp', 'lmstudio', 'vllm', 'host'].includes(sub)) { await _hpResetLayout(); return; }
+    if (sub === 'manager') {
       scope = { hidden: 'managerHidden', order: 'managerOrder', cols: 'managerCols' };
       map = CARD_LABELS_MANAGER;
-    } else if (sub === 'llamacpp') {
-      scope = { hidden: 'hidden', order: 'order', cols: 'cols' };
-      map = CARD_LABELS;
     } else {
       return;
     }
@@ -1663,14 +1621,6 @@ async function resetCurrentTabLayout() {
         if (id.startsWith('ov-')) delete layout.cardSizes[id];
       }
     }
-  }
-  // Per-agent surfaces: also clear the selected agent's own hidden/order/size sets.
-  const _resetProv = (window.LMLayout && LMLayout.PER_AGENT_HIDDEN[scope.hidden]) || null;
-  const _aid = _resetProv ? _selectedAgent(_resetProv) : null;
-  if (_aid) {
-    if (layout.hiddenByAgent && layout.hiddenByAgent[_resetProv]) delete layout.hiddenByAgent[_resetProv][_aid];
-    if (layout.orderByAgent && layout.orderByAgent[_resetProv]) delete layout.orderByAgent[_resetProv][_aid];
-    if (layout.sizesByAgent && layout.sizesByAgent[_resetProv]) delete layout.sizesByAgent[_resetProv][_aid];
   }
   try {
     await fetch('/api/layout', {
@@ -1703,9 +1653,6 @@ function switchTab(tab) {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
   });
-  // Also hide legacy cardGrid if still top-level
-  const cg = document.getElementById('cardGrid');
-  if (cg && !cg.closest('#dashboardTab')) cg.style.display = 'none';
 
   // Overall entry paints the live panels at once and seeds history and energy
   // alongside them; nothing on it fetches or redraws while hidden (#506, #1140, #1439).
@@ -1723,6 +1670,12 @@ function switchTab(tab) {
   if (tab === 'dashboard' && typeof _subTabState !== 'undefined' && _subTabState.dashboard === 'all') {
     if (typeof ahEnter === 'function') ahEnter();
   } else if (typeof ahLeave === 'function') ahLeave();
+  // Host pages poll only while Dashboards shows them, or while Overall shows one of their pinned panels.
+  const hpPage = tab === 'dashboard' && typeof _subTabState !== 'undefined'
+    ? { llamacpp: 'llama', lmstudio: 'lms', vllm: 'vllm', host: 'host' }[_subTabState.dashboard] : null;
+  if (hpPage) {
+    if (typeof hpEnter === 'function') hpEnter(hpPage);
+  } else if (typeof hpLeave === 'function') hpLeave();
   if (tab === 'events')     {
     document.getElementById('eventsTab').style.display = '';
     _ensureAlarmIframeLoaded();

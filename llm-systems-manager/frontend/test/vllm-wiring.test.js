@@ -3,6 +3,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import { JSDOM } from 'jsdom';
 import OV from '../js/lib/overall-view.js';
+import HP from '../js/lib/host-view.js';
 // Sets window.LMPeaks, which charts.js's history backfill reads.
 import '../js/lib/peaks.js';
 import { readFileSync, existsSync } from 'node:fs';
@@ -60,11 +61,11 @@ describe('foundation.js', () => {
       fnSrc('_selectedAgent', foundation),
       blockSrc(foundation, 'const _AGENT_PICKER_CONTAINERS', '\n};'),
       fnSrc('_renderAgentPickers', foundation),
+      'window._AGENT_PICKER_CONTAINERS = _AGENT_PICKER_CONTAINERS;',
     ].join('\n');
     evalGlobal(code);
 
     document.body.innerHTML = `
-      <div class="agent-picker" id="agentPickerDashVllm" style="display:none"></div>
       <div class="agent-picker" id="agentPickerCtrlVllm" style="display:none"></div>`;
     window._agentsByProvider = {
       vllm: [
@@ -76,7 +77,9 @@ describe('foundation.js', () => {
 
     _renderAgentPickers();
 
-    for (const cid of ['agentPickerDashVllm', 'agentPickerCtrlVllm']) {
+    // The vLLM dashboard picks its host in the host page list (#1432); only LLM Control keeps chips.
+    expect(window._AGENT_PICKER_CONTAINERS.vllm).toEqual(['agentPickerCtrlVllm']);
+    for (const cid of ['agentPickerCtrlVllm']) {
       const el = document.getElementById(cid);
       expect(el.style.display).not.toBe('none');
       const chips = [...el.querySelectorAll('.agent-chip')];
@@ -87,22 +90,19 @@ describe('foundation.js', () => {
     }
   });
 
-  test('CARD_LABELS_VLLM drives per-agent provider resolution for vllm cards', () => {
-    const code = [
-      blockSrc(foundation, 'const CARD_LABELS_LMS', '\n};'),
-      blockSrc(foundation, 'const CARD_LABELS_VLLM', '\n};'),
-      blockSrc(foundation, 'const CARD_LABELS = {', '\n};'),
-      fnSrc('_perAgentProviderForCard', foundation),
-    ].join('\n');
-    evalGlobal(code);
-
-    expect(_perAgentProviderForCard('vllm-cpu')).toBe('vllm');
-    expect(_perAgentProviderForCard('vllm-kv')).toBe('vllm');
-    // Contrast: llama/global and LMS cards resolve to their own provider,
-    // not vllm — proves the lookup is keyed off CARD_LABELS_VLLM specifically.
-    expect(_perAgentProviderForCard('gpu')).toBe('llama');
-    expect(_perAgentProviderForCard('lms-cpu')).toBe('lms');
-    expect(_perAgentProviderForCard('nope')).toBeNull();
+  test('CARD_LABELS_VLLM lists the vLLM host page panels with their titles (#1432)', () => {
+    window.HP = HP;
+    evalGlobal(blockSrc(foundation, '// Host page panel ids and titles', '\nconst CARD_LABELS_MANAGER', { includeEnd: false }).replace(/^const /gm, 'var ')
+      + '\n_hostPanelLabels();');
+    expect(Object.keys(window.CARD_LABELS_VLLM)).toEqual(HP.panelsFor('vllm').map(p => 'vllm-' + p.name));
+    expect(window.CARD_LABELS_VLLM['vllm-kv']).toBe('KV cache');
+    expect(window.CARD_LABELS_VLLM['vllm-cpu-mem']).toBe('CPU and memory');
+    // The lookup is keyed per page: llama and LM Studio panels stay in their own maps.
+    expect(window.CARD_LABELS_VLLM['llama-gpu-busy']).toBeUndefined();
+    expect(window.CARD_LABELS['llama-gpu-busy']).toBe('GPU busy and memory');
+    expect(window.CARD_LABELS_LMS['lms-models']).toBe('Models');
+    expect(Object.keys(window.CARD_LABELS_HOST)).toEqual(HP.panelsFor('host').map(p => 'host-' + p.name));
+    expect(window.CARD_LABELS_HOST['host-tps']).toBeUndefined();
   });
 });
 
@@ -126,15 +126,13 @@ describe('boot.js', () => {
     window.stopLogStream = () => calls.push('stopLogStream');
     window.stopPerfRefresh = () => calls.push('stopPerfRefresh');
     window.stopLmsLogRefresh = () => calls.push('stopLmsLogRefresh');
-    window.loadVllmHistory = () => { calls.push('loadVllmHistory'); return Promise.resolve(); };
     window.fetchVllmMetrics = () => calls.push('fetchVllmMetrics');
 
     switchSubTab('dashboard', 'vllm');
     await flush();
     expect(document.getElementById('dash-vllm').classList.contains('active')).toBe(true);
     expect(_subTabState.dashboard).toBe('vllm');
-    // Dashboard entry re-backfills then resumes the live poll (#504).
-    expect(calls).toContain('loadVllmHistory');
+    // Dashboard entry refreshes the live payload; the vLLM host page loads its own history (#1432).
     expect(calls).toContain('fetchVllmMetrics');
 
     calls.length = 0;
@@ -157,8 +155,6 @@ describe('boot.js', () => {
       window.initSortable = () => {};
       window.syncInterval = async () => {};
       window.loadHistory = async () => {};
-      window.loadLmsHistory = () => Promise.resolve();
-      window.loadVllmHistory = () => Promise.resolve();
       window.loadManagerPerfHistory = () => Promise.resolve();
       window.checkConfig = async () => {};
       window.pollServerState = () => {};
@@ -261,127 +257,62 @@ describe('charts.js', () => {
     expect(document.getElementById('vllmStateBanner').style.display).toBe('none');
   });
 
-  // #366: _activeTabLayoutKeys must resolve the vllm sub-tab to the vllm grid.
-  test('_activeTabLayoutKeys resolves the dashboard vllm sub-tab to the vllm grid', () => {
+  // #366, #1432: the vLLM dashboard is a host page, so it has no card grid keys.
+  test('_activeTabLayoutKeys gives no card keys on the vllm host page', () => {
     document.body.innerHTML = `
-      <div id="dash-vllm" class="active"></div>
-      <div class="grid" id="vllmCardGrid"></div>`;
+      <div id="dash-vllm" class="active"><div class="hp-root" id="hp-vllm" data-hp-page="vllm"></div></div>`;
     const code = [
-      blockSrc(foundation, 'const CARD_LABELS_LMS', '\n};'),
       blockSrc(foundation, 'const CARD_LABELS_MANAGER', '\n};'),
-      blockSrc(foundation, 'const CARD_LABELS_VLLM', '\n};'),
-      blockSrc(foundation, 'const CARD_LABELS = {', '\n};'),
       srcFile('js/lib/settingsdrawer.js'),
       fnSrc('_getDashSubTab', foundation),
       fnSrc('_sdScope', foundation),
       fnSrc('_sdCardMap', foundation),
       fnSrc('_activeTabLayoutKeys', charts),
-      'window.CARD_LABELS_VLLM = CARD_LABELS_VLLM;',
     ].join('\n');
     evalGlobal(code);
     window._activeTab = 'dashboard';
 
-    const ks = _activeTabLayoutKeys();
-    expect(ks.hidden).toBe('vllmHidden');
-    expect(ks.order).toBe('vllmOrder');
-    expect(ks.cols).toBe('vllmCols');
-    expect(ks.grid).toBe(document.getElementById('vllmCardGrid'));
-    expect(ks.map).toBe(CARD_LABELS_VLLM);
+    expect(_sdScope()).toMatchObject({ kind: 'rows', root: 'hp-vllm', rowsHidden: 'vllmRowsHidden' });
+    expect(_activeTabLayoutKeys()).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
 // #358: vLLM dashboard history backfill wiring.
-describe('vllm history backfill (#358)', () => {
+describe('vllm history backfill (#358, #1432)', () => {
   const charts = src('js/charts.js');
 
-  function loadVllmHistoryHarness() {
-    const code = [
-      'const MAX_POINTS = 3600;',
-      fnSrc('_historyRows', charts),
-      fnSrc('_makeHistoryBackfill', charts),
-      blockSrc(charts, 'const loadVllmHistory', '\n  });'),
-      'window.loadVllmHistory = loadVllmHistory;',
-    ].join('\n');
-    evalGlobal(code);
-    window._withPushBatch = (fn) => fn();
-  }
-
-  beforeEach(() => {
-    window._resetVllmCharts = () => window.__resetCalls.push(Date.now());
-    window.__resetCalls = [];
-    window.__pushPointCalls = [];
-    window.__pushDualCalls = [];
-    window.pushPoint = (chart, ts, val) => window.__pushPointCalls.push({ chart, val });
-    window.pushDual = (chart, ts, v1, v2) => window.__pushDualCalls.push({ chart, v1, v2 });
-    window.vllmKvChart = { name: 'kv' };
-    window.vllmTpsChart = { name: 'tps' };
-    window._selectedAgent = undefined;
-    window.__VLLM_AGENT = 'agent-1';
+  test('no vllm chart backfill is left; the vLLM host page loads the history', () => {
+    // wiring (unexecutable): absence check across the whole file.
+    expect(charts).not.toContain('loadVllmHistory');
   });
 
-  test('builds loadVllmHistory from the shared backfill factory and paints kv/tps', async () => {
-    loadVllmHistoryHarness();
-    const fetchCalls = [];
-    window.fetch = async (url) => {
-      fetchCalls.push(url);
-      return { ok: true, json: async () => [{ ts: 1000, vllm_kv: 55, vllm_tps: 3, vllm_pps: 2 }] };
-    };
-    await window.loadVllmHistory();
-    expect(fetchCalls).toEqual(['/api/history?agent=agent-1']);
-    // Reset fires twice on this first-ever call: once because the agent
-    // changed from unset (#121), again just before repainting the rows.
-    expect(window.__resetCalls.length).toBe(2);
-    expect(window.__pushPointCalls).toEqual([{ chart: window.vllmKvChart, val: 55 }]);
-    expect(window.__pushDualCalls).toEqual([{ chart: window.vllmTpsChart, v1: 3, v2: 2 }]);
+  test('boot.js no longer backfills vllm history at startup or on dashboard sub-tab entry', () => {
+    const boot = src('js/boot.js');
+    // wiring (unexecutable): the boot IIFE needs the whole page to run.
+    expect(boot).not.toContain('loadVllmHistory');
+    const entry = boot.slice(boot.indexOf("if (sub === 'vllm')"));
+    expect(entry.slice(0, 120)).toContain('fetchVllmMetrics();');
   });
 
-  test('generation guard: only the newest in-flight call paints (++gen)', async () => {
-    loadVllmHistoryHarness();
-    let resolveFirst;
-    let call = 0;
-    window.fetch = async () => {
-      call += 1;
-      if (call === 1) {
-        return new Promise((resolve) => { resolveFirst = () => resolve({ ok: true, json: async () => [{ ts: 1, vllm_kv: 1 }] }); });
-      }
-      return { ok: true, json: async () => [{ ts: 2, vllm_kv: 99 }] };
-    };
-    const first = window.loadVllmHistory();   // stale call — resolves last
-    const second = window.loadVllmHistory();  // newest call — resolves first
-    await second;
-    resolveFirst();
-    await first;
-    // Only the second (newest) call's row was painted; the stale first
-    // call's late resolution must not overwrite it.
-    expect(window.__pushPointCalls).toEqual([{ chart: window.vllmKvChart, val: 99 }]);
-  });
-
-  test('boot.js backfills vllm history at startup, then re-backfills on dashboard sub-tab entry',
-    () => {
-      const boot = src('js/boot.js');
-      expect(boot).toContain('loadVllmHistory().catch');
-      const entry = boot.slice(boot.indexOf("if (sub === 'vllm')"));
-      // wiring (unexecutable): narrow source check on the boot-time call site.
-      expect(entry.slice(0, 400)).toContain('loadVllmHistory().finally');
-    });
-
-  test('foundation.js agent-switch backfills, resumes the poll, and clears the disk list', () => {
+  test('foundation.js agent-switch resumes the poll without a chart backfill', () => {
     const foundation = src('js/foundation.js');
     const branch = foundation.slice(foundation.indexOf("provider === 'vllm'"));
     // wiring (unexecutable): branch lives inside a large multi-provider switch.
-    expect(branch.slice(0, 600)).toContain('loadVllmHistory().finally');
-    // #121 parity with the LMS branch: agent switch clears the disk bar list.
-    expect(branch.slice(0, 600)).toContain("_clearBars('vllmDiskList')");
+    expect(branch.slice(0, 200)).toContain('fetchVllmMetrics();');
+    expect(branch.slice(0, 600)).not.toContain('loadVllmHistory');
+    expect(branch.slice(0, 600)).not.toContain('vllmDiskList');
   });
 
-  test('backend maps the vllm history fields and injects __VLLM_AGENT', () => {
+  test('backend maps the vllm history fields and no longer injects the provider default agent ids', () => {
     // wiring (unexecutable): Python backend source — no JS/jsdom harness runs it.
     const be = src('../backend/llm-systems-manager.py');
     for (const f of ['vllm_kv', 'vllm_tps', 'vllm_pps', 'vllm_req_running', 'vllm_req_waiting']) {
       expect(be).toContain(`"${f}"`);
     }
-    expect(be).toContain('window.__VLLM_AGENT');
+    expect(be).not.toContain('window.__VLLM_AGENT');
+    expect(be).not.toContain('window.__LMS_AGENT');
+    expect(be).toContain('window.__MGR_AGENT');
   });
 });
 
@@ -454,11 +385,12 @@ describe('index.html', () => {
     expect(vllmIdx).toBeLessThan(bootIdx);
   });
 
-  // #364: each vllm chart canvas must sit directly in a .chart-wrap.
-  test.each(['vllmKvChart', 'vllmTpsChart'])('%s canvas is a direct child of .chart-wrap', (id) => {
-    const canvas = doc.getElementById(id);
-    expect(canvas).toBeTruthy();
-    expect(canvas.parentElement.classList.contains('chart-wrap')).toBe(true);
+  // #364, #1432: the vLLM KV and throughput charts are host page panels, not canvases.
+  test('has no old vllm chart canvases; the host page has the KV and throughput panels', () => {
+    for (const id of ['vllmKvChart', 'vllmTpsChart']) expect(doc.getElementById(id), id).toBeNull();
+    const names = HP.panelsFor('vllm').map(p => p.name);
+    expect(names).toContain('kv');
+    expect(names).toContain('tps');
   });
 
   // #366: the vllm control panel must match the llama/LMS toolbar pattern.
@@ -634,22 +566,11 @@ describe('vllm header state pill', () => {
       // jsdom documents default to hidden (visibilityState 'prerender'),
       // which fetchVllmMetrics treats as "tab backgrounded" and no-ops on.
       Object.defineProperty(document, 'hidden', { value: false, configurable: true });
-      window._activeTab = 'dashboard';
-      window._subTabState = { dashboard: 'vllm', llm: 'llamacpp' };
-      window.Chart = function (ctx, cfg) { return { data: cfg.data, update: () => {} }; };
-      window.cssVar = () => '#000';
-      window._sparkInteraction = {}; window._pctTick = () => {};
-      window._sparkTooltip = {}; window._zoomOpts = {};
-      window._clearChart = (ch) => { if (ch) { ch.data.labels = []; ch.data.datasets.forEach((d) => d.data = []); } };
+      window._activeTab = 'llm';
+      window._subTabState = { dashboard: 'manager', llm: 'vllm' };
       window._agentClaimKey = (base) => base;
       window._claim = () => true; window._release = () => {};
       window._esc = (s) => String(s);
-      window._fmtBytes = (b) => (b ? String(b) : '—');
-      window._setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
-      window._dashSetStatus = (id, cls) => { window.__dashCalls.push([id, cls]); };
-      window.pushPoint = (chart, ts, val) => window.__pushPointCalls.push({ chart, val });
-      window.pushDual = (chart, ts, v1, v2) => window.__pushDualCalls.push({ chart, v1, v2 });
-      window.__dashCalls = []; window.__pushPointCalls = []; window.__pushDualCalls = [];
       window._fetchT = () => fetch('/api/vllm/metrics');
       window.fetch = async () => ({ json: async () => (${JSON.stringify(fixture)}) });
     `;
@@ -692,111 +613,52 @@ describe('vllm header state pill', () => {
 });
 
 // ---------------------------------------------------------------------------
-// #411: vLLM tab surfaces the host system metrics, mirroring LM Studio.
+// #411, #1432: the vLLM host system metrics show on the vLLM host page, not in old cards.
 describe('vllm host system metrics (#411)', () => {
   const dom = new JSDOM(src('index.html'));
   const doc = dom.window.document;
 
-  test('index.html has the five host system cards', () => {
+  test('index.html has the vLLM host page and none of the old host system cards', () => {
+    expect(doc.getElementById('hp-vllm')).toBeTruthy();
     for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk', 'vllm-io']) {
-      expect(doc.querySelector(`[data-card="${c}"]`)).toBeTruthy();
+      expect(doc.querySelector(`[data-card="${c}"]`), c).toBeNull();
+    }
+    for (const id of ['vllm-cpu-total', 'vllmCoreGrid', 'vllmDiskList', 'vllmCpuChart', 'vllm-dash-badge']) {
+      expect(doc.getElementById(id), id).toBeNull();
     }
   });
-  test('index.html has the host metric element ids', () => {
-    for (const id of ['vllm-cpu-total', 'vllm-cpu-temp', 'vllm-cpu-governor', 'vllmCoreGrid',
-                      'vllm-ram-pct', 'vllm-ram-sub', 'vllm-ram-cached', 'vllm-ram-buffers',
-                      'vllm-swap-used', 'vllm-swap-free', 'vllm-net-sent', 'vllm-net-recv',
-                      'vllmDiskList', 'vllm-io-read', 'vllm-io-write']) {
-      expect(doc.getElementById(id)).toBeTruthy();
-    }
+
+  test('the vLLM host page has the host system panels', () => {
+    const names = HP.panelsFor('vllm').map(p => p.name);
+    for (const n of ['cpu-mem', 'cpu-details', 'mem-details', 'net', 'io', 'disk']) expect(names, n).toContain(n);
   });
-  // #364: each chart canvas must sit directly in a height-constrained .chart-wrap.
-  test.each(['vllmCpuChart', 'vllmRamChart', 'vllmNetChart', 'vllmIoChart', 'vllmDiskUsageChart'])(
-    '%s canvas is a direct child of .chart-wrap', (id) => {
-      const canvas = doc.getElementById(id);
-      expect(canvas).toBeTruthy();
-      expect(canvas.parentElement.classList.contains('chart-wrap')).toBe(true);
-    });
 
   function runVllmHarness(fixture) {
-    const bodyHtml = `
-      <div id="vllm-cpu-total"></div><div id="vllm-cpu-temp"></div><div id="vllm-cpu-governor"></div>
-      <div id="vllmCoreGrid"></div>
-      <div id="vllm-ram-pct"></div><div id="vllm-ram-sub"></div>
-      <div id="vllm-ram-cached"></div><div id="vllm-ram-buffers"></div>
-      <div id="vllm-swap-used"></div><div id="vllm-swap-free"></div>
-      <div id="vllm-net-sent"></div><div id="vllm-net-recv"></div>
-      <div id="vllmDiskList"></div><div id="vllm-io-read"></div><div id="vllm-io-write"></div>
-      <div id="vllm-active-model"></div><div id="vllm-active-state"></div>
-      <div id="vllm-req-running"></div><div id="vllm-req-waiting"></div>
-      <div id="vllm-kv-pct"></div><div id="vllm-tps"></div><div id="vllm-pps"></div>
-      <div id="vllm-dash-badge"></div><div id="vllmCtrlBadge"></div>
-      <canvas id="vllmKvChart"></canvas><canvas id="vllmTpsChart"></canvas>
-      <canvas id="vllmCpuChart"></canvas><canvas id="vllmRamChart"></canvas>
-      <canvas id="vllmNetChart"></canvas><canvas id="vllmIoChart"></canvas>
-      <canvas id="vllmDiskUsageChart"></canvas>
-    `;
+    const bodyHtml = '<div id="vllmCtrlBadge"></div><span id="vllmSrvPill"></span>';
     const stub = `
       // jsdom documents default to hidden (visibilityState 'prerender'),
       // which fetchVllmMetrics treats as "tab backgrounded" and no-ops on.
       Object.defineProperty(document, 'hidden', { value: false, configurable: true });
-      // jsdom has no real canvas backend — stub a truthy getContext().
-      window.HTMLCanvasElement.prototype.getContext = function () { return {}; };
-      window._activeTab = 'dashboard';
-      window._subTabState = { dashboard: 'vllm', llm: 'llamacpp' };
-      window.Chart = function (ctx, cfg) { return { data: cfg.data, update: () => {} }; };
-      window.cssVar = () => '#000';
-      window._sparkInteraction = {}; window._pctTick = () => {};
-      window._sparkTooltip = {}; window._zoomOpts = {};
-      window._clearChart = (ch) => { if (ch) { ch.data.labels = []; ch.data.datasets.forEach((d) => d.data = []); } };
+      window._activeTab = 'llm';
+      window._subTabState = { dashboard: 'manager', llm: 'vllm' };
       window._agentClaimKey = (base) => base;
       window._claim = () => true; window._release = () => {};
       window._esc = (s) => String(s);
-      window._fmtBytes = (b) => (b ? String(b) : '—');
-      window._setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
-      window.__dashCalls = [];
-      window._dashSetStatus = (id, cls) => { window.__dashCalls.push([id, cls]); };
-      window.__pushPointCalls = []; window.__pushDualCalls = [];
-      window.pushPoint = (chart, ts, val) => window.__pushPointCalls.push({ chart, val });
-      window.pushDual = (chart, ts, v1, v2) => window.__pushDualCalls.push({ chart, v1, v2 });
       window._fetchT = () => fetch('/api/vllm/metrics');
       window.fetch = async () => ({ json: async () => (${JSON.stringify(fixture)}) });
     `;
-    const exposeCharts = 'window.vllmCpuChart = vllmCpuChart; window.vllmRamChart = vllmRamChart; window.vllmNetChart = vllmNetChart;';
-    return runHarness({ sources: [stub, src('js/vllm.js'), exposeCharts], bodyHtml });
+    return runHarness({ sources: [stub, src('js/vllm.js')], bodyHtml });
   }
 
-  test('vllm.js reads the host system block from the metrics payload', async () => {
-    const w = runVllmHarness({
-      agent_online: true,
-      vllm: { state: 'running' },
-      system: {
-        cpu_total: 41.2, cpu_temp_c: 55.5, cpu_governor: 'performance', cpu_per_core: [10, 90],
-        ram: { percent: 62.5, used_bytes: 2e9, total_bytes: 4e9 },
-        net: { bytes_sent_per_sec: 1048576, bytes_recv_per_sec: 2097152 },
-        disk: [{ mountpoint: '/', percent: 33.3, total_bytes: 2e11 }],
-        disk_io: { read_bytes_per_sec: 1048576, write_bytes_per_sec: 2097152 },
-      },
-    });
+  test('fetchVllmMetrics keeps the LLM Control badge and server pill current', async () => {
+    const w = runVllmHarness({ agent_online: true, vllm: { state: 'running', model: 'org/m', port: 8000 }, system: { cpu_total: 41.2 } });
+    const warnings = [];
+    w.console.warn = (...args) => warnings.push(args);
     await w.fetchVllmMetrics();
-    expect(w.document.getElementById('vllm-cpu-total').textContent).toBe('41.2%');
-    expect(w.document.getElementById('vllm-ram-pct').textContent).toBe('62.5%');
-    expect(w.document.getElementById('vllm-net-sent').textContent).toBe('1.00');
-    expect(w.document.getElementById('vllmCoreGrid').textContent).toContain('C0');
-    expect(w.document.getElementById('vllmDiskList').innerHTML).toContain('33.3%');
-  });
-
-  test('vllm.js defines and resets the three host charts', async () => {
-    const w = runVllmHarness({ agent_online: true, vllm: {}, system: {} });
-    expect(w.vllmCpuChart).toBeTruthy();
-    expect(w.vllmRamChart).toBeTruthy();
-    expect(w.vllmNetChart).toBeTruthy();
-    w.vllmCpuChart.data.datasets[0].data = [1, 2, 3];
-    w.vllmCpuChart.data.labels = ['a', 'b'];
-    w._resetVllmCharts();
-    // #504: reset clears labels along with datasets (via the real _clearChart).
-    expect(w.vllmCpuChart.data.datasets[0].data).toEqual([]);
-    expect(w.vllmCpuChart.data.labels).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(w.document.getElementById('vllmCtrlBadge').textContent).toBe('running — org/m');
+    expect(w.document.getElementById('vllmSrvPill').textContent).toBe('Server ON · port 8000');
+    expect(typeof w._resetVllmCharts).toBe('undefined');
   });
 
   // #504 parity with fetchLMStudioMetrics: fetch failures are logged, not swallowed silently.
@@ -808,28 +670,6 @@ describe('vllm host system metrics (#411)', () => {
     await w.fetchVllmMetrics();
     expect(warnings.length).toBe(1);
     expect(warnings[0][0]).toBe('fetchVllmMetrics:');
-  });
-
-  test('vllm.js sets accent status on the new host cards', async () => {
-    const w = runVllmHarness({
-      agent_online: true, vllm: { state: 'running' },
-      system: { cpu_total: 95, ram: { percent: 50 }, net: {}, disk: [] },
-    });
-    await w.fetchVllmMetrics();
-    const byId = Object.fromEntries(w.__dashCalls);
-    expect(byId['vllm-cpu']).toBe('dash-crit');   // 95% >= 90 threshold
-    expect(byId['vllm-ram']).toBe('dash-ok');
-    expect(byId['vllm-network']).toBe('dash-ok');
-    expect(byId['vllm-disk']).toBe('dash-ok');
-    expect(byId['vllm-io']).toBe('dash-off');     // no disk_io in the payload
-  });
-
-  test('foundation.js registers labels for the new host cards', () => {
-    const foundation = src('js/foundation.js');
-    evalGlobal(blockSrc(foundation, 'const CARD_LABELS_VLLM', '\n};') + '\nwindow.CARD_LABELS_VLLM = CARD_LABELS_VLLM;');
-    for (const c of ['vllm-cpu', 'vllm-ram', 'vllm-network', 'vllm-disk']) {
-      expect(Object.prototype.hasOwnProperty.call(CARD_LABELS_VLLM, c)).toBe(true);
-    }
   });
 });
 

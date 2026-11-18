@@ -38,3 +38,6 @@
   .ah-now th:first-child { width: 34%; }
   .ah-bar { width: calc(100% - 40px); margin-right: 4px; }
 }
+/* "No LLM server · open host": a plain text button in the accent colour. */
+.ah-sub > .ah-none { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; white-space: nowrap; }
+.ah-sub > .ah-none:hover, .ah-sub > .ah-none:focus-visible { text-decoration: underline; }

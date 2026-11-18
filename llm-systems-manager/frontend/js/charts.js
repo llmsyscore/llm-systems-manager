@@ -1,54 +1,16 @@
 // ---------------------------------------------------------------------------
-// Card-title hardware-name helper — set the <h3> text from a probed hardware
-// name (CPU model, lspci GPU, liquidctl device header) with a generic
-// fallback when the agent didn't report one. Also records the resolved
-// name into window._hardwareNames keyed by data-card id so the settings
-// picker can show the same hardware label.
-// ---------------------------------------------------------------------------
-function _setCardTitle(id, name, fallback, cardIds) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const trimmed = name && String(name).trim();
-  const next = trimmed || fallback;
-  if (el.textContent !== next) el.textContent = next;
-  if (cardIds) {
-    window._hardwareNames = window._hardwareNames || {};
-    const ids = Array.isArray(cardIds) ? cardIds : [cardIds];
-    if (trimmed) ids.forEach(c => { window._hardwareNames[c] = trimmed; });
-    else         ids.forEach(c => { delete window._hardwareNames[c]; });
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Drag and drop
 // ---------------------------------------------------------------------------
 function initSortable() {
-  Sortable.create(document.getElementById('cardGrid'), {
-    handle: '.card-handle', animation: 150,
-    onEnd: saveLayout,
-  });
+  // Pinned host page panels move by their own kit grip.
   Sortable.create(document.getElementById('overallGrid'), {
-    handle: '.card-handle', animation: 150, ghostClass: 'sortable-ghost',
+    handle: '.card-handle, .grip', animation: 150, ghostClass: 'sortable-ghost',
     onEnd: () => {
       layout.overallOrder = [...document.querySelectorAll('#overallGrid > [data-card]')]
         .map(c => c.dataset.card);
       saveLayout();
     },
   });
-  const lmsGrid = document.getElementById('lmsCardGrid');
-  if (lmsGrid) {
-    Sortable.create(lmsGrid, {
-      handle: '.card-handle', animation: 150,
-      onEnd: saveLmsLayout,
-    });
-  }
-  const vllmGrid = document.getElementById('vllmCardGrid');
-  if (vllmGrid) {
-    Sortable.create(vllmGrid, {
-      handle: '.card-handle', animation: 150,
-      onEnd: saveVllmLayout,
-    });
-  }
   const mgrGrid = document.getElementById('managerCardGrid');
   if (mgrGrid) {
     Sortable.create(mgrGrid, {
@@ -192,9 +154,11 @@ function _ensureSizeBtn(card) {
   });
   card.appendChild(btn);
 }
+// Kit panels (host pages, All hosts, Overall rows) keep the kit's own layout; only old-style cards get a size.
 function initCardResize() {
   document.querySelectorAll('[data-card]').forEach(card => {
     const id = card.dataset.card; if (!id) return;
+    if (card.matches('section.panel') || card.closest('.hp-root, #dash-all')) return;
     _ensureSizeBtn(card);
     _applyCardSize(card, _sizeMapFor(id)[id] || _defaultCardSize(id));
   });
@@ -503,31 +467,6 @@ function _layoutResetZoomBtns(host) {
   btns.forEach((b, i) => { b.style.right = (30 + i * 28) + 'px'; });
 }
 
-// Percent tick label: Chart.js's own numeric formatter (what the unsuffixed
-// llama axes use) plus the unit, so zoomed float bounds don't print 15 digits.
-function _pctTick(v, i, ticks) {
-  const f = window.Chart && Chart.Ticks && Chart.Ticks.formatters
-         && Chart.Ticks.formatters.numeric;
-  const n = f ? f.call(this, v, i, ticks)
-       : Number.isInteger(v) ? String(v)
-       : Math.abs(v) < 10 ? String(Number(Number(v).toFixed(1)))
-       : String(Math.round(v));
-  return n + '%';
-}
-window._pctTick = _pctTick;
-
-function mkChart(id, label, color) {
-  return new Chart(document.getElementById(id).getContext('2d'), {
-    type: 'line',
-    data: { labels: [], datasets: [{ label, data: [], borderColor: color, borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 }] },
-    options: { animation: false, responsive: true, maintainAspectRatio: false,
-      interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-      scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
-    }
-  });
-}
-
 // N-line chart factory — used by the self-monitor cards which graph more
 // than two latency series on one canvas. `lines` is [{label, color}, ...].
 function mkMultiChart(id, lines) {
@@ -580,33 +519,6 @@ function pushMulti(chart, ts, values) {
   _pushUpdate(chart);
 }
 
-function mkDualChart(id, l1, c1, l2, c2) {
-  return new Chart(document.getElementById(id).getContext('2d'), {
-    type: 'line',
-    data: { labels: [], datasets: [
-      { label: l1, data: [], borderColor: c1, borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 },
-      { label: l2, data: [], borderColor: c2, borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 },
-    ]},
-    options: { animation: false, responsive: true, maintainAspectRatio: false,
-      interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-      scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
-    }
-  });
-}
-
-const cpuChart      = mkChart('cpuChart',      'CPU %',       '#e05');
-const ramChart      = mkChart('ramChart',      'RAM %',       '#05e');
-const gpuChart      = mkChart('gpuChart',      'GPU util %',  '#0e5');
-const gpuMemChart   = mkDualChart('gpuMemChart', 'VRAM %',    '#0e5', 'GTT %',       '#e90');
-const netChart      = mkChart('netChart',      'MB/s',        '#e50');
-const llamaSrvChart = mkDualChart('llamaSrvChart', 'Gen t/s',  '#7af', 'Prompt t/s', '#fa7');
-const aioTempChart = mkChart('aioTempChart', 'Liquid °C', '#4dd');
-const genTokensChart  = mkChart('genTokensChart',  'Tokens gen', '#7af');
-const llamaChart    = mkDualChart('llamaChart',    'Gen t/s',  '#7af', 'Prompt t/s', '#fa7');
-const ioChart       = mkDualChart('ioChart',       'Read',     '#a7f', 'Write',       '#f7a');
-const psuPowerChart = mkDualChart('psuPowerChart', 'Output W', '#0e9', 'Input W',     '#fa7');
-
 // Self-monitor cards — manager_self_monitor source. Order of datasets in
 // each chart must match the order of values passed to pushMulti() below.
 const mgrPerfChart = mkMultiChart('mgrPerfChart', [
@@ -625,41 +537,6 @@ const aePerfChart = mkMultiChart('aePerfChart', [
   { label: 'influx_query_5m',   color: '#ffd042' },  // gold
   { label: 'influx_query_24h',  color: '#b88aff' },  // lavender
 ]);
-
-// Toggle the /mnt/iscsi series + legend entry; the series only shows for
-// agents whose collector actually discovered the mount (#565 feedback).
-function _setIscsiSeriesVisible(on) {
-  if (typeof diskUsageChart === 'undefined' || !diskUsageChart) return;
-  if (diskUsageChart.data.datasets[1].hidden !== !on) {
-    diskUsageChart.data.datasets[1].hidden = !on;
-    _redrawChart(diskUsageChart);
-  }
-  const leg = document.getElementById('diskIscsiLegend');
-  if (leg) leg.style.display = on ? '' : 'none';
-}
-
-// Show the GTT line only for hosts that report GTT (AMD).
-function _setGttSeriesVisible(on) {
-  if (gpuMemChart.data.datasets[1].hidden !== !on) {
-    gpuMemChart.data.datasets[1].hidden = !on;
-    _redrawChart(gpuMemChart);
-  }
-}
-
-// Dual-line disk usage chart — root + iscsi target.
-const diskUsageCtx = document.getElementById('diskUsageChart').getContext('2d');
-const diskUsageChart = new Chart(diskUsageCtx, {
-  type: 'line',
-  data: { labels: [], datasets: [
-    { label: '/', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 },
-    { label: '/mnt/iscsi', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false,
-    interaction: _sparkInteraction,
-    plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-    scales: { x: xAxis, y: { min: 0, max: 100, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick }, grid: { color: cssVar('--border-soft') } } }
-  }
-});
 
 
 // Backfill batching: inside _withPushBatch the push helpers collect the
@@ -680,119 +557,25 @@ function _pushUpdate(chart) {
   if (_pushBatch) _pushBatch.add(chart); else _redrawChart(chart);
 }
 
-function pushPoint(chart, ts, val) {
-  const d = chart.data.datasets[0].data, l = chart.data.labels;
-  const t = _bucketDate(ts);
-  if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
-    d[d.length - 1] = val;
-  } else {
-    d.push(val); l.push(t);
-    if (d.length > MAX_POINTS) { d.shift(); l.shift(); }
-  }
-  _pushUpdate(chart);
-}
-
-// bucketMs overrides the poll-interval grid for series with their own fixed
-// cadence (e.g. the 15s gateway pusher) so short bursts aren't collapsed away.
-// agg 'max' keeps the in-bucket peak instead of the latest sample.
-function pushDual(chart, ts, v1, v2, bucketMs, agg) {
-  const l = chart.data.labels, d0 = chart.data.datasets[0].data, d1 = chart.data.datasets[1].data;
-  const t = bucketMs ? LMSeries.bucketDate(ts, bucketMs) : _bucketDate(ts);
-  if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
-    if (agg === 'max') {
-      d0[d0.length - 1] = Math.max(d0[d0.length - 1] || 0, v1 || 0);
-      d1[d1.length - 1] = Math.max(d1[d1.length - 1] || 0, v2 || 0);
-    } else {
-      d0[d0.length - 1] = v1 || 0; d1[d1.length - 1] = v2 || 0;
-    }
-  } else {
-    d0.push(v1 || 0); d1.push(v2 || 0); l.push(t);
-    if (l.length > MAX_POINTS) { l.shift(); d0.shift(); d1.shift(); }
-  }
-  _pushUpdate(chart);
-}
-
-// Bucket width for gateway-pushed token rates — matches gateway_usage
-// PUSH_INTERVAL_S on the manager.
-const GW_RATE_BUCKET_MS = 15000;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function fmt(bytes) {
-  if (bytes == null) return '—';
-  const gb = bytes / 1073741824;
-  return gb >= 1 ? gb.toFixed(1) + ' GB' : (bytes / 1048576).toFixed(0) + ' MB';
-}
-
-function lqVal(obj, key) {
-  if (!obj || !obj[key]) return '—';
-  const v = obj[key].value;
-  return v != null ? (typeof v === 'number' ? v.toFixed(1) : v) : '—';
-}
-
-function timeSince(ts) {
-  if (ts == null || ts === '') return '';
-  const ms = typeof ts === 'number' ? ts : new Date(ts).getTime();
-  if (!Number.isFinite(ms)) return '';
-  return LMPeaks.agoText(Date.now() - ms);
-}
-
-// Muted "(peak N Xm ago)" suffix shared by fmtWithPeak and fmtRateTile.
-function _peakSpan(valText, ts) {
-  return `<span style="font-size:0.7em;color:var(--fg-dim)">(peak ${valText} ${timeSince(ts)})</span>`;
-}
-
 const lastNonZero = {
   active_slots: { val: null, ts: null },
   requests_processing: { val: null, ts: null },
   requests_deferred: { val: null, ts: null },
 };
 
-// Rolling window for the Llama server card's Gen/Prompt tokens/s tiles;
+// llama Gen/Prompt tokens/s peak trackers, read by the llama.cpp host page;
 // all samples carry browser-clock timestamps.
 const _LLAMA_PEAK_WINDOW_MS = LMPeaks.RATE_WINDOW_MS;
-// Server-card spark bucket: peak-per-minute so short bursts stay visible.
-const _LLAMA_SRV_BUCKET_MS = 60000;
 const _llamaPeaks = {
   tps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
   pps: LMPeaks.makeTracker(_LLAMA_PEAK_WINDOW_MS),
 };
 
-// {html, label} for a rate tile from LMPeaks.rateStat: value + muted peak
-// span, and "<name> · live" / "<name> · 60‑min avg"; win = server window (#745).
-function fmtRateTile(live, tracker, name, now, win) {
-  const s = LMPeaks.rateStat(tracker, live, now == null ? Date.now() : now, win);
-  const peak = s.peak ? ' ' + _peakSpan(s.peak.v.toFixed(1), s.peak.t) : '';
-  return { html: (s.v != null ? s.v.toFixed(1) : '—') + peak, label: `${name} · ${s.mode}` };
-}
-
-// Writes a rate tile's value (#id, html) and label (#id-lbl, text) when changed.
-function _setRateTile(id, tile) {
-  _setLivePeak(id, tile.html);
-  const lbl = document.getElementById(id + '-lbl');
-  if (lbl && lbl.textContent !== tile.label) lbl.textContent = tile.label;
-}
-
-// Writes innerHTML only when the rendered string changed.
-const _livePeakLast = {};
-function _setLivePeak(id, html) {
-  if (_livePeakLast[id] === html) return;
-  const el = document.getElementById(id);
-  if (!el) return;
-  _livePeakLast[id] = html;
-  el.innerHTML = html;
-}
-
 function updateNonZero(key, val) {
   if (val !== null && val !== 0) lastNonZero[key] = { val, ts: new Date().toISOString() };
-}
-
-function fmtWithPeak(current, key) {
-  const p = lastNonZero[key];
-  if (current !== null && current !== 0) return _esc(String(current));
-  if (p && p.val !== null) return `0 ${_peakSpan(_esc(String(p.val)), p.ts)}`;
-  return '0';
 }
 
 // ---------------------------------------------------------------------------
@@ -871,33 +654,6 @@ async function openAgentSse(infoPath, fallbackPath) {
       finish(new EventSource(fallbackPath));
     });
   });
-}
-
-// {text, label, title} for a windowed counter tile (#1303): the ratio as a
-// percent, or the block's state word when there is no ratio.
-const _LLAMA_WINDOW_STATE_TEXT = {
-  unsupported: 'Not reported', off: 'Not in use', idle: 'Idle', reset: 'Reset', paused: 'Paused',
-};
-const _LLAMA_WINDOW_S = 60;
-function _fmtLlamaWindowStat(block, name, numLbl, denLbl) {
-  if (!block || typeof block !== 'object') return { text: '—', label: name, title: '' };
-  const pct = block.ratio != null ? (block.ratio * 100).toFixed(1) + '%' : null;
-  const state = _LLAMA_WINDOW_STATE_TEXT[block.state];
-  const text = pct == null ? (state || '—') : (state && block.state !== 'idle' ? `${pct} · ${state}` : pct);
-  const noWindow = block.state === 'unsupported' || block.state === 'off';
-  const label = noWindow ? name : `${name} · ${_LLAMA_WINDOW_S} s`;
-  const num = block[numLbl], den = block[denLbl];
-  const title = !noWindow && num != null && den != null
-    ? `${numLbl} ${Number(num).toLocaleString()} · ${denLbl} ${Number(den).toLocaleString()} in the last ${_LLAMA_WINDOW_S} s`
-    : '';
-  return { text, label, title };
-}
-function _setLlamaWindowTile(id, tile) {
-  const el = document.getElementById(id);
-  if (el && el.textContent !== tile.text) el.textContent = tile.text;
-  if (el && el.title !== tile.title) el.title = tile.title;
-  const lbl = document.getElementById(id + '-lbl');
-  if (lbl && lbl.textContent !== tile.label) lbl.textContent = tile.label;
 }
 
 // Mirrors backend clean_display_model(): '(unloaded)' → '' (no model);
@@ -1243,33 +999,6 @@ function _clearChart(ch) {
   _pushUpdate(ch);
 }
 
-// Wipe every dashboard time-series. Called at the top of loadHistory so a
-// per-agent backfill never blends onto the previously-selected agent's lines
-// (#121); a no-op at boot when the charts are already empty.
-function _resetMetricCharts() {
-  [cpuChart, ramChart, gpuChart, gpuMemChart, netChart, llamaSrvChart, aioTempChart,
-   genTokensChart, llamaChart, ioChart, psuPowerChart, diskUsageChart]
-    .forEach(_clearChart);
-}
-
-// LM Studio dashboard time-series. Cleared at the top of loadLmsHistory so an
-// LMS agent switch doesn't blend onto the previous agent's lines (#121).
-function _resetLmsCharts() {
-  if (typeof _lmsTilesReset === 'function') _lmsTilesReset();
-  [typeof lmsCpuChart !== 'undefined' ? lmsCpuChart : null,
-   typeof lmsRamChart !== 'undefined' ? lmsRamChart : null,
-   typeof lmsNetChart !== 'undefined' ? lmsNetChart : null,
-   typeof lmsTpsChart !== 'undefined' ? lmsTpsChart : null,
-   typeof lmsIoChart !== 'undefined' ? lmsIoChart : null,
-   typeof lmsDiskUsageChart !== 'undefined' ? lmsDiskUsageChart : null,
-   typeof lmsGpuChart !== 'undefined' ? lmsGpuChart : null]
-    .forEach(_clearChart);
-}
-
-// Carry-forward state for the sparse gen-total llama chart, shared by
-// backfill and live push.
-let _genTokensCarry = 0;
-
 // Fetch a /api/history* row array, returning null on any failure. An auth-gated
 // 401 returns a JSON object, so a shape check is required, not just r.ok.
 async function _historyRows(url, label) {
@@ -1292,72 +1021,27 @@ async function _historyRows(url, label) {
 }
 
 let _histGen = 0, _histLastAgent;
+// Seeds the llama rate peaks from the selected llama host's last hour of history;
+// an agent change clears them first (#121). Only the newest call seeds (#267).
 async function loadHistory() {
-  // Generation counter: only the newest in-flight backfill may paint (#267).
   const gen = ++_histGen;
-  let _sawGttHistory = false;
   try {
-    // Backfill the (picker-)selected llama agent's host history. No selection
-    // (single-agent install) → plain /api/history = the default-agent ring,
-    // byte-identical to pre-multi-agent.
     const sel = (typeof _selectedAgent === 'function') ? _selectedAgent('llama') : null;
-    // Clear before the fetch only on an agent change (#121); a same-agent
-    // re-entry keeps its live data if the fetch fails (#507).
     if (sel !== _histLastAgent) {
-      _resetMetricCharts();
       _llamaPeaks.tps.reset();
       _llamaPeaks.pps.reset();
     }
     _histLastAgent = sel;
-    const url = sel ? `/api/history?agent=${encodeURIComponent(sel)}` : '/api/history';
+    const mins = Math.ceil(_LLAMA_PEAK_WINDOW_MS / 60000);
+    const url = sel ? `/api/history?agent=${encodeURIComponent(sel)}&since_minutes=${mins}` : `/api/history?since_minutes=${mins}`;
     const rows = await _historyRows(url, 'llama');
-    if (gen !== _histGen) return;
-    if (!rows || !rows.length) return;
-    // Convert bytes-per-second → MiB-per-second so backfill points match the
-    // live-fetch unit (see net/io conversion in fetchMetrics around line 3550).
-    const B_PER_MIB = 1048576;
-    const _peakSeedTs = LMPeaks.rowClock(rows, Date.now());
-    _genTokensCarry = 0;
-    let _sawIscsiHistory = false;
-    _withPushBatch(() => {
-      // Clears again after the await so a live point added during the fetch is dropped (#137).
-      _resetMetricCharts();
-      for (const r of rows.slice(-MAX_POINTS)) {
-      pushPoint(cpuChart,  r.ts, r.cpu_total   || 0);
-      pushPoint(ramChart,  r.ts, r.ram_percent || 0);
-      pushPoint(gpuChart,  r.ts, r.gpu_util    || 0);
-      if (r.gpu_gtt != null) _sawGttHistory = true;
-      pushDual(gpuMemChart, r.ts, r.gpu_vram, r.gpu_gtt);
-      pushPoint(netChart,  r.ts, ((r.net_sent || 0) + (r.net_recv || 0)) / B_PER_MIB);
-      pushDual(llamaChart, r.ts, r.llama_tps,  r.llama_pps);
-      _llamaPeaks.tps.push(_peakSeedTs(r.ts), r.llama_tps);
-      _llamaPeaks.pps.push(_peakSeedTs(r.ts), r.llama_pps);
-      pushDual(ioChart,    r.ts, (r.io_read  || 0) / B_PER_MIB,
-                                  (r.io_write || 0) / B_PER_MIB);
-      // Hardware sensor charts (AIO liquid temp + PSU power draw).
-      // Skip the push when the field is undefined so the line stays at
-      // its previous value instead of dropping to 0.
-      if (typeof aioTempChart !== 'undefined' && r.aio_temp != null)
-        pushPoint(aioTempChart, r.ts, r.aio_temp);
-      if (typeof psuPowerChart !== 'undefined' && (r.psu_out != null || r.psu_in != null))
-        pushDual(psuPowerChart, r.ts, r.psu_out || 0, r.psu_in || 0);
-      // Detailed llama charts — the server-card throughput spark mirrors
-      // llamaChart; gen total carries its last value across idle rows.
-      if (typeof llamaSrvChart !== 'undefined') pushDual(llamaSrvChart, r.ts, r.llama_tps, r.llama_pps, _LLAMA_SRV_BUCKET_MS, 'max');
-      if (r.llama_gen_tokens != null) _genTokensCarry = r.llama_gen_tokens;
-      if (typeof genTokensChart !== 'undefined') pushPoint(genTokensChart, r.ts, _genTokensCarry);
-      // Disk usage — / and /mnt/iscsi percent over time.
-      if (typeof diskUsageChart !== 'undefined'
-          && (r.disk_root_pct != null || r.disk_iscsi_pct != null)) {
-        if (r.disk_iscsi_pct != null) _sawIscsiHistory = true;
-        pushDual(diskUsageChart, r.ts,
-                 r.disk_root_pct  != null ? r.disk_root_pct  : 0,
-                 r.disk_iscsi_pct != null ? r.disk_iscsi_pct : 0);
-      }
-    } });
-    _setIscsiSeriesVisible(_sawIscsiHistory);
+    if (gen !== _histGen || !rows || !rows.length) return;
+    const clock = LMPeaks.rowClock(rows, Date.now());
+    for (const r of rows) {
+      _llamaPeaks.tps.push(clock(r.ts), r.llama_tps);
+      _llamaPeaks.pps.push(clock(r.ts), r.llama_pps);
+    }
   } catch(e) { console.error('History error:', e); }
-  finally { if (gen === _histGen) _setGttSeriesVisible(_sawGttHistory); }
 }
 
 // Backfill manager + alarm-engine self-monitor charts from the alarm engine
@@ -1417,87 +1101,6 @@ async function loadManagerPerfHistory() {
   }
 }
 
-// Per-provider /api/history?agent= chart backfill factory: generation guard so
-// only the newest in-flight call paints, then repaint the last MAX_POINTS rows.
-function _makeHistoryBackfill(provider, defaultAgentKey, resetCharts, paintRow) {
-  let gen = 0, lastAgent;
-  return async function () {
-    const g = ++gen;
-    const sel = (typeof _selectedAgent === 'function') ? _selectedAgent(provider) : null;
-    const agent = sel || window[defaultAgentKey];
-    // Clear before the fetch only when the agent changed (#121). On a
-    // same-agent re-entry a failed fetch would blank good live data (#507).
-    if (agent !== lastAgent) resetCharts();
-    lastAgent = agent;
-    if (!agent) return;
-    const rows = await _historyRows(
-      `/api/history?agent=${encodeURIComponent(agent)}`, provider);
-    if (g !== gen) return;
-    if (rows && rows.length) {
-      const clock = LMPeaks.rowClock(rows, Date.now());
-      _withPushBatch(() => { resetCharts(); for (const r of rows.slice(-MAX_POINTS)) paintRow(r, clock); });
-    }
-  };
-}
-
-// Backfill the LM Studio host + gateway-throughput charts from the selected
-// LMS agent's history. Makes no llama calls — Overall backfills separately.
-const loadLmsHistory = _makeHistoryBackfill('lms', '__LMS_AGENT',
-  () => _resetLmsCharts(),
-  (r, clock) => {
-    const B_PER_MIB = 1048576;
-    if (typeof _lmsSeedTileRow === 'function') _lmsSeedTileRow(r, clock);
-    if (typeof lmsCpuChart !== 'undefined' && lmsCpuChart && r.cpu_total != null)
-      pushPoint(lmsCpuChart, r.ts, r.cpu_total);
-    if (typeof lmsRamChart !== 'undefined' && lmsRamChart && r.ram_percent != null)
-      pushPoint(lmsRamChart, r.ts, r.ram_percent);
-    if (typeof lmsNetChart !== 'undefined' && lmsNetChart)
-      pushDual(lmsNetChart, r.ts,
-        r.net_sent != null ? r.net_sent / B_PER_MIB : null,
-        r.net_recv != null ? r.net_recv / B_PER_MIB : null);
-    if (typeof lmsIoChart !== 'undefined' && lmsIoChart
-        && (r.io_read != null || r.io_write != null))
-      pushDual(lmsIoChart, r.ts,
-        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
-    if (typeof lmsDiskUsageChart !== 'undefined' && lmsDiskUsageChart
-        && r.disk_root_pct != null)
-      pushPoint(lmsDiskUsageChart, r.ts, r.disk_root_pct);
-    if (typeof lmsGpuChart !== 'undefined' && lmsGpuChart
-        && r.mac_gpu_busy != null)
-      pushPoint(lmsGpuChart, r.ts, r.mac_gpu_busy);
-    if (typeof lmsTpsChart !== 'undefined' && lmsTpsChart
-        && (r.lms_tps != null || r.lms_pps != null))
-      pushDual(lmsTpsChart, r.ts, r.lms_tps || 0, r.lms_pps || 0, GW_RATE_BUCKET_MS);
-  });
-
-// Backfill the vLLM KV-cache/throughput + host (CPU/RAM/Net/IO/disk) charts
-// from the selected vLLM agent's history (#358, #502).
-const loadVllmHistory = _makeHistoryBackfill('vllm', '__VLLM_AGENT',
-  () => { if (typeof _resetVllmCharts === 'function') _resetVllmCharts(); },
-  (r) => {
-    const B_PER_MIB = 1048576;
-    if (typeof vllmKvChart !== 'undefined' && vllmKvChart && r.vllm_kv != null)
-      pushPoint(vllmKvChart, r.ts, r.vllm_kv);
-    if (typeof vllmTpsChart !== 'undefined' && vllmTpsChart
-        && (r.vllm_tps != null || r.vllm_pps != null))
-      pushDual(vllmTpsChart, r.ts, r.vllm_tps || 0, r.vllm_pps || 0);
-    if (typeof vllmCpuChart !== 'undefined' && vllmCpuChart && r.cpu_total != null)
-      pushPoint(vllmCpuChart, r.ts, r.cpu_total);
-    if (typeof vllmRamChart !== 'undefined' && vllmRamChart && r.ram_percent != null)
-      pushPoint(vllmRamChart, r.ts, r.ram_percent);
-    if (typeof vllmNetChart !== 'undefined' && vllmNetChart)
-      pushDual(vllmNetChart, r.ts,
-        r.net_sent != null ? r.net_sent / B_PER_MIB : null,
-        r.net_recv != null ? r.net_recv / B_PER_MIB : null);
-    if (typeof vllmIoChart !== 'undefined' && vllmIoChart
-        && (r.io_read != null || r.io_write != null))
-      pushDual(vllmIoChart, r.ts,
-        (r.io_read || 0) / B_PER_MIB, (r.io_write || 0) / B_PER_MIB);
-    if (typeof vllmDiskUsageChart !== 'undefined' && vllmDiskUsageChart
-        && r.disk_root_pct != null)
-      pushPoint(vllmDiskUsageChart, r.ts, r.disk_root_pct);
-  });
-
 // ---------------------------------------------------------------------------
 // Main fetch
 // ---------------------------------------------------------------------------
@@ -1507,10 +1110,12 @@ async function fetchMetrics() {
   const _mk = _agentClaimKey('fetchMetrics', 'llama');
   if (!_claim(_mk)) return;
   try {
+    const aid = _selectedAgent('llama');
     const m = await _fetchT('/api/metrics', {}, 10000).then(r => r.json());
-    const ts = m.ts || new Date().toISOString();
 
     window._latestMetric = m;
+    window._latestMetricAt = Date.now();
+    window._latestMetricAgent = aid;
     // Overall tab is fleet-aggregated (PR4) — refresh it from the fleet
     // endpoints, not this single-agent sample, while it's visible.
     if (document.getElementById('overallTab')?.style.display !== 'none') {
@@ -1522,148 +1127,15 @@ async function fetchMetrics() {
       fetchOpenclawAnalytics();
     }
 
-    // CPU
-    _setCardTitle('cpuCardTitle', m.cpu_name, 'CPU', 'cpu-overall');
-    document.getElementById('cpuStat').textContent = (m.cpu_total || 0).toFixed(1) + '%';
-    pushPoint(cpuChart, ts, m.cpu_total || 0);
-    if (m.cpu_temp_c != null) document.getElementById('cpuTemp').textContent = m.cpu_temp_c.toFixed(1) + '°C';
-    if (m.cpu_governor) document.getElementById('cpuGovernor').textContent = m.cpu_governor;
-    if (m.cpu_per_core) {
-      document.getElementById('coreGrid').innerHTML = m.cpu_per_core.map((pct, i) => {
-        const glowClass = pct >= 90 ? ' crit' : pct >= 70 ? ' warn' : '';
-        const color = pct >= 90 ? '#f55' : pct >= 70 ? '#fc0' : '';
-        return `<div class="core${glowClass}"><div class="sub">C${i}</div><div class="pct" style="${color ? `color:${color}` : ''}">${pct.toFixed(0)}%</div></div>`;
-      }).join('');
-    }
-
-    // RAM
-    const rp = m.ram ? m.ram.percent : 0;
-    document.getElementById('ramStat').textContent = rp.toFixed(1) + '%';
-    document.getElementById('ramSub').textContent  = m.ram ? fmt(m.ram.used_bytes) + ' used / ' + fmt(m.ram.available_bytes) + ' avail' : '';
-    if (m.ram) {
-      document.getElementById('ramCached').textContent  = fmt(m.ram.cached_bytes);
-      document.getElementById('ramBuffers').textContent = fmt(m.ram.buffers_bytes);
-    }
-    if (m.swap) {
-      document.getElementById('swapUsed').textContent = fmt(m.swap.used_bytes);
-      document.getElementById('swapFree').textContent = fmt(m.swap.free_bytes);
-    }
-    pushPoint(ramChart, ts, rp);
-
-    // GPU
-    const g = m.gpu || {};
-    _setCardTitle('gpuCardTitle',   g.name, 'GPU', 'gpu');
-    document.getElementById('gpuTemp').textContent            = g.temperature_c           != null ? g.temperature_c.toFixed(1) : '—';
-    document.getElementById('gpuTempJunction').textContent    = g.temperature_junction_c  != null ? g.temperature_junction_c.toFixed(1) : '—';
-    document.getElementById('gpuTempMemory').textContent      = g.temperature_memory_c    != null ? g.temperature_memory_c.toFixed(1) : '—';
-    document.getElementById('gpuVddgfx').textContent          = g.vddgfx_mv               != null ? g.vddgfx_mv : '—';
-    document.getElementById('gpuFan1').textContent            = g.fan1_rpm                != null ? g.fan1_rpm : '—';
-    document.getElementById('gpuVram').textContent            = g.vram_usage_percent      != null ? g.vram_usage_percent.toFixed(1) : '—';
-    document.getElementById('gpuVramMb').textContent          = g.vram_used_mb            != null ? '(' + g.vram_used_mb.toLocaleString() + ' MB)' : '';
-    document.getElementById('gpuGttMb').textContent           = g.gtt_used_bytes          != null ? 'GTT ' + Math.round(g.gtt_used_bytes / 1048576).toLocaleString() + (g.gtt_total_bytes ? ' / ' + Math.round(g.gtt_total_bytes / 1048576).toLocaleString() : '') + ' MB' : '';
-    document.getElementById('gpuUtil').textContent            = g.gpu_util_percent        != null ? g.gpu_util_percent.toFixed(1) : '—';
-    document.getElementById('gpuPower').textContent           = g.power_watts             != null ? g.power_watts.toFixed(0) : '—';
-    document.getElementById('gpuPowerCap').textContent        = g.power_cap_watts         != null ? g.power_cap_watts.toFixed(0) : '—';
-    document.getElementById('gpuVoltage').textContent         = g.voltage_offset_mv       != null ? g.voltage_offset_mv : '—';
-    document.getElementById('gpuSclk').textContent            = g.sclk_mhz               != null ? g.sclk_mhz : '—';
-    document.getElementById('gpuMclk').textContent            = g.mclk_mhz               != null ? g.mclk_mhz : '—';
-    document.getElementById('gpuPerfLevel').textContent       = g.performance_level       || '—';
-    document.getElementById('gpuPowerProfile').textContent    = g.power_profile            || '—';
-    pushPoint(gpuChart, ts, g.gpu_util_percent || 0);
-    pushDual(gpuMemChart, ts, g.vram_usage_percent, g.gtt_usage_percent);
-    if (g.gtt_usage_percent != null) _setGttSeriesVisible(true);
-
-    // Network
-    const net = m.net || {};
-    const sMiB = (net.bytes_sent_per_sec || 0) / 1048576;
-    const rMiB = (net.bytes_recv_per_sec || 0) / 1048576;
-    document.getElementById('netSent').textContent = sMiB.toFixed(2);
-    document.getElementById('netRecv').textContent = rMiB.toFixed(2);
-    pushPoint(netChart, ts, sMiB + rMiB);
-
-    // Disk usage — the iSCSI series/row only render when the agent actually
-    // discovered a /mnt/iscsi mount (or reports a live session).
-    let _hasIscsiMount = false;
-    if (m.disk && m.disk.length) {
-      document.getElementById('diskList').innerHTML = m.disk.map(d =>
-        `<div class="disk-row">
-          <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${_esc(d.mountpoint)}</span>
-          <div class="disk-bar"><div class="disk-fill" style="width:${Number(d.percent)}%"></div></div>
-          <span>${d.percent.toFixed(1)}%</span>
-        </div>`
-      ).join('');
-      const byMount = Object.fromEntries(m.disk.map(d => [d.mountpoint, d.percent]));
-      _hasIscsiMount = byMount['/mnt/iscsi'] != null;
-      pushDual(diskUsageChart, ts,
-        byMount['/'] || 0,
-        byMount['/mnt/iscsi'] || 0,
-      );
-      _setIscsiSeriesVisible(_hasIscsiMount);
-    }
-
-    // iSCSI status line — hidden entirely for agents with no session/mount.
-    const isc = m.iscsi || {};
-    const iscsiRowEl = document.getElementById('iscsiRow');
-    if (iscsiRowEl) iscsiRowEl.style.display = (isc.state || _hasIscsiMount) ? '' : 'none';
-    const iscsiStateEl = document.getElementById('iscsiState');
-    iscsiStateEl.textContent = isc.state || '—';
-    iscsiStateEl.style.color = isc.state === 'LOGGED_IN' ? '#4e9' : '#f55';
-    if (isc.target) {
-      const parts = isc.target.split(':');
-      document.getElementById('iscsiTarget').textContent = parts[parts.length - 1] || isc.target;
-    }
-
-    // Disk IO
-    const io = m.disk_io || {};
-    const rMiB2 = (io.read_bytes_per_sec  || 0) / 1048576;
-    const wMiB  = (io.write_bytes_per_sec || 0) / 1048576;
-    document.getElementById('ioRead').textContent  = rMiB2.toFixed(2);
-    document.getElementById('ioWrite').textContent = wMiB.toFixed(2);
-    pushDual(ioChart, ts, rMiB2, wMiB);
-
-    // Llama
+    // Llama: header pill model name, rate peaks, LLM Control model cards
     const ll = m.llama || {};
-    const sleeping = ll.sleeping === true;
-    const modelEl = document.getElementById('llamaModel');
     const llModelClean = _cleanLlamaModelName(ll.model);
     // Track model name for state pill — only update when awake with a real name
-    if (llModelClean && !sleeping) {
+    if (llModelClean && ll.sleeping !== true) {
       _pillModelName = llModelClean.split('/').pop() || llModelClean;
     }
-    modelEl.textContent = llModelClean || 'No model loaded';
-    modelEl.style.color = sleeping ? '#444' : '#aaa';
-    modelEl.title = sleeping ? 'Model is sleeping — metrics polling paused' : '';
     _llamaPeaks.tps.push(Date.now(), ll.tokens_per_second);
     _llamaPeaks.pps.push(Date.now(), ll.prompt_tokens_per_second);
-    const llWin = m.throughput_window || null;
-    _setRateTile('llamaTps', fmtRateTile(ll.tokens_per_second, _llamaPeaks.tps, 'Gen tokens/s', undefined, llWin && llWin.gen));
-    _setRateTile('llamaPps', fmtRateTile(ll.prompt_tokens_per_second, _llamaPeaks.pps, 'Prompt tokens/s', undefined, llWin && llWin.prompt));
-    document.getElementById('llamaGenTokens').textContent    = ll.total_tokens_generated   != null ? ll.total_tokens_generated.toLocaleString() : '—';
-    document.getElementById('llamaPromptTokens').textContent = ll.total_tokens_prompted    != null ? ll.total_tokens_prompted.toLocaleString() : '—';
-    document.getElementById('llamaDecodes').textContent      = ll.n_decode_total           != null ? ll.n_decode_total.toLocaleString() : '—';
-    document.getElementById('llamaBusySlots').textContent    = ll.n_busy_slots_per_decode  != null ? ll.n_busy_slots_per_decode.toFixed(2) : '—';
-    document.getElementById('llamaCtxHigh').textContent      = ll.n_tokens_max             != null ? ll.n_tokens_max.toLocaleString() : '—';
-    document.getElementById('llamaKvRatio').textContent      = ll.kv_cache_usage_ratio     != null ? (ll.kv_cache_usage_ratio * 100).toFixed(1) + '%' : '—';
-    document.getElementById('llamaKvTokens').textContent     = ll.kv_cache_tokens          != null ? ll.kv_cache_tokens.toLocaleString() : '—';
-    _setLlamaWindowTile('llamaCacheReuse', _fmtLlamaWindowStat(ll.cache_reuse, 'Prompt cache reuse', 'cached', 'processed'));
-    _setLlamaWindowTile('llamaSpecAccept', _fmtLlamaWindowStat(ll.spec_accept, 'Draft tokens accepted', 'accepted', 'drafted'));
-    document.getElementById('llamaNRemain').textContent      = ll.n_remain                 != null ? ll.n_remain.toLocaleString() : '—';
-    document.getElementById('llamaTotalSlots').textContent   = ll.total_slots              != null ? ll.total_slots.toLocaleString() : '—';
-    const modsEl = document.getElementById('llamaModalities');
-    if (ll.modalities && typeof ll.modalities === 'object') {
-      const on = Object.keys(ll.modalities).filter(k => ll.modalities[k]);
-      modsEl.textContent = on.length ? on.join(', ') : 'text';
-    } else {
-      modsEl.textContent = '—';
-    }
-    const tmplEl = document.getElementById('llamaChatTemplate');
-    if (ll.chat_template_len != null) {
-      tmplEl.textContent = (ll.chat_template_len / 1024).toFixed(1) + ' KB';
-      tmplEl.title = (ll.chat_template || '').slice(0, 600);
-    } else {
-      tmplEl.textContent = '—';
-      tmplEl.title = '';
-    }
     const _prevLlamaActive = _llamaActiveSlots > 0;
     _llamaActiveSlots = ll.active_slots || 0;
     if ((_llamaActiveSlots > 0) !== _prevLlamaActive) renderModelCards();
@@ -1673,122 +1145,6 @@ async function fetchMetrics() {
     updateNonZero('active_slots',        ll.active_slots);
     updateNonZero('requests_processing', ll.requests_processing);
     updateNonZero('requests_deferred',   ll.requests_deferred);
-    document.getElementById('llamaSlots').innerHTML      = fmtWithPeak(ll.active_slots,        'active_slots');
-    document.getElementById('llamaProcessing').innerHTML = fmtWithPeak(ll.requests_processing, 'requests_processing');
-    document.getElementById('llamaDeferred').innerHTML   = fmtWithPeak(ll.requests_deferred,   'requests_deferred');
-    pushDual(llamaChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second);
-    pushDual(llamaSrvChart, ts, ll.tokens_per_second, ll.prompt_tokens_per_second, _LLAMA_SRV_BUCKET_MS, 'max');
-    if (ll.total_tokens_generated != null) _genTokensCarry = ll.total_tokens_generated;
-    pushPoint(genTokensChart, ts, _genTokensCarry);
-
-    // UPS
-    const ups = m.ups || {};
-    const pct = ups.percent;
-    const upsEl = document.getElementById('upsPercent');
-    upsEl.textContent = pct != null ? pct.toFixed(0) + '%' : '—';
-    upsEl.className   = 'val' + (pct != null && pct < 20 ? ' crit' : pct != null && pct < 50 ? ' warn' : '');
-    document.getElementById('upsState').textContent   = ups.state         || '—';
-    document.getElementById('upsWarning').textContent = ups.warning_level || '—';
-    const onBat = ups.on_battery;
-    const onBatEl = document.getElementById('upsOnBattery');
-    onBatEl.textContent = onBat == null ? '—' : onBat ? 'Yes' : 'No';
-    onBatEl.className   = 'val' + (onBat ? ' crit' : '');
-    document.getElementById('upsTimeEmpty').textContent = ups.time_to_empty || '—';
-    const ttf = document.getElementById('upsTimeFull');
-    const ttfLbl = document.getElementById('upsTimeFullLbl');
-    if (ups.time_to_full) {
-      ttf.textContent = ups.time_to_full; ttfLbl.textContent = 'Time to full'; ttf.className = 'val';
-    } else {
-      ttf.textContent = 'Charged'; ttfLbl.textContent = 'Status'; ttf.className = 'val';
-    }
-
-    // Liquidctl — AIO / PSU / Smart Device — h3s renamed from the device
-    // headers liquidctl prints on its first non-tree line.
-    const lq = m.liquidctl || {};
-    const k = lq.aio || {};
-    _setCardTitle('aioCardTitle',         k._name,              'AIO',            'aio');
-    _setCardTitle('psuCardTitle',         (lq.psu   || {})._name, 'PSU',            'psu');
-    _setCardTitle('smartDeviceCardTitle', (lq.smart || {})._name, 'Fan controller', 'smart-device');
-    document.getElementById('aioTemp').textContent     = lqVal(k, 'Liquid temperature');
-    document.getElementById('aioPumpSpeed').textContent= lqVal(k, 'Pump speed');
-    document.getElementById('aioPumpDuty').textContent = lqVal(k, 'Pump duty');
-    document.getElementById('aioFanSpeed').textContent = lqVal(k, 'Fan speed');
-    document.getElementById('aioFanDuty').textContent  = lqVal(k, 'Fan duty');
-    pushPoint(aioTempChart, ts, k['Liquid temperature'] ? k['Liquid temperature'].value : 0);
-
-    // Liquidctl — PSU
-    const p = lq.psu || {};
-    document.getElementById('psuVrmTemp').textContent   = lqVal(p, 'VRM temperature');
-    document.getElementById('psuCaseTemp').textContent  = lqVal(p, 'Case temperature');
-    document.getElementById('psuFanSpeed').textContent  = lqVal(p, 'Fan speed');
-    document.getElementById('psuInputV').textContent    = lqVal(p, 'Input voltage');
-    document.getElementById('psuTotalOut').textContent  = lqVal(p, 'Total power output');
-    document.getElementById('psuInputPower').textContent= lqVal(p, 'Estimated input power');
-    document.getElementById('psuEfficiency').textContent= lqVal(p, 'Estimated efficiency');
-    const psuOut = p['Total power output']   ? p['Total power output'].value   : 0;
-    const psuIn  = p['Estimated input power'] ? p['Estimated input power'].value : 0;
-    pushDual(psuPowerChart, ts, psuOut, psuIn);
-
-    // Liquidctl — Smart Device fans (with sensors voltage/current)
-    const sd = lq.smart || {};
-    const fans = sd.fans || [];
-    document.getElementById('smartFanTable').innerHTML = fans.map(f =>
-      `<tr>
-        <td>Fan ${_esc(String(f.id))}</td>
-        <td>${_esc(f.control_mode || '—')}</td>
-        <td>${f.duty != null ? _esc(f.duty) : '—'}</td>
-        <td>${f.speed ? _esc(f.speed.value) + ' ' + _esc(f.speed.unit) : '—'}</td>
-        <td>${f.voltage_v != null ? f.voltage_v.toFixed(2) + ' V' : '—'}</td>
-        <td>${f.current_ma != null ? _esc(f.current_ma) + ' mA' : '—'}</td>
-      </tr>`
-    ).join('');
-
-// ---- Dashboard card accent borders (severity-based left border color) ----
-    // llama-server / llama-throughput: model+active→ok, sleeping→warn, no model→off
-    {
-      const _ll = m.llama || {};
-      const _llamaState = _ll.model
-        ? (_ll.sleeping ? 'dash-warn' : 'dash-ok')
-        : 'dash-off';
-      _dashSetStatus('llama-server',     _llamaState);
-      _dashSetStatus('llama-throughput', _llamaState);
-    }
-    // GPU: edge temp thresholds
-    {
-      const _gt = (m.gpu || {}).temperature_c;
-      _dashSetStatus('gpu', _gt != null ? (_gt >= 85 ? 'dash-crit' : _gt >= 70 ? 'dash-warn' : 'dash-ok') : 'dash-off');
-    }
-    // CPU
-    {
-      const _ct = m.cpu_total;
-      _dashSetStatus('cpu-overall', _ct != null ? (_ct >= 90 ? 'dash-crit' : _ct >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off');
-    }
-    // RAM
-    {
-      const _rp = (m.ram || {}).percent;
-      _dashSetStatus('ram', _rp != null ? (_rp >= 90 ? 'dash-crit' : _rp >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off');
-    }
-    // UPS
-    {
-      const _u = m.ups || {};
-      const _upsSt = _u.on_battery ? 'dash-crit'
-        : (_u.percent != null && _u.percent < 40) ? 'dash-warn'
-        : (_u.percent != null ? 'dash-ok' : 'dash-off');
-      _dashSetStatus('ups', _upsSt);
-    }
-    // AIO liquid temp
-    {
-      const _kTemp = ((m.liquidctl || {}).aio || {})['Liquid temperature'];
-      const _kt = _kTemp ? _kTemp.value : null;
-      _dashSetStatus('aio', _kt != null ? (_kt >= 40 ? 'dash-crit' : _kt >= 38 ? 'dash-warn' : 'dash-ok') : 'dash-off');
-    }
-    // PSU / Network / Disk — show ok if data present, off otherwise
-    _dashSetStatus('psu',        (m.liquidctl || {}).psu ? 'dash-ok' : 'dash-off');
-    _dashSetStatus('network',    m.net ? 'dash-ok' : 'dash-off');
-    _dashSetStatus('disk-usage', m.disk ? 'dash-ok' : 'dash-off');
-    _dashSetStatus('disk-io',    m.disk_io ? 'dash-ok' : 'dash-off');
-    _dashSetStatus('smart-device', (m.liquidctl || {}).smart ? 'dash-ok' : 'dash-off');
-
   } catch(e) {
     console.error('Fetch error:', e);
   } finally {
@@ -1799,23 +1155,9 @@ async function fetchMetrics() {
 // ---------------------------------------------------------------------------
 // Alarm-rule threshold lines (chartjs-plugin-annotation)
 // ---------------------------------------------------------------------------
-// Maps each dashboard chart id to its alarm metric (source + metric_name) and
-// the provider whose selected agent supplies the host for host-scoped rules.
-// LM Studio GPU busy lives under mac_power — that host emits no system/gpu_*.
-const CHART_METRIC = {
-  cpuChart:           { source: 'system',    metric_name: 'cpu_total',            provider: 'llama' },
-  ramChart:           { source: 'system',    metric_name: 'ram_percent',          provider: 'llama' },
-  gpuChart:           { source: 'system',    metric_name: 'gpu_gpu_util_percent', provider: 'llama' },
-  gpuMemChart:        { source: 'system',    metric_name: 'gpu_vram_usage_percent', provider: 'llama' },
-  diskUsageChart:     { source: 'system',    metric_name: 'disk_root_percent',    provider: 'llama' },
-  lmsCpuChart:        { source: 'system',    metric_name: 'cpu_total',            provider: 'lms' },
-  lmsRamChart:        { source: 'system',    metric_name: 'ram_percent',          provider: 'lms' },
-  lmsDiskUsageChart:  { source: 'system',    metric_name: 'disk_root_percent',    provider: 'lms' },
-  lmsGpuChart:        { source: 'mac_power', metric_name: 'gpu_busy_pct',         provider: 'lms' },
-  vllmCpuChart:       { source: 'system',    metric_name: 'cpu_total',            provider: 'vllm' },
-  vllmRamChart:       { source: 'system',    metric_name: 'ram_percent',          provider: 'vllm' },
-  vllmDiskUsageChart: { source: 'system',    metric_name: 'disk_root_percent',    provider: 'vllm' },
-};
+// Chart.js canvas id → {source, metric_name, provider} for alarm-rule lines; empty
+// while no Chart.js chart draws one (the host pages draw their own, js/hostpage.js).
+const CHART_METRIC = {};
 let _alarmRules = [];
 
 // Fetch the alarm engine's rules through the manager proxy, then redraw lines.
@@ -1825,7 +1167,9 @@ async function refreshAlarmRules() {
     if (!r.ok) { console.warn('alarm rules fetch returned', r.status); return; }
     const data = await r.json();
     _alarmRules = Array.isArray(data) ? data : [];
+    window._alarmRules = _alarmRules;
     _applyThresholds();
+    if (typeof hpRender === 'function') hpRender();
   } catch (_) {}
 }
 

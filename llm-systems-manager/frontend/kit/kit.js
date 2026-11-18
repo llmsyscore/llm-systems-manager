@@ -1,11 +1,11 @@
-// Panel kit 1.2.0
+// Panel kit 1.3.0
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
 var KIT_MENU_ICON = '⋯';
 
 // Kit settings: store key prefix, optional store in place of localStorage, extra double-click skip selector, and app hooks.
-var KIT_CONF = { prefix: 'kit', store: null, dblSkip: '', onLegend: null, onRefit: null, holderRows: null };
+var KIT_CONF = { prefix: 'kit', store: null, dblSkip: '', onLegend: null, onRefit: null, holderRows: null, fullRedraw: false };
 // Sets prefix (non-empty string), store (getItem and setItem, or null), dblSkip (string or null) and the hooks onLegend(panel, chartId),
 // onRefit(root) and holderRows(box) (function or null) in KIT_CONF; returns KIT_CONF.
 function kitConfigure(opts) {
@@ -23,6 +23,7 @@ function kitConfigure(opts) {
     }
     if (ok) KIT_CONF.dblSkip = sel;
   }
+  if (kitOwn(opts, 'fullRedraw')) KIT_CONF.fullRedraw = opts.fullRedraw === true;
   ['onLegend', 'onRefit', 'holderRows'].forEach(function(k) {
     if (kitOwn(opts, k) && (opts[k] === null || typeof opts[k] === 'function')) KIT_CONF[k] = opts[k];
   });
@@ -73,6 +74,8 @@ function grainFor(range, today) {
   }
   return 'day';
 }
+// True for a missing chart value (null or undefined).
+function kitMissing(v) { return v === null || v === undefined; }
 function kitSum(a) {
   var t = 0;
   for (var i = 0; i < a.length; i++) t += +a[i] || 0;
@@ -118,7 +121,7 @@ function kitSlot(slot, i) { return 'var(--s' + kitSlotN(slot, i) + ')'; }
 function kitSeriesFill(s, i) { return s.color === 'bad' ? 'var(--bad)' : kitSlot(s.slot, i); }
 function kitN(v) { return String(Math.round(v * 10) / 10); }
 // A table; columns after the first whose cells are all number-like ('', '—' and '–' aside), with at least one number, are right-aligned.
-// Real numbers show through kitFmt and keep the raw value in data-v for Copy data; a {text, v} cell shows text and keeps raw v.
+// Real numbers show through kitFmt and keep the raw value in data-v for Copy data; a {text, v, title} cell shows text, keeps raw v and a title.
 var KIT_NUMLIKE = /^[+\-\u2212]?\d[\d.,]*%?$/;
 function kitCellObj(c) { return c !== null && typeof c === 'object'; }
 function kitTable(cols, rows) {
@@ -135,7 +138,8 @@ function kitTable(cols, rows) {
   var body = rows.map(function(r) {
     return '<tr>' + r.map(function(c, i) {
       var cell = kitCellObj(c), raw = cell ? c.v : c, num = typeof raw === 'number';
-      return '<td' + (right[i] ? ' class="num"' : '') + (num ? ' data-v="' + kitEsc(raw) + '"' : '') + '>' + kitEsc(cell ? c.text : num ? kitFmt(c) : c) + '</td>';
+      var tip = cell && typeof c.title === 'string' && c.title ? ' title="' + kitEsc(c.title) + '"' : '';
+      return '<td' + (right[i] ? ' class="num"' : '') + (num ? ' data-v="' + kitEsc(raw) + '"' : '') + tip + '>' + kitEsc(cell ? c.text : num ? kitFmt(c) : c) + '</td>';
     }).join('') + '</tr>';
   }).join('');
   return '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>';
@@ -216,12 +220,113 @@ function kitTsView(o) {
   var z = kitTsZ(o);
   return z ? { i0: z[0], i1: z[1] } : { i0: 0, i1: ((o && o.labels) || []).length - 1 };
 }
+// tsHtml options that draw a line chart through kitTsBands, carried in data-kit-ts for redraws.
+var KIT_TS_FANCY = ['split', 'bars', 'idle', 'strip', 'stripLabel', 'step'];
+function kitTsFancy(o) {
+  return !!(o && (o.split === true || o.bars === 'peak' || o.step === true || (typeof o.strip === 'string' && o.strip)));
+}
+// Peak bars: a faint bar to each value above 0 and a solid bar to its s.avg; runs of 0 draw a muted idle line on the baseline.
+function kitTsPeak(s, n, x, y, step) {
+  var bw = Math.max(Math.min(3, step), Math.min(28, step * 0.8)), out = '', idle = '', run = -1;
+  for (var j = 0; j <= n; j++) {
+    var v = j < n ? s.values[j] : null, zero = j < n && !kitMissing(v) && +v === 0;
+    if (zero && run < 0) run = j;
+    if (!zero && run >= 0) { idle += 'M' + kitN(x(run) - step / 2) + ' ' + kitN(y(0) - 1.5) + 'H' + kitN(x(j - 1) + step / 2); run = -1; }
+    if (j >= n || kitMissing(v) || !(+v > 0)) continue;
+    var a = s.avg ? s.avg[j] : null, x0 = kitN(x(j) - bw / 2), w = kitN(bw);
+    out += '<rect class="ts-peak" x="' + x0 + '" y="' + kitN(y(+v)) + '" width="' + w + '" height="' + kitN(Math.max(1, y(0) - y(+v))) + '" fill="' + s.fill + '" fill-opacity=".32"/>';
+    if (!kitMissing(a) && +a > 0) {
+      var ya = y(Math.min(+a, +v));
+      out += '<rect class="ts-avg" x="' + x0 + '" y="' + kitN(ya) + '" width="' + w + '" height="' + kitN(Math.max(1, y(0) - ya)) + '" fill="' + s.fill + '"/>';
+    }
+  }
+  return (idle ? '<path class="ts-idle" d="' + idle + '" fill="none" stroke="var(--muted)" stroke-opacity=".55" stroke-width="3" vector-effect="non-scaling-stroke"/>' : '') + out;
+}
+// Filled steps: each value holds flat across its bucket; a missing value ends the run.
+function kitTsSteps(s, n, x, y, step) {
+  var out = '', run = [];
+  function flush() {
+    if (!run.length) return;
+    var a = x(run[0]) - step / 2, top = '';
+    run.forEach(function(j, i) { var yy = kitN(y(+s.values[j] || 0)); top += (i ? 'V' + yy : 'M' + kitN(a) + ' ' + yy) + 'H' + kitN(x(j) + step / 2); });
+    out += '<path class="ts-area" d="' + top + 'V' + kitN(y(0)) + 'H' + kitN(a) + 'Z" fill="' + s.fill + '" fill-opacity=".18"/>' +
+      '<path d="' + top + '" fill="none" stroke="' + s.fill + '" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+    run = [];
+  }
+  for (var j = 0; j < n; j++) { if (kitMissing(s.values[j])) flush(); else run.push(j); }
+  flush();
+  return out;
+}
+// A line that ends at each missing value; a lone value between two gaps draws as a dot.
+function kitTsLine(s, n, x, y) {
+  var d = '', on = false;
+  for (var j = 0; j < n; j++) {
+    if (kitMissing(s.values[j])) { on = false; continue; }
+    d += (on ? 'L' : 'M') + kitN(x(j)) + ' ' + kitN(y(+s.values[j] || 0));
+    if (!on && (j === n - 1 || kitMissing(s.values[j + 1]))) d += 'h0';
+    on = true;
+  }
+  return d ? '<path d="' + d + '" fill="none" stroke="' + s.fill + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' : '';
+}
+// The o.strip series as a heat strip on top (darker is higher, to o.ymax or 100), then one band per series with o.split or one shared band.
+// Returns {g: gridlines and axis labels, marks}; o.idle shows in the plot when no shown value is above 0.
+function kitTsBands(o, vis, n, d) {
+  var L = d.L, step = d.step, gap = 10, pw = d.W - L - d.R, g = '', marks = '';
+  function x(j) { return L + step * (j + 0.5); }
+  var sName = typeof o.strip === 'string' ? o.strip : '', sv = null, rest = [];
+  vis.forEach(function(s) { if (sName && s.name === sName && !sv) sv = s; else rest.push(s); });
+  var sh = sv ? (d.H >= 360 ? 30 : 18) : 0, top0 = d.T + (sv ? sh + gap : 0), h0 = d.ih - (sv ? sh + gap : 0);
+  if (sv) {
+    var smax = d.cap || 100;
+    g += '<rect class="ts-strip" x="' + L + '" y="' + d.T + '" width="' + kitN(pw) + '" height="' + sh + '" fill="var(--grid)" fill-opacity=".45"/>';
+    if (o.stripLabel) g += '<text x="' + (L - 6) + '" y="' + kitN(d.T + sh / 2 + 3.5) + '" text-anchor="end" class="ax">' + kitEsc(o.stripLabel) + '</text>';
+    for (var j = 0; j < n; j++) {
+      var v = sv.values[j], cell = 'x="' + kitN(L + step * j) + '" y="' + d.T + '" width="' + kitN(step + 0.4) + '" height="' + sh + '"';
+      if (kitMissing(v)) marks += '<rect ' + cell + ' fill="var(--card)"/>';
+      else if (+v > 0) marks += '<rect class="ts-cell" ' + cell + ' fill="' + sv.fill + '" fill-opacity="' + (0.15 + 0.85 * Math.min(+v, smax) / smax).toFixed(2) + '"/>';
+    }
+  }
+  var groups = o.split === true ? rest.map(function(s) { return [s]; }) : rest.length ? [rest] : [];
+  var k = groups.length, bh = k ? (h0 - gap * (k - 1)) / k : 0;
+  groups.forEach(function(grp, gi) {
+    var bt = top0 + gi * (bh + gap), mx = 1, one = k === 1 && o.split !== true;
+    grp.forEach(function(s) { s.values.forEach(function(v) { if (+v > mx) mx = +v; }); });
+    if (!d.cap && one) d.ths.forEach(function(h) { mx = Math.max(mx, h.value); });
+    var ymax = d.cap || kitNiceMax(mx), hi = d.cap || Infinity;
+    function y(v) { return bt + bh - (Math.max(0, Math.min(v, hi)) / ymax) * bh; }
+    [0, ymax / 2, ymax].forEach(function(v) {
+      var yy = kitN(y(v));
+      g += '<line x1="' + L + '" x2="' + (d.W - d.R) + '" y1="' + yy + '" y2="' + yy + '" stroke="var(--grid)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>' +
+        '<text x="' + (L - 6) + '" y="' + kitN(+yy + 3.5) + '" text-anchor="end" class="ax">' + kitFmt(v) + '</text>';
+    });
+    if (o.split === true) g += '<text x="' + (L + 4) + '" y="' + kitN(bt + 10) + '" class="ax ts-bl">' + kitEsc(grp[0].name) + '</text>';
+    grp.forEach(function(s) { marks += o.bars === 'peak' ? kitTsPeak(s, n, x, y, step) : o.step === true ? kitTsSteps(s, n, x, y, step) : kitTsLine(s, n, x, y); });
+    if (one) d.ths.forEach(function(h) {
+      if (h.value > ymax || h.value < 0) return;
+      var ty = kitN(y(h.value)), tone = h.tone === 'bad' ? 'var(--bad)' : h.tone === 'warn' ? 'var(--warn)' : 'var(--muted)';
+      marks += '<line class="th" x1="' + L + '" x2="' + (d.W - d.R) + '" y1="' + ty + '" y2="' + ty + '" stroke="' + tone + '" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>' +
+        '<text x="' + (d.W - d.R) + '" y="' + kitN(+ty - 3) + '" text-anchor="end" class="ax th-l">' + kitEsc(h.label) + '</text>';
+    });
+  });
+  var seen = vis.some(function(s) { return s.values.some(function(v) { return !kitMissing(v); }); });
+  var up = vis.some(function(s) { return s.values.some(function(v) { return +v > 0; }); });
+  if (typeof o.idle === 'string' && o.idle && seen && !up) {
+    var want = o.idle.length * 6.4 + 24, tw = Math.min(pw - 8, want), cx = L + pw / 2, cy = d.T + d.ih / 2;
+    // Text wider than the plot is squeezed to fit inside the pill.
+    var fitText = want > tw ? ' textLength="' + kitN(Math.max(0, tw - 16)) + '" lengthAdjust="spacingAndGlyphs"' : '';
+    marks += '<g class="ts-idle-msg"><rect x="' + kitN(cx - tw / 2) + '" y="' + kitN(cy - 11) + '" width="' + kitN(tw) + '" height="22" rx="11" fill="var(--card)" stroke="var(--border)"/>' +
+      '<text x="' + kitN(cx) + '" y="' + kitN(cy + 4) + '" text-anchor="middle" class="ax"' + fitText + '>' + kitEsc(o.idle) + '</text></g>';
+  }
+  return { g: g, marks: marks };
+}
 // Time series: line or stacked bars in an o.w-wide viewBox (default 600), gridlines at 0, half and the top, a legend of series toggles.
 // o.marks ({day, label, release}) on a shown day draw dashed lines; data-kit-ts holds the options for the hover and for kitRefit.
 function tsHtml(o) {
   var id = o.id, labels = o.labels || [], series = o.series || [], stack = o.mode === 'stack';
   // o.ymax caps the axis, o.thresholds draw labelled lines, o.zoom with a valid o.z shows that slice only; o.keep is for kitTsAppend.
-  var zr = kitTsZ(o), cap = +o.ymax > 0 ? +o.ymax : 0, ext = o.ymax != null || o.thresholds != null || o.zoom != null || o.keep != null;
+  // o.gaps 'break' ends a line at a missing value (null or undefined) instead of drawing it as 0.
+  var zr = kitTsZ(o), cap = +o.ymax > 0 ? +o.ymax : 0, ext = o.ymax != null || o.thresholds != null || o.zoom != null || o.keep != null || o.gaps != null;
+  var brk = o.gaps === 'break', fancy = !stack && kitTsFancy(o);
   var ths = (Array.isArray(o.thresholds) ? o.thresholds : []).filter(function(h) { return h && typeof h.value === 'number' && isFinite(h.value); });
   function part(a) { return zr ? a.slice(zr[0], zr[1] + 1) : a; }
   var shown = part(labels);
@@ -229,14 +334,16 @@ function tsHtml(o) {
   var legend = '<div class="legend">' + series.map(function(s, i) {
     var key = id + '|' + s.name, off = !!KIT_SERIES_OFF[key];
     return '<button type="button" class="chip' + (off ? ' off' : '') + '" data-kit-series="' + kitEsc(key) + '" aria-pressed="' + (off ? 'false' : 'true') + '">' +
-      '<i style="background:' + kitSeriesFill(s, i) + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + (typeof s.legend === 'string' ? kitEsc(s.legend) : kitFmt(kitSum(part(s.values || [])))) + '</span>' +
+      '<i style="background:' + kitSeriesFill(s, i) + (stack && s.dim === true ? ';opacity:.35' : '') + '"></i>' + kitEsc(s.name) + ' <span class="c-v">' + (typeof s.legend === 'string' ? kitEsc(s.legend) : kitFmt(kitSum(part(s.values || [])))) + '</span>' +
       (off ? ' <span class="c-off">hidden</span>' : '') + '</button>';
   }).join('') + (zr ? '<button type="button" class="chip zr" data-kit-zoom-reset>Reset zoom</button>' : '') + '</div>';
   var n = shown.length;
   if (!n) return legend + '<div class="empty">Nothing in this period.</div>';
   var W = +o.w > 0 ? Math.round(+o.w) : 600, H = +o.height || 220, L = 34, R = 8, T = 10, B = 22, iw = W - L - R, ih = H - T - B, step = iw / n;
   var vis = [];
-  series.forEach(function(s, i) { if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: part(s.values || []), slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i) }); });
+  series.forEach(function(s, i) {
+    if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: part(s.values || []), avg: Array.isArray(s.avg) ? part(s.avg) : null, slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i), dim: s.dim === true });
+  });
   var top = 1;
   for (var i = 0; i < n; i++) {
     var t = 0;
@@ -257,10 +364,12 @@ function tsHtml(o) {
     g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="var(--grid)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>' +
       '<text x="' + (L - 6) + '" y="' + kitN(+yy + 3.5) + '" text-anchor="end" class="ax">' + kitFmt(v) + '</text>';
   });
+  // o.split, o.bars 'peak' (with each series' avg), o.strip (with o.stripLabel), o.step and o.idle draw through kitTsBands.
+  var marks = '', fz = fancy ? kitTsBands(o, vis, n, { L: L, R: R, T: T, W: W, H: H, ih: ih, step: step, cap: cap, ths: ths }) : null;
+  if (fz) { g = fz.g; marks = fz.marks; }
   // At most 7 day labels, and at most one per 90px of width (at least 2).
   var every = Math.max(Math.ceil(n / 7), Math.ceil(n / Math.max(2, Math.floor(W / 90))));
   for (var j = 0; j < n; j += every) g += '<text x="' + kitN(x(j)) + '" y="' + (H - 6) + '" text-anchor="middle" class="ax ax-x">' + kitEsc(shown[j]) + '</text>';
-  var marks = '';
   if (stack) {
     var bw = Math.max(3, Math.min(28, step * 0.62));
     for (var b = 0; b < n; b++) {
@@ -269,23 +378,32 @@ function tsHtml(o) {
       for (var m = 0; m < vis.length; m++) {
         var val = +vis[m].values[b] || 0;
         if (!val || acc >= hi) continue;
-        var y0 = y(acc) - (acc ? 2 : 0), y1 = y(acc + val), hgt = Math.max(1, y0 - y1), x0 = x(b) - bw / 2;
+        // o.joined stacks parts with no gap; a dim series draws faint.
+        var y0 = y(acc) - (acc && o.joined !== true ? 2 : 0), y1 = y(acc + val), hgt = Math.max(1, y0 - y1), x0 = x(b) - bw / 2, op = vis[m].dim ? '" fill-opacity=".35' : '';
         acc += val;
         if (m === lastK) {
           var r = Math.min(3, bw / 2, hgt);
           marks += '<path class="ts-bar" d="M' + kitN(x0) + ' ' + kitN(y0) + 'V' + kitN(y0 - hgt + r) + 'q0 -' + kitN(r) + ' ' + kitN(r) + ' -' + kitN(r) +
-            'h' + kitN(bw - 2 * r) + 'q' + kitN(r) + ' 0 ' + kitN(r) + ' ' + kitN(r) + 'V' + kitN(y0) + 'Z" fill="' + vis[m].fill + '"/>';
+            'h' + kitN(bw - 2 * r) + 'q' + kitN(r) + ' 0 ' + kitN(r) + ' ' + kitN(r) + 'V' + kitN(y0) + 'Z" fill="' + vis[m].fill + op + '"/>';
         } else {
-          marks += '<rect class="ts-bar" x="' + kitN(x0) + '" y="' + kitN(y0 - hgt) + '" width="' + kitN(bw) + '" height="' + kitN(hgt) + '" fill="' + vis[m].fill + '"/>';
+          marks += '<rect class="ts-bar" x="' + kitN(x0) + '" y="' + kitN(y0 - hgt) + '" width="' + kitN(bw) + '" height="' + kitN(hgt) + '" fill="' + vis[m].fill + op + '"/>';
         }
       }
     }
-  } else {
+  } else if (!fz) {
     vis.forEach(function(s) {
-      var d = '';
-      for (var p = 0; p < n; p++) d += (p ? 'L' : 'M') + kitN(x(p)) + ' ' + kitN(y(+s.values[p] || 0));
-      marks += '<path d="' + d + '" fill="none" stroke="' + s.fill + '" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' +
-        '<circle cx="' + kitN(x(n - 1)) + '" cy="' + kitN(y(+s.values[n - 1] || 0)) + '" r="3" fill="' + s.fill + '" stroke="var(--card)" stroke-width="2"/>';
+      var d = '', on = false, last = -1;
+      for (var p = 0; p < n; p++) {
+        if (brk && kitMissing(s.values[p])) { on = false; continue; }
+        d += (on ? 'L' : 'M') + kitN(x(p)) + ' ' + kitN(y(+s.values[p] || 0));
+        // A lone value between two gaps draws as a dot.
+        if (brk && !on && (p === n - 1 || kitMissing(s.values[p + 1]))) d += 'h0';
+        on = true;
+        last = p;
+      }
+      if (last < 0) return;
+      marks += '<path d="' + d + '" fill="none" stroke="' + s.fill + '" stroke-width="1.5" stroke-linejoin="round"' + (brk ? ' stroke-linecap="round"' : '') + ' vector-effect="non-scaling-stroke"/>' +
+        '<circle cx="' + kitN(x(last)) + '" cy="' + kitN(y(+s.values[last] || 0)) + '" r="3" fill="' + s.fill + '" stroke="var(--card)" stroke-width="2"/>';
     });
   }
   var inRange = (o.marks || []).filter(function(mk) { return /^\d{4}-\d{2}-\d{2}$/.test(String(mk.day)) && labels.indexOf(mk.day) >= 0; }), mkLines = '';
@@ -298,16 +416,23 @@ function tsHtml(o) {
   });
   // Each threshold inside the axis is a dashed line in its tone with its label at the right end, 3px above the line.
   var thLines = '';
-  ths.forEach(function(h) {
+  (fz ? [] : ths).forEach(function(h) {
     if (h.value > ymax || h.value < ylo) return;
     var ty = kitN(y(h.value)), tone = h.tone === 'bad' ? 'var(--bad)' : h.tone === 'warn' ? 'var(--warn)' : 'var(--muted)';
     thLines += '<line class="th" x1="' + L + '" x2="' + (W - R) + '" y1="' + ty + '" y2="' + ty + '" stroke="' + tone + '" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>' +
       '<text x="' + (W - R) + '" y="' + kitN(+ty - 3) + '" text-anchor="end" class="ax th-l">' + kitEsc(h.label) + '</text>';
   });
   var hover = { id: id, labels: labels, mode: stack ? 'stack' : 'line', height: H, w: W, l: L, r: R,
-    series: series.map(function(s, i) { return { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined, legend: typeof s.legend === 'string' ? s.legend : undefined }; }),
+    series: series.map(function(s, i) {
+      var hs = { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined, legend: typeof s.legend === 'string' ? s.legend : undefined };
+      if (Array.isArray(s.avg)) hs.avg = s.avg;
+      if (s.dim === true) hs.dim = true;
+      return hs;
+    }),
     marks: inRange.map(function(mk) { return { day: mk.day, label: String(mk.label || ''), release: !!mk.release }; }) };
-  if (ext) { hover.ymax = o.ymax; hover.thresholds = o.thresholds; hover.zoom = o.zoom; hover.z = o.z; hover.keep = o.keep; hover.t = T; hover.b = T + ih; }
+  if (ext || fancy) { hover.ymax = o.ymax; hover.thresholds = o.thresholds; hover.zoom = o.zoom; hover.z = o.z; hover.keep = o.keep; hover.gaps = o.gaps; hover.t = T; hover.b = T + ih; }
+  if (fancy) KIT_TS_FANCY.forEach(function(k) { if (o[k] != null) hover[k] = o[k]; });
+  if (o.joined === true) hover.joined = true;
   return legend + '<div class="ts"' + (o.zoom ? ' data-kit-zoom' : '') + ' data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + kitEsc(series.map(function(s) { return s.name; }).join(', ')) + '">' + g + marks + mkLines + thLines +
     '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (T + ih) + '" stroke="var(--text-2)" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/></svg>' +
@@ -521,6 +646,9 @@ function kitFill(bodyId, html, table) {
   if (!body) return;
   body.innerHTML = html;
   kitSetTable(bodyId, table);
+  // With KIT_CONF.fullRedraw, a fill inside a full-size panel fits its charts to that panel again.
+  var full = KIT_CONF.fullRedraw && body.closest ? body.closest('.panel.full') : null;
+  if (full && full.querySelector('.ts[data-kit-ts]')) kitFullCharts(full, true);
 }
 // Puts a {cols, rows} table in the hidden .p-table of the panel holding a body, adding one after the body when it has none.
 function kitSetTable(bodyId, table) {
@@ -593,9 +721,9 @@ function kitRedrawTs(ts, o, w) {
   if (hovered && nts && nts.matches && nts.matches('.ts[data-kit-ts]')) kitTsHover(nts, kitTsX);
   return nts;
 }
-// Appends a point (label, values[k] to series k, else 0) to the chart under root with that id, trims the front to o.keep (else its prior length),
+// Appends a point (label, values[k] to series k, else 0, or null with o.gaps 'break') to the chart under root with that id, trims the front to o.keep (else its prior length),
 // drops o.z when its from label goes, redraws; false when none matches. Needs a chart with a point: re-render an empty one with tsHtml.
-function kitTsAppend(root, id, label, values) {
+function kitTsAppend(root, id, label, values, avgs) {
   if (!root || !root.querySelectorAll) return false;
   var list = root.querySelectorAll('.ts[data-kit-ts]');
   for (var i = 0; i < list.length; i++) {
@@ -603,9 +731,13 @@ function kitTsAppend(root, id, label, values) {
     if (!o || !o.series || String(o.id) !== String(id)) continue;
     var labels = o.labels = o.labels || [], keep = Math.floor(+o.keep), max = keep > 0 ? keep : labels.length;
     labels.push(label);
-    o.series.forEach(function(s, k) { (s.values = s.values || []).push(values && values[k] != null ? values[k] : 0); });
+    o.series.forEach(function(s, k) {
+      (s.values = s.values || []).push(values && values[k] != null ? values[k] : o.gaps === 'break' ? null : 0);
+      // A series with an avg list takes avgs[k], else null.
+      if (Array.isArray(s.avg)) s.avg.push(avgs && avgs[k] != null ? avgs[k] : null);
+    });
     var cut = Math.max(0, labels.length - max), gone = labels.splice(0, cut);
-    o.series.forEach(function(s) { s.values.splice(0, cut); });
+    o.series.forEach(function(s) { s.values.splice(0, cut); if (Array.isArray(s.avg)) s.avg.splice(0, cut); });
     if (o.z && gone.indexOf(o.z.from) >= 0) delete o.z;
     if (ts.parentNode) kitRedrawTs(ts, o, o.w);
     return true;
@@ -706,13 +838,46 @@ function kitPanelDo(panel, item) {
     kitSetFull(panel, !panel.classList.contains('full'));
   }
 }
-// Opens or closes a panel full size and sets its menu item text to match; its charts scale through their viewBox.
-// Then calls KIT_CONF.onRefit(panel) when it is set.
+// Opens or closes a panel full size and sets its menu item text to match; its charts scale through their viewBox,
+// or with KIT_CONF.fullRedraw redraw to fit (kitFullCharts). Then calls KIT_CONF.onRefit(panel) when it is set.
 function kitSetFull(panel, on) {
   var fb = panel.querySelector('button[data-kit-do="full"]');
   if (on) panel.classList.add('full'); else panel.classList.remove('full');
   if (fb) fb.textContent = on ? 'Close full size' : 'Open full size';
+  if (KIT_CONF.fullRedraw) kitFullCharts(panel, on);
   if (KIT_CONF.onRefit) { try { KIT_CONF.onRefit(panel); } catch (e) { if (typeof console !== 'undefined') console.error('kit hook onRefit failed', e); } }
+}
+// Redraws a panel's charts at their body's width and their own height; opening (or a refit while open) then shares
+// the body's free height among them, closing leaves each at its own height.
+function kitFullCharts(panel, on) {
+  var keep = panel.kitFullH || (panel.kitFullH = {});
+  Array.prototype.forEach.call(panel.querySelectorAll('.ts[data-kit-ts]'), function(ts) {
+    var o = kitTsData(ts), body = ts.parentNode, w = body ? Math.round(+body.clientWidth || 0) : 0;
+    if (!o || !o.series) return;
+    var had = Object.prototype.hasOwnProperty.call(keep, o.id);
+    if (on && !had) keep[o.id] = o.height;
+    else if (!on && !had) return;
+    o.height = keep[o.id];
+    if (!on) delete keep[o.id];
+    kitRedrawTs(ts, o, w > 0 ? w : o.w);
+  });
+  var list = panel.querySelectorAll('.ts[data-kit-ts]'), free = on ? kitFreeHeight(panel.querySelector('.p-body')) : 0;
+  if (free <= 0 || !list.length) return;
+  var add = Math.floor(free / list.length);
+  Array.prototype.forEach.call(list, function(ts) {
+    var o = kitTsData(ts);
+    if (o && o.series) kitRedrawTs(ts, Object.assign(o, { height: (+o.height || 220) + add }), o.w);
+  });
+}
+// Height in px a shown box has below the lowest of its shown children; 0 when hidden or full.
+function kitFreeHeight(box) {
+  if (!box || box.hidden || !box.getBoundingClientRect) return 0;
+  var top = box.getBoundingClientRect().top, end = top;
+  Array.prototype.forEach.call(box.children, function(k) {
+    var r = k.getBoundingClientRect();
+    if (r.height > 0 && r.bottom > end) end = r.bottom;
+  });
+  return Math.max(0, Math.floor((+box.clientHeight || 0) - (end - top)));
 }
 var KIT_DBL_SKIP = 'button, a, input, select, textarea, label, summary, [role="link"], [role="button"], table[data-kit-sortable] th, .grip, .p-pop';
 // Elements a double-click does not open full size from: KIT_DBL_SKIP plus KIT_CONF.dblSkip.
@@ -798,9 +963,10 @@ function kitTsHover(box, clientX) {
   if (xh) { xh.setAttribute('x1', cx); xh.setAttribute('x2', cx); xh.setAttribute('visibility', 'visible'); }
   if (!tp) return;
   var tot = 0, rows = shown.map(function(s) {
-    var sv = +s.values[at] || 0;
+    var sv = +s.values[at] || 0, miss = (d.gaps === 'break' || kitTsFancy(d)) && kitMissing(s.values[at]);
+    var pk = d.bars === 'peak' && Array.isArray(s.avg) && sv > 0 ? 'peak ' + kitFmt(sv) + ' · avg ' + (kitMissing(s.avg[at]) ? '—' : kitFmt(+s.avg[at])) : '';
     tot += sv;
-    return '<div><i style="background:' + kitSeriesFill(s, 0) + '"></i>' + kitEsc(s.name) + '<b>' + kitFmt(sv) + '</b></div>';
+    return '<div><i style="background:' + kitSeriesFill(s, 0) + (d.mode === 'stack' && s.dim === true ? ';opacity:.35' : '') + '"></i>' + kitEsc(s.name) + '<b>' + (miss ? '—' : pk || kitFmt(sv)) + '</b></div>';
   }).join('');
   var mks = (d.marks || []).filter(function(mk) { return mk.day === d.labels[at]; }).map(function(mk) { return '<div class="tip-m">' + kitEsc(mk.label) + '</div>'; }).join('');
   tp.innerHTML = '<div class="tip-d">' + kitEsc(d.labels[at]) + '</div>' + rows + (d.mode === 'stack' && shown.length > 1 ? '<div class="tip-t">Total<b>' + kitFmt(tot) + '</b></div>' : '') + mks;
@@ -862,6 +1028,13 @@ function kitRowDraw(row, folded) {
   b.setAttribute('aria-expanded', folded ? 'false' : 'true');
   if (ch) ch.textContent = folded ? '▸' : '▾';
 }
+// A page row's saved fold: true folded, false open, null when none is saved.
+function kitRowFolded(page, rowId, storage) {
+  var mine = kitPageObj(kitSavedObj(storage, kitKey('rows')), page), v = kitOwn(mine, rowId) ? mine[rowId] : null;
+  return v === 1 ? true : v === 0 ? false : null;
+}
+// Draws a row folded or open without saving the fold.
+function kitSetRowFold(row, folded) { if (row) kitRowDraw(row, !!folded); }
 // Known saved ids in saved order, then each new id after the last placed id that precedes it by default.
 function kitReconcile(defaultIds, savedIds) {
   var out = [];

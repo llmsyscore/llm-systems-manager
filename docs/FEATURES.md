@@ -16,15 +16,16 @@ Everything LLM Systems Manager does, with a screenshot of each screen. To instal
 - **Model management.** A built-in Hugging Face browser downloads and prunes models file-by-file; named profiles (chat / code / general) swap and reload from the model card in one click.
 - **Energy & thermal control.** A performance controller sets the CPU governor, GPU power limit and fan profile with inference load — full power under work, quiet when idle. It follows the model's state (loading, awake, sleeping, unloaded), waits out short changes before switching, and confirms each switch took effect.
 - **Remote control, no SSH.** Run the servers, hot-swap models, edit configs, update `llama.cpp` (source, conda, Homebrew, release binaries, or your own script), tail logs, and open an in-browser PTY terminal. **LLM Control → ⋯ → Installed builds** lists every llama.cpp build on the host with its backend and version; an admin can **Activate** another build, and the previous one comes back if the new one does not start. The agent also works with a `llama-server` you installed yourself, from a distro package, Homebrew or your own build. See [Using a llama-server you installed yourself](DEPLOYMENT.md#using-a-llama-server-you-installed-yourself).
-- **LLM runtime visibility.** Slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, chat template, and modalities, plus LM Studio loaded models and sessions. For llama.cpp, the Llama server card also shows how much of the last minute's prompt text was reused from the prompt cache and, when speculative or multi-token (MTP) decoding is on, how many drafted tokens the model accepted. Both tiles say "Not reported" when the running llama.cpp build does not publish those counters, "Idle" or "Paused" when nothing has run recently, and "Reset" right after the server restarted; the acceptance tile says "Not in use" when the model runs without a draft model or MTP. The same two ratios are kept in history and available to alarm rules.
+- **LLM runtime visibility.** Slots, tokens/sec, prompt-processing rate, KV cache, context, idle/awake, chat template, and modalities, plus LM Studio loaded models and sessions. For llama.cpp, the **Server details** panel also shows how much of the last minute's prompt text was reused from the prompt cache and, when speculative or multi-token (MTP) decoding is on, how many drafted tokens the model accepted. Both lines say "Not reported" when the running llama.cpp build does not publish those counters, "Idle" or "Paused" when nothing has run recently, and "Reset" right after the server restarted; the acceptance line says "Not in use" when the model runs without a draft model or MTP. The same two ratios are kept in history and available to alarm rules.
 - **Every host in one pane.** A picker switches views and controls per agent, and the **Overall** page shows the whole fleet at once: token throughput, each LLM server, power and energy, forecast findings, Tower and alerts. Pick a provider in the toolbar to narrow every panel to it, and pick 6, 12 or 24 hours for the throughput chart.
 - **All hosts.** **Dashboards** opens on **All hosts**. The **Right now** table shows CPU, memory and disk use for every host, with high values in red. Click a host to open its page; a host without an LLM server says "No LLM server". The **Compare over time** charts draw one line per host for CPU, memory, disk used, network in and disk writes. The five busiest hosts show first; click a host's chip under a chart to show or hide its line. Pick 6, 12 or 24 hours in the toolbar.
+- **Host pages.** **Dashboards → llama.cpp**, **LM Studio** and **vLLM** each show one host at a time. Pick the host in the **Host** list at the top. The page has five rows: **Host** (state, CPU, memory, GPU and generation speed at a glance), **Inference** (throughput, the server and its details), **GPU**, **System** (CPU, memory, network and disks) and **Power hardware** (UPS, liquid cooler, power supply and fans). Rows a host has nothing for stay hidden, and Power hardware folds with "Nothing reported". A host with no LLM server opens from **All hosts** on its own host page with the same rows except Inference. Pick 6, 12 or 24 hours in the toolbar. Open the settings drawer on one of these pages to hide its rows or single panels, or on **Overall** to pin any of their panels there. A pinned panel shows on Overall even when it is hidden on its own page, and follows the Overall time range there. Panels on one line are the same height, and charts grow to fill their panel. Throughput shows a bar for each 15 minutes (shorter on 6 and 12 hours): the faint part reaches the highest speed and the solid part is the average, with generation and prompt speed in separate rows. A grey line along the bottom marks idle time. GPU busy shows as a colour strip above the memory chart, with a stronger colour when busier; on a Mac it shows bars like Throughput. A chart's **⋯** menu has **View … in metrics** for each line the alarm engine keeps history for; it opens **Events and metrics → Metrics** with that host and metric picked.
 - **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant — a bare host just reports system metrics, all over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats. AMD cards also show how much system memory the GPU uses (GTT) beside VRAM. On a host with several GPUs, pick the one to watch in **Admin → Agents**.
 - **Fleet updates.** **Update all** in **Admin → Agents** updates every agent that is behind, one at a time. It keeps running when you close the window or leave the page, and shows on the Jobs tab.
 - **Alerting.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email (with the mail server's certificate verified), toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
 - **Incident correlation.** Several rules triggering on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
-- **At-a-glance status.** Dots on the **Events** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab. A separate run-activity dot on **LLM Control → Tools** tracks tool runs globally.
+- **At-a-glance status.** Dots on the **Events and metrics** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab. A separate run-activity dot on **LLM Control → Tools** tracks tool runs globally.
 - **Phone companion (PWA).** An installable app at `/companion` — Home, Alerts, Tower (ask, prompts and insights), Energy, Models, Admin, and Settings screens sized for a phone, with alarm-engine alerts delivered as native push notifications even when the app is closed. Model swaps, pins, autopilot approvals, and service restarts each sit behind a confirm sheet, restricted to the admin role. See [Phone companion](DEPLOYMENT.md#phone-companion-pwa).
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
 - **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
@@ -60,17 +61,17 @@ Fleet tiles, token throughput by provider, each LLM server, power and energy, th
 </details>
 
 <details>
-<summary><b>llama.cpp dashboard</b> — live server internals beside GPU, CPU, RAM, disk and network cards for the selected host</summary>
+<summary><b>llama.cpp dashboard</b> — one host's server, GPU, system and power hardware, with a host picker</summary>
 
-Live server internals beside GPU, CPU, RAM, disk and network cards for the selected host.
+One host's server, GPU, system and power hardware, with a host picker.
 
 <img width="1920" height="1080" alt="llama.cpp dashboard" src="screenshots/dashboard-llama.webp" />
 </details>
 
 <details>
-<summary><b>LM Studio dashboard</b> — loaded models, host metrics, and Apple-silicon powermetrics</summary>
+<summary><b>LM Studio dashboard</b> — loaded models, host metrics, and Apple-silicon power use</summary>
 
-Loaded models, host metrics, and Apple-silicon powermetrics.
+Loaded models, host metrics, and Apple-silicon power use.
 
 <img width="1920" height="1080" alt="LM Studio dashboard" src="screenshots/dashboard-lmstudio.webp" />
 </details>
@@ -204,9 +205,9 @@ Native async image and video generation on a local stable-diffusion.cpp server.
 </details>
 
 <details>
-<summary><b>Alarm console</b> — active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events tab</summary>
+<summary><b>Alarm console</b> — active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events and metrics tab</summary>
 
-Active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events tab.
+Active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events and metrics tab.
 
 <img width="1920" height="1080" alt="Alarm console" src="screenshots/alarm-console.webp" />
 </details>

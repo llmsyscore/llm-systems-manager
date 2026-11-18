@@ -540,6 +540,44 @@ describe('4b: serverPanels', () => {
 });
 
 describe('4b: energy and power panels', () => {
+  it('energyPerHour with a step sums hours into local steps that start at a multiple of the step', () => {
+    const mid = new Date(2026, 10, 16, 0, 0, 0).getTime() / 1000;
+    const rows = [0, 1, 2, 3, 5].map(h => ({ hour_ts: mid + h * 3600, energy_wh: 10, active_energy_wh: h }));
+    const e = OV.energyPerHour(rows, 3);
+    expect(e.labels).toEqual(['Mon 00:00', 'Mon 03:00']);
+    expect(e.series[1].values).toEqual([3, 8]);
+    expect(e.series[0].values).toEqual([27, 12]);
+    expect(e.totals.kwh).toBe(0.05);
+    expect(OV.energyPerHour(rows, 1).labels).toHaveLength(5);
+    expect(OV.energyPerHour(rows, 9).labels).toHaveLength(5);
+  });
+  it('energyPerHour with a step leaves out a first step a week before the last one with the same label, keeping its energy in the totals', () => {
+    const now = new Date(2026, 10, 17, 10, 0, 0).getTime() / 1000;
+    const rows = [];
+    for (let h = 167; h >= 0; h--) rows.push({ hour_ts: now - h * 3600, energy_wh: 1, active_energy_wh: 0 });
+    const e = OV.energyPerHour(rows, 3);
+    expect(e.labels[0]).toBe('Tue 12:00');
+    expect(e.labels[e.labels.length - 1]).toBe('Tue 09:00');
+    expect(new Set(e.labels).size).toBe(e.labels.length);
+    expect(e.totals.kwh).toBe(0.168);
+    // Data that starts mid-step without a week of rows keeps its first bar.
+    const short = rows.slice(-5);
+    expect(OV.energyPerHour(short, 3).labels).toEqual(['Tue 06:00', 'Tue 09:00']);
+  });
+  it('energyPerHour with a step groups a fall-back DST day by local hour', () => {
+    const tz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // 2026-11-01: 01:00 happens twice in New York.
+      const start = Date.UTC(2026, 10, 1, 4) / 1000;
+      const rows = [0, 1, 2, 3, 4].map(h => ({ hour_ts: start + h * 3600, energy_wh: 10, active_energy_wh: 0 }));
+      const e = OV.energyPerHour(rows, 3);
+      expect(e.labels).toEqual(['Sun 00:00', 'Sun 03:00']);
+      expect(e.series[0].values).toEqual([40, 10]);
+    } finally {
+      if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+    }
+  });
   it('energyPerHour: Idle and Generating Wh, summed kWh, local labels', () => {
     const e = OV.energyPerHour({ end_ts: END_TS, rows: HOURLY_ROWS.slice().reverse() });
     expect(e.series.map(s => s.name)).toEqual(['Idle', 'Generating']);

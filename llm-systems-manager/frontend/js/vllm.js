@@ -3,71 +3,6 @@
 // ---------------------------------------------------------------------------
 let _vllmMetrics = {};
 
-const vllmKvChartCtx = document.getElementById('vllmKvChart')?.getContext('2d');
-const vllmKvChart = vllmKvChartCtx ? new Chart(vllmKvChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'KV %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const vllmTpsChartCtx = document.getElementById('vllmTpsChart')?.getContext('2d');
-const vllmTpsChart = vllmTpsChartCtx ? new Chart(vllmTpsChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Gen t/s',    data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'Prompt t/s', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-// Host system charts (CPU / RAM / Network) — mirror the LM Studio tab.
-const vllmCpuChartCtx = document.getElementById('vllmCpuChart')?.getContext('2d');
-const vllmCpuChart = vllmCpuChartCtx ? new Chart(vllmCpuChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'CPU %', data: [], borderColor: '#e05', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-const vllmRamChartCtx = document.getElementById('vllmRamChart')?.getContext('2d');
-const vllmRamChart = vllmRamChartCtx ? new Chart(vllmRamChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: 'RAM %', data: [], borderColor: '#7af', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { beginAtZero: true, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-const vllmNetChartCtx = document.getElementById('vllmNetChart')?.getContext('2d');
-const vllmNetChart = vllmNetChartCtx ? new Chart(vllmNetChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Out', data: [], borderColor: '#fa7', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'In',  data: [], borderColor: '#4e9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const vllmIoChartCtx = document.getElementById('vllmIoChart')?.getContext('2d');
-const vllmIoChart = vllmIoChartCtx ? new Chart(vllmIoChartCtx, {
-  type: 'line',
-  data: { datasets: [
-    { label: 'Read',  data: [], borderColor: '#a7f', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-    { label: 'Write', data: [], borderColor: '#f7a', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 },
-  ]},
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts } }
-}) : null;
-
-const vllmDiskUsageChartCtx = document.getElementById('vllmDiskUsageChart')?.getContext('2d');
-const vllmDiskUsageChart = vllmDiskUsageChartCtx ? new Chart(vllmDiskUsageChartCtx, {
-  type: 'line',
-  data: { datasets: [{ label: '/ %', data: [], borderColor: '#4a9', borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.3 }] },
-  options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: _sparkInteraction, scales: { x: { type: 'time', display: false }, y: { min: 0, max: 100, display: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 }, callback: _pctTick } } }, plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } } }
-}) : null;
-
-// Clear all vLLM chart series — labels and datasets (backfill + agent switch).
-function _resetVllmCharts() {
-  [vllmKvChart, vllmTpsChart, vllmCpuChart, vllmRamChart, vllmNetChart,
-   vllmIoChart, vllmDiskUsageChart].forEach(ch => _clearChart(ch));
-}
-
 // True when a vLLM SUB-tab is the active view (cards + log live there only).
 function _vllmLogViewActive() {
   const t = _activeTab;
@@ -75,9 +10,10 @@ function _vllmLogViewActive() {
   const ls = _subTabState && _subTabState['llm'];
   return (t === 'dashboard' && ds === 'vllm') || (t === 'llm' && ls === 'vllm');
 }
-// Metrics also feed the LLM Overall tab's vLLM fleet tile.
+// Full metrics feed LLM Control · vLLM and Overall; on Dashboards · vLLM the host page
+// polls its own data, so there only the header pill is kept current (light fetch).
 function _vllmMetricsViewActive() {
-  return _activeTab === 'overall' || _vllmLogViewActive();
+  return _activeTab === 'overall' || (_activeTab === 'llm' && !!_subTabState && _subTabState.llm === 'vllm');
 }
 
 // Header vLLM state pill from a /api/vllm/metrics payload.
@@ -117,92 +53,12 @@ async function fetchVllmMetrics() {
     const v      = d.vllm || {};
     const online = d.agent_online === true;
     const up     = online && v.state === 'running';
-    const ts     = d.ts ? new Date(d.ts) : new Date();
-
-    const badge = document.getElementById('vllm-dash-badge');
-    if (badge) {
-      badge.className = `status ${online ? 'status--ok' : 'status--crit'}`;
-      badge.innerHTML = '<span class="status__dot"></span>' + (online ? 'online' : 'offline');
-    }
 
     const srvPill = document.getElementById('vllmSrvPill');
     if (srvPill) {
       srvPill.className = 'mc-pill ' + (up ? 'p-active' : 'p-unloaded') + ' llm-sec-pill';
       srvPill.textContent = up ? ('Server ON' + (v.port ? ' · port ' + v.port : '')) : 'Server OFF';
     }
-
-    _setEl('vllm-active-model', up ? (v.model || '(no model)') : '—');
-    _setEl('vllm-active-state', 'state ' + (online ? (v.state || 'unknown') : 'agent offline'));
-    _setEl('vllm-req-running', up && v.requests_running != null ? String(v.requests_running) : '—');
-    _setEl('vllm-req-waiting', up && v.requests_waiting != null ? String(v.requests_waiting) : '—');
-
-    const kv = up && v.kv_cache_usage_pct != null ? v.kv_cache_usage_pct : null;
-    _setEl('vllm-kv-pct', kv != null ? kv.toFixed(1) + '%' : '—');
-    if (vllmKvChart && kv != null) pushPoint(vllmKvChart, ts, kv);
-
-    const tps = up && v.tokens_per_second != null ? v.tokens_per_second : null;
-    const pps = up && v.prompt_tokens_per_second != null ? v.prompt_tokens_per_second : null;
-    _setEl('vllm-tps', tps != null ? tps.toFixed(1) : '—');
-    _setEl('vllm-pps', pps != null ? pps.toFixed(1) : '—');
-    if (vllmTpsChart && (tps != null || pps != null)) pushDual(vllmTpsChart, ts, tps || 0, pps || 0);
-
-    // ---- vLLM host system metrics (CPU / RAM / Network / Disk) ----
-    // Available whenever the agent is online, independent of vLLM server state.
-    const sys = d.system || {};
-    const ram = sys.ram || {};
-    const net = sys.net || {};
-    const cpu = sys.cpu_per_core || [];
-
-    _setEl('vllm-cpu-total', sys.cpu_total != null ? sys.cpu_total.toFixed(1) + '%' : '—');
-    if (sys.cpu_temp_c != null) _setEl('vllm-cpu-temp', sys.cpu_temp_c.toFixed(1) + '°C');
-    if (sys.cpu_governor) _setEl('vllm-cpu-governor', sys.cpu_governor);
-    if (vllmCpuChart && sys.cpu_total != null) pushPoint(vllmCpuChart, ts, sys.cpu_total);
-    if (cpu.length && document.getElementById('vllmCoreGrid')) {
-      document.getElementById('vllmCoreGrid').innerHTML = cpu.map((pct, i) => {
-        const glowClass = pct >= 90 ? ' crit' : pct >= 70 ? ' warn' : '';
-        const col = pct >= 90 ? 'color:var(--crit)' : pct >= 70 ? 'color:var(--note)' : '';
-        return `<div class="core${glowClass}"><div class="sub">C${i}</div><div class="pct" style="${col}">${pct.toFixed(0)}%</div></div>`;
-      }).join('');
-    }
-
-    _setEl('vllm-ram-pct',  ram.percent != null ? ram.percent.toFixed(1) + '%' : '—');
-    _setEl('vllm-ram-sub',  ram.used_bytes ? _fmtBytes(ram.used_bytes) + ' used / ' + _fmtBytes(ram.total_bytes) + ' total' : '—');
-    _setEl('vllm-ram-cached',  ram.cached_bytes  != null ? _fmtBytes(ram.cached_bytes)  : '—');
-    _setEl('vllm-ram-buffers', ram.buffers_bytes != null ? _fmtBytes(ram.buffers_bytes) : '—');
-    _setEl('vllm-swap-used', sys.swap?.used_bytes != null ? _fmtBytes(sys.swap.used_bytes) : '—');
-    _setEl('vllm-swap-free', sys.swap?.free_bytes != null ? _fmtBytes(sys.swap.free_bytes) : '—');
-    if (vllmRamChart && ram.percent != null) pushPoint(vllmRamChart, ts, ram.percent);
-
-    _setEl('vllm-net-sent', net.bytes_sent_per_sec != null ? (net.bytes_sent_per_sec / 1048576).toFixed(2) : '—');
-    _setEl('vllm-net-recv', net.bytes_recv_per_sec != null ? (net.bytes_recv_per_sec / 1048576).toFixed(2) : '—');
-    if (vllmNetChart && net.bytes_sent_per_sec != null) {
-      pushDual(vllmNetChart, ts, net.bytes_sent_per_sec / 1048576, net.bytes_recv_per_sec / 1048576);
-    }
-
-    const vDiskEl = document.getElementById('vllmDiskList');
-    if (vDiskEl && sys.disk) {
-      vDiskEl.innerHTML = sys.disk
-        .filter(dk => dk.mountpoint && dk.total_bytes > 1e8)
-        .map(dk => {
-          const fillColor = dk.percent > 90 ? 'var(--crit)' : dk.percent > 75 ? 'var(--warn)' : 'var(--accent-2)';
-          return `<div class="disk-row">
-            <span style="min-width:100px;color:var(--fg-muted);font-size:0.8em">${_esc(dk.mountpoint)}</span>
-            <div class="disk-bar"><div class="disk-fill" style="width:${Number(dk.percent)}%;background:${fillColor};"></div></div>
-            <span>${dk.percent.toFixed(1)}%</span>
-          </div>`;
-        }).join('');
-      const vRoot = sys.disk.find(dk => dk.mountpoint === '/');
-      if (vllmDiskUsageChart && vRoot && vRoot.percent != null)
-        pushPoint(vllmDiskUsageChart, ts, vRoot.percent);
-    }
-
-    // Disk IO
-    const dio = sys.disk_io || {};
-    const ioR = (dio.read_bytes_per_sec  || 0) / 1048576;
-    const ioW = (dio.write_bytes_per_sec || 0) / 1048576;
-    _setEl('vllm-io-read',  dio.read_bytes_per_sec  != null ? ioR.toFixed(2) : '—');
-    _setEl('vllm-io-write', dio.write_bytes_per_sec != null ? ioW.toFixed(2) : '—');
-    if (vllmIoChart && dio.read_bytes_per_sec != null) pushDual(vllmIoChart, ts, ioR, ioW);
 
     renderVllmModelCards(up ? (v.models || []) : [], v.model);
     _setVllmBtns(up);
@@ -215,19 +71,6 @@ async function fetchVllmMetrics() {
     }
 
     _updateVllmHeaderPill(d);
-
-    const sev = !online ? 'dash-off' : (up ? 'dash-ok' : 'dash-warn');
-    ['vllm-server', 'vllm-requests', 'vllm-kv', 'vllm-throughput'].forEach(c => _dashSetStatus(c, sev));
-
-    // Host system card accents — keyed on live host metrics, not vLLM state.
-    {
-      const _ct = sys.cpu_total, _rp = ram.percent;
-      _dashSetStatus('vllm-cpu', !online ? 'dash-off' : (_ct != null ? (_ct >= 90 ? 'dash-crit' : _ct >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
-      _dashSetStatus('vllm-ram', !online ? 'dash-off' : (_rp != null ? (_rp >= 90 ? 'dash-crit' : _rp >= 75 ? 'dash-warn' : 'dash-ok') : 'dash-off'));
-      _dashSetStatus('vllm-network', !online ? 'dash-off' : (sys.net ? 'dash-ok' : 'dash-off'));
-      _dashSetStatus('vllm-disk',    !online ? 'dash-off' : (sys.disk ? 'dash-ok' : 'dash-off'));
-      _dashSetStatus('vllm-io',      !online ? 'dash-off' : (sys.disk_io ? 'dash-ok' : 'dash-off'));
-    }
   } catch (e) {
     console.warn('fetchVllmMetrics:', e);
   } finally {

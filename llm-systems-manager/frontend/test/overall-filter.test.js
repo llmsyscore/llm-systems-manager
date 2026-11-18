@@ -190,11 +190,15 @@ describe('Overall provider filter (#1432)', () => {
     expect(window.mcShellPaintOv).toHaveBeenCalled();
     const hourly = calls.filter(u => u.startsWith('/api/energy/hourly'));
     expect(hourly.sort()).toEqual([`/api/energy/hourly?hours=168&agent=${ID_LMS}`, `/api/energy/hourly?hours=168&agent=${ID_LMS2}`].sort());
-    // Energy per hour is the two LM Studio hosts summed per hour: Idle then Generating Wh.
-    const e = en7();
-    expect(e.labels).toHaveLength(3);
-    expect(e.series[0].values).toEqual([4, 1, 4]);
-    expect(e.series[1].values).toEqual([0, 0.5, 1]);
+    // Energy use is the two LM Studio hosts summed per hour, then per 3-hour step: Idle then Generating Wh.
+    const e = en7(), want = OV.energyPerHour([
+      { hour_ts: END_TS - 30 * 3600, energy_wh: 4, active_energy_wh: 0 },
+      { hour_ts: END_TS - 7200, energy_wh: 1.5, active_energy_wh: 0.5 },
+      { hour_ts: END_TS - 3600, energy_wh: 5, active_energy_wh: 1 }], 3);
+    expect(e.labels).toEqual(want.labels);
+    expect(e.series[0].values).toEqual(want.series[0].values);
+    expect(e.series[1].values).toEqual(want.series[1].values);
+    expect(want.series[0].values.reduce((x, y) => x + y, 0)).toBe(9);
     expect(text('ov-b-k-tok')).toContain('300 the day before');
     expect(text('ov-b-energy-hosts')).toContain('llm-systems-lmstudio');
     expect(text('ov-b-energy-hosts')).not.toContain('llm-systems-agent-llama');
@@ -210,7 +214,7 @@ describe('Overall provider filter (#1432)', () => {
     await window.ovSetFilter('all');
     await window.ovSetFilter('lms');
     expect(calls.filter(u => u.startsWith('/api/energy/hourly'))).toEqual([]);
-    expect(en7().series[0].values).toEqual([4, 1, 4]);
+    expect(en7().series[0].values.reduce((x, y) => x + y, 0)).toBe(9);
     // The once-a-minute refresh refetches the filter's hosts and drops the cache.
     now = T0 + 61000;
     await window.fetchOverallMetrics();
@@ -304,8 +308,8 @@ bodyDoc.querySelectorAll('body script').forEach(s => s.remove());
 const bodyHtml = bodyDoc.body.innerHTML;
 const PAGE = ['kit/kit.js', 'js/lib/settingsdrawer.js', 'js/foundation.js', 'js/boot.js', 'js/lib/overall-view.js',
   'js/overall.js', 'js/shell.js'].map(srcFile);
-const STUBS = ['loadBenchmarkData', 'renderModelCards', 'initSortable', 'syncInterval', 'loadHistory', 'loadLmsHistory',
-  'loadVllmHistory', 'loadManagerPerfHistory', 'checkConfig', 'pollServerState', 'fetchMetrics', 'startFetching',
+const STUBS = ['loadBenchmarkData', 'renderModelCards', 'initSortable', 'syncInterval', 'loadHistory',
+  'loadManagerPerfHistory', 'checkConfig', 'pollServerState', 'fetchMetrics', 'startFetching',
   'fetchLMStudioMetrics', 'fetchVllmMetrics', 'fetchServicesAndInflux', 'fetchManagerAgentsCard', 'fetchManagerStreamsCard',
   'refreshTabIndicators', 'refreshAlarmRules', 'refreshLLMTab', 'loadHFTrending', 'startPerfRefresh',
   '_initLLMSections', 'startLogStream', 'adminLoadAgents', 'adminLoadHealth', 'adminAuthLoad', 'adminStartAutoRefresh',
@@ -446,7 +450,7 @@ describe('Overall filter fix round 1 (#1432)', () => {
     await flush();
     expect(calls).toContain(`/api/energy/hourly?hours=168&agent=${ID_LMS}`);
     expect(calls).toContain(`/api/energy/hourly?hours=168&agent=${ID_LMS2}`);
-    expect(en7().series[0].values).toEqual([4, 1, 4]);
+    expect(en7().series[0].values.reduce((x, y) => x + y, 0)).toBe(9);
     delete window._activeTab;
   });
 
@@ -471,7 +475,7 @@ describe('Overall filter fix round 1 (#1432)', () => {
     expect(kpi('k-tok').querySelector('.k-delta').textContent).toBe('Loading…');
     release();
     await p;
-    expect(en7().series[0].values).toEqual([4, 1, 4]);
+    expect(en7().series[0].values.reduce((x, y) => x + y, 0)).toBe(9);
     expect(text('ov-b-k-tok')).toContain('300 the day before');
     expect(document.getElementById('overallTab').textContent).not.toContain('Loading…');
   });
@@ -504,16 +508,16 @@ describe('Overall filter fix round 1 (#1432)', () => {
     await window.ovLoad();
     await flush();
     const before = en7();
-    expect(before.series[1].values).toEqual([2.35, 0]);
+    expect(before.series[1].values.reduce((x, y) => x + y, 0)).toBe(2.35);
     const release = holdFetch(u => u.includes('&agent='));
     const p = window.ovSetFilter('llama');
     expect(text('ov-b-energy7')).toBe('Loading…');
     await window.ovSetFilter('all');
-    expect(en7().series[1].values).toEqual([2.35, 0]);
+    expect(en7().series[1].values).toEqual(before.series[1].values);
     release();
     await p;
     await flush();
-    expect(en7().series[1].values).toEqual([2.35, 0]);
+    expect(en7().series[1].values).toEqual(before.series[1].values);
     expect(en7().labels).toEqual(before.labels);
     expect(document.getElementById('overallTab').textContent).not.toContain('Loading…');
   });

@@ -21,10 +21,13 @@ function loadSwitchTab() {
   evalGlobal(code);
 }
 
-function loadMakeHistoryBackfill() {
-  const code = [fnSrc(charts, '_makeHistoryBackfill'), 'window._makeHistoryBackfill = _makeHistoryBackfill;'].join('\n');
-  evalGlobal(code);
-  window._withPushBatch = (fn) => fn();
+// charts.js's real loadHistory with its generation and last-agent state as window vars.
+function loadLoadHistory() {
+  evalGlobal([fnSrc(charts, 'loadHistory'), 'window.loadHistory = loadHistory;'].join('\n'));
+  window._histGen = 0;
+  window._histLastAgent = undefined;
+  window._LLAMA_PEAK_WINDOW_MS = 3600000;
+  window.LMPeaks = LMPeaks;
 }
 
 function switchTabDom() {
@@ -34,32 +37,29 @@ function switchTabDom() {
 }
 
 describe('LM Studio sub-tab entry (#506)', () => {
-  test('dashboard entry backfills history before resuming the live poll, and the live poll still resumes if the backfill fails', async () => {
+  // #1432: the LM Studio host page loads its own history; the sub-tab only refreshes the live payload.
+  test('dashboard entry fetches the live payload at once and backfills no chart history', async () => {
     loadSwitchSubTab();
     window._lmsLogOpen = false;
     window._initLMSSections = vi.fn();
-    const order = [];
-    window.loadLmsHistory = vi.fn(() => { order.push('backfill'); return Promise.reject(new Error('ae down')); });
-    window.fetchLMStudioMetrics = vi.fn(() => order.push('live'));
+    window.fetchLMStudioMetrics = vi.fn();
 
     switchSubTab('dashboard', 'lmstudio');
     await tick(); await tick();
 
-    expect(order).toEqual(['backfill', 'live']);
+    expect(window.fetchLMStudioMetrics).toHaveBeenCalledTimes(1);
   });
 
-  test('backfill is gated to the dashboard parent — the llm-tab panel fetches directly', () => {
+  test('the llm-tab panel fetches directly', () => {
     loadSwitchSubTab();
     window._lmsLogOpen = false;
     window._initLMSSections = vi.fn();
     window.stopLogStream = vi.fn();
     window.stopPerfRefresh = vi.fn();
-    window.loadLmsHistory = vi.fn();
     window.fetchLMStudioMetrics = vi.fn();
 
     switchSubTab('llm', 'lmstudio');
 
-    expect(window.loadLmsHistory).not.toHaveBeenCalled();
     expect(window.fetchLMStudioMetrics).toHaveBeenCalledTimes(1);
   });
 });
@@ -139,60 +139,55 @@ describe('Overall tab entry (#506)', () => {
   });
 });
 
-describe('_makeHistoryBackfill pre-fetch clear (#507)', () => {
-  test('clears before the fetch only when the selected agent changed', async () => {
-    loadMakeHistoryBackfill();
-    window.MAX_POINTS = 3600;
-    window._selectedAgent = () => 'agent-A';
-    const resetCharts = vi.fn();
-    let deferred;
-    window._historyRows = () => new Promise(res => { deferred = res; });
-    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, vi.fn());
+describe('loadHistory peak seeding (#507, #1432)', () => {
+  // A tracker stub that records its pushes and resets.
+  const tracker = () => ({ pushes: [], resets: 0, push(t, v) { this.pushes.push(v); }, reset() { this.resets++; this.pushes = []; } });
 
-    const run = backfill();                       // first call: agent undefined -> 'agent-A'
-    expect(resetCharts).toHaveBeenCalledTimes(1);  // pre-fetch clear fires on agent change
+  test('resets the llama peaks before the fetch only when the selected agent changed', async () => {
+    loadLoadHistory();
+    window._llamaPeaks = { tps: tracker(), pps: tracker() };
+    let agent = 'agent-A', deferred;
+    window._selectedAgent = () => agent;
+    window._historyRows = () => new Promise(res => { deferred = res; });
+
+    let run = window.loadHistory();
+    expect(window._llamaPeaks.tps.resets).toBe(1);
+    deferred([]);
+    await run;
+
+    run = window.loadHistory();
+    expect(window._llamaPeaks.tps.resets).toBe(1);
+    deferred([]);
+    await run;
+
+    agent = 'agent-B';
+    run = window.loadHistory();
+    expect(window._llamaPeaks.pps.resets).toBe(2);
     deferred([]);
     await run;
   });
 
-  // An unconditional pre-fetch reset blanks the window when the fetch fails.
-  test('has no unconditional pre-fetch resetCharts call', async () => {
-    loadMakeHistoryBackfill();
-    window.MAX_POINTS = 3600;
+  test('seeds both trackers from the rows; an older call that answers late seeds nothing', async () => {
+    loadLoadHistory();
+    window._llamaPeaks = { tps: tracker(), pps: tracker() };
     window._selectedAgent = () => 'agent-A';
-    const resetCharts = vi.fn();
-    window._historyRows = () => Promise.resolve([]);
-    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, vi.fn());
-    await backfill();                              // prime lastAgent = 'agent-A'
-    resetCharts.mockClear();
+    const answers = [];
+    window._historyRows = () => new Promise(res => answers.push(res));
+    const first = window.loadHistory();
+    const second = window.loadHistory();
+    const now = Date.now();
+    answers[1]([{ ts: new Date(now - 60000).toISOString(), llama_tps: 5, llama_pps: 50 }, { ts: new Date(now).toISOString(), llama_tps: 7, llama_pps: 70 }]);
+    await second;
+    answers[0]([{ ts: new Date(now).toISOString(), llama_tps: 99, llama_pps: 99 }]);
+    await first;
 
-    let deferred;
-    window._historyRows = () => new Promise(res => { deferred = res; });
-    const run = backfill();                        // same agent as last time
-    expect(resetCharts).not.toHaveBeenCalled();     // no clear before the fetch settles (#507 fix)
-    deferred([]);
-    await run;
+    expect(window._llamaPeaks.tps.pushes).toEqual([5, 7]);
+    expect(window._llamaPeaks.pps.pushes).toEqual([50, 70]);
   });
 
-  test('still repaints from a clean slate once rows arrive', async () => {
-    loadMakeHistoryBackfill();
-    window.LMPeaks = LMPeaks;
-    window.MAX_POINTS = 3600;
-    window._selectedAgent = () => 'agent-A';
-    const resetCharts = vi.fn();
-    const paintRow = vi.fn();
-    window._historyRows = () => Promise.resolve([]);
-    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', resetCharts, paintRow);
-    await backfill();                               // prime lastAgent, no rows yet
-    resetCharts.mockClear();
-
-    const rows = [{ ts: 1 }, { ts: 2 }];
-    window._historyRows = () => Promise.resolve(rows);
-    await backfill();
-
-    expect(resetCharts).toHaveBeenCalledTimes(1);
-    expect(paintRow).toHaveBeenNthCalledWith(1, rows[0], expect.any(Function));
-    expect(paintRow).toHaveBeenNthCalledWith(2, rows[1], expect.any(Function));
+  test('charts.js has no LM Studio or vLLM chart backfill left; their host pages load the history', () => {
+    // wiring (unexecutable): absence check across the whole file.
+    expect(charts).not.toMatch(/loadLmsHistory|loadVllmHistory/);
   });
 });
 
@@ -231,39 +226,24 @@ describe('history fetches detect non-array responses (#507)', () => {
 });
 
 describe('history-backfill callers route through _historyRows, not raw fetch (#507)', () => {
-  test('loadHistory', async () => {
-    const code = [fnSrc(charts, 'loadHistory'), 'window.loadHistory = loadHistory;'].join('\n');
-    evalGlobal(code);
-    window._histGen = 0;
-    window._histLastAgent = undefined;
-    window._selectedAgent = () => null;
-    window._resetMetricCharts = vi.fn();
-    window._setGttSeriesVisible = vi.fn();
+  test('loadHistory asks for the last hour, of the picked host when there is one', async () => {
+    loadLoadHistory();
+    let agent = null;
+    window._selectedAgent = () => agent;
     window._llamaPeaks = { tps: { reset: vi.fn() }, pps: { reset: vi.fn() } };
-    window._historyRows = vi.fn(async () => []);   // empty rows: returns before touching any chart
+    window._historyRows = vi.fn(async () => []);   // empty rows: returns before seeding
     window.fetch = vi.fn();
 
     await window.loadHistory();
+    agent = 'agent-A';
+    await window.loadHistory();
 
-    expect(window._historyRows).toHaveBeenCalledWith('/api/history', 'llama');
+    expect(window._historyRows).toHaveBeenNthCalledWith(1, '/api/history?since_minutes=60', 'llama');
+    expect(window._historyRows).toHaveBeenNthCalledWith(2, '/api/history?agent=agent-A&since_minutes=60', 'llama');
     expect(window.fetch).not.toHaveBeenCalled();
   });
 
-  test('_makeHistoryBackfill', async () => {
-    loadMakeHistoryBackfill();
-    window.MAX_POINTS = 3600;
-    window._selectedAgent = () => 'agent-A';
-    window._historyRows = vi.fn(async () => []);
-    window.fetch = vi.fn();
-    const backfill = window._makeHistoryBackfill('llama', '__DEF_AGENT', vi.fn(), vi.fn());
-
-    await backfill();
-
-    expect(window._historyRows).toHaveBeenCalledWith('/api/history?agent=agent-A', 'llama');
-    expect(window.fetch).not.toHaveBeenCalled();
-  });
-
-  test.each(['loadHistory', '_makeHistoryBackfill'])(
+  test.each(['loadHistory'])(
     '%s body has no direct fetch call', (name) => {
       // wiring (unexecutable): absence must hold in branches no test drives.
       const body = fnSrc(charts, name);

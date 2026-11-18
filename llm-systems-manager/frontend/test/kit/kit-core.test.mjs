@@ -12,6 +12,7 @@ const KIT_VERSION = readFileSync(resolve(HERE, '../../kit/KIT_VERSION'), 'utf8')
 const TS_10 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.0.json'), 'utf8'));
 const RS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/rank-split-1.1.json'), 'utf8'));
 const TS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.1.json'), 'utf8'));
+const TS_122 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.2.2.json'), 'utf8'));
 // A small WORLD_DOTS of the cloud worlddots.js shape: 8 dots over DE, FR, JP and US (3 dots for US).
 const WORLD_SRC = "var WORLD_DOTS = { w: 60, h: 30, step: 6, codes: ['DE', 'FR', 'JP', 'US'], dots: '1,1,0;2,1,0;3,1,1;7,2,2;8,2,2;5,3,3;6,3,3;6,4,3;' };";
 
@@ -40,7 +41,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.2.0');
+    assert.equal(first, '// Panel kit 1.3.0');
   });
 
   test('coexists with an old copy', () => {
@@ -551,6 +552,16 @@ describe('ported from cloud kit.test.mjs', () => {
     assert.ok(out.includes('<td>Device</td><td>desktop</td><td class="num" data-v="3">3</td><td class="num">40%</td><td class="num">+4</td><td data-v="7">7</td>'));
     assert.ok(out.includes('<td>OS</td><td>Linux</td><td class="num"></td><td class="num">—</td><td class="num">−1,200.5</td><td>source</td>'));
   });
+
+  test('kitTable writes a {text, v, title} cell title; cells without one have none', () => {
+    const k = kit();
+    const out = k.kitTable(['Field', 'Value'], [['Template', { text: '2.0 KB', v: '2.0 KB', title: '<b>"x"</b>' }],
+      ['Size', { text: '1 GB', v: 1 }], ['Empty', { text: 'a', v: 'a', title: '' }]]);
+    assert.ok(out.includes('<td title="&lt;b&gt;&quot;x&quot;&lt;/b&gt;">2.0 KB</td>'), out);
+    assert.ok(out.includes('<td data-v="1">1 GB</td>'), out);
+    assert.ok(out.includes('<td>a</td>'), out);
+    assert.equal((out.match(/title=/g) || []).length, 1);
+  });
 });
 
 // The data-kit-ts options of the first chart in an HTML string.
@@ -724,5 +735,178 @@ describe('kit 1.2 value formatter', () => {
     const out = kit().splitHtml([{ label: 'CPU', v: 0.502 }, { label: 'GPU', v: 0 }], { unit: 'W', fmt: (v) => v.toFixed(1) + ' W' });
     assert.deepEqual([...out.matchAll(/class="c-v">([^<]*)</g)].map((m) => m[1]), ['0.5 W', '0.0 W']);
     assert.match(out, /title="CPU: 0\.5 W"/);
+  });
+});
+
+describe('kit 1.2.2 gaps and full size', () => {
+  const GAP = { id: 'g', labels: ['a', 'b', 'c', 'd', 'e', 'f'], series: [{ name: 'A', values: [10, 20, null, null, 40, null], slot: 1 }], w: 600, height: 220 };
+  const pathD = (out) => out.match(/<path d="([^"]*)" fill="none"/)[1];
+
+  test('gaps "break" ends a line at a missing value and draws a lone value as a dot', () => {
+    const out = kit().tsHtml({ ...GAP, gaps: 'break' });
+    const d = pathD(out);
+    assert.equal(count(d, /M/g), 2);
+    assert.equal(count(d, /L/g), 1);
+    assert.ok(d.endsWith('h0'), d);
+    assert.ok(out.includes('stroke-linecap="round"'));
+    // The end dot sits on the last value shown, not on the missing last bucket.
+    const x = d.match(/M([\d.]+) [\d.]+h0$/)[1];
+    assert.equal(out.match(/<circle cx="([\d.]+)"/)[1], x);
+    assert.equal(tsJson(out).gaps, 'break');
+  });
+
+  test('without gaps a missing value still draws as 0, exactly as in 1.2.1', () => {
+    const out = kit().tsHtml(GAP);
+    const d = pathD(out);
+    assert.equal(count(d, /M/g), 1);
+    assert.equal(count(d, /L/g), 5);
+    assert.ok(!out.includes('stroke-linecap'));
+    assert.equal(tsJson(out).gaps, undefined);
+  });
+
+  test('a series with no value at all draws no line with gaps "break"', () => {
+    const out = kit().tsHtml({ ...GAP, series: [{ name: 'A', values: [null, null, null, null, null, null] }], gaps: 'break' });
+    assert.ok(!out.includes('fill="none" stroke='));
+    assert.ok(!out.includes('<circle'));
+  });
+
+  test('kitConfigure turns fullRedraw on only for true', () => {
+    const k = kit();
+    assert.equal(k.KIT_CONF.fullRedraw, false);
+    k.kitConfigure({ fullRedraw: 'yes' });
+    assert.equal(k.KIT_CONF.fullRedraw, false);
+    k.kitConfigure({ fullRedraw: true });
+    assert.equal(k.KIT_CONF.fullRedraw, true);
+    k.kitConfigure({ prefix: 'x' });
+    assert.equal(k.KIT_CONF.fullRedraw, true);
+    k.kitConfigure({ fullRedraw: false });
+    assert.equal(k.KIT_CONF.fullRedraw, false);
+  });
+});
+
+describe('kit 1.2.2 without gaps', () => {
+  test('a series of only missing values without gaps still draws its line and end dot at 0', () => {
+    const out = kit().tsHtml({ id: 'z', labels: ['a', 'b'], series: [{ name: 'A', values: [null, null] }], w: 600, height: 220 });
+    assert.match(out, /<path d="M[\d.]+ [\d.]+L[\d.]+ [\d.]+" fill="none"/);
+    assert.equal(count(out, /<circle /g), 1);
+  });
+});
+
+describe('kit 1.3.0 chart styles', () => {
+  const L6 = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const PEAK = { id: 'p', labels: L6, w: 600, height: 220, bars: 'peak', series: [{ name: 'Gen', values: [0, 0, 50, null, 20, 0], avg: [0, 0, 25, null, 30, 0], slot: 1 }] };
+
+  test('peak bars draw a light bar to the peak, a solid bar to the average and an idle line for runs of 0', () => {
+    const out = kit().tsHtml(PEAK);
+    assert.equal(count(out, /class="ts-peak"/g), 2);
+    assert.equal(count(out, /class="ts-avg"/g), 2);
+    const idle = out.match(/class="ts-idle" d="([^"]*)"/)[1];
+    assert.equal(count(idle, /M/g), 2);
+    // An average above its peak is drawn at the peak.
+    const peaks = [...out.matchAll(/class="ts-peak" x="[\d.]+" y="([\d.]+)"/g)].map(m => +m[1]);
+    const avgs = [...out.matchAll(/class="ts-avg" x="[\d.]+" y="([\d.]+)"/g)].map(m => +m[1]);
+    assert.ok(avgs[0] > peaks[0]);
+    assert.equal(avgs[1], peaks[1]);
+    const j = tsJson(out);
+    assert.equal(j.bars, 'peak');
+    assert.deepEqual(j.series[0].avg, [0, 0, 25, null, 30, 0]);
+    assert.ok(!out.includes('<circle'));
+  });
+
+  test('split gives each series its own band, scale and name', () => {
+    const out = kit().tsHtml({ ...PEAK, split: true, series: [PEAK.series[0], { name: 'Prompt', values: [0, 700, 0, 0, 0, 0], avg: [0, 350, 0, 0, 0, 0], slot: 2 }] });
+    assert.deepEqual([...out.matchAll(/class="ax ts-bl">([^<]*)</g)].map(m => m[1]), ['Gen', 'Prompt']);
+    const tops = [...out.matchAll(/text-anchor="end" class="ax">([^<]*)</g)].map(m => m[1]);
+    assert.deepEqual(tops, ['0', '25', '50', '0', '500', '1k']);
+    assert.equal(tsJson(out).split, true);
+  });
+
+  test('strip draws its series as cells shaded by value, a gap as card colour, and the rest as filled steps', () => {
+    const out = kit().tsHtml({ id: 's', labels: L6, w: 600, height: 220, ymax: 100, strip: 'Busy %', stripLabel: 'Busy', step: true, gaps: 'break',
+      series: [{ name: 'Busy %', values: [0, 100, 60, null, 0, 20], slot: 3 }, { name: 'VRAM %', values: [10, 90, 90, null, 90, 0], slot: 1 }] });
+    const cells = [...out.matchAll(/class="ts-cell"[^>]*fill-opacity="([\d.]+)"/g)].map(m => +m[1]);
+    assert.deepEqual(cells, [1, 0.66, 0.32]);
+    assert.equal(count(out, /fill="var\(--card\)"\/>/g), 1);
+    assert.match(out, /text-anchor="end" class="ax">Busy</);
+    assert.equal(count(out, /class="ts-area"/g), 2);
+    const j = tsJson(out);
+    assert.equal(j.strip, 'Busy %');
+    assert.equal(j.stripLabel, 'Busy');
+    assert.equal(j.step, true);
+  });
+
+  test('idle shows its message only when some value is shown and none is above 0', () => {
+    const idle = { ...PEAK, idle: 'Idle · no requests in this range' };
+    const quiet = kit().tsHtml({ ...idle, series: [{ name: 'Gen', values: [0, 0, null, 0, 0, 0], avg: [0, 0, null, 0, 0, 0] }] });
+    assert.match(quiet, /class="ts-idle-msg"/);
+    assert.match(quiet, />Idle · no requests in this range</);
+    assert.ok(!kit().tsHtml(idle).includes('ts-idle-msg'));
+    const none = kit().tsHtml({ ...idle, series: [{ name: 'Gen', values: [null, null, null, null, null, null] }] });
+    assert.ok(!none.includes('ts-idle-msg'));
+  });
+
+  test('thresholds draw in a single shared band and not in split bands', () => {
+    const th = [{ value: 40, label: 'warn 40', tone: 'warn' }];
+    assert.equal(count(kit().tsHtml({ ...PEAK, thresholds: th }), /class="th"/g), 1);
+    assert.equal(count(kit().tsHtml({ ...PEAK, split: true, thresholds: th }), /class="th"/g), 0);
+  });
+
+  test('charts without the new options render the exact 1.2.2 markup', () => {
+    for (const [name, o] of Object.entries(TS_122.calls)) assert.equal(kit().tsHtml(o), TS_122.out[name], name);
+  });
+
+  test('a lone value between gaps in a plain split line draws as a dot', () => {
+    const out = kit().tsHtml({ id: 'l', labels: ['a', 'b', 'c'], w: 600, height: 220, split: true, series: [{ name: 'A', values: [null, 5, null] }] });
+    assert.match(out, /<path d="M[\d.]+ [\d.]+h0" fill="none"/);
+  });
+
+  test('an idle message wider than the plot is squeezed into its pill', () => {
+    const o = { ...PEAK, idle: 'Idle · no requests in this range', series: [{ name: 'Gen', values: [0, 0, 0, 0, 0, 0], avg: [0, 0, 0, 0, 0, 0] }] };
+    assert.ok(!kit().tsHtml(o).includes('textLength'));
+    assert.match(kit().tsHtml({ ...o, w: 200 }), /textLength="[\d.]+" lengthAdjust="spacingAndGlyphs"/);
+  });
+
+  test('a chart without the new options keeps 1.2.2 data-kit-ts and series fields', () => {
+    const out = kit().tsHtml({ id: 'o', labels: ['a', 'b'], series: [{ name: 'A', values: [1, 2] }], w: 600, height: 220 });
+    const j = tsJson(out);
+    ['split', 'bars', 'idle', 'strip', 'stripLabel', 'step', 't'].forEach(k => assert.ok(!(k in j), k));
+    assert.ok(!('avg' in j.series[0]));
+  });
+});
+
+describe('kit 1.3.0 stack options', () => {
+  const ST = { id: 'st', labels: ['a', 'b'], mode: 'stack', w: 600, height: 220,
+    series: [{ name: 'Idle', values: [10, 10], slot: 5, dim: true }, { name: 'Gen', values: [5, 0], slot: 2 }] };
+  test('joined stacks parts with no gap and a dim series draws faint, legend dot included', () => {
+    const gap = kit().tsHtml({ ...ST, series: ST.series.map(s => ({ ...s, dim: undefined })) });
+    const out = kit().tsHtml({ ...ST, joined: true });
+    assert.equal(count(out, /fill-opacity="\.35"/g), 2);
+    assert.match(out, /<i style="background:[^"]*;opacity:\.35">/);
+    const top = (html) => +html.match(/class="ts-bar" d="M[\d.]+ ([\d.]+)V/)[1];
+    const idleTop = (html) => +html.match(/class="ts-bar" x="[\d.]+" y="([\d.]+)"/)[1];
+    assert.equal(top(out), idleTop(out));
+    assert.equal(top(gap), idleTop(gap) - 2);
+    const j = tsJson(out);
+    assert.equal(j.joined, true);
+    assert.equal(j.series[0].dim, true);
+    assert.ok(!('dim' in j.series[1]));
+  });
+});
+
+describe('kit 1.3.0 stack option edges', () => {
+  test('joined needs true and dim fades only stacked bars and their legend dots', () => {
+    const base = { id: 'e', labels: ['a'], w: 600, height: 220 };
+    const two = [{ name: 'Idle', values: [10], dim: true }, { name: 'Gen', values: [5] }];
+    const truthy = kit().tsHtml({ ...base, mode: 'stack', joined: 1, series: two });
+    assert.ok(!('joined' in tsJson(truthy)));
+    const top = +truthy.match(/class="ts-bar" d="M[\d.]+ ([\d.]+)V/)[1], idle = +truthy.match(/class="ts-bar" x="[\d.]+" y="([\d.]+)"/)[1];
+    assert.equal(top, idle - 2);
+    const line = kit().tsHtml({ ...base, series: two });
+    assert.ok(!line.includes('opacity:.35'));
+  });
+  test('ranked list values get 56 px and the row actions sit clear of them', () => {
+    const css = readFileSync(resolve(HERE, '../../kit/kit.css'), 'utf8');
+    assert.match(css, /\.rank li\{[^}]*grid-template-columns:minmax\(0,1fr\) minmax\(60px,38%\) 56px;/);
+    assert.match(css, /\.r-act\{position:absolute;right:62px;/);
   });
 });

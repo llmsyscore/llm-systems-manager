@@ -668,19 +668,41 @@ function _hourLabel(ts) {
   const d = new Date(ts * 1000);
   return DOW[d.getDay()] + ' ' + _pad2(d.getHours()) + ':00';
 }
-// Hourly energy rows → local 'Ddd HH:00' labels, Idle and Generating Wh, and kWh totals.
-function energyPerHour(hourlyRows) {
-  const rows = _hourRows(hourlyRows);
+// Hourly energy rows → local 'Ddd HH:00' labels, Idle and Generating Wh, and kWh totals of every hour; with stepH 2 to 6
+// the hours are summed into local steps of that many hours from midnight (see _hourGroups).
+function energyPerHour(hourlyRows, stepH) {
+  const step = Number.isInteger(stepH) && stepH >= 2 && stepH <= 6 ? stepH : 1;
+  const hours = _hourRows(hourlyRows), rows = _hourGroups(hours, step);
   const act = rows.map(r => _rnd(_num(r.active_energy_wh) || 0, 2));
   const idle = rows.map((r, i) => Math.max(0, _rnd((_num(r.energy_wh) || 0) - act[i], 2)));
-  const wh = rows.reduce((s, r) => s + (_num(r.energy_wh) || 0), 0);
-  const awh = act.reduce((s, v) => s + v, 0);
+  const wh = hours.reduce((s, r) => s + (_num(r.energy_wh) || 0), 0);
+  const awh = hours.reduce((s, r) => s + _rnd(_num(r.active_energy_wh) || 0, 2), 0);
   const kwh = _rnd(wh / 1000, 3), active = _rnd(awh / 1000, 3);
   return {
     labels: rows.map(r => _hourLabel(r.hour_ts)),
     series: [{ name: 'Idle', values: idle }, { name: 'Generating', values: act }],
     totals: { kwh, active_kwh: active, idle_kwh: _rnd(Math.max(0, kwh - active), 3) },
   };
+}
+
+// Hour rows summed per step of hours starting at a local hour divisible by the step; a first step that starts
+// before the first row and has the same label as the last one (a week earlier) is left out.
+function _hourGroups(rows, step) {
+  if (step === 1) return rows;
+  const out = [];
+  rows.forEach(r => {
+    const d = new Date(r.hour_ts * 1000);
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours() - (d.getHours() % step)).getTime() / 1000;
+    const last = out[out.length - 1];
+    if (last && last.hour_ts === start) {
+      last.energy_wh = (_num(last.energy_wh) || 0) + (_num(r.energy_wh) || 0);
+      last.active_energy_wh = (_num(last.active_energy_wh) || 0) + (_num(r.active_energy_wh) || 0);
+    } else {
+      out.push({ hour_ts: start, energy_wh: _num(r.energy_wh) || 0, active_energy_wh: _num(r.active_energy_wh) || 0 });
+    }
+  });
+  if (out.length > 1 && out[0].hour_ts < rows[0].hour_ts && _hourLabel(out[0].hour_ts) === _hourLabel(out[out.length - 1].hour_ts)) out.shift();
+  return out;
 }
 
 // Metered hosts ranked by Wh (v), filter value agent id; noPower counts hosts without power.
@@ -858,5 +880,6 @@ function mapLegacyBand(layout) {
 return { agentRows, alertsSummary, fleetWatts, fmtShort, PROVIDER_LABEL,
          rangeBucketMs, bucketLabel, hostIds, throughput, liveBucket, fleetKpis, serverPanels,
          energyPerHour, energyByHost, energySplit, powerNow, hostsByTokens, hostRows,
-         forecastFeed, towerFeed, alertsFeed, mapLegacyBand, rangeLabel, bucketLabels, promptName, tpLegend };
+         forecastFeed, towerFeed, alertsFeed, mapLegacyBand, rangeLabel, bucketLabels, promptName, tpLegend,
+         llamaPanel: _llamaPanel, lmsPanel: _lmsPanel };
 });
