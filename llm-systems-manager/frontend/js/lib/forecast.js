@@ -173,7 +173,7 @@ const GO = {
   model_errors: ['Open Gateway', 'admin', 'routing', true],
   slot_pressure: ['Open Autopilot', 'admin', 'routing', true, 'apEntriesCard'],
   model_churn: ['Open Autopilot', 'admin', 'routing', true, 'apEntriesCard'],
-  alarm_patterns: ['Open Events', 'events', '', false],
+  alarm_patterns: ['Open Events and metrics', 'events', '', false],
   agent_health: ['Open Agents', 'admin', 'agents', true],
   service_health: ['Open Manager dashboard', 'dashboard', 'manager', false],
 };

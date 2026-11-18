@@ -6,7 +6,9 @@
   if (!side) return;
   const NAV_KEY = 'mgr.nav';
 
-  const TITLES = { overall: 'Overall', llm: 'LLM Control', tools: 'Tools', events: 'Events', admin: 'Admin' };
+  const TITLES = { overall: 'Overall', llm: 'LLM Control', tools: 'Tools', events: 'Events and metrics', admin: 'Admin' };
+  // Dashboards pages with no sidebar item, and the item marked while each shows.
+  const SUB_TITLES = { host: 'Host' }, SUB_MARK = { host: 'all' };
   const curLayout = () => (typeof layout !== 'undefined' && layout && typeof layout === 'object') ? layout : null;
   const dashSub = () => (typeof _subTabState !== 'undefined' && _subTabState) ? _subTabState.dashboard : '';
 
@@ -24,7 +26,8 @@
       if (typeof saveLayout === 'function') saveLayout();
     },
   };
-  kitConfigure({ prefix: 'mgr', store: STORE });
+  // Full-size panels redraw their charts to fit the full-size box; a refit evens out the host page rows.
+  kitConfigure({ prefix: 'mgr', store: STORE, fullRedraw: true, onRefit: (root) => { if (typeof window.hpFit === 'function') window.hpFit(root); } });
   kitWire(document);
 
   // Overall toolbar group: provider chips and the time range, pressed as window.ovState says.
@@ -59,6 +62,8 @@
   // All hosts toolbar group: the time range, pressed as window.ahState says.
   const ahBar = document.querySelector('#toolbar .tb-ah');
   const AH_RANGE_KEY = 'mgr.ahRange';
+  // Dashboards pages that use the All hosts range.
+  const AH_SUBS = ['all', 'llamacpp', 'lmstudio', 'vllm', 'host'];
   function mcShellPaintAh() {
     if (!ahBar) return;
     const r = +(window.ahState || {}).range || 24;
@@ -67,7 +72,9 @@
   if (ahBar) {
     ahBar.addEventListener('click', (e) => {
       const b = e.target.closest('button[data-ah-range]');
-      if (b && typeof window.ahSetRange === 'function') Promise.resolve(window.ahSetRange(+b.dataset.ahRange)).catch(() => {});
+      if (!b || typeof window.ahSetRange !== 'function') return;
+      Promise.resolve(window.ahSetRange(+b.dataset.ahRange)).catch(() => {});
+      if (typeof window.hpRender === 'function') window.hpRender();
     });
   }
   // Saved All hosts range, kept only when a toolbar button carries that value.
@@ -82,9 +89,10 @@
   function mcShellMark(tab, sub) {
     if (ovBar) ovBar.hidden = tab !== 'overall';
     if (tab === 'dashboard' && !sub) sub = dashSub();
-    if (ahBar) ahBar.hidden = !(tab === 'dashboard' && sub === 'all');
+    if (ahBar) ahBar.hidden = !(tab === 'dashboard' && AH_SUBS.includes(sub));
+    const mark = SUB_MARK[sub] || sub;
     side.querySelectorAll('[data-tab]').forEach((b) => {
-      const on = b.dataset.tab === tab && (tab !== 'dashboard' || b.dataset.sub === sub);
+      const on = b.dataset.tab === tab && (tab !== 'dashboard' || b.dataset.sub === mark);
       b.classList.toggle('on', on);
       if (on) b.setAttribute('aria-current', 'page');
       else b.removeAttribute('aria-current');
@@ -97,7 +105,7 @@
       if (!sub) sub = dashSub();
       const b = [...side.querySelectorAll('[data-tab="dashboard"][data-sub]')].find((x) => x.dataset.sub === sub);
       const lab = b && b.querySelector('.side-lab');
-      t = 'Dashboards · ' + (lab ? lab.textContent.trim() : '');
+      t = 'Dashboards · ' + (lab ? lab.textContent.trim() : SUB_TITLES[sub] || '');
     }
     if (!t) return;
     const h = $('pageTitle');

@@ -68,6 +68,7 @@ Backend API endpoints consumed:
   <link rel="stylesheet" href="/static/css/energy.css">
   <link rel="stylesheet" href="/static/css/overall.css">
   <link rel="stylesheet" href="/static/css/allhosts.css">
+  <link rel="stylesheet" href="/static/css/hostpage.css">
   <link rel="stylesheet" href="/static/css/forecast.css">
   <link rel="stylesheet" href="/static/css/tower.css">
   <link rel="stylesheet" href="/static/css/shell.css">
@@ -118,7 +119,7 @@ Backend API endpoints consumed:
       </div>
       <div class="side-grp">
         <h4>System</h4>
-        <button type="button" class="nav" id="tabBtnEvents" data-tab="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span class="side-lab">Events</span><span class="tab-dot" id="tabDotEvents"></span></button>
+        <button type="button" class="nav" id="tabBtnEvents" data-tab="events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span class="side-lab">Events and metrics</span><span class="tab-dot" id="tabDotEvents"></span></button>
         <button type="button" class="nav" id="tabBtnAdmin" data-tab="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.5 3.2 8 7.5 9.5 4.3-1.5 7.5-5 7.5-9.5V6z"/></svg><span class="side-lab">Admin</span><span class="tab-dot" id="tabDotAdmin"></span></button>
       </div>
     </nav>
@@ -203,9 +204,9 @@ Backend API endpoints consumed:
     </section>
   </div><!-- end dash-all sub-panel -->
 
-  <!-- llama.cpp dashboard = existing cardGrid -->
+  <!-- llama.cpp dashboard: kit rows filled by js/hostpage.js -->
   <div id="dash-llamacpp" class="sub-tab-panel">
-    <div class="agent-picker" id="agentPickerDashLlama" style="display:none"></div>
+    <div class="hp-root" id="hp-llama" data-hp-page="llama"></div>
     <div id="llm-ctrl-wrap">
 
   <!-- Model Roster -->
@@ -1148,462 +1149,20 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
     </div>
   </div>
 </div>
-
-<div class="grid" id="cardGrid">
-
-  <div class="card" data-card="llama-server">
-    <span class="card-handle" title="Drag to reorder">⠿</span>
-    <h3>Llama server</h3>
-    <div class="sub" id="llamaModel" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
-    <div class="llama-grid">
-      <div class="llama-item"><div class="val" id="llamaPps">—</div><div class="lbl" id="llamaPps-lbl">Prompt tokens/s</div></div>
-      <div class="llama-item"><div class="val" id="llamaTps">—</div><div class="lbl" id="llamaTps-lbl">Gen tokens/s</div></div>
-      <div class="llama-item"><div class="val" id="llamaPromptTokens">—</div><div class="lbl">Tokens prompted</div></div>
-      <div class="llama-item"><div class="val" id="llamaGenTokens">—</div><div class="lbl">Tokens generated</div></div>
-      <div class="llama-item"><div class="val" id="llamaDecodes">—</div><div class="lbl">Decode calls</div></div>
-      <div class="llama-item"><div class="val" id="llamaCtxHigh">—</div><div class="lbl">Peak ctx tokens</div></div>
-      <div class="llama-item"><div class="val" id="llamaProcessing">—</div><div class="lbl">Requests processing</div></div>
-      <div class="llama-item"><div class="val" id="llamaDeferred">—</div><div class="lbl">Requests deferred</div></div>
-      <div class="llama-item"><div class="val" id="llamaSlots">—</div><div class="lbl">Active slots</div></div>
-      <div class="llama-item"><div class="val" id="llamaBusySlots">—</div><div class="lbl">Avg busy slots/decode</div></div>
-      <div class="llama-item"><div class="val" id="llamaKvRatio">—</div><div class="lbl">KV cache usage %</div></div>
-      <div class="llama-item"><div class="val" id="llamaKvTokens">—</div><div class="lbl">KV cache tokens</div></div>
-      <div class="llama-item"><div class="val" id="llamaCacheReuse">—</div><div class="lbl" id="llamaCacheReuse-lbl">Prompt cache reuse</div></div>
-      <div class="llama-item"><div class="val" id="llamaSpecAccept">—</div><div class="lbl" id="llamaSpecAccept-lbl">Draft tokens accepted</div></div>
-      <div class="llama-item"><div class="val" id="llamaNRemain">—</div><div class="lbl">Tokens remaining</div></div>
-      <div class="llama-item"><div class="val" id="llamaTotalSlots">—</div><div class="lbl">Total slots</div></div>
-      <div class="llama-item"><div class="val" id="llamaModalities">—</div><div class="lbl">Modalities</div></div>
-      <div class="llama-item"><div class="val" id="llamaChatTemplate">—</div><div class="lbl">Chat template</div></div>
-    </div>
-    <div class="legend-row" style="margin-top:10px;">
-      <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
-      <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-    </div>
-    <div class="chart-wrap" style="height:80px;"><canvas id="llamaSrvChart" role="img" aria-label="Llama token throughput over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="llama-throughput">
-    <span class="card-handle">⠿</span>
-    <h3>Llama throughput</h3>
-    <div class="legend-row">
-      <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
-      <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-    </div>
-    <div class="chart-wrap" style="height:140px;"><canvas id="llamaChart" role="img" aria-label="Llama token throughput over time"></canvas></div>
-    <div class="sub chart-caption">Tokens generated</div>
-    <div class="chart-wrap" style="height:140px;"><canvas id="genTokensChart" role="img" aria-label="Total tokens generated over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="gpu">
-    <span class="card-handle">⠿</span>
-    <h3 id="gpuCardTitle">GPU</h3>
-    <div class="stat-row cols3">
-      <div><div class="stat" id="gpuTemp">—</div><div class="sub">°C edge</div></div>
-      <div><div class="stat" id="gpuVram">—</div><div class="sub">VRAM %</div><div class="sub" id="gpuVramMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div><div class="sub" id="gpuGttMb" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div></div>
-      <div><div class="stat" id="gpuUtil">—</div><div class="sub">GPU %</div></div>
-    </div>
-    <div class="stat-row cols3">
-      <div><div class="stat" style="font-size:1.1em" id="gpuTempJunction">—</div><div class="sub">°C junction</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuTempMemory">—</div><div class="sub">°C memory</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuVddgfx">—</div><div class="sub">mV core</div></div>
-    </div>
-    <div class="stat-row cols3">
-      <div><div class="stat" style="font-size:1.1em" id="gpuPower">—</div><div class="sub">W draw</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuPowerCap">—</div><div class="sub">W cap</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuVoltage">—</div><div class="sub">mV offset</div></div>
-    </div>
-    <div class="stat-row cols3">
-      <div><div class="stat" style="font-size:1.1em" id="gpuSclk">—</div><div class="sub">SCLK MHz</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuMclk">—</div><div class="sub">MCLK MHz</div></div>
-      <div><div class="stat" style="font-size:1.1em" id="gpuFan1">—</div><div class="sub">fan RPM</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-      <div><div class="sub" style="margin-bottom:2px;">Perf level</div><div class="badge" id="gpuPerfLevel">—</div></div>
-      <div><div class="sub" style="margin-bottom:2px;">Power profile</div><div class="badge" id="gpuPowerProfile">—</div></div>
-    </div>
-    <div class="chart-wrap"><canvas id="gpuChart" role="img" aria-label="GPU utilization over time"></canvas></div>
-    <div class="sub chart-caption">Memory % — VRAM, and GTT (system memory the GPU uses)</div>
-    <div class="chart-wrap" style="height:140px;"><canvas id="gpuMemChart" role="img" aria-label="GPU VRAM and GTT memory use over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="cpu-overall">
-    <span class="card-handle">⠿</span>
-    <h3 id="cpuCardTitle">CPU</h3>
-    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-      <div class="stat" id="cpuStat">—</div>
-      <div style="text-align:right;">
-        <div class="sub" id="cpuTemp" style="font-size:0.85em;color:var(--fg-muted);"></div>
-        <div class="sub" id="cpuGovernor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
-      </div>
-    </div>
-    <div class="sub">% utilization</div>
-    <div class="chart-wrap"><canvas id="cpuChart" role="img" aria-label="CPU usage over time"></canvas></div>
-    <div class="core-grid" id="coreGrid" style="margin-top:10px;"></div>
-  </div>
-
-  <div class="card" data-card="ram">
-    <span class="card-handle">⠿</span>
-    <h3>RAM</h3>
-    <div class="stat" id="ramStat">—</div>
-    <div class="sub" id="ramSub"></div>
-    <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-      <div>Cached: <span id="ramCached" style="color:var(--fg-muted)">—</span></div>
-      <div>Buffers: <span id="ramBuffers" style="color:var(--fg-muted)">—</span></div>
-      <div>Swap used: <span id="swapUsed" style="color:var(--fg-muted)">—</span></div>
-      <div>Swap free: <span id="swapFree" style="color:var(--fg-muted)">—</span></div>
-    </div>
-    <div class="chart-wrap card-gap"><canvas id="ramChart" role="img" aria-label="RAM usage over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="network">
-    <span class="card-handle">⠿</span>
-    <h3>Network</h3>
-    <div class="stat-row cols2">
-      <div><div class="stat" id="netSent">—</div><div class="sub">MiB/s out</div></div>
-      <div><div class="stat" id="netRecv">—</div><div class="sub">MiB/s in</div></div>
-    </div>
-    <div class="chart-wrap"><canvas id="netChart" role="img" aria-label="Network throughput over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="disk-usage">
-    <span class="card-handle">⠿</span>
-    <h3>Disk usage</h3>
-    <div class="disk-list" id="diskList"></div>
-    <div id="iscsiRow" class="card-gap" style="display:none;margin-bottom:5px;font-size:0.8em;color:var(--fg-dim);">
-      <span>iSCSI: </span>
-      <span id="iscsiState" style="color:var(--fg-muted)">—</span>
-      <span style="margin-left:8px;font-size:0.85em;" id="iscsiTarget"></span>
-    </div>
-    <div class="legend-row" style="margin-top:15px;">
-      <span><span class="legend-dot" style="background:#4a9"></span>/</span>
-      <span id="diskIscsiLegend" style="display:none;"><span class="legend-dot" style="background:var(--accent)"></span>/mnt/iscsi</span>
-    </div>
-    <div class="chart-wrap" style="margin-top:6px;"><canvas id="diskUsageChart" role="img" aria-label="Disk usage over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="disk-io">
-    <span class="card-handle">⠿</span>
-    <h3>Disk IO</h3>
-    <div class="stat-row cols2">
-      <div><div class="stat" id="ioRead">—</div><div class="sub">MiB/s read</div></div>
-      <div><div class="stat" id="ioWrite">—</div><div class="sub">MiB/s write</div></div>
-    </div>
-    <div class="legend-row">
-      <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
-      <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
-    </div>
-    <div class="chart-wrap"><canvas id="ioChart" role="img" aria-label="Disk IO throughput over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="ups">
-    <span class="card-handle">⠿</span>
-    <h3>UPS</h3>
-    <div class="ups-grid">
-      <div class="ups-item"><div class="val" id="upsPercent">—</div><div class="lbl">Battery %</div></div>
-      <div class="ups-item"><div class="val" id="upsState">—</div><div class="lbl">State</div></div>
-      <div class="ups-item"><div class="val" id="upsWarning">—</div><div class="lbl">Warning level</div></div>
-      <div class="ups-item"><div class="val" id="upsOnBattery">—</div><div class="lbl">On battery</div></div>
-      <div class="ups-item"><div class="val" id="upsTimeEmpty">—</div><div class="lbl">Time to empty</div></div>
-      <div class="ups-item" id="upsTimeFullItem"><div class="val" id="upsTimeFull">—</div><div class="lbl" id="upsTimeFullLbl">Time to full</div></div>
-    </div>
-  </div>
-
-  <div class="card" data-card="aio">
-    <span class="card-handle">⠿</span>
-    <h3 id="aioCardTitle">AIO</h3>
-    <div class="lq-grid">
-      <div class="lq-item"><div class="val" id="aioTemp">—</div><div class="lbl">Liquid °C</div></div>
-      <div class="lq-item"><div class="val" id="aioPumpSpeed">—</div><div class="lbl">Pump RPM</div></div>
-      <div class="lq-item"><div class="val" id="aioPumpDuty">—</div><div class="lbl">Pump duty %</div></div>
-      <div class="lq-item"><div class="val" id="aioFanSpeed">—</div><div class="lbl">Fan RPM</div></div>
-      <div class="lq-item"><div class="val" id="aioFanDuty">—</div><div class="lbl">Fan duty %</div></div>
-    </div>
-    <div class="chart-wrap" style="height:160px;margin-top:10px;"><canvas id="aioTempChart" role="img" aria-label="AIO liquid temperature over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="psu">
-    <span class="card-handle">⠿</span>
-    <h3 id="psuCardTitle">PSU</h3>
-    <div class="lq-grid">
-      <div class="lq-item"><div class="val" id="psuVrmTemp">—</div><div class="lbl">VRM °C</div></div>
-      <div class="lq-item"><div class="val" id="psuCaseTemp">—</div><div class="lbl">Case °C</div></div>
-      <div class="lq-item"><div class="val" id="psuFanSpeed">—</div><div class="lbl">Fan RPM</div></div>
-      <div class="lq-item"><div class="val" id="psuInputV">—</div><div class="lbl">Input V</div></div>
-      <div class="lq-item"><div class="val" id="psuTotalOut">—</div><div class="lbl">Total output W</div></div>
-      <div class="lq-item"><div class="val" id="psuInputPower">—</div><div class="lbl">Input power W</div></div>
-      <div class="lq-item"><div class="val" id="psuEfficiency">—</div><div class="lbl">Efficiency %</div></div>
-    </div>
-    <div class="legend-row" style="margin-top:10px;">
-      <span><span class="legend-dot" style="background:#0e9"></span>Output W</span>
-      <span><span class="legend-dot" style="background:var(--warn)"></span>Input W</span>
-    </div>
-    <div class="chart-wrap" style="height:80px;"><canvas id="psuPowerChart" role="img" aria-label="PSU input and output power over time"></canvas></div>
-  </div>
-
-  <div class="card" data-card="smart-device">
-    <span class="card-handle">⠿</span>
-    <h3 id="smartDeviceCardTitle">Fan controller</h3>
-    <table class="fan-table">
-      <thead><tr><th>Fan</th><th>Mode</th><th>Duty %</th><th>RPM</th><th>Voltage</th><th>Current</th></tr></thead>
-      <tbody id="smartFanTable"></tbody>
-    </table>
-  </div>
-
-
-</div><!-- end llm-ctrl-wrap -->
   </div><!-- end dash-llamacpp sub-panel -->
 
   <!-- LM Studio dashboard sub-tab -->
   <div id="dash-lmstudio" class="sub-tab-panel">
-    <div class="agent-picker" id="agentPickerDashLms" style="display:none"></div>
-    <div class="grid" id="lmsCardGrid">
-
-      <!-- LMS Models -->
-      <div class="card" data-card="lms-models">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>LM Studio Models <span class="status status--crit" id="lms-dash-badge" style="margin-left:8px;"><span class="status__dot"></span>offline</span></h3>
-        <div id="lmsDashModelList" style="margin-top:28px;">
-          <div style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent...</div>
-        </div>
-      </div>
-
-      <!-- LMS Server — model info + gateway-measured throughput (#502) -->
-      <div class="card" data-card="lms-active">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>LM Studio Server</h3>
-        <div class="sub" id="lms-active-model" style="margin-bottom:10px;color:var(--fg);word-break:break-all;">—</div>
-        <div class="llama-grid">
-          <div class="llama-item"><div class="val" id="lms-pps">—</div><div class="lbl" id="lms-pps-lbl">Prompt tokens/s</div></div>
-          <div class="llama-item"><div class="val" id="lms-tps">—</div><div class="lbl" id="lms-tps-lbl">Gen tokens/s</div></div>
-          <div class="llama-item"><div class="val" id="lms-prompt-tokens">—</div><div class="lbl">Tokens prompted</div></div>
-          <div class="llama-item"><div class="val" id="lms-gen-tokens">—</div><div class="lbl">Tokens generated</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-status">—</div><div class="lbl">Status</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-size">—</div><div class="lbl">Size</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-ctx">—</div><div class="lbl">Context</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-parallel">—</div><div class="lbl">Parallel</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-quant">—</div><div class="lbl">Quant</div></div>
-          <div class="llama-item"><div class="val" id="lms-active-port">—</div><div class="lbl">Port</div></div>
-        </div>
-        <div class="legend-row" style="margin-top:10px;">
-          <span><span class="legend-dot" style="background:var(--accent)"></span>Gen t/s</span>
-          <span><span class="legend-dot" style="background:var(--warn)"></span>Prompt t/s</span>
-        </div>
-        <div class="chart-wrap fixed-h" style="height:120px;"><canvas id="lmsTpsChart" role="img" aria-label="LM Studio token throughput over time"></canvas></div>
-      </div>
-
-      <!-- LMS CPU -->
-      <div class="card" data-card="lms-cpu">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>CPU</h3>
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-          <div class="stat" id="lms-cpu-total">—</div>
-          <div style="text-align:right;">
-            <div class="sub" id="lms-cpu-temp" style="font-size:0.85em;color:var(--fg-muted);"></div>
-            <div class="sub" id="lms-cpu-governor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
-          </div>
-        </div>
-        <div class="sub">% utilization</div>
-        <div class="chart-wrap"><canvas id="lmsCpuChart" role="img" aria-label="LM Studio host CPU usage over time"></canvas></div>
-        <div class="core-grid" id="lmsCoreGrid" style="margin-top:10px;"></div>
-      </div>
-
-      <!-- LMS RAM -->
-      <div class="card" data-card="lms-ram">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>RAM</h3>
-        <div class="stat" id="lms-ram-pct">—</div>
-        <div class="sub" id="lms-ram-sub"></div>
-        <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-          <div>Cached: <span id="lms-ram-cached" style="color:var(--fg-muted)">—</span></div>
-          <div>Buffers: <span id="lms-ram-buffers" style="color:var(--fg-muted)">—</span></div>
-          <div>Swap used: <span id="lms-swap-used" style="color:var(--fg-muted)">—</span></div>
-          <div>Swap free: <span id="lms-swap-free" style="color:var(--fg-muted)">—</span></div>
-        </div>
-        <div class="chart-wrap" style="margin-top:28px;"><canvas id="lmsRamChart" role="img" aria-label="LM Studio host RAM usage over time"></canvas></div>
-      </div>
-
-      <!-- LMS Network -->
-      <div class="card" data-card="lms-network">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Network</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="lms-net-sent">—</div><div class="sub">MiB/s out</div></div>
-          <div><div class="stat" id="lms-net-recv">—</div><div class="sub">MiB/s in</div></div>
-        </div>
-        <div class="chart-wrap"><canvas id="lmsNetChart" role="img" aria-label="LM Studio host network throughput over time"></canvas></div>
-      </div>
-
-      <!-- LMS Disk -->
-      <div class="card" data-card="lms-disk">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk usage</h3>
-        <div class="disk-list" id="lmsDiskList"></div>
-        <div class="legend-row" style="margin-top:15px;">
-          <span><span class="legend-dot" style="background:#4a9"></span>/</span>
-        </div>
-        <div class="chart-wrap" style="margin-top:6px;"><canvas id="lmsDiskUsageChart" role="img" aria-label="LM Studio host disk usage over time"></canvas></div>
-      </div>
-
-      <!-- LMS Disk IO -->
-      <div class="card" data-card="lms-io">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk IO</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="lms-io-read">—</div><div class="sub">MiB/s read</div></div>
-          <div><div class="stat" id="lms-io-write">—</div><div class="sub">MiB/s write</div></div>
-        </div>
-        <div class="legend-row">
-          <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
-          <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
-        </div>
-        <div class="chart-wrap"><canvas id="lmsIoChart" role="img" aria-label="LM Studio host disk IO over time"></canvas></div>
-      </div>
-
-      <!-- powermetrics — Apple Silicon thermal/power/GPU residency.
-           Painted by lmstudio.js from the /api/lmstudio/metrics payload's
-           mac_power block (requires passwordless sudoers entry for
-           /usr/bin/powermetrics on Mac). Note: macOS 26+ no longer exposes
-           die temps to powermetrics, so those tiles are omitted. -->
-      <div class="card" data-card="lms-power">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>powermetrics <span class="status status--muted" id="lms-power-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="mpSocW">—</div><div class="lbl">SoC total W</div></div>
-          <div class="lq-item"><div class="val" id="mpCpuPkg">—</div><div class="lbl">CPU W</div></div>
-          <div class="lq-item"><div class="val" id="mpGpuW">—</div><div class="lbl">GPU W</div></div>
-          <div class="lq-item"><div class="val" id="mpAneW">—</div><div class="lbl">ANE W</div></div>
-          <div class="lq-item"><div class="val" id="mpThermal">—</div><div class="lbl">Thermal</div></div>
-          <div class="lq-item"><div class="val" id="mpGpuBusyVal">—</div><div class="lbl">GPU busy %</div></div>
-        </div>
-        <div class="stat-row cols2" style="margin-top:10px;">
-          <div><div class="sub">P-core</div><div id="mpPcore" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">E-core</div><div id="mpEcore" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-        </div>
-        <div class="stat-row cols2" style="margin-top:6px;">
-          <div><div class="sub">GPU clock</div><div id="mpGpuClock" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-          <div><div class="sub">Network pkts/s</div><div id="mpNet" style="color:var(--fg-muted);font-size:0.9em;">—</div></div>
-        </div>
-        <div class="sub" style="margin-top:10px;">GPU busy %</div>
-        <div class="chart-wrap" style="height:80px;"><canvas id="lmsGpuChart" role="img" aria-label="Apple GPU busy percent over time"></canvas></div>
-      </div>
-
-    </div>
+    <div class="hp-root" id="hp-lms" data-hp-page="lms"></div>
   </div><!-- end dash-lmstudio sub-panel -->
 
   <!-- vLLM dashboard sub-tab -->
   <div id="dash-vllm" class="sub-tab-panel">
-    <div class="agent-picker" id="agentPickerDashVllm" style="display:none"></div>
-    <div class="grid" id="vllmCardGrid">
-
-      <div class="card" data-card="vllm-server">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>vLLM Server <span class="sub" id="vllm-dash-badge" style="font-weight:normal;">—</span></h3>
-        <div class="stat-row cols1">
-          <div><div class="stat" id="vllm-active-model" style="font-size:1.05em;word-break:break-all;">—</div><div class="sub">model</div></div>
-        </div>
-        <div class="stat-row cols1" style="margin-top:8px;">
-          <div><div class="sub" id="vllm-active-state">state —</div></div>
-        </div>
-      </div>
-
-      <div class="card" data-card="vllm-requests">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Requests</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="vllm-req-running">—</div><div class="sub">running</div></div>
-          <div><div class="stat" id="vllm-req-waiting">—</div><div class="sub">waiting</div></div>
-        </div>
-      </div>
-
-      <div class="card" data-card="vllm-kv">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>KV Cache</h3>
-        <div class="stat-row cols1">
-          <div><div class="stat" id="vllm-kv-pct">—</div><div class="sub">GPU KV cache used</div></div>
-        </div>
-        <div class="chart-wrap"><canvas id="vllmKvChart"></canvas></div>
-      </div>
-
-      <div class="card" data-card="vllm-throughput">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Throughput</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="vllm-tps">—</div><div class="sub">gen tok/s</div></div>
-          <div><div class="stat" id="vllm-pps">—</div><div class="sub">prompt tok/s</div></div>
-        </div>
-        <div class="chart-wrap"><canvas id="vllmTpsChart"></canvas></div>
-      </div>
-
-      <!-- vLLM host CPU -->
-      <div class="card" data-card="vllm-cpu">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>CPU</h3>
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-          <div class="stat" id="vllm-cpu-total">—</div>
-          <div style="text-align:right;">
-            <div class="sub" id="vllm-cpu-temp" style="font-size:0.85em;color:var(--fg-muted);"></div>
-            <div class="sub" id="vllm-cpu-governor" style="font-size:0.75em;color:var(--fg-dim);margin-top:2px;"></div>
-          </div>
-        </div>
-        <div class="sub">% utilization</div>
-        <div class="chart-wrap"><canvas id="vllmCpuChart" role="img" aria-label="vLLM host CPU usage over time"></canvas></div>
-        <div class="core-grid" id="vllmCoreGrid" style="margin-top:10px;"></div>
-      </div>
-
-      <!-- vLLM host RAM -->
-      <div class="card" data-card="vllm-ram">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>RAM</h3>
-        <div class="stat" id="vllm-ram-pct">—</div>
-        <div class="sub" id="vllm-ram-sub"></div>
-        <div style="margin-top:12px;font-size:0.8em;color:var(--fg-dim);display:grid;grid-template-columns:1fr 1fr;gap:5px;">
-          <div>Cached: <span id="vllm-ram-cached" style="color:var(--fg-muted)">—</span></div>
-          <div>Buffers: <span id="vllm-ram-buffers" style="color:var(--fg-muted)">—</span></div>
-          <div>Swap used: <span id="vllm-swap-used" style="color:var(--fg-muted)">—</span></div>
-          <div>Swap free: <span id="vllm-swap-free" style="color:var(--fg-muted)">—</span></div>
-        </div>
-        <div class="chart-wrap" style="margin-top:28px;"><canvas id="vllmRamChart" role="img" aria-label="vLLM host RAM usage over time"></canvas></div>
-      </div>
-
-      <!-- vLLM host Network -->
-      <div class="card" data-card="vllm-network">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Network</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="vllm-net-sent">—</div><div class="sub">MiB/s out</div></div>
-          <div><div class="stat" id="vllm-net-recv">—</div><div class="sub">MiB/s in</div></div>
-        </div>
-        <div class="chart-wrap"><canvas id="vllmNetChart" role="img" aria-label="vLLM host network throughput over time"></canvas></div>
-      </div>
-
-      <!-- vLLM host Disk -->
-      <div class="card" data-card="vllm-disk">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk usage</h3>
-        <div class="disk-list" id="vllmDiskList"></div>
-        <div class="legend-row" style="margin-top:15px;">
-          <span><span class="legend-dot" style="background:#4a9"></span>/</span>
-        </div>
-        <div class="chart-wrap" style="margin-top:6px;"><canvas id="vllmDiskUsageChart" role="img" aria-label="vLLM host disk usage over time"></canvas></div>
-      </div>
-
-      <!-- vLLM host Disk IO -->
-      <div class="card" data-card="vllm-io">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk IO</h3>
-        <div class="stat-row cols2">
-          <div><div class="stat" id="vllm-io-read">—</div><div class="sub">MiB/s read</div></div>
-          <div><div class="stat" id="vllm-io-write">—</div><div class="sub">MiB/s write</div></div>
-        </div>
-        <div class="legend-row">
-          <span><span class="legend-dot" style="background:#a7f"></span>Read</span>
-          <span><span class="legend-dot" style="background:#f7a"></span>Write</span>
-        </div>
-        <div class="chart-wrap"><canvas id="vllmIoChart" role="img" aria-label="vLLM host disk IO over time"></canvas></div>
-      </div>
-
-    </div>
+    <div class="hp-root" id="hp-vllm" data-hp-page="vllm"></div>
   </div><!-- end dash-vllm sub-panel -->
+
+  <!-- Host page for a host with no LLM server, opened from All hosts -->
+  <div id="dash-host" class="sub-tab-panel"><div class="hp-root" id="hp-host" data-hp-page="host"></div></div>
 
   <!-- Manager dashboard sub-tab — host-side service + InfluxDB health -->
   <div id="dash-manager" class="sub-tab-panel">
@@ -1678,7 +1237,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
           <tbody id="mgrStreamsTable"><tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">Loading…</td></tr></tbody>
         </table>
         <div style="font-size:0.75em;color:var(--fg-dim);margin-top:6px;">
-          Pushed to the alarm engine as <code>manager_streams</code> / <code>agent_streams</code> — add rules in the Events tab to alert on these.</div>
+          Pushed to the alarm engine as <code>manager_streams</code> / <code>agent_streams</code> — add rules in the Events and metrics tab to alert on these.</div>
       </div>
 
       <div class="card" data-card="mgr-ram">
@@ -2057,7 +1616,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
   <section class="row" data-row="power">
     <button type="button" class="row-hd" data-row-fold>Power and energy</button>
     <div class="panels">
-      <section class="panel span2" data-card="energy7" data-title="Energy per hour" data-note="7 days · Wh" data-kit-table><div class="p-body" id="ov-b-energy7"></div></section>
+      <section class="panel span2" data-card="energy7" data-title="Energy use" data-note="7 days · Wh per 3 hours" data-kit-table><div class="p-body" id="ov-b-energy7"></div></section>
       <section class="panel" data-card="energy-hosts" data-title="Energy by host" data-note="7 days · Wh" data-kit-table><div class="p-body" id="ov-b-energy-hosts"></div></section>
       <section class="panel" data-card="energy-split" data-title="Where the energy went" data-note="24 h · Wh" data-kit-table><div class="p-body" id="ov-b-energy-split"></div></section>
       <section class="panel" data-card="power-now" data-title="Power now" data-kit-table><div class="p-body" id="ov-b-power-now"></div></section>
@@ -2962,6 +2521,8 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/overall.js"></script>
 <script src="/static/js/lib/hosts-view.js"></script>
 <script src="/static/js/allhosts.js"></script>
+<script src="/static/js/lib/host-view.js"></script>
+<script src="/static/js/hostpage.js"></script>
 <script src="/static/js/dashboard-manager.js"></script>
 <script src="/static/js/tower.js"></script>
 

@@ -1,4 +1,4 @@
-/* Panel kit 1.2.0: theme tokens, shell, panel kit and chart styles for kit.js. */
+/* Panel kit 1.3.0: theme tokens, shell, panel kit and chart styles for kit.js. */
 /* Theme tokens: dark on :root, light on :root[data-theme="light"], then the kit names mapped onto the cloud set and shared tints.
    The *-text tokens colour status text; light sets darker shades that meet 4.5:1 on --card. */
 :root{color-scheme:dark;
@@ -188,15 +188,15 @@ table[data-kit-sortable] thead th:not(.no-copy):not(:empty){cursor:pointer;user-
 .empty{color:var(--muted);font-size:13px;padding:8px 0}
 .hint{font-size:0.76rem;color:var(--muted);margin:4px 0 0}
 .rank{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.rank li{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(60px,38%) 46px;align-items:center;gap:12px;padding:0 6px;margin:0 -6px;height:28px;border-radius:5px;font-size:13px}
+.rank li{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(60px,38%) 56px;align-items:center;gap:12px;padding:0 6px;margin:0 -6px;height:28px;border-radius:5px;font-size:13px}
 .rank li:hover{background:var(--hover)}
 .r-lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .r-bar{height:4px;border-radius:2px;background:var(--track);overflow:hidden}.r-bar i{display:block;height:100%;background:var(--s1);border-radius:2px}
 .r-val{text-align:right;font-variant-numeric:tabular-nums;color:var(--text)}
-.r-act{position:absolute;right:52px;display:flex;gap:2px;background:var(--pop);padding:2px;border-radius:6px;opacity:0;pointer-events:none}
+.r-act{position:absolute;right:62px;display:flex;gap:2px;background:var(--pop);padding:2px;border-radius:6px;opacity:0;pointer-events:none}
 .rank li:hover .r-act,.rank li:focus-within .r-act{opacity:1;pointer-events:auto}
 /* Without hover the row actions take a fourth column after the value. */
-@media (hover:none){.rank li{grid-template-columns:minmax(0,1fr) minmax(40px,24%) 46px auto;gap:8px}
+@media (hover:none){.rank li{grid-template-columns:minmax(0,1fr) minmax(40px,24%) 56px auto;gap:8px}
   .r-act{position:static;opacity:1;pointer-events:auto;background:none;padding:0}}
 .r-act button{background:var(--card);border:1px solid var(--border);border-radius:4px;width:24px;height:24px;display:inline-grid;place-items:center;cursor:pointer;color:var(--text-2);padding:0}
 .r-act button:hover{color:var(--text);border-color:var(--border-2)}.r-act button svg{width:14px;height:14px;display:block}

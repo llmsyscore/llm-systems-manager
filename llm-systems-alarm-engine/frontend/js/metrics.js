@@ -233,7 +233,13 @@ const MetricsView = {
         const metSel = document.getElementById('metricSelect');
         if (!hostSel || !metSel) return;
         const hosts = MetricsManager.hosts();
+        const loaded = MetricsManager.visible().length > 0;
         if (f.host && !hosts.includes(f.host)) {
+            if (f.want && loaded && this.parseKey(f.want).host === f.host) {
+                const w = this.parseKey(f.want);
+                ToastManager.show(`No history from ${f.host}; showing ${MetricNames.pretty(w.source, w.name)} for all hosts`, 'info');
+                f.want = null;
+            }
             f.host = '';
             const p = this.parseKey(f.key);
             if (p.host) { f.key = `*|${p.source}/${p.name}`; if (f.mark) f.mark.key = f.key; }
@@ -254,8 +260,15 @@ const MetricsView = {
         });
         metSel.innerHTML = groups.join('') || '<option value="">No metrics reported yet</option>';
         const keys = [...bySource.values()].flatMap(m => [...m.keys()]);
+        // A host page link is checked once against a loaded catalog.
+        const wanted = f.want && loaded ? f.want : null;
+        if (wanted) f.want = null;
         if (!keys.includes(f.key)) {
             if (f.mark && f.mark.key === f.key) { ToastManager.show(`No history for ${this.parseKey(f.key).name}`, 'info'); f.mark = null; }
+            else if (wanted) {
+                const w = this.parseKey(wanted);
+                ToastManager.show(`No history for ${MetricNames.pretty(w.source, w.name)}${w.host ? ' on ' + w.host : ''}`, 'info');
+            }
             const pref = list.find(m => m.source === 'system' && m.metric_name === 'cpu_total') || list[0];
             f.key = pref ? (f.host ? this.keyOf(pref) : `*|${pref.source}/${pref.metric_name}`) : '';
             metSel.value = f.key;
@@ -282,6 +295,16 @@ const MetricsView = {
     showFor(host, source, name) {
         this._target(host, source, name);
         TabManager.switchTab('metrics');
+    },
+
+    // From a manager host page: this metric's current window, with a note when the console has no history for it.
+    openLive(host, source, name) {
+        const f = AppState.filters.metrics;
+        f.offset = 0;
+        f.mark = null;
+        f.want = `${host || '*'}|${source}/${name}`;
+        this._liveTag();
+        this.showFor(host, source, name);
     },
 
     // From an alert: the 1-hour window holding `at`, with the alert marked on the chart.

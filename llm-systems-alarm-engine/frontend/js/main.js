@@ -12,7 +12,7 @@ const AppState = {
         alerts: { severity: 'all', status: 'open', search: '', sort: 'fired', dir: 'desc', page: 1, pageSize: 25 },
         console: { severity: 'all', sort: 'fired', dir: 'desc', recentLimit: 20 },
         rules: { search: '', type: 'all', state: 'all', host: '', sort: 'name', dir: 'asc', page: 1, pageSize: 25 },
-        metrics: { host: '', key: '', minutes: 60, offset: 0, mark: null },
+        metrics: { host: '', key: '', minutes: 60, offset: 0, mark: null, want: null },
         deliveries: { type: '', result: '', page: 1, pageSize: 20 },
     },
 };
@@ -170,6 +170,10 @@ window.addEventListener('message', (ev) => {
         }
         // The manager's Tower cards and toasts deep-link one alert (#962).
         if (d && d.type === 'open_alert' && d.id != null && String(d.id)) AlertsView.openFor(String(d.id));
+        // A host page panel deep-links one host's metric.
+        if (d && d.type === 'open_metric' && typeof d.source === 'string' && typeof d.name === 'string' && d.source && d.name) {
+            MetricsView.openLive(typeof d.host === 'string' ? d.host : '', d.source, d.name);
+        }
     } catch (_) {}
 });
 
@@ -188,7 +192,9 @@ document.addEventListener('DOMContentLoaded', () => {
     WebSocketEvents.init();
 
     const m = /^#(console|alerts|metrics|rules|notifications)\b/.exec(location.hash || '');
-    const want = new URLSearchParams(window.location.search).get('alert');
+    const q = new URLSearchParams(window.location.search);
+    const want = q.get('alert'), metric = MetricsView.parseKey(q.get('metric') || '');
     if (want) AlertsView.openFor(want);
+    else if (metric.source && metric.name) MetricsView.openLive(metric.host || '', metric.source, metric.name);
     else TabManager.switchTab(m ? m[1] : 'console', false);
 });

@@ -315,13 +315,14 @@
   function paintEnergy7() {
     if (hourlyLoading() || slowLoading(S.hourly168)) {
       fill('ov-b-energy7', empty('Loading…'));
-      setRows('ov-b-energy7', { cols: ['Hour', 'Idle Wh', 'Generating Wh'], rows: [] });
+      setRows('ov-b-energy7', { cols: ['From', 'Idle Wh', 'Generating Wh'], rows: [] });
       return;
     }
-    const e = OV.energyPerHour(S.hourly168);
-    const series = [{ name: 'Idle', values: e.series[0].values, slot: 5 }, { name: 'Generating', values: e.series[1].values, slot: 2 }];
-    fill('ov-b-energy7', tsHtml({ id: 'ov-en7', labels: e.labels, series, mode: 'stack', w: kitWidth('ov-b-energy7'), height: 190 }));
-    setRows('ov-b-energy7', { cols: ['Hour', 'Idle Wh', 'Generating Wh'],
+    // Three-hour steps; idle draws faint under generating with no gap between them.
+    const e = OV.energyPerHour(S.hourly168, 3);
+    const series = [{ name: 'Idle', values: e.series[0].values, slot: 5, dim: true }, { name: 'Generating', values: e.series[1].values, slot: 2 }];
+    fill('ov-b-energy7', tsHtml({ id: 'ov-en7', labels: e.labels, series, mode: 'stack', joined: true, w: kitWidth('ov-b-energy7'), height: 190 }));
+    setRows('ov-b-energy7', { cols: ['From', 'Idle Wh', 'Generating Wh'],
       rows: e.labels.map((l, i) => [l, series[0].values[i], series[1].values[i]]) });
   }
   // A slow panel whose payload has not landed yet while no slow refresh has ended shows Loading….
@@ -366,11 +367,12 @@
 
   // ---- Watch list ----
   const goLink = (to, text) => '<button type="button" class="ov-link" data-ov-go="' + to + '">' + esc(text) + '</button>';
-  // Open Events goes to the Events tab, Open Forecast to Dashboards › Forecast.
+  // Open Events and metrics goes to that tab, Open Forecast to Dashboards › Forecast.
   function onGo(ev) {
     const b = ev.target && ev.target.closest ? ev.target.closest('[data-ov-go]') : null;
     if (!b || typeof switchTab !== 'function') return;
     if (b.getAttribute('data-ov-go') === 'events') { switchTab('events'); return; }
+    if (typeof _subTabState !== 'undefined') _subTabState.dashboard = 'forecast';
     switchTab('dashboard');
     if (typeof switchSubTab === 'function') switchSubTab('dashboard', 'forecast');
   }
@@ -409,14 +411,14 @@
   function paintAlerts() {
     const list = window._activeAlerts;
     if (list === undefined) {
-      fill('ov-b-alerts', empty('Alerts unavailable') + goLink('events', 'Open Events'));
+      fill('ov-b-alerts', empty('Alerts unavailable') + goLink('events', 'Open Events and metrics'));
       setRows('ov-b-alerts', { cols: ['Severity', 'Alert', 'Detail'], rows: [] });
       note('ov-b-alerts', '');
       return;
     }
     const f = OV.alertsFeed(list, ids()), c = f.summary.counts;
     fill('ov-b-alerts', (f.rows.length ? feedHtml(f.rows.slice(0, ALERTS_TOP), Date.now()) + more(f.rows.length - ALERTS_TOP)
-      : empty('No active alerts')) + goLink('events', 'Open Events'));
+      : empty('No active alerts')) + goLink('events', 'Open Events and metrics'));
     setRows('ov-b-alerts', { cols: ['Severity', 'Alert', 'Detail'], rows: f.rows.map(r => [r.kind, r.title, r.detail]) });
     note('ov-b-alerts', ['critical', 'warning', 'info'].filter(k => c[k]).map(k => c[k] + ' ' + k).join(' · '));
   }
@@ -451,6 +453,7 @@
       kitDress(root);
       root.querySelectorAll('.panel > .p-hd > .p-note').forEach(n => { n.title = n.textContent; });
       root.addEventListener('click', onGo);
+      if (typeof keepPlace === 'function') keepPlace(root, '.panel, #overallGrid > .card');
     }
     const o = st();
     if ((opts && opts.tp) || !S.tpPainted || S.tpKey !== o.prov + '|' + o.range) paintTp();
@@ -595,6 +598,8 @@
     window.ovState.range = h;
     saveBar(RANGE_KEY, h);
     paintBar();
+    // Host page panels pinned here redraw for the new range.
+    if (changed && typeof window.hpRender === 'function') window.hpRender();
     return changed ? ovLoad() : Promise.resolve();
   }
 
@@ -633,7 +638,7 @@ function _setLmsBtns(serverUp) {
 // currently adopted into the Overall pinned grid (#565).
 // cls: 'dash-ok' | 'dash-warn' | 'dash-crit' | 'dash-off'
 function _dashSetStatus(cardId, cls) {
-  const el = document.querySelector(`#cardGrid [data-card="${cardId}"], #lmsCardGrid [data-card="${cardId}"], #vllmCardGrid [data-card="${cardId}"], #managerCardGrid [data-card="${cardId}"], #overallGrid [data-card="${cardId}"]`);
+  const el = document.querySelector(`#managerCardGrid [data-card="${cardId}"], #overallGrid [data-card="${cardId}"]`);
   if (!el) return;
   el.classList.remove('dash-ok','dash-warn','dash-crit','dash-off');
   if (cls) el.classList.add(cls);

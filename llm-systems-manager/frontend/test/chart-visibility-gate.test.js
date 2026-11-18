@@ -8,7 +8,7 @@ const charts = srcFile('js/charts.js');
 evalGlobal([
   blockSrc(foundation, 'const _dirtyCharts = new Set();', '// Apply chart defaults once at load', { includeEnd: false }),
   'window._chartUpdate = _chartUpdate; window._flushDirtyCharts = _flushDirtyCharts; window._dirtyChartsRef = _dirtyCharts;',
-  blockSrc(charts, 'let _pushBatch = null;', 'function pushPoint', { includeEnd: false }),
+  blockSrc(charts, 'let _pushBatch = null;', 'const lastNonZero = {', { includeEnd: false }),
   fnSrc(charts, '_clearChart'),
   'window._withPushBatch = _withPushBatch; window._pushUpdate = _pushUpdate; window._clearChart = _clearChart;',
 ].join('\n'));

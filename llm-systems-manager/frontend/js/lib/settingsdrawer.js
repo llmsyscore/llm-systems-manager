@@ -75,10 +75,13 @@
   // New installs start on Flow + auto columns + compact; a layout that has ever
   // saved card state keeps its engine/columns/density as they are.
   const FRESH_DEFAULTS = { layoutEngine: 'flow', density: 'compact', cols: 'auto' };
-  const _CARD_STATE_KEYS = ['cardSizes', 'sizesByAgent', 'hiddenByAgent', 'orderByAgent'];
+  const _CARD_STATE_KEYS = ['cardSizes', 'sizesByAgent', 'hiddenByAgent', 'orderByAgent',
+    'order', 'hidden', 'cols', 'lmsOrder', 'lmsHidden', 'lmsCols', 'vllmOrder', 'vllmHidden', 'vllmCols',
+    'llamaPanelsHidden', 'lmsPanelsHidden', 'vllmPanelsHidden', 'hostPanelsHidden'];
+  // A layout with card state, an engine or density, or one already moved to the host pages is not fresh.
   function isFreshLayout(lay) {
     if (!lay || typeof lay !== 'object') return true;
-    if (lay.layoutEngine !== undefined || lay.density !== undefined) return false;
+    if (lay.layoutEngine !== undefined || lay.density !== undefined || lay.hostPageMapped) return false;
     const filled = v => Array.isArray(v) ? v.length > 0 : (v && typeof v === 'object') ? Object.keys(v).length > 0 : v != null;
     for (const p of Object.values(CARD_PAGES)) {
       for (const k of [p.hidden, p.cols, p.order, p.borrowed]) if (k && filled(lay[k])) return false;
@@ -93,30 +96,32 @@
     return true;
   }
 
-  // Card id → role. Unlisted ids (and ov-borrow-* shells) resolve through roleOf().
+  // Manager card id → role. Host page panels and ov-borrow-* shells resolve through roleOf().
   const CARD_ROLES = {
-    'llama-server': 'chart', 'llama-throughput': 'chart', 'gpu': 'chart', 'cpu-overall': 'chart',
-    'ram': 'chart', 'network': 'chart', 'disk-usage': 'chart', 'disk-io': 'chart', 'ups': 'stats',
-    'aio': 'chart', 'psu': 'chart', 'smart-device': 'table',
-    'lms-models': 'list', 'lms-active': 'chart', 'lms-cpu': 'chart', 'lms-ram': 'chart',
-    'lms-network': 'chart', 'lms-disk': 'chart', 'lms-io': 'chart', 'lms-power': 'chart',
-    'vllm-server': 'stats', 'vllm-requests': 'stats', 'vllm-kv': 'chart', 'vllm-throughput': 'chart',
-    'vllm-cpu': 'chart', 'vllm-ram': 'chart', 'vllm-network': 'chart', 'vllm-disk': 'chart', 'vllm-io': 'chart',
     'services': 'table', 'influxdb': 'stats', 'mgr-agents': 'table', 'mgr-streams': 'table',
     'mgr-ram': 'stats', 'mgr-disk': 'stats', 'mgr-network': 'stats', 'mgr-processes': 'table',
     'mgr-perf-summary': 'stats', 'mgr-perf': 'chart', 'ae-perf': 'chart',
   };
   const ROLES = ['chart', 'stats', 'table', 'list'];
   const OV_PREFIX = 'ov-borrow-';
+  // Host page panel kind (js/lib/host-view.js) → role.
+  const KIND_ROLES = { ts: 'chart', kv: 'table', table: 'table', list: 'table', bars: 'table', split: 'table', tiles: 'stats' };
+  // A host page panel id's role by its kind, read from window.HP once host-view.js has loaded; else null.
+  function _hostPanelRole(id) {
+    const hp = typeof window !== 'undefined' ? window.HP : null;
+    const m = /^(llama|lms|vllm|host)-(.+)$/.exec(id);
+    if (!hp || typeof hp.panelsFor !== 'function' || !m) return null;
+    const p = hp.panelsFor(m[1]).find(x => x.name === m[2]);
+    return p ? (KIND_ROLES[p.kind] || 'stats') : null;
+  }
   function roleOf(cardId) {
     const id = String(cardId || '');
     const home = id.startsWith(OV_PREFIX) ? id.slice(OV_PREFIX.length) : id;
-    return CARD_ROLES[home] || 'stats';
+    return CARD_ROLES[home] || _hostPanelRole(home) || 'stats';
   }
   // The card a page's Hero preset widens; pages without one use their first visible card.
   const HERO_CARDS = {
-    'dashboard/llamacpp': 'gpu', 'dashboard/lmstudio': 'lms-active',
-    'dashboard/vllm': 'vllm-throughput', 'dashboard/manager': 'services',
+    'dashboard/manager': 'services',
   };
   // widths: role → column span; hero: span for the page's hero card. Unlisted = 1.
   const ROLE_PRESETS = {
@@ -168,21 +173,22 @@
     return meta && !meta.dark ? DEFAULT_THEME : base;
   }
 
-  // Which drawer sections a page gets. Card pages: Overall + the four card
-  // dashboards; every other tab (and the Energy/OpenClaw sub-tabs) has none.
+  // Which drawer sections a page gets. Card pages: Overall + the Manager
+  // dashboard; every other tab (and the Energy/OpenClaw sub-tabs) has none.
   const CARD_PAGES = {
     'overall':            { label: 'Overall',               hidden: 'hiddenOverall', cols: 'overallCols', order: 'overallOrder', grid: 'overallGrid', borrowed: 'overallBorrowed' },
-    'dashboard/llamacpp': { label: 'Dashboards · llama.cpp', hidden: 'hidden',        cols: 'cols',        order: 'order',        grid: 'cardGrid' },
-    'dashboard/lmstudio': { label: 'Dashboards · LM Studio', hidden: 'lmsHidden',     cols: 'lmsCols',     order: 'lmsOrder',     grid: 'lmsCardGrid' },
-    'dashboard/vllm':     { label: 'Dashboards · vLLM',      hidden: 'vllmHidden',    cols: 'vllmCols',    order: 'vllmOrder',    grid: 'vllmCardGrid' },
     'dashboard/manager':  { label: 'Dashboards · Manager',   hidden: 'managerHidden', cols: 'managerCols', order: 'managerOrder', grid: 'managerCardGrid' },
   };
-  // Kit pages whose drawer lists only their rows: the layout key of the hidden row ids and the page root.
+  // Kit pages whose drawer lists their rows: the layout keys of the hidden row ids (and host page panel ids) and the page root.
   const ROW_PAGES = {
-    'dashboard/all': { label: 'Dashboards · All hosts', rowsHidden: 'allHostsRowsHidden', root: 'dash-all' },
+    'dashboard/all':      { label: 'Dashboards · All hosts', rowsHidden: 'allHostsRowsHidden', root: 'dash-all' },
+    'dashboard/llamacpp': { label: 'Dashboards · llama.cpp', rowsHidden: 'llamaRowsHidden', panelsHidden: 'llamaPanelsHidden', root: 'hp-llama' },
+    'dashboard/lmstudio': { label: 'Dashboards · LM Studio', rowsHidden: 'lmsRowsHidden',   panelsHidden: 'lmsPanelsHidden',   root: 'hp-lms' },
+    'dashboard/vllm':     { label: 'Dashboards · vLLM',      rowsHidden: 'vllmRowsHidden',  panelsHidden: 'vllmPanelsHidden',  root: 'hp-vllm' },
+    'dashboard/host':     { label: 'Dashboards · Host',      rowsHidden: 'hostRowsHidden',  panelsHidden: 'hostPanelsHidden',  root: 'hp-host' },
   };
   const PAGE_LABELS = {
-    dashboard: 'Dashboards', llm: 'LLM Control', events: 'Events', tools: 'Tools', admin: 'Admin',
+    dashboard: 'Dashboards', llm: 'LLM Control', events: 'Events and metrics', tools: 'Tools', admin: 'Admin',
   };
   const SUB_LABELS = { energy: 'Energy', openclaw: 'OpenClaw' };
 
@@ -209,7 +215,7 @@
     PRESETS, COLUMN_OPTIONS, AUTO_MIN_COL_PX, presetsFor, getPreset, presetLabel, matchPreset, gridTemplate, normalizeCols,
     ENGINES, DEFAULT_ENGINE, DENSITIES, DEFAULT_DENSITY, FLOW_UNIT_PX, FLOW_ROW_GAP_PX, normalizeEngine, normalizeDensity,
     FRESH_DEFAULTS, isFreshLayout, applyFreshDefaults,
-    CARD_ROLES, ROLES, roleOf, HERO_CARDS, ROLE_PRESETS, DEFAULT_ROLE_PRESET, normalizeRolePreset, roleWidth, flowSpan,
+    CARD_ROLES, KIND_ROLES, ROLES, roleOf, HERO_CARDS, ROLE_PRESETS, DEFAULT_ROLE_PRESET, normalizeRolePreset, roleWidth, flowSpan,
     THEMES, THEME_IDS, DEFAULT_THEME, LEGACY_THEMES, SYSTEM_LIGHT_THEME, normalizeTheme, effectiveTheme,
     CARD_PAGES, ROW_PAGES, settingsScope, INTERVAL_MIN, INTERVAL_MAX, INTERVAL_CHIPS, clampInterval,
   };

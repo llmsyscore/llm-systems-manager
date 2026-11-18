@@ -102,6 +102,26 @@ test('prefix: dt keys read today\'s saved folds', () => {
   assert.ok(!p.d.querySelector('.row[data-row="b"]').classList.contains('folded'));
 });
 
+test('kitRowFolded reads a saved fold and kitSetRowFold draws one without saving', () => {
+  const p = page(row('a', panel('c1', '')) + row('b', panel('c2', '')) + row('c', panel('c3', '')),
+    { seed: { 'dt.rows': JSON.stringify({ p: { a: 1, b: 0 }, q: 'junk' }) } });
+  const st = p.w.kitStore(p.d);
+  assert.equal(p.w.kitRowFolded('p', 'a', st), true);
+  assert.equal(p.w.kitRowFolded('p', 'b', st), false);
+  assert.equal(p.w.kitRowFolded('p', 'c', st), null);
+  assert.equal(p.w.kitRowFolded('q', 'a', st), null);
+  assert.equal(p.w.kitRowFolded('p', 'a', { getItem() { throw 1; } }), null);
+  const c = p.d.querySelector('.row[data-row="c"]');
+  p.w.kitSetRowFold(c, true);
+  assert.ok(c.classList.contains('folded'));
+  assert.equal(c.querySelector('button[data-row-fold]').getAttribute('aria-expanded'), 'false');
+  assert.equal(c.querySelector('.chev').textContent, '▸');
+  p.w.kitSetRowFold(c, false);
+  assert.ok(!c.classList.contains('folded'));
+  assert.doesNotThrow(() => p.w.kitSetRowFold(null, true));
+  assert.deepEqual(JSON.parse(p.w.localStorage.getItem('dt.rows')), { p: { a: 1, b: 0 }, q: 'junk' });
+});
+
 test('prefix: other apps get their own keys', () => {
   const p = page(row('a', panel('c1', '')), { prefix: 'lsm' });
   p.click(p.d.querySelector('.row[data-row="a"] button[data-row-fold]'));
@@ -1872,4 +1892,110 @@ test('reset zoom outside a panel focuses the new chart', () => {
   const ts = p.$('bare').querySelector('.ts[data-kit-ts]');
   assert.equal(ts.getAttribute('tabindex'), '-1');
   assert.equal(p.d.activeElement, ts);
+});
+
+test('with gaps "break" kitTsAppend keeps a missing value missing and the hover shows a dash for it', () => {
+  const p = page('<div id="gb"></div>');
+  const o = { id: 'gc', labels: ['a', 'b'], series: [{ name: 'S', values: [3, 4] }], keep: 3, w: 600, height: 220 };
+  p.$('gb').innerHTML = p.w.tsHtml({ ...o, gaps: 'break' }) + '<div id="plain">' + p.w.tsHtml({ ...o, id: 'pc' }) + '</div>';
+  assert.equal(p.w.kitTsAppend(p.$('gb'), 'gc', 'c', [null]), true);
+  assert.equal(p.w.kitTsAppend(p.$('plain'), 'pc', 'c', [null]), true);
+  const data = (id) => p.w.kitTsData([...p.$('gb').querySelectorAll('.ts[data-kit-ts]')].find(t => p.w.kitTsData(t).id === id));
+  assert.deepEqual([...data('gc').series[0].values], [3, 4, null]);
+  assert.deepEqual([...data('pc').series[0].values], [3, 4, 0]);
+  const ts = [...p.$('gb').querySelectorAll('.ts[data-kit-ts]')].find(t => p.w.kitTsData(t).id === 'gc');
+  // 600 wide, 34 left and 8 right: the third of three steps starts at 406.
+  p.w.kitTsHover(ts, 500);
+  assert.match(ts.querySelector('.tip').innerHTML, /S<b>—<\/b>/);
+  p.w.kitTsHover(ts, 100);
+  assert.match(ts.querySelector('.tip').innerHTML, /S<b>3<\/b>/);
+});
+
+test('with fullRedraw, full size redraws a chart at the full width with the free height, and closing restores it', () => {
+  const p = page(row('r', panel('fp', '')));
+  p.w.kitConfigure({ fullRedraw: true });
+  const P = p.w.HTMLElement.prototype, full = (el) => !!el.closest('.panel.full');
+  // jsdom lays nothing out: the panel body is 1500 x 800 when full size and 600 wide otherwise; a legend is 20 high above its chart.
+  Object.defineProperty(P, 'clientWidth', { configurable: true, get() { return this.classList.contains('p-body') ? (full(this) ? 1500 : 600) : 0; } });
+  Object.defineProperty(P, 'clientHeight', { configurable: true, get() { return this.classList.contains('p-body') && full(this) ? 800 : 0; } });
+  P.getBoundingClientRect = function () {
+    const h = this.classList.contains('ts') ? p.w.kitTsData(this).height : this.classList.contains('legend') ? 20 : 0;
+    const top = this.classList.contains('ts') ? 120 : 100;
+    return { top, bottom: top + h, height: h, left: 0, right: 0, width: 0 };
+  };
+  try {
+    p.$('fpBody').innerHTML = p.w.tsHtml({ id: 'fc', labels: ['a', 'b'], series: [{ name: 'S', values: [1, 2] }], w: 600, height: 170 });
+    const box = () => p.$('fpBody').querySelector('svg').getAttribute('viewBox');
+    const pnl = p.d.querySelector('[data-card="fp"]');
+    p.w.kitSetFull(pnl, true);
+    assert.equal(box(), '0 0 1500 780');
+    p.w.kitSetFull(pnl, false);
+    assert.equal(box(), '0 0 600 170');
+    p.w.kitConfigure({ fullRedraw: false });
+    const svg = p.$('fpBody').querySelector('svg');
+    p.w.kitSetFull(pnl, true);
+    assert.equal(p.$('fpBody').querySelector('svg'), svg);
+  } finally {
+    ['clientWidth', 'clientHeight', 'getBoundingClientRect'].forEach(k => { delete P[k]; });
+  }
+});
+
+test('with fullRedraw, a chart filled again while its panel is full size (a range change) draws at the full-size box', () => {
+  const p = page(row('r', panel('fr', '')));
+  p.w.kitConfigure({ fullRedraw: true });
+  const P = p.w.HTMLElement.prototype, full = (el) => !!el.closest('.panel.full');
+  // jsdom lays nothing out: the panel body is 1500 x 800 when full size and 600 wide otherwise; a legend is 20 high above its chart.
+  Object.defineProperty(P, 'clientWidth', { configurable: true, get() { return this.classList.contains('p-body') ? (full(this) ? 1500 : 600) : 0; } });
+  Object.defineProperty(P, 'clientHeight', { configurable: true, get() { return this.classList.contains('p-body') && full(this) ? 800 : 0; } });
+  P.getBoundingClientRect = function () {
+    const h = this.classList.contains('ts') ? p.w.kitTsData(this).height : this.classList.contains('legend') ? 20 : 0;
+    const top = this.classList.contains('ts') ? 120 : 100;
+    return { top, bottom: top + h, height: h, left: 0, right: 0, width: 0 };
+  };
+  try {
+    const draw = (labels) => p.w.kitFill('frBody', p.w.tsHtml({ id: 'rc', labels, series: [{ name: 'S', values: labels.map(() => 1) }], w: 600, height: 170 }));
+    const box = () => p.$('frBody').querySelector('svg').getAttribute('viewBox');
+    draw(['a', 'b']);
+    const pnl = p.d.querySelector('[data-card="fr"]');
+    p.w.kitSetFull(pnl, true);
+    assert.equal(box(), '0 0 1500 780');
+    draw(['a', 'b', 'c']);
+    assert.equal(box(), '0 0 1500 780');
+    p.w.kitSetFull(pnl, false);
+    assert.equal(box(), '0 0 600 170');
+    draw(['a']);
+    assert.equal(box(), '0 0 600 170');
+  } finally {
+    ['clientWidth', 'clientHeight'].forEach(k => { delete P[k]; });
+    delete P.getBoundingClientRect;
+  }
+});
+
+test('kitTsAppend adds to avg lists and the hover shows peak and average for peak bars', () => {
+  const p = page('<div id="pk"></div>');
+  p.$('pk').innerHTML = p.w.tsHtml({ id: 'pkc', labels: ['a', 'b'], series: [{ name: 'Gen', values: [8, 0], avg: [4, 0] }], keep: 3, w: 600, height: 220, bars: 'peak', gaps: 'break' });
+  assert.equal(p.w.kitTsAppend(p.$('pk'), 'pkc', 'c', [6], [3]), true);
+  assert.equal(p.w.kitTsAppend(p.$('pk'), 'pkc', 'd', [null]), true);
+  const ts = p.$('pk').querySelector('.ts[data-kit-ts]'), o = p.w.kitTsData(ts);
+  assert.deepEqual([...o.series[0].values], [0, 6, null]);
+  assert.deepEqual([...o.series[0].avg], [0, 3, null]);
+  assert.equal(o.bars, 'peak');
+  // 600 wide, 34 left and 8 right: three steps of about 186 from 34.
+  p.w.kitTsHover(ts, 300);
+  assert.match(ts.querySelector('.tip').innerHTML, /Gen<b>peak 6 · avg 3<\/b>/);
+  p.w.kitTsHover(ts, 100);
+  assert.match(ts.querySelector('.tip').innerHTML, /Gen<b>0<\/b>/);
+  p.w.kitTsHover(ts, 500);
+  assert.match(ts.querySelector('.tip').innerHTML, /Gen<b>—<\/b>/);
+});
+
+test('the hover of a split peak chart lists every series, with a dash for a missing average', () => {
+  const p = page('<div id="sp"></div>');
+  p.$('sp').innerHTML = p.w.tsHtml({ id: 'spc', labels: ['a', 'b'], w: 600, height: 220, bars: 'peak', split: true, gaps: 'break',
+    series: [{ name: 'Gen', values: [8, 5], avg: [4, null] }, { name: 'Prompt', values: [700, 0], avg: [350, 0] }] });
+  const ts = p.$('sp').querySelector('.ts[data-kit-ts]');
+  p.w.kitTsHover(ts, 100);
+  assert.match(ts.querySelector('.tip').innerHTML, /Gen<b>peak 8 · avg 4<\/b>.*Prompt<b>peak 700 · avg 350<\/b>/);
+  p.w.kitTsHover(ts, 500);
+  assert.match(ts.querySelector('.tip').innerHTML, /Gen<b>peak 5 · avg —<\/b>.*Prompt<b>0<\/b>/);
 });

@@ -16,11 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Move cardGrid (dashboard cards) into dash-llamacpp
-  const dashPanel  = document.getElementById('dash-llamacpp');
-  const cardGrid   = document.getElementById('cardGrid');
-  if (dashPanel && cardGrid) dashPanel.appendChild(cardGrid);
-
   // Move llm-ctrl-wrap (LLM control content) into llm-llamacpp
   const llmPanel   = document.getElementById('llm-llamacpp');
   const llmCtrl    = document.getElementById('llm-ctrl-wrap');
@@ -44,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
 const _subTabState = { dashboard: 'all', llm: 'llamacpp', admin: 'agents', tools: 'openclaw' };
 
 const _SUB_TAB_MAP = {
-  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['all','llamacpp','lmstudio','vllm','energy','openclaw','manager','forecast'] },
+  dashboard: { tabId: 'dashboardTab', prefix: 'dash',  subs: ['all','llamacpp','lmstudio','vllm','host','energy','openclaw','manager','forecast'] },
   llm:       { tabId: 'llmTab',       prefix: 'llm',   subs: ['llamacpp','lmstudio','vllm','tools'] },
   admin:     { tabId: 'adminTab',     prefix: 'admin', subs: ['access','agents','audit','backup','jobs','routing','settings'] },
   tools:     { tabId: 'toolsTab',     prefix: 'tools', subs: ['openclaw','llmchat','imggen'] },
@@ -94,13 +89,7 @@ function switchSubTab(parent, sub) {
   }
   // Trigger LM Studio fetch when switching to lmstudio sub-tab
   if (sub === 'lmstudio') {
-    // Dashboard entry: re-backfill charts from history, then resume the live
-    // poll; the llm-tab lmstudio panel has no charts and keeps the plain fetch.
-    if (parent === 'dashboard' && typeof loadLmsHistory === 'function') {
-      loadLmsHistory().finally(() => fetchLMStudioMetrics()).catch(() => {});
-    } else {
-      fetchLMStudioMetrics();
-    }
+    fetchLMStudioMetrics();
     _initLMSSections();
     // Always restart log polling on every visit (timer is stopped on tab leave)
     if (_lmsLogOpen) startLmsLogRefresh();
@@ -110,13 +99,7 @@ function switchSubTab(parent, sub) {
     stopVllmLogRefresh();
   }
   if (sub === 'vllm') {
-    // Dashboard entry: re-backfill charts from history, then resume the live
-    // poll; the llm-tab vllm panel has no charts and keeps the plain fetch.
-    if (parent === 'dashboard' && typeof loadVllmHistory === 'function') {
-      loadVllmHistory().finally(() => fetchVllmMetrics()).catch(() => {});
-    } else {
-      fetchVllmMetrics();
-    }
+    fetchVllmMetrics();
     if (typeof _vllmLogOpen !== 'undefined' && _vllmLogOpen) startVllmLogRefresh();
   }
   if (parent === 'dashboard' && sub === 'openclaw') {
@@ -127,6 +110,13 @@ function switchSubTab(parent, sub) {
     if (typeof ahEnter === 'function') ahEnter();
   } else if (parent === 'dashboard' && typeof ahLeave === 'function') {
     ahLeave();
+  }
+  // Host pages fetch their picked host and start the live poll on entry; any other Dashboards page stops it.
+  const hpPage = { llamacpp: 'llama', lmstudio: 'lms', vllm: 'vllm', host: 'host' }[sub];
+  if (parent === 'dashboard' && hpPage) {
+    if (typeof hpEnter === 'function') hpEnter(hpPage);
+  } else if (parent === 'dashboard' && typeof hpLeave === 'function') {
+    hpLeave();
   }
   // Tools launcher refreshes tool stats + ledger on entry (#769).
   if (parent === 'llm' && sub === 'tools'
@@ -247,13 +237,14 @@ function _rebackfillActiveView() {
     run(typeof ovLoad !== 'undefined' ? ovLoad : null);
     // Adopted pinned cards re-backfill their home providers too (#565).
     run(typeof _ovBackfillPinnedProviders !== 'undefined' ? _ovBackfillPinnedProviders : null);
+    // Host page panels pinned here fetch their history gap.
+    run(typeof hpRefresh !== 'undefined' ? hpRefresh : null);
     return;
   }
   if (_activeTab !== 'dashboard') return;
   const sub = _subTabState.dashboard;
+  if (['llamacpp', 'lmstudio', 'vllm', 'host'].includes(sub)) run(typeof hpRefresh !== 'undefined' ? hpRefresh : null);
   if (sub === 'llamacpp')       run(typeof loadHistory !== 'undefined' ? loadHistory : null);
-  else if (sub === 'lmstudio')  run(typeof loadLmsHistory !== 'undefined' ? loadLmsHistory : null);
-  else if (sub === 'vllm')      run(typeof loadVllmHistory !== 'undefined' ? loadVllmHistory : null);
   else if (sub === 'manager')   run(typeof loadManagerPerfHistory !== 'undefined' ? loadManagerPerfHistory : null);
   else if (sub === 'all')       run(typeof ahRefresh !== 'undefined' ? ahRefresh : null);
 }
@@ -265,20 +256,16 @@ function _rebackfillActiveView() {
   window.mcLayoutReady = loadLayout();
   await window.mcLayoutReady;
   if (typeof loadMe === 'function') await loadMe();
-  // Populate the multi-agent picker (chips auto-hide at ≤1 agent). Awaited so
-  // the restored/default selection is set BEFORE loadHistory backfills the
-  // selected agent's host history. Refreshed on the 30s tick below so
-  // newly-approved/online agents appear without a reload.
+  // Loads each provider's hosts and restores the saved host picks before the history loads;
+  // the 30 s tick below refreshes them.
   if (typeof _loadAgentsByProvider === 'function') await _loadAgentsByProvider();
   initSortable();
   // Sync the live poll interval before any backfill so history and live
   // appends bucket to the same resolution grid (#129).
   if (typeof syncInterval === 'function') await syncInterval();
   await loadHistory();
-  // Independent backfills — fired async so a slow alarm engine doesn't
-  // serialize startup; a miss is re-tried on view entry (#131, #506).
-  loadLmsHistory().catch(() => {});
-  loadVllmHistory().catch(() => {});
+  // Fired async so a slow alarm engine doesn't serialize startup; Dashboards ·
+  // Manager fetches it again each time it opens (#131, #506).
   loadManagerPerfHistory().catch(() => {});
   await checkConfig();
   pollServerState();

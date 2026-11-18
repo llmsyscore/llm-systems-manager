@@ -76,3 +76,40 @@ describe('vLLM header pill off-view', () => {
     expect(window._vllmMetrics).toBeUndefined();
   });
 });
+
+// #1432: Dashboards · LM Studio and vLLM are host pages that poll their own data, so there
+// these polls only keep the header pill current; LLM Control still gets the full payload.
+describe('host pages fetch only the light pill payload', () => {
+  const view = (src, name) => load(src, [name]);
+
+  test('LM Studio: light on its dashboard page, full on LLM Control', async () => {
+    view(lmsSrc, '_lmsMetricsViewActive');
+    window._lmsPillTick = 0;
+    window._fetchT = vi.fn(() => Promise.resolve({ json: async () => ({ agent_online: true, ps: [], models: [] }) }));
+    load(lmsSrc, ['_updateLmsHeaderPill', 'fetchLMStudioMetrics']);
+    window._activeTab = 'dashboard';
+    window._subTabState = { dashboard: 'lmstudio', llm: 'lmstudio' };
+    expect(window._lmsMetricsViewActive()).toBe(false);
+    for (let i = 0; i < 5; i++) await window.fetchLMStudioMetrics();
+    expect(window._fetchT.mock.calls.map(c => c[0])).toEqual(['/api/lmstudio/metrics?light=1']);
+    window._activeTab = 'llm';
+    expect(window._lmsMetricsViewActive()).toBe(true);
+    window._activeTab = 'overall';
+    expect(window._lmsMetricsViewActive()).toBe(true);
+  });
+
+  test('vLLM: light on its dashboard page, full on LLM Control', async () => {
+    view(vllmSrc, '_vllmMetricsViewActive');
+    window._vllmPillTick = 0;
+    window._fetchT = vi.fn(() => Promise.resolve({ json: async () => ({ agent_online: true, vllm: {} }) }));
+    load(vllmSrc, ['_updateVllmHeaderPill', 'fetchVllmMetrics']);
+    window._activeTab = 'dashboard';
+    window._subTabState = { dashboard: 'vllm', llm: 'vllm' };
+    for (let i = 0; i < 5; i++) await window.fetchVllmMetrics();
+    expect(window._fetchT.mock.calls.map(c => c[0])).toEqual(['/api/vllm/metrics?light=1']);
+    window._activeTab = 'llm';
+    expect(window._vllmMetricsViewActive()).toBe(true);
+    window._subTabState = { dashboard: 'vllm', llm: 'llamacpp' };
+    expect(window._vllmMetricsViewActive()).toBe(false);
+  });
+});

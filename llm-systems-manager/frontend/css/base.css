@@ -108,7 +108,6 @@
       .llm-sec-pill { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
     }
     .grid.flow .chart-wrap { flex: 0 0 140px; min-height: 140px; }
-    .grid.flow .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
     .grid.flow > .ov-shell { min-height: 0; }
     .grid.flow > .ov-shell > .card { height: auto; }
     /* Compact density: tighter padding, smaller stat type, shorter plots. */
@@ -117,13 +116,11 @@
     :root[data-density="compact"] .grid > .ov-shell > .card { padding: 10px 12px; }
     :root[data-density="compact"] .grid .card h3 { margin-bottom: 8px; }
     :root[data-density="compact"] .grid .chart-wrap { flex-basis: 110px; min-height: 110px; }
-    :root[data-density="compact"] .grid .chart-wrap.fixed-h { flex-basis: auto; min-height: 0; }
     :root[data-density="compact"] .grid .fan-table td { padding: 3px 6px; }
     :root[data-density="compact"] .grid .fan-table th { padding: 3px 6px; }
-    /* Size-cycle button — small, unobtrusive, lives to the left of the
-       drag handle in the card's top-right. */
+    /* Size-cycle button — small, unobtrusive, in the card's top-right. */
     .card-size-btn {
-      position: absolute; top: 10px; right: 30px;
+      position: absolute; top: 10px; right: 10px;
       background: transparent; border: none;
       color: var(--fg-faint); font-size: 0.9em;
       padding: 0 2px; cursor: pointer;
@@ -145,7 +142,8 @@
     .card.drag-over { border-color: var(--accent); }
     .card.sortable-ghost { opacity: 0.3; }
     .card.sortable-drag { opacity: 0.9; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-    .card-handle { position: absolute; top: 10px; right: 10px; cursor: grab; color: var(--fg-faint); font-size: 0.9em; user-select: none; }
+    .card-handle { position: absolute; top: 10px; left: 10px; cursor: grab; color: var(--fg-faint); font-size: 0.9em; user-select: none; }
+    .card-handle + h3 { padding-left: 18px; }
     .card-handle:hover { color: var(--fg-muted); }
     .card h3 { font-size: 0.9em; text-transform: uppercase; color: var(--fg-muted); margin-bottom: 12px; letter-spacing: 0.05em; padding-right: 20px; }
     /* Chart wraps grow to fill any extra vertical space when the
@@ -155,13 +153,6 @@
        false`, so they re-paint to fill this box at the monitor's DPR
        whenever the size changes. */
     .chart-wrap { position: relative; flex: 1 1 140px; min-height: 140px; }
-    /* Vertical breathing room between stacked blocks inside a card. */
-    .card .card-gap { margin-top: 10px; }
-    .card .chart-caption { margin: 10px 0 6px; }
-    /* Fixed-height variant: keeps its inline height instead of filling the card. */
-    .chart-wrap.fixed-h { flex: 0 0 auto; min-height: 0; }
-    .card.size-1x2 .chart-wrap.fixed-h, .card.size-2x2 .chart-wrap.fixed-h,
-    .card.size-3x2 .chart-wrap.fixed-h { flex: 1 1 auto; }
     /* Reset-zoom icon — shown only while a chart is zoomed. Sits in the card
        header left of the drag grip, clear of the plot area. */
     .chart-reset-zoom {
@@ -174,32 +165,7 @@
     .chart-reset-zoom:hover { background: color-mix(in srgb, var(--accent) 34%, transparent); }
     .stat { font-size: 1.6em; font-weight: bold; margin-bottom: 4px; }
     .sub { font-size: 0.8em; color: var(--fg-dim); }
-    .llama-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-    .llama-item { background: var(--bg-card-alt); border-radius: 4px; padding: 10px; }
-    .llama-item .val { font-size: 1.1em; font-weight: bold; color: var(--accent); }
-    .llama-item .lbl { font-size: 0.75em; color: var(--fg-dim); margin-top: 2px; }
-    .core-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 4px; margin-top: 8px; }
-    .core { background: var(--bg-elev); border-radius: 3px; padding: 5px 3px; text-align: center; font-size: 0.72em; transition: background 0.3s, box-shadow 0.3s; }
-    .core.warn { background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev)); box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 30%, transparent); }
-    .core.crit { background: color-mix(in srgb, var(--crit) 20%, var(--bg-elev)); box-shadow: 0 0 10px color-mix(in srgb, var(--crit) 40%, transparent); }
-    .core .pct { font-weight: bold; font-size: 1.1em; }
-    .disk-list { margin-top: 4px; }
-    .disk-row { display: flex; justify-content: space-between; align-items: center; margin: 10px 0; font-size: 0.85em; }
-    .disk-bar { flex: 1; height: 8px; background: var(--border-strong); border-radius: 3px; margin: 0 12px; }
-    .disk-fill { height: 100%; border-radius: 3px; background: var(--accent-2); }
-    .stat-row { display: grid; gap: 8px; margin-bottom: 12px; }
-    .stat-row.cols3 { grid-template-columns: 1fr 1fr 1fr; }
-    .stat-row.cols2 { grid-template-columns: 1fr 1fr; }
     .badge { display: inline-block; font-size: 0.75em; padding: 2px 8px; border-radius: 4px; background: var(--border); color: var(--fg); margin-top: 4px; }
-    .ups-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-    .ups-item { background: var(--bg-card-alt); border-radius: 4px; padding: 10px; }
-    .ups-item .val { font-size: 1.3em; font-weight: bold; color: var(--accent-2); }
-    .ups-item .val.warn { color: var(--warn); }
-    .ups-item .val.crit { color: var(--crit); }
-    .ups-item .lbl { font-size: 0.75em; color: var(--fg-dim); margin-top: 2px; }
-    .legend-row { display: flex; gap: 16px; margin-bottom: 8px; font-size: 0.8em; }
-    .legend-row span { display: flex; align-items: center; gap: 5px; }
-    .legend-dot { width: 12px; height: 3px; display: inline-block; }
     .lq-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
     .lq-item { background: var(--bg-card-alt); border-radius: 4px; padding: 10px; }
     .lq-item .val { font-size: 1.1em; font-weight: bold; color: var(--ok); }
@@ -477,16 +443,12 @@
 
     /* ===== Shared enterprise card theme (Overall + Dashboard) ===== */
     #overallGrid .card,
-    #cardGrid .card,
-    #lmsCardGrid .card,
     #managerCardGrid .card {
       border-left: 3px solid var(--border);
       background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
       transition: border-color 0.4s, background 0.3s;
     }
     #overallGrid .card h3,
-    #cardGrid .card h3,
-    #lmsCardGrid .card h3,
     #managerCardGrid .card h3 {
       font-size: clamp(0.58em, 0.8vw, 0.68em);
       text-transform: uppercase;
@@ -496,8 +458,6 @@
       padding-right: 25px;
     }
     #overallGrid .stat,
-    #cardGrid .stat,
-    #lmsCardGrid .stat,
     #managerCardGrid .stat {
       font-size: clamp(1.4rem, 2vw, 2.3rem);
       font-weight: 300;
@@ -506,42 +466,19 @@
       line-height: 1;
     }
     #overallGrid .sub,
-    #cardGrid .sub,
-    #lmsCardGrid .sub,
     #managerCardGrid .sub {
       font-size: clamp(0.55em, 0.7vw, 0.62em);
       letter-spacing: 0.08em;
       color: var(--fg-faint);
       text-transform: uppercase;
     }
-    #overallGrid .stat-row + .stat-row,
-    #cardGrid .stat-row + .stat-row,
-    #lmsCardGrid .stat-row + .stat-row {
-      border-top: 1px solid var(--bg-elev);
-      padding-top: 10px;
-      margin-top: 2px;
-    }
-    #overallGrid .stat-row > div > div:not(.stat):not(.sub),
-    #cardGrid .stat-row > div > div:not(.stat):not(.sub),
-    #lmsCardGrid .stat-row > div > div:not(.stat):not(.sub) {
-      font-size: clamp(0.75em, 1vw, 0.88em);
-      color: var(--fg-dim);
-    }
     :root[data-density="compact"] #overallGrid .stat,
-    :root[data-density="compact"] #cardGrid .stat,
-    :root[data-density="compact"] #lmsCardGrid .stat,
-    :root[data-density="compact"] #vllmCardGrid .stat,
     :root[data-density="compact"] #managerCardGrid .stat { font-size: clamp(1.1rem, 1.5vw, 1.6rem); }
-    :root[data-density="compact"] #overallGrid .stat-row + .stat-row,
-    :root[data-density="compact"] #cardGrid .stat-row + .stat-row,
-    :root[data-density="compact"] #lmsCardGrid .stat-row + .stat-row,
-    :root[data-density="compact"] #vllmCardGrid .stat-row + .stat-row,
-    :root[data-density="compact"] #managerCardGrid .stat-row + .stat-row { padding-top: 6px; margin-top: 0; }
     /* Status-driven accent borders applied by JS */
-    #overallGrid .dash-ok,   #cardGrid .dash-ok,   #lmsCardGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
-    #overallGrid .dash-warn, #cardGrid .dash-warn, #lmsCardGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-    #overallGrid .dash-crit, #cardGrid .dash-crit, #lmsCardGrid .dash-crit, #managerCardGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
-    #overallGrid .dash-off,  #cardGrid .dash-off,  #lmsCardGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
+    #overallGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
+    #overallGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+    #overallGrid .dash-crit, #managerCardGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
+    #overallGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
 
     /* ===== Settings panel additions ===== */
     /* ===== Server Config overlay ===== */
@@ -905,12 +842,8 @@
     .bl-heat-cell small { display:block; font-size:.72em; opacity:.75; }
 
 
-    /* Multi-agent picker (PR3) — chip row in the 4 provider sub-panels. */
+    /* Multi-agent picker (PR3) — chip row in the LLM Control provider sub-panels. */
     .agent-picker { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 14px; }
-    /* Dashboard sub-tab panels have no horizontal padding, so the picker sits
-       flush-left while the card grid below is inset by .grid's 16px padding.
-       Inset these two pickers to line the pills up with the cards. */
-    #agentPickerDashLlama, #agentPickerDashLms { padding-left:16px; padding-right:16px; }
     .agent-chip {
       font-size:0.82em; padding:5px 12px; border-radius:999px; cursor:pointer;
       background:color-mix(in srgb, var(--accent) 8%, transparent);

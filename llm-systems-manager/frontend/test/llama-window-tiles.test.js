@@ -1,62 +1,50 @@
-// #1303: the Llama server card's prompt-cache reuse and draft-acceptance tiles
-// show a state word (Not reported / Idle / Reset / Paused) instead of a fake 0%.
-import { describe, test, expect, beforeEach } from 'vitest';
-import { srcFile, blockSrc, evalGlobal } from './helpers/harness.js';
+// #1303, #1432: the llama.cpp Server details panel's prompt-cache reuse and draft-acceptance lines
+// show a state word (Not reported / Idle / Reset / Paused) instead of a fake 0%. Real js/lib/host-view.js.
+import { describe, test, expect } from 'vitest';
+import HP from '../js/lib/host-view.js';
 
-const charts = srcFile('js/charts.js');
-const indexHtml = srcFile('index.html');
+const NOW = Date.parse('2026-11-16T12:00:00Z');
+// The Server details value for one windowed block under its llama payload key.
+const line = (key, block, label) => {
+  const rows = HP.details('llama', 'details', null, { live: { llama: { [key]: block } }, now: NOW }, true);
+  return rows.find(r => r[0] === label)[1];
+};
+const reuse = (block) => line('cache_reuse', block, 'Prompt cache reuse');
+const accept = (block) => line('spec_accept', block, 'Draft tokens accepted');
 
-evalGlobal(blockSrc(charts, 'const _LLAMA_WINDOW_STATE_TEXT = {', '// Mirrors backend clean_display_model()', { includeEnd: false }));
-const fmt = (block) => window._fmtLlamaWindowStat(block, 'Prompt cache reuse', 'cached', 'processed');
-
-describe('_fmtLlamaWindowStat', () => {
-  test('ok ratio renders as a percent with the window in the label', () => {
-    const t = fmt({ state: 'ok', processed: 10, cached: 8200, ratio: 0.9988 });
-    expect(t.text).toBe('99.9%');
-    expect(t.label).toBe('Prompt cache reuse · 60 s');
-    expect(t.title).toContain('cached 8,200');
-    expect(t.title).toContain('processed 10');
+describe('llama window lines on the Server details panel', () => {
+  test('an ok ratio reads as a percent with its counts', () => {
+    expect(reuse({ state: 'ok', processed: 10, cached: 8200, ratio: 0.9988 })).toBe('99.9% (8,200 of 10)');
+    expect(accept({ state: 'ok', drafted: 93, accepted: 68, drafts: 30, ratio: 0.7312, accepted_per_draft: 2.27 }))
+      .toBe('73.1% (68 of 93)');
   });
 
   test('speculative decoding not configured reads "Not in use"', () => {
-    const t = window._fmtLlamaWindowStat({ state: 'off', drafted: 0, accepted: 0, drafts: 0, ratio: null, accepted_per_draft: null },
-      'Draft tokens accepted', 'accepted', 'drafted');
-    expect(t).toEqual({ text: 'Not in use', label: 'Draft tokens accepted', title: '' });
+    expect(accept({ state: 'off', drafted: 0, accepted: 0, drafts: 0, ratio: null, accepted_per_draft: null })).toBe('Not in use');
   });
 
-  test('unsupported build says so and never shows 0%', () => {
-    const t = fmt({ state: 'unsupported', processed: null, cached: null, ratio: null });
-    expect(t.text).toBe('Not reported');
-    expect(t.label).toBe('Prompt cache reuse');
-    expect(t.title).toBe('');
+  test('an unsupported build says so and never shows 0%', () => {
+    expect(reuse({ state: 'unsupported', processed: null, cached: null, ratio: null })).toBe('Not reported');
   });
 
   test('idle, reset and paused windows are labelled by state', () => {
-    expect(fmt({ state: 'idle', processed: 0, cached: 0, ratio: null }).text).toBe('Idle');
-    expect(fmt({ state: 'reset', processed: 0, cached: 0, ratio: null }).text).toBe('Reset');
-    expect(fmt({ state: 'reset', processed: 30, cached: 30, ratio: 0.5 }).text).toBe('50.0% · Reset');
-    expect(fmt({ state: 'paused', processed: 0, cached: 0, ratio: null }).text).toBe('Paused');
+    expect(reuse({ state: 'idle', processed: 0, cached: 0, ratio: null })).toBe('Idle');
+    expect(reuse({ state: 'reset', processed: 0, cached: 0, ratio: null })).toBe('Reset');
+    expect(reuse({ state: 'reset', processed: 30, cached: 30, ratio: 0.5 })).toBe('50.0% · Reset (30 of 30)');
+    expect(reuse({ state: 'paused', processed: 0, cached: 0, ratio: null })).toBe('Paused');
+    expect(reuse({ state: 'idle', processed: 4, cached: 0, ratio: 0 })).toBe('0.0% (0 of 4)');
   });
 
-  test('missing block (sleeping / old agent) renders a dash', () => {
-    expect(fmt(null)).toEqual({ text: '—', label: 'Prompt cache reuse', title: '' });
-    expect(fmt(undefined).text).toBe('—');
-  });
-});
-
-describe('_setLlamaWindowTile', () => {
-  beforeEach(() => {
-    document.body.innerHTML = blockSrc(indexHtml, '<div class="llama-grid">', '</div>\n    <div class="legend-row"', { includeEnd: false });
+  test('a missing block (sleeping or old agent) and an offline host read as a dash', () => {
+    expect(reuse(null)).toBe('—');
+    expect(reuse(undefined)).toBe('—');
+    const off = HP.details('llama', 'details', null,
+      { live: { llama: { cache_reuse: { state: 'ok', ratio: 0.5, cached: 1, processed: 2 } } }, now: NOW }, false);
+    expect(off.find(r => r[0] === 'Prompt cache reuse')[1]).toBe('—');
   });
 
-  test('card markup has both tiles and the writer fills value, label and title', () => {
-    expect(document.getElementById('llamaCacheReuse')).not.toBeNull();
-    expect(document.getElementById('llamaSpecAccept')).not.toBeNull();
-    window._setLlamaWindowTile('llamaSpecAccept', window._fmtLlamaWindowStat(
-      { state: 'ok', drafted: 93, accepted: 68, drafts: 30, ratio: 0.7312, accepted_per_draft: 2.27 },
-      'Draft tokens accepted', 'accepted', 'drafted'));
-    expect(document.getElementById('llamaSpecAccept').textContent).toBe('73.1%');
-    expect(document.getElementById('llamaSpecAccept-lbl').textContent).toBe('Draft tokens accepted · 60 s');
-    expect(document.getElementById('llamaSpecAccept').title).toContain('accepted 68 · drafted 93');
+  test('the llama.cpp page has the Server details panel in its Inference row', () => {
+    const p = HP.panelsFor('llama').find(x => x.name === 'details');
+    expect(p).toMatchObject({ row: 'inf', title: 'Server details', kind: 'kv' });
   });
 });

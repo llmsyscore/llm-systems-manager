@@ -11,7 +11,7 @@ const drawerSrc = readFileSync(join(here, '..', 'js', 'lib', 'settingsdrawer.js'
 
 // Loads foundation.js with GET /api/layout answering `saved`; POST bodies land in `posts`.
 function harness(saved) {
-  const dom = new JSDOM('<!doctype html><html><head></head><body><div id="cardGrid"></div></body></html>',
+  const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>',
     { runScripts: 'dangerously', url: 'http://localhost/' });
   const w = dom.window;
   const posts = [];

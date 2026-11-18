@@ -70,23 +70,21 @@ describe('LMPeaks.makeTracker', () => {
   });
 });
 
-describe('llama card wiring (#590)', () => {
+describe('llama peak trackers (#590)', () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const charts = readFileSync(join(here, '..', 'js', 'charts.js'), 'utf8');
   const html = readFileSync(join(here, '..', 'index.html'), 'utf8');
 
-  it('live poll pushes browser-clock samples and renders live+peak', () => {
+  // The llama.cpp host page reads these trackers; the old server card tiles are gone (#1432).
+  it('live poll pushes browser-clock samples', () => {
     expect(charts).toMatch(/_llamaPeaks\.tps\.push\(Date\.now\(\), ll\.tokens_per_second\)/);
-    expect(charts).toMatch(/fmtRateTile\(ll\.tokens_per_second, _llamaPeaks\.tps, 'Gen tokens\/s', undefined, llWin && llWin\.gen\)/);
-    expect(charts).toMatch(/fmtRateTile\(ll\.prompt_tokens_per_second, _llamaPeaks\.pps, 'Prompt tokens\/s', undefined, llWin && llWin\.prompt\)/);
-    expect(charts).toMatch(/const llWin = m\.throughput_window \|\| null;/);
-    expect(charts).toMatch(/_setRateTile\('llamaTps', fmtRateTile\(/);
-    expect(html).toMatch(/id="llamaTps-lbl"/);
+    expect(charts).toMatch(/_llamaPeaks\.pps\.push\(Date\.now\(\), ll\.prompt_tokens_per_second\)/);
+    expect(html).not.toMatch(/id="llamaTps-lbl"/);
   });
 
   it('backfill seeds clock-normalized rows; agent switch resets the trackers', () => {
-    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(_peakSeedTs\(r\.ts\), r\.llama_tps\)/);
-    expect(charts).toMatch(/_peakSeedTs = LMPeaks\.rowClock\(rows, Date\.now\(\)\)/);
+    expect(charts).toMatch(/_llamaPeaks\.tps\.push\(clock\(r\.ts\), r\.llama_tps\)/);
+    expect(charts).toMatch(/const clock = LMPeaks\.rowClock\(rows, Date\.now\(\)\)/);
     expect(charts).toMatch(/_llamaPeaks\.tps\.reset\(\);/);
   });
 

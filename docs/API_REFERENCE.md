@@ -906,6 +906,13 @@ Lists every approved host, including hosts without an LLM server, with its provi
 
 ---
 
+### `GET /api/agents/<agent_id>/system`
+Returns the latest system reading of one approved host, whether or not it runs an LLM server. For a host that runs llama.cpp, LM Studio or vLLM, the reading comes from that server's latest report. `online` is true while any of the host's reports is recent, and `age_s` is the age of the newest one. Available to all signed-in users, including operators. Unknown or unapproved hosts return 404.
+
+**Response:** `{"agent_id", "hostname", "online": true|false, "age_s": <seconds>|null, "sample": {…}}`. `sample` is empty until the host has reported.
+
+---
+
 ### `GET /api/agents/whoami`
 Allows an agent to look up its own registration record using its bearer token. Not a UI-facing endpoint.
 
@@ -1233,14 +1240,14 @@ Returns Claude Code session analytics derived from the session log files on the 
 ## Dashboard Layout
 
 ### `GET /api/layout`
-Returns the saved dashboard layout: card order, hidden cards, LMS card order, Overall tab card order, borrowed cards, and the active theme name. Layouts are per user: a signed-in account reads its own document, seeded from the installation-wide one on first sign-in; bypass sessions (`disabled` / `trusted_cidr` auth modes) read the installation-wide document.
+Returns the saved dashboard layout: the Manager page's card order and hidden cards, the Overall tab's card order and pinned cards, the hidden sections and panels of each host page, and the active theme name. Layouts are per user: a signed-in account reads its own document, seeded from the installation-wide one on first sign-in; bypass sessions (`disabled` / `trusted_cidr` auth modes) read the installation-wide document.
 
 ---
 
 ### `POST /api/layout`
-Saves the current dashboard layout. The frontend calls this automatically whenever the user drags a card, hides a card, or changes the theme. Writes the signed-in user's own document (the installation-wide one for bypass sessions), so one user's theme or card order never changes another's.
+Saves the current dashboard layout. The frontend calls this automatically whenever the user drags a card, hides a card, section or panel, pins a panel to Overall, or changes the theme. Writes the signed-in user's own document (the installation-wide one for bypass sessions), so one user's theme or card order never changes another's.
 
-**Body:** A layout JSON object with `order`, `hidden`, `lmsOrder`, `overallOrder`, `overallBorrowed`, and `theme` fields.
+**Body:** A layout JSON object with fields such as `managerOrder`, `managerHidden`, `overallOrder`, `overallBorrowed`, `overallRowsHidden`, `llamaRowsHidden`, `llamaPanelsHidden` (and the `lms`, `vllm` and `host` versions of the last two), `kit` and `theme`.
 
 ---
 
@@ -1871,7 +1878,7 @@ Returns only currently active (firing, unacknowledged) alerts.
 ---
 
 ### `GET /api/alarm/alerts/counters`
-Returns alert counts broken down by status and severity. Used by the dashboard badge and Events tab indicator.
+Returns alert counts broken down by status and severity. Used by the dashboard badge and Events and metrics tab indicator.
 
 ---
 
