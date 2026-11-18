@@ -1,4 +1,4 @@
-/* Panel kit 1.3.0: theme tokens, shell, panel kit and chart styles for kit.js. */
+/* Panel kit 1.4.0: theme tokens, shell, panel kit and chart styles for kit.js. */
 /* Theme tokens: dark on :root, light on :root[data-theme="light"], then the kit names mapped onto the cloud set and shared tints.
    The *-text tokens colour status text; light sets darker shades that meet 4.5:1 on --card. */
 :root{color-scheme:dark;

@@ -1,4 +1,4 @@
-// Panel kit 1.3.0
+// Panel kit 1.4.0
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
@@ -225,22 +225,55 @@ var KIT_TS_FANCY = ['split', 'bars', 'idle', 'strip', 'stripLabel', 'step'];
 function kitTsFancy(o) {
   return !!(o && (o.split === true || o.bars === 'peak' || o.step === true || (typeof o.strip === 'string' && o.strip)));
 }
+// The muted idle line along the baseline under each run of slots where zero(j) is true.
+function kitTsIdle(n, x, y, step, zero) {
+  var idle = '', run = -1;
+  for (var j = 0; j <= n; j++) {
+    var z = j < n && zero(j);
+    if (z && run < 0) run = j;
+    if (!z && run >= 0) { idle += 'M' + kitN(x(run) - step / 2) + ' ' + kitN(y(0) - 1.5) + 'H' + kitN(x(j - 1) + step / 2); run = -1; }
+  }
+  return idle ? '<path class="ts-idle" d="' + idle + '" fill="none" stroke="var(--muted)" stroke-opacity=".55" stroke-width="3" vector-effect="non-scaling-stroke"/>' : '';
+}
 // Peak bars: a faint bar to each value above 0 and a solid bar to its s.avg; runs of 0 draw a muted idle line on the baseline.
 function kitTsPeak(s, n, x, y, step) {
-  var bw = Math.max(Math.min(3, step), Math.min(28, step * 0.8)), out = '', idle = '', run = -1;
-  for (var j = 0; j <= n; j++) {
-    var v = j < n ? s.values[j] : null, zero = j < n && !kitMissing(v) && +v === 0;
-    if (zero && run < 0) run = j;
-    if (!zero && run >= 0) { idle += 'M' + kitN(x(run) - step / 2) + ' ' + kitN(y(0) - 1.5) + 'H' + kitN(x(j - 1) + step / 2); run = -1; }
-    if (j >= n || kitMissing(v) || !(+v > 0)) continue;
-    var a = s.avg ? s.avg[j] : null, x0 = kitN(x(j) - bw / 2), w = kitN(bw);
-    out += '<rect class="ts-peak" x="' + x0 + '" y="' + kitN(y(+v)) + '" width="' + w + '" height="' + kitN(Math.max(1, y(0) - y(+v))) + '" fill="' + s.fill + '" fill-opacity=".32"/>';
-    if (!kitMissing(a) && +a > 0) {
-      var ya = y(Math.min(+a, +v));
-      out += '<rect class="ts-avg" x="' + x0 + '" y="' + kitN(ya) + '" width="' + w + '" height="' + kitN(Math.max(1, y(0) - ya)) + '" fill="' + s.fill + '"/>';
-    }
+  return kitTsPeakStack([s], n, x, y, step);
+}
+// Peak bars of series sharing a band, stacked in order: each sits on the previous one's peak, solid to its avg and faint to its peak.
+// Parts starting at or above hi (the o.ymax cap) are left out; runs of all-0 shown values draw one muted idle line on the baseline.
+function kitTsPeakStack(grp, n, x, y, step, hi) {
+  hi = hi > 0 ? hi : Infinity;
+  var bw = Math.max(Math.min(3, step), Math.min(28, step * 0.8)), out = '';
+  for (var j = 0; j < n; j++) {
+    var base = 0, x0 = kitN(x(j) - bw / 2), w = kitN(bw);
+    grp.forEach(function(s) {
+      var v = s.values[j];
+      if (kitMissing(v) || !(+v > 0) || base >= hi) return;
+      var a = s.avg ? s.avg[j] : null, top = base + +v;
+      out += '<rect class="ts-peak" x="' + x0 + '" y="' + kitN(y(top)) + '" width="' + w + '" height="' + kitN(Math.max(1, y(base) - y(top))) + '" fill="' + s.fill + '" fill-opacity=".32"/>';
+      if (!kitMissing(a) && +a > 0) {
+        var ya = y(base + Math.min(+a, +v));
+        out += '<rect class="ts-avg" x="' + x0 + '" y="' + kitN(ya) + '" width="' + w + '" height="' + kitN(Math.max(1, y(base) - ya)) + '" fill="' + s.fill + '"/>';
+      }
+      base = top;
+    });
   }
-  return (idle ? '<path class="ts-idle" d="' + idle + '" fill="none" stroke="var(--muted)" stroke-opacity=".55" stroke-width="3" vector-effect="non-scaling-stroke"/>' : '') + out;
+  return kitTsIdle(n, x, y, step, function(j) {
+    var any = false;
+    for (var q = 0; q < grp.length; q++) { var v = grp[q].values[j]; if (kitMissing(v)) continue; if (+v !== 0) return false; any = true; }
+    return any;
+  }) + out;
+}
+// The o.idle message in a pill at the middle of the plot when some shown value is there and none is above 0.
+function kitTsIdleMsg(o, vis, L, pw, cy) {
+  var seen = vis.some(function(s) { return s.values.some(function(v) { return !kitMissing(v); }); });
+  var up = vis.some(function(s) { return s.values.some(function(v) { return +v > 0; }); });
+  if (!(typeof o.idle === 'string' && o.idle && seen && !up)) return '';
+  var want = o.idle.length * 6.4 + 24, tw = Math.min(pw - 8, want), cx = L + pw / 2;
+  // Text wider than the plot is squeezed to fit inside the pill.
+  var fitText = want > tw ? ' textLength="' + kitN(Math.max(0, tw - 16)) + '" lengthAdjust="spacingAndGlyphs"' : '';
+  return '<g class="ts-idle-msg"><rect x="' + kitN(cx - tw / 2) + '" y="' + kitN(cy - 11) + '" width="' + kitN(tw) + '" height="22" rx="11" fill="var(--card)" stroke="var(--border)"/>' +
+    '<text x="' + kitN(cx) + '" y="' + kitN(cy + 4) + '" text-anchor="middle" class="ax"' + fitText + '>' + kitEsc(o.idle) + '</text></g>';
 }
 // Filled steps: each value holds flat across its bucket; a missing value ends the run.
 function kitTsSteps(s, n, x, y, step) {
@@ -268,8 +301,8 @@ function kitTsLine(s, n, x, y) {
   }
   return d ? '<path d="' + d + '" fill="none" stroke="' + s.fill + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' : '';
 }
-// The o.strip series as a heat strip on top (darker is higher, to o.ymax or 100), then one band per series with o.split or one shared band.
-// Returns {g: gridlines and axis labels, marks}; o.idle shows in the plot when no shown value is above 0.
+// The o.strip series as a heat strip on top (darker is higher, to o.ymax or 100), then one band per series with o.split (series with
+// the same s.band share one, peak bars stacked) or one shared band. Returns {g: gridlines and axis labels, marks}; o.idle shows when no value is above 0.
 function kitTsBands(o, vis, n, d) {
   var L = d.L, step = d.step, gap = 10, pw = d.W - L - d.R, g = '', marks = '';
   function x(j) { return L + step * (j + 0.5); }
@@ -286,11 +319,19 @@ function kitTsBands(o, vis, n, d) {
       else if (+v > 0) marks += '<rect class="ts-cell" ' + cell + ' fill="' + sv.fill + '" fill-opacity="' + (0.15 + 0.85 * Math.min(+v, smax) / smax).toFixed(2) + '"/>';
     }
   }
-  var groups = o.split === true ? rest.map(function(s) { return [s]; }) : rest.length ? [rest] : [];
+  var groups = [], byBand = Object.create(null);
+  if (o.split === true) rest.forEach(function(s) {
+    if (typeof s.band !== 'string' || !s.band) { groups.push([s]); return; }
+    if (!byBand[s.band]) groups.push(byBand[s.band] = []);
+    byBand[s.band].push(s);
+  });
+  else if (rest.length) groups = [rest];
   var k = groups.length, bh = k ? (h0 - gap * (k - 1)) / k : 0;
   groups.forEach(function(grp, gi) {
     var bt = top0 + gi * (bh + gap), mx = 1, one = k === 1 && o.split !== true;
-    grp.forEach(function(s) { s.values.forEach(function(v) { if (+v > mx) mx = +v; }); });
+    var stacked = o.bars === 'peak' && o.split === true && !!grp[0].band;
+    if (stacked) for (var c = 0; c < n; c++) mx = Math.max(mx, grp.reduce(function(t, s) { return t + Math.max(0, +s.values[c] || 0); }, 0));
+    else grp.forEach(function(s) { s.values.forEach(function(v) { if (+v > mx) mx = +v; }); });
     if (!d.cap && one) d.ths.forEach(function(h) { mx = Math.max(mx, h.value); });
     var ymax = d.cap || kitNiceMax(mx), hi = d.cap || Infinity;
     function y(v) { return bt + bh - (Math.max(0, Math.min(v, hi)) / ymax) * bh; }
@@ -299,8 +340,9 @@ function kitTsBands(o, vis, n, d) {
       g += '<line x1="' + L + '" x2="' + (d.W - d.R) + '" y1="' + yy + '" y2="' + yy + '" stroke="var(--grid)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>' +
         '<text x="' + (L - 6) + '" y="' + kitN(+yy + 3.5) + '" text-anchor="end" class="ax">' + kitFmt(v) + '</text>';
     });
-    if (o.split === true) g += '<text x="' + (L + 4) + '" y="' + kitN(bt + 10) + '" class="ax ts-bl">' + kitEsc(grp[0].name) + '</text>';
-    grp.forEach(function(s) { marks += o.bars === 'peak' ? kitTsPeak(s, n, x, y, step) : o.step === true ? kitTsSteps(s, n, x, y, step) : kitTsLine(s, n, x, y); });
+    if (o.split === true) g += '<text x="' + (L + 4) + '" y="' + kitN(bt + 10) + '" class="ax ts-bl">' + kitEsc(grp[0].band || grp[0].name) + '</text>';
+    if (stacked) marks += kitTsPeakStack(grp, n, x, y, step, hi);
+    else grp.forEach(function(s) { marks += o.bars === 'peak' ? kitTsPeak(s, n, x, y, step) : o.step === true ? kitTsSteps(s, n, x, y, step) : kitTsLine(s, n, x, y); });
     if (one) d.ths.forEach(function(h) {
       if (h.value > ymax || h.value < 0) return;
       var ty = kitN(y(h.value)), tone = h.tone === 'bad' ? 'var(--bad)' : h.tone === 'warn' ? 'var(--warn)' : 'var(--muted)';
@@ -308,15 +350,7 @@ function kitTsBands(o, vis, n, d) {
         '<text x="' + (d.W - d.R) + '" y="' + kitN(+ty - 3) + '" text-anchor="end" class="ax th-l">' + kitEsc(h.label) + '</text>';
     });
   });
-  var seen = vis.some(function(s) { return s.values.some(function(v) { return !kitMissing(v); }); });
-  var up = vis.some(function(s) { return s.values.some(function(v) { return +v > 0; }); });
-  if (typeof o.idle === 'string' && o.idle && seen && !up) {
-    var want = o.idle.length * 6.4 + 24, tw = Math.min(pw - 8, want), cx = L + pw / 2, cy = d.T + d.ih / 2;
-    // Text wider than the plot is squeezed to fit inside the pill.
-    var fitText = want > tw ? ' textLength="' + kitN(Math.max(0, tw - 16)) + '" lengthAdjust="spacingAndGlyphs"' : '';
-    marks += '<g class="ts-idle-msg"><rect x="' + kitN(cx - tw / 2) + '" y="' + kitN(cy - 11) + '" width="' + kitN(tw) + '" height="22" rx="11" fill="var(--card)" stroke="var(--border)"/>' +
-      '<text x="' + kitN(cx) + '" y="' + kitN(cy + 4) + '" text-anchor="middle" class="ax"' + fitText + '>' + kitEsc(o.idle) + '</text></g>';
-  }
+  marks += kitTsIdleMsg(o, vis, L, pw, d.T + d.ih / 2);
   return { g: g, marks: marks };
 }
 // Time series: line or stacked bars in an o.w-wide viewBox (default 600), gridlines at 0, half and the top, a legend of series toggles.
@@ -342,7 +376,8 @@ function tsHtml(o) {
   var W = +o.w > 0 ? Math.round(+o.w) : 600, H = +o.height || 220, L = 34, R = 8, T = 10, B = 22, iw = W - L - R, ih = H - T - B, step = iw / n;
   var vis = [];
   series.forEach(function(s, i) {
-    if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: part(s.values || []), avg: Array.isArray(s.avg) ? part(s.avg) : null, slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i), dim: s.dim === true });
+    if (!KIT_SERIES_OFF[id + '|' + s.name]) vis.push({ name: s.name, values: part(s.values || []), avg: Array.isArray(s.avg) ? part(s.avg) : null, slot: kitSlotN(s.slot, i), fill: kitSeriesFill(s, i), dim: s.dim === true,
+      band: typeof s.band === 'string' && s.band ? s.band : '' });
   });
   var top = 1;
   for (var i = 0; i < n; i++) {
@@ -390,6 +425,13 @@ function tsHtml(o) {
         }
       }
     }
+    // o.idleLine draws the muted idle line under runs of slots whose shown values are all 0; o.idle shows its message.
+    if (o.idleLine === true) marks = kitTsIdle(n, x, y, step, function(j) {
+      var any = false;
+      for (var q = 0; q < vis.length; q++) { var v = vis[q].values[j]; if (kitMissing(v)) continue; if (+v !== 0) return false; any = true; }
+      return any;
+    }) + marks;
+    marks += kitTsIdleMsg(o, vis, L, iw, T + ih / 2);
   } else if (!fz) {
     vis.forEach(function(s) {
       var d = '', on = false, last = -1;
@@ -427,12 +469,15 @@ function tsHtml(o) {
       var hs = { name: s.name, values: s.values || [], slot: kitSlotN(s.slot, i), color: s.color === 'bad' ? 'bad' : undefined, legend: typeof s.legend === 'string' ? s.legend : undefined };
       if (Array.isArray(s.avg)) hs.avg = s.avg;
       if (s.dim === true) hs.dim = true;
+      if (typeof s.band === 'string' && s.band) hs.band = s.band;
       return hs;
     }),
     marks: inRange.map(function(mk) { return { day: mk.day, label: String(mk.label || ''), release: !!mk.release }; }) };
   if (ext || fancy) { hover.ymax = o.ymax; hover.thresholds = o.thresholds; hover.zoom = o.zoom; hover.z = o.z; hover.keep = o.keep; hover.gaps = o.gaps; hover.t = T; hover.b = T + ih; }
   if (fancy) KIT_TS_FANCY.forEach(function(k) { if (o[k] != null) hover[k] = o[k]; });
   if (o.joined === true) hover.joined = true;
+  if (stack && typeof o.idle === 'string' && o.idle) hover.idle = o.idle;
+  if (stack && o.idleLine === true) hover.idleLine = true;
   return legend + '<div class="ts"' + (o.zoom ? ' data-kit-zoom' : '') + ' data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + kitEsc(series.map(function(s) { return s.name; }).join(', ')) + '">' + g + marks + mkLines + thLines +
     '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (T + ih) + '" stroke="var(--text-2)" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/></svg>' +

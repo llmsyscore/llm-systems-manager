@@ -13,6 +13,7 @@ const TS_10 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.0.json'), 'ut
 const RS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/rank-split-1.1.json'), 'utf8'));
 const TS_11 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.1.json'), 'utf8'));
 const TS_122 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.2.2.json'), 'utf8'));
+const TS_130 = JSON.parse(readFileSync(resolve(HERE, 'fixtures/ts-1.3.0.json'), 'utf8'));
 // A small WORLD_DOTS of the cloud worlddots.js shape: 8 dots over DE, FR, JP and US (3 dots for US).
 const WORLD_SRC = "var WORLD_DOTS = { w: 60, h: 30, step: 6, codes: ['DE', 'FR', 'JP', 'US'], dots: '1,1,0;2,1,0;3,1,1;7,2,2;8,2,2;5,3,3;6,3,3;6,4,3;' };";
 
@@ -41,7 +42,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.3.0');
+    assert.equal(first, '// Panel kit 1.4.0');
   });
 
   test('coexists with an old copy', () => {
@@ -908,5 +909,123 @@ describe('kit 1.3.0 stack option edges', () => {
     const css = readFileSync(resolve(HERE, '../../kit/kit.css'), 'utf8');
     assert.match(css, /\.rank li\{[^}]*grid-template-columns:minmax\(0,1fr\) minmax\(60px,38%\) 56px;/);
     assert.match(css, /\.r-act\{position:absolute;right:62px;/);
+  });
+});
+
+describe('kit 1.4.0 stacked bands and stack idle', () => {
+  const L6 = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const BAND = { id: 'b', labels: L6, w: 600, height: 220, bars: 'peak', split: true, series: [
+    { name: 'Prompt', values: [0, 700, 0, 0, 0, null], avg: [0, 350, 0, 0, 0, null], slot: 2 },
+    { name: 'llama', band: 'Generation', values: [10, 0, 30, 0, 30, null], avg: [5, 0, 20, 0, 30, null], slot: 1 },
+    { name: 'LMS', band: 'Generation', values: [20, 0, 0, 0, 40, null], avg: [10, 0, 0, 0, 40, null], slot: 3 }] };
+
+  test('charts without the new options render the exact 1.3.0 markup', () => {
+    for (const [name, o] of Object.entries(TS_130.calls)) assert.equal(kit().tsHtml(o), TS_130.out[name], name);
+  });
+
+  test('series sharing a band share one band named by it, scaled to their stacked peaks', () => {
+    const out = kit().tsHtml(BAND);
+    assert.deepEqual([...out.matchAll(/class="ax ts-bl">([^<]*)</g)].map(m => m[1]), ['Prompt', 'Generation']);
+    // Slot e stacks 30 + 40 = 70, above any single value: the scale goes to 100, not 50.
+    const ticks = [...out.matchAll(/text-anchor="end" class="ax">([^<]*)</g)].map(m => m[1]);
+    assert.deepEqual(ticks.slice(3), ['0', '50', '100']);
+    assert.deepEqual(tsJson(out).series.map(s => s.band), [undefined, 'Generation', 'Generation']);
+  });
+
+  test('stacked peak bars sit on the peak below them, solid to each average', () => {
+    const out = kit().tsHtml(BAND);
+    // Slot a: llama 0..10 then LMS 10..30; each bar's bottom is the top of the one below.
+    const bars = [...out.matchAll(/class="ts-peak" x="([\d.]+)" y="([\d.]+)" width="[\d.]+" height="([\d.]+)"/g)].map(m => ({ x: +m[1], y: +m[2], h: +m[3] }));
+    // The first bar is Prompt's; the Generation band follows.
+    const a = bars.filter(b => b.x === bars[1].x);
+    assert.equal(a.length, 2);
+    assert.ok(Math.abs(a[1].y + a[1].h - a[0].y) < 0.02);
+    const avgs = [...out.matchAll(/class="ts-avg" x="([\d.]+)" y="([\d.]+)" width="[\d.]+" height="([\d.]+)"/g)].map(m => ({ x: +m[1], y: +m[2], h: +m[3] }));
+    const aa = avgs.filter(b => b.x === bars[1].x);
+    // LMS's average starts at llama's peak, not at llama's average.
+    assert.ok(Math.abs(aa[1].y + aa[1].h - a[0].y) < 0.02);
+  });
+
+  test('a stacked band draws one idle line under slots where all its shown values are 0', () => {
+    const out = kit().tsHtml(BAND);
+    const idles = [...out.matchAll(/class="ts-idle" d="([^"]*)"/g)].map(m => m[1]);
+    // Prompt: a, c..e; Generation: slots b and d only.
+    assert.equal(idles.length, 2);
+    assert.equal(count(idles[1], /M/g), 2);
+  });
+
+  test('a stacked chart with idleLine draws the idle line under all-0 slots, not missing ones, and keeps it on redraw', () => {
+    const o = { id: 't', labels: L6, mode: 'stack', w: 600, height: 220, idleLine: true,
+      series: [{ name: 'Gen', values: [5, 0, 0, null, 0, 2], slot: 1 }, { name: 'Prompt', values: [1, 0, 0, null, 3, 0], slot: 2 }] };
+    const out = kit().tsHtml(o);
+    const d = out.match(/class="ts-idle" d="([^"]*)"/)[1];
+    assert.equal(count(d, /M/g), 1);
+    assert.equal(tsJson(out).idleLine, true);
+    assert.ok(!kit().tsHtml({ ...o, idleLine: undefined }).includes('ts-idle'));
+  });
+
+  test('a stacked chart shows the idle message when every shown value is 0', () => {
+    const o = { id: 't', labels: L6, mode: 'stack', w: 600, height: 220, idle: 'Idle · no tokens in this range',
+      series: [{ name: 'Gen', values: [0, 0, null, 0, 0, 0] }] };
+    assert.match(kit().tsHtml(o), />Idle · no tokens in this range</);
+    assert.equal(tsJson(kit().tsHtml(o)).idle, 'Idle · no tokens in this range');
+    assert.ok(!kit().tsHtml({ ...o, series: [{ name: 'Gen', values: [0, 1, 0, 0, 0, 0] }] }).includes('ts-idle-msg'));
+  });
+
+  test('a banded chart and a stacked idle chart redraw from their data-kit-ts to the same markup', () => {
+    const k = kit(), out = k.tsHtml(BAND);
+    assert.equal(k.tsHtml(tsJson(out)), out);
+    const st = k.tsHtml({ id: 't', labels: L6, mode: 'stack', w: 600, height: 220, idleLine: true, idle: 'Idle',
+      series: [{ name: 'Gen', values: [0, 0, 1, 0, 0, 0] }] });
+    assert.equal(k.tsHtml(tsJson(st)), st);
+  });
+
+  test('a band name like constructor or __proto__ still draws', () => {
+    for (const band of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      const out = kit().tsHtml({ ...BAND, series: BAND.series.map((x, i) => (i ? { ...x, band } : x)) });
+      assert.deepEqual([...out.matchAll(/class="ax ts-bl">([^<]*)</g)].map(m => m[1]), ['Prompt', band], band);
+    }
+  });
+
+  test('a hidden series drops out of its band\'s stack and scale', () => {
+    const k = kit();
+    k.KIT_SERIES_OFF['b|LMS'] = true;
+    const out = k.tsHtml(BAND);
+    const ticks = [...out.matchAll(/text-anchor="end" class="ax">([^<]*)</g)].map(m => m[1]);
+    assert.deepEqual(ticks.slice(3), ['0', '25', '50']);
+  });
+
+  test('with o.ymax a stacked band leaves out parts that start at the cap', () => {
+    const out = kit().tsHtml({ ...BAND, ymax: 25, series: BAND.series.slice(1) });
+    // Slot a: 10 + 20 crosses 25 (both drawn); slot c: 30 fills it; slot e: 30 fills it and LMS starts above.
+    assert.equal(count(out, /class="ts-peak"/g), 4);
+  });
+
+  test('a zoom slice scales a stacked band to the slice only', () => {
+    const out = kit().tsHtml({ ...BAND, zoom: true, z: { from: 'a', to: 'b' } });
+    const ticks = [...out.matchAll(/text-anchor="end" class="ax">([^<]*)</g)].map(m => m[1]);
+    assert.deepEqual(ticks.slice(3), ['0', '25', '50']);
+  });
+
+  test('bands without peak bars share a band but draw lines, not stacks', () => {
+    const out = kit().tsHtml({ ...BAND, bars: undefined });
+    assert.deepEqual([...out.matchAll(/class="ax ts-bl">([^<]*)</g)].map(m => m[1]), ['Prompt', 'Generation']);
+    assert.equal(count(out, /class="ts-peak"/g), 0);
+  });
+
+  test('the stacked idle line comes before the bars, and no pill shows when every value is missing', () => {
+    const o = { id: 't', labels: L6, mode: 'stack', w: 600, height: 220, idleLine: true, idle: 'Idle',
+      series: [{ name: 'Gen', values: [0, 3, 0, 0, 0, 0] }] };
+    const out = kit().tsHtml(o);
+    assert.ok(out.indexOf('class="ts-idle"') < out.indexOf('class="ts-bar"'));
+    const none = kit().tsHtml({ ...o, series: [{ name: 'Gen', values: [null, null, null, null, null, null] }] });
+    assert.ok(!none.includes('ts-idle-msg'));
+    assert.ok(!none.includes('class="ts-idle"'));
+  });
+
+  test('a stacked chart keeps idle and idleLine in data-kit-ts only when they take effect', () => {
+    const o = { id: 't', labels: L6, mode: 'stack', w: 600, height: 220, series: [{ name: 'Gen', values: [1, 2, 3, 4, 5, 6] }] };
+    const j = tsJson(kit().tsHtml({ ...o, idle: '', idleLine: false }));
+    assert.ok(!('idle' in j) && !('idleLine' in j));
   });
 });

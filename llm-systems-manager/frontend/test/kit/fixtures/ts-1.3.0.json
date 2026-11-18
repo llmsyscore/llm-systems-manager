@@ -1,0 +1,530 @@
+{
+ "calls": {
+  "peak": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "bars": "peak",
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    }
+   ]
+  },
+  "peakIdle": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "bars": "peak",
+   "idle": "Idle",
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    }
+   ]
+  },
+  "split": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "bars": "peak",
+   "split": true,
+   "series": [
+    {
+     "name": "Prompt",
+     "values": [
+      0,
+      700,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      350,
+      0,
+      0,
+      0,
+      0
+     ],
+     "slot": 2
+    },
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    }
+   ]
+  },
+  "splitLine": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "split": true,
+   "series": [
+    {
+     "name": "Prompt",
+     "values": [
+      0,
+      700,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      350,
+      0,
+      0,
+      0,
+      0
+     ],
+     "slot": 2
+    },
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    }
+   ]
+  },
+  "strip": {
+   "id": "s",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "ymax": 100,
+   "strip": "Busy %",
+   "stripLabel": "Busy",
+   "step": true,
+   "gaps": "break",
+   "series": [
+    {
+     "name": "Busy %",
+     "values": [
+      0,
+      100,
+      60,
+      null,
+      0,
+      20
+     ],
+     "slot": 3
+    },
+    {
+     "name": "VRAM %",
+     "values": [
+      10,
+      90,
+      90,
+      null,
+      90,
+      0
+     ],
+     "slot": 1
+    }
+   ]
+  },
+  "stack": {
+   "id": "st",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "mode": "stack",
+   "w": 600,
+   "height": 220,
+   "joined": true,
+   "series": [
+    {
+     "name": "Idle",
+     "values": [
+      10,
+      0,
+      0,
+      null,
+      3,
+      0
+     ],
+     "slot": 5,
+     "dim": true
+    },
+    {
+     "name": "Gen",
+     "values": [
+      5,
+      0,
+      0,
+      null,
+      0,
+      1
+     ],
+     "slot": 2
+    }
+   ]
+  },
+  "peakThresholds": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "bars": "peak",
+   "thresholds": [
+    {
+     "value": 40,
+     "label": "warn 40",
+     "tone": "warn"
+    }
+   ],
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    },
+    {
+     "name": "Prompt",
+     "values": [
+      0,
+      700,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      350,
+      0,
+      0,
+      0,
+      0
+     ],
+     "slot": 2
+    }
+   ]
+  },
+  "peakCap": {
+   "id": "p",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "bars": "peak",
+   "ymax": 30,
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    }
+   ]
+  },
+  "stepOnly": {
+   "id": "s",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "step": true,
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    },
+    {
+     "name": "Prompt",
+     "values": [
+      0,
+      700,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      350,
+      0,
+      0,
+      0,
+      0
+     ],
+     "slot": 2
+    }
+   ]
+  },
+  "stackEmptyIdle": {
+   "id": "st",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "mode": "stack",
+   "w": 600,
+   "height": 220,
+   "idle": "",
+   "series": [
+    {
+     "name": "A",
+     "values": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    }
+   ]
+  },
+  "line": {
+   "id": "l",
+   "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+   ],
+   "w": 600,
+   "height": 220,
+   "gaps": "break",
+   "zoom": true,
+   "keep": 6,
+   "series": [
+    {
+     "name": "Gen",
+     "values": [
+      0,
+      0,
+      50,
+      null,
+      20,
+      0
+     ],
+     "avg": [
+      0,
+      0,
+      25,
+      null,
+      30,
+      0
+     ],
+     "slot": 1
+    },
+    {
+     "name": "Prompt",
+     "values": [
+      0,
+      700,
+      0,
+      0,
+      0,
+      0
+     ],
+     "avg": [
+      0,
+      350,
+      0,
+      0,
+      0,
+      0
+     ],
+     "slot": 2
+    }
+   ]
+  }
+ },
+ "out": {
+  "peak": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]}],&quot;marks&quot;:[],&quot;t&quot;:10,&quot;b&quot;:198,&quot;bars&quot;:&quot;peak&quot;}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">25</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">50</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-idle\" d=\"M34 196.5H220M499 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"252.5\" y=\"10\" width=\"28\" height=\"188\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"252.5\" y=\"104\" width=\"28\" height=\"94\" fill=\"var(--s1)\"/><rect class=\"ts-peak\" x=\"438.5\" y=\"122.8\" width=\"28\" height=\"75.2\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"438.5\" y=\"122.8\" width=\"28\" height=\"75.2\" fill=\"var(--s1)\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "peakIdle": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">0</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,0,0,0,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,0,0,0,0]}],&quot;marks&quot;:[],&quot;t&quot;:10,&quot;b&quot;:198,&quot;bars&quot;:&quot;peak&quot;,&quot;idle&quot;:&quot;Idle&quot;}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">2</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">4</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-idle\" d=\"M34 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><g class=\"ts-idle-msg\"><rect x=\"288.2\" y=\"93\" width=\"49.6\" height=\"22\" rx=\"11\" fill=\"var(--card)\" stroke=\"var(--border)\"/><text x=\"313\" y=\"108\" text-anchor=\"middle\" class=\"ax\">Idle</text></g><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "split": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Prompt\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Prompt <span class=\"c-v\">700</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Prompt&quot;,&quot;values&quot;:[0,700,0,0,0,0],&quot;slot&quot;:2,&quot;avg&quot;:[0,350,0,0,0,0]},{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]}],&quot;marks&quot;:[],&quot;t&quot;:10,&quot;b&quot;:198,&quot;split&quot;:true,&quot;bars&quot;:&quot;peak&quot;}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Prompt, Gen\"><line x1=\"34\" x2=\"592\" y1=\"99\" y2=\"99\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"102.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"54.5\" y2=\"54.5\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"58\" text-anchor=\"end\" class=\"ax\">500</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">1k</text><text x=\"38\" y=\"20\" class=\"ax ts-bl\">Prompt</text><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"153.5\" y2=\"153.5\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"157\" text-anchor=\"end\" class=\"ax\">25</text><line x1=\"34\" x2=\"592\" y1=\"109\" y2=\"109\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"112.5\" text-anchor=\"end\" class=\"ax\">50</text><text x=\"38\" y=\"119\" class=\"ax ts-bl\">Gen</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-idle\" d=\"M34 97.5H127M220 97.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"159.5\" y=\"36.7\" width=\"28\" height=\"62.3\" fill=\"var(--s2)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"159.5\" y=\"67.9\" width=\"28\" height=\"31.2\" fill=\"var(--s2)\"/><path class=\"ts-idle\" d=\"M34 196.5H220M499 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"252.5\" y=\"109\" width=\"28\" height=\"89\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"252.5\" y=\"153.5\" width=\"28\" height=\"44.5\" fill=\"var(--s1)\"/><rect class=\"ts-peak\" x=\"438.5\" y=\"162.4\" width=\"28\" height=\"35.6\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"438.5\" y=\"162.4\" width=\"28\" height=\"35.6\" fill=\"var(--s1)\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "splitLine": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Prompt\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Prompt <span class=\"c-v\">700</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Prompt&quot;,&quot;values&quot;:[0,700,0,0,0,0],&quot;slot&quot;:2,&quot;avg&quot;:[0,350,0,0,0,0]},{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]}],&quot;marks&quot;:[],&quot;t&quot;:10,&quot;b&quot;:198,&quot;split&quot;:true}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Prompt, Gen\"><line x1=\"34\" x2=\"592\" y1=\"99\" y2=\"99\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"102.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"54.5\" y2=\"54.5\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"58\" text-anchor=\"end\" class=\"ax\">500</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">1k</text><text x=\"38\" y=\"20\" class=\"ax ts-bl\">Prompt</text><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"153.5\" y2=\"153.5\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"157\" text-anchor=\"end\" class=\"ax\">25</text><line x1=\"34\" x2=\"592\" y1=\"109\" y2=\"109\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"112.5\" text-anchor=\"end\" class=\"ax\">50</text><text x=\"38\" y=\"119\" class=\"ax ts-bl\">Gen</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path d=\"M80.5 99L173.5 36.7L266.5 99L359.5 99L452.5 99L545.5 99\" fill=\"none\" stroke=\"var(--s2)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><path d=\"M80.5 198L173.5 198L266.5 109M452.5 162.4L545.5 198\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "strip": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"s|Busy %\" aria-pressed=\"true\"><i style=\"background:var(--s3)\"></i>Busy % <span class=\"c-v\">180</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"s|VRAM %\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>VRAM % <span class=\"c-v\">280</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;s&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Busy %&quot;,&quot;values&quot;:[0,100,60,null,0,20],&quot;slot&quot;:3},{&quot;name&quot;:&quot;VRAM %&quot;,&quot;values&quot;:[10,90,90,null,90,0],&quot;slot&quot;:1}],&quot;marks&quot;:[],&quot;ymax&quot;:100,&quot;gaps&quot;:&quot;break&quot;,&quot;t&quot;:10,&quot;b&quot;:198,&quot;strip&quot;:&quot;Busy %&quot;,&quot;stripLabel&quot;:&quot;Busy&quot;,&quot;step&quot;:true}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Busy %, VRAM %\"><rect class=\"ts-strip\" x=\"34\" y=\"10\" width=\"558\" height=\"18\" fill=\"var(--grid)\" fill-opacity=\".45\"/><text x=\"28\" y=\"22.5\" text-anchor=\"end\" class=\"ax\">Busy</text><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"118\" y2=\"118\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"121.5\" text-anchor=\"end\" class=\"ax\">50</text><line x1=\"34\" x2=\"592\" y1=\"38\" y2=\"38\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"41.5\" text-anchor=\"end\" class=\"ax\">100</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><rect class=\"ts-cell\" x=\"127\" y=\"10\" width=\"93.4\" height=\"18\" fill=\"var(--s3)\" fill-opacity=\"1.00\"/><rect class=\"ts-cell\" x=\"220\" y=\"10\" width=\"93.4\" height=\"18\" fill=\"var(--s3)\" fill-opacity=\"0.66\"/><rect x=\"313\" y=\"10\" width=\"93.4\" height=\"18\" fill=\"var(--card)\"/><rect class=\"ts-cell\" x=\"499\" y=\"10\" width=\"93.4\" height=\"18\" fill=\"var(--s3)\" fill-opacity=\"0.32\"/><path class=\"ts-area\" d=\"M34 182H127V54H220V54H313V198H34Z\" fill=\"var(--s1)\" fill-opacity=\".18\"/><path d=\"M34 182H127V54H220V54H313\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><path class=\"ts-area\" d=\"M406 54H499V198H592V198H406Z\" fill=\"var(--s1)\" fill-opacity=\".18\"/><path d=\"M406 54H499V198H592\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "stack": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"st|Idle\" aria-pressed=\"true\"><i style=\"background:var(--s5);opacity:.35\"></i>Idle <span class=\"c-v\">13</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"st|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Gen <span class=\"c-v\">6</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;st&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;stack&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Idle&quot;,&quot;values&quot;:[10,0,0,null,3,0],&quot;slot&quot;:5,&quot;dim&quot;:true},{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[5,0,0,null,0,1],&quot;slot&quot;:2}],&quot;marks&quot;:[],&quot;joined&quot;:true}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Idle, Gen\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">10</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">20</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><rect class=\"ts-bar\" x=\"66.5\" y=\"104\" width=\"28\" height=\"94\" fill=\"var(--s5)\" fill-opacity=\".35\"/><path class=\"ts-bar\" d=\"M66.5 104V60q0 -3 3 -3h22q3 0 3 3V104Z\" fill=\"var(--s2)\"/><path class=\"ts-bar\" d=\"M438.5 198V172.8q0 -3 3 -3h22q3 0 3 3V198Z\" fill=\"var(--s5)\" fill-opacity=\".35\"/><path class=\"ts-bar\" d=\"M531.5 198V191.6q0 -3 3 -3h22q3 0 3 3V198Z\" fill=\"var(--s2)\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "peakThresholds": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"p|Prompt\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Prompt <span class=\"c-v\">700</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]},{&quot;name&quot;:&quot;Prompt&quot;,&quot;values&quot;:[0,700,0,0,0,0],&quot;slot&quot;:2,&quot;avg&quot;:[0,350,0,0,0,0]}],&quot;marks&quot;:[],&quot;thresholds&quot;:[{&quot;value&quot;:40,&quot;label&quot;:&quot;warn 40&quot;,&quot;tone&quot;:&quot;warn&quot;}],&quot;t&quot;:10,&quot;b&quot;:198,&quot;bars&quot;:&quot;peak&quot;}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen, Prompt\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">500</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">1k</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-idle\" d=\"M34 196.5H220M499 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"252.5\" y=\"188.6\" width=\"28\" height=\"9.4\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"252.5\" y=\"193.3\" width=\"28\" height=\"4.7\" fill=\"var(--s1)\"/><rect class=\"ts-peak\" x=\"438.5\" y=\"194.2\" width=\"28\" height=\"3.8\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"438.5\" y=\"194.2\" width=\"28\" height=\"3.8\" fill=\"var(--s1)\"/><path class=\"ts-idle\" d=\"M34 196.5H127M220 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"159.5\" y=\"66.4\" width=\"28\" height=\"131.6\" fill=\"var(--s2)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"159.5\" y=\"132.2\" width=\"28\" height=\"65.8\" fill=\"var(--s2)\"/><line class=\"th\" x1=\"34\" x2=\"592\" y1=\"190.5\" y2=\"190.5\" stroke=\"var(--warn)\" stroke-dasharray=\"6 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"592\" y=\"187.5\" text-anchor=\"end\" class=\"ax th-l\">warn 40</text><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "peakCap": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"p|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;p&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]}],&quot;marks&quot;:[],&quot;ymax&quot;:30,&quot;t&quot;:10,&quot;b&quot;:198,&quot;bars&quot;:&quot;peak&quot;}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">15</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">30</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-idle\" d=\"M34 196.5H220M499 196.5H592\" fill=\"none\" stroke=\"var(--muted)\" stroke-opacity=\".55\" stroke-width=\"3\" vector-effect=\"non-scaling-stroke\"/><rect class=\"ts-peak\" x=\"252.5\" y=\"10\" width=\"28\" height=\"188\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"252.5\" y=\"41.3\" width=\"28\" height=\"156.7\" fill=\"var(--s1)\"/><rect class=\"ts-peak\" x=\"438.5\" y=\"72.7\" width=\"28\" height=\"125.3\" fill=\"var(--s1)\" fill-opacity=\".32\"/><rect class=\"ts-avg\" x=\"438.5\" y=\"72.7\" width=\"28\" height=\"125.3\" fill=\"var(--s1)\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "stepOnly": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"s|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"s|Prompt\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Prompt <span class=\"c-v\">700</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;s&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]},{&quot;name&quot;:&quot;Prompt&quot;,&quot;values&quot;:[0,700,0,0,0,0],&quot;slot&quot;:2,&quot;avg&quot;:[0,350,0,0,0,0]}],&quot;marks&quot;:[],&quot;t&quot;:10,&quot;b&quot;:198,&quot;step&quot;:true}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen, Prompt\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">500</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">1k</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-area\" d=\"M34 198H127V198H220V188.6H313V198H34Z\" fill=\"var(--s1)\" fill-opacity=\".18\"/><path d=\"M34 198H127V198H220V188.6H313\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><path class=\"ts-area\" d=\"M406 194.2H499V198H592V198H406Z\" fill=\"var(--s1)\" fill-opacity=\".18\"/><path d=\"M406 194.2H499V198H592\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><path class=\"ts-area\" d=\"M34 198H127V66.4H220V198H313V198H406V198H499V198H592V198H34Z\" fill=\"var(--s2)\" fill-opacity=\".18\"/><path d=\"M34 198H127V66.4H220V198H313V198H406V198H499V198H592\" fill=\"none\" stroke=\"var(--s2)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" vector-effect=\"non-scaling-stroke\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "stackEmptyIdle": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"st|A\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>A <span class=\"c-v\">3</span></button></div><div class=\"ts\" data-kit-ts=\"{&quot;id&quot;:&quot;st&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;stack&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;A&quot;,&quot;values&quot;:[1,0,0,0,0,2],&quot;slot&quot;:1}],&quot;marks&quot;:[]}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"A\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">2</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">4</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path class=\"ts-bar\" d=\"M66.5 198V154q0 -3 3 -3h22q3 0 3 3V198Z\" fill=\"var(--s1)\"/><path class=\"ts-bar\" d=\"M531.5 198V107q0 -3 3 -3h22q3 0 3 3V198Z\" fill=\"var(--s1)\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>",
+  "line": "<div class=\"legend\"><button type=\"button\" class=\"chip\" data-kit-series=\"l|Gen\" aria-pressed=\"true\"><i style=\"background:var(--s1)\"></i>Gen <span class=\"c-v\">70</span></button><button type=\"button\" class=\"chip\" data-kit-series=\"l|Prompt\" aria-pressed=\"true\"><i style=\"background:var(--s2)\"></i>Prompt <span class=\"c-v\">700</span></button></div><div class=\"ts\" data-kit-zoom data-kit-ts=\"{&quot;id&quot;:&quot;l&quot;,&quot;labels&quot;:[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;,&quot;d&quot;,&quot;e&quot;,&quot;f&quot;],&quot;mode&quot;:&quot;line&quot;,&quot;height&quot;:220,&quot;w&quot;:600,&quot;l&quot;:34,&quot;r&quot;:8,&quot;series&quot;:[{&quot;name&quot;:&quot;Gen&quot;,&quot;values&quot;:[0,0,50,null,20,0],&quot;slot&quot;:1,&quot;avg&quot;:[0,0,25,null,30,0]},{&quot;name&quot;:&quot;Prompt&quot;,&quot;values&quot;:[0,700,0,0,0,0],&quot;slot&quot;:2,&quot;avg&quot;:[0,350,0,0,0,0]}],&quot;marks&quot;:[],&quot;zoom&quot;:true,&quot;keep&quot;:6,&quot;gaps&quot;:&quot;break&quot;,&quot;t&quot;:10,&quot;b&quot;:198}\"><svg viewBox=\"0 0 600 220\" width=\"100%\" role=\"img\" aria-label=\"Gen, Prompt\"><line x1=\"34\" x2=\"592\" y1=\"198\" y2=\"198\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"201.5\" text-anchor=\"end\" class=\"ax\">0</text><line x1=\"34\" x2=\"592\" y1=\"104\" y2=\"104\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"107.5\" text-anchor=\"end\" class=\"ax\">500</text><line x1=\"34\" x2=\"592\" y1=\"10\" y2=\"10\" stroke=\"var(--grid)\" stroke-dasharray=\"3 4\" vector-effect=\"non-scaling-stroke\"/><text x=\"28\" y=\"13.5\" text-anchor=\"end\" class=\"ax\">1k</text><text x=\"80.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">a</text><text x=\"173.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">b</text><text x=\"266.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">c</text><text x=\"359.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">d</text><text x=\"452.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">e</text><text x=\"545.5\" y=\"214\" text-anchor=\"middle\" class=\"ax ax-x\">f</text><path d=\"M80.5 198L173.5 198L266.5 188.6M452.5 194.2L545.5 198\" fill=\"none\" stroke=\"var(--s1)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"545.5\" cy=\"198\" r=\"3\" fill=\"var(--s1)\" stroke=\"var(--card)\" stroke-width=\"2\"/><path d=\"M80.5 198L173.5 66.4L266.5 198L359.5 198L452.5 198L545.5 198\" fill=\"none\" stroke=\"var(--s2)\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\" vector-effect=\"non-scaling-stroke\"/><circle cx=\"545.5\" cy=\"198\" r=\"3\" fill=\"var(--s2)\" stroke=\"var(--card)\" stroke-width=\"2\"/><line class=\"xh\" x1=\"0\" x2=\"0\" y1=\"10\" y2=\"198\" stroke=\"var(--text-2)\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" visibility=\"hidden\"/></svg><div class=\"tip\" hidden></div></div>"
+ }
+}
