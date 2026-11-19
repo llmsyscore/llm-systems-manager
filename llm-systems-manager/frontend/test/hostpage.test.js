@@ -498,7 +498,7 @@ describe('Host pages (#1432)', () => {
     window.layout.overallBorrowed = ['vllm-cpu-mem'];
     window._activeTab = 'overall';
     window.adoptPinnedCards = vi.fn();
-    window.hpPaintPinned();
+    await window.hpPaintPinned();
     await vi.advanceTimersByTimeAsync(0);
     const live = () => calls.filter(u => u.startsWith('/api/vllm/metrics?')).length;
     const seeded = live();

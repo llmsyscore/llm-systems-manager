@@ -63,13 +63,11 @@ llm-systems-admin-password reset
 
 **First sign-in.** Open `http://<this-host>:5000/` and sign in with the admin login the installer showed you.
 
-## Video tour
+## See it in action
 
-Six minutes through sign-in, every dashboard, Tower, LLM Control, the Tools, chat, image generation, alerts and the Admin pages.
+**[▶ Live demo](https://demo.llmsysmanager.com/?ref=gh)**: click through every dashboard, LLM Control, the Tools, alerts and the Admin pages with sample data, right in your browser.
 
-https://github.com/user-attachments/assets/b2da9caf-9437-4001-acdc-cd12567fa786
-
-**[▶ Screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)**: all 30 screens, full size.
+**[▶ Screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)**: all 31 screens, full size.
 
 ## What it does
 

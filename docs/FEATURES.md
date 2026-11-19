@@ -9,7 +9,7 @@ Everything LLM Systems Manager does, with a screenshot of each screen. To instal
 - **Jobs.** One scheduler for tool runs waiting behind a busy host, Report Card runs, Tower timers, overnight autotune batches, Forecast runs and Tower evaluations. Jobs keep running when you close the tab or restart the manager, show on every dashboard, and can be cancelled by their owner or an admin. **Admin → Jobs** lists them all; **System Health** shows the live and scheduled ones.
 - **Model Autopilot.** Places each declared model on a host with the memory to hold it, moves it when a host goes offline, and adds or removes copies as demand changes. **Admin → Gateway**.
 - **GPU Report Card.** One standardized benchmark across all three providers producing a comparable, shareable card — TTFT, throughput, tokens/joule, measured $/Mtok, and the GPU it ran on. Runs are stored so you can trend them.
-- **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, monthly savings against hosted-API pricing, idle-power accounting, and energy, cost and tokens per model (a *By model* table on the Energy tab). The global figure counts hosts that report both power and tokens.
+- **Energy & cost intelligence.** Measured **$/Mtok** from real power draw, monthly savings against hosted-API pricing, idle-power accounting, and energy, cost and tokens per model (a *By model* table on the Energy page). The global figure counts hosts that report both power and tokens.
 - **Discord bot.** Slash commands for host and Tower queries, model load/unload, and alarm acknowledgement, limited to an allowlist of users.
 - **OpenAI-compatible inference gateway.** One endpoint (`/api/gateway/v1`) fronts every provider; `/v1/models` merges all pools, deduped and tagged. Per-model pin, then pool round-robin, then pre-first-token failover. Dashboard sessions by default, API keys for external clients — a key can carry a `label=secret` form so it shows by name (not position) in the Gateway card's flow diagram. See [Inference gateway](DEPLOYMENT.md#inference-gateway).
 - **Benchmarking & autotuning.** **Benchmark → Live** runs `speed-bench` against the running server through its API (workload presets, concurrency sweeps, energy per token, a results chart); runs attach to the Report Card, feed Autopilot's cross-host speed ranking, and can be pinned as baselines that are re-checked on a schedule with an alarm-engine regression alert. **Benchmark → Offline** runs `llama-bench` or `vllm bench serve` with a KV-cache type sweep, energy per run and a prompt × output heatmap. **Autotune** takes a goal (Fit / Speed / Balanced / Serve) and tunes seven settings in order — context, KV-cache type with a quality check, MoE CPU offload, CPU threads, speculative decoding with draft-model discovery on Hugging Face, parallel slots, author-recommended sampling — then verifies the result under traffic. Overnight batches, a Quiet power-cap goal, a stale-tune reminder and a standalone Quality guard round it out. Live benchmark and autotune run on `llama.cpp`, LM Studio and vLLM hosts, and any two runs from the ledger can be compared. Every headline speed shows the range of the repeated runs behind it, and every result saves the conditions it ran under (GPU and driver, CPU, memory, OS, backend build, server command, model file, context and the GPU state at the start and end), so two runs of the same model can be compared side by side with the differences highlighted. With more than one llama.cpp build installed, the Offline and Live benchmark, Autotune and Report Card forms show a **Builds** row: pick several builds to run the same settings on each one, and every result is labelled with the build it ran on. Offline benchmark and Autotune run each build's own programs; Live benchmark and Report Card switch the server to each picked build and back to the starting one when the run ends, which needs an admin.
@@ -22,14 +22,14 @@ Everything LLM Systems Manager does, with a screenshot of each screen. To instal
 - **Host pages.** **Dashboards → llama.cpp**, **LM Studio** and **vLLM** each show one host at a time. Pick the host in the **Host** list at the top. The page has five rows: **Host** (a **Snapshot** of state, CPU, memory, GPU, prompt speed and generation speed), **Inference** (throughput, the server and its details, and tokens per hour), **GPU**, **System** (CPU, memory, network and disks) and **Power hardware** (UPS, liquid cooler, power supply and fans). Rows a host has nothing for stay hidden, and Power hardware folds with "Nothing reported". A host with no LLM server opens from **All hosts** on its own host page with the same rows except Inference. Pick 6, 12 or 24 hours in the toolbar. Open the settings drawer on one of these pages to hide its rows or single panels, or on **Overall** to pin any of their panels there. A pinned panel shows on Overall even when it is hidden on its own page, and follows the Overall time range there. Panels on one line are the same height, and charts grow to fill their panel. Throughput shows a bar for each 15 minutes (shorter on 6 and 12 hours): the faint part reaches the highest speed and the solid part is the average, with prompt speed in the top row and generation speed below it. A grey line along the bottom marks idle time. Tokens per hour shows a bar for each of the last 24 hours, whatever the range, with prompt tokens stacked on generated tokens; the grey line marks hours with none. Disk space lists real drives only; on a Mac the main drive shows once as Macintosh HD. GPU busy shows as a colour strip above the memory chart, with a stronger colour when busier; on a Mac it shows bars like Throughput. A chart's **⋯** menu has **View … in metrics** for each line the alarm engine keeps history for; it opens **Events and metrics → Metrics** with that host and metric picked.
 - **Cross-platform agent.** One agent for Linux and macOS/Apple Silicon auto-detects what each host runs and enables only what's relevant — a bare host just reports system metrics, all over TLS.
 - **Live host telemetry.** CPU, RAM, disk, network, GPU utilization, PSU, UPS battery, and AIO cooling stats. AMD cards also show how much system memory the GPU uses (GTT) beside VRAM. On a host with several GPUs, pick the one to watch in **Admin → Agents**.
-- **Fleet updates.** **Update all** in **Admin → Agents** updates every agent that is behind, one at a time. It keeps running when you close the window or leave the page, and shows on the Jobs tab.
+- **Fleet updates.** **Update all** in **Admin → Agents** updates every agent that is behind, one at a time. It keeps running when you close the window or leave the page, and shows on Admin → Jobs.
 - **Alerting.** A standalone alarm engine persists every metric to InfluxDB, evaluates threshold and anomaly rules, and routes alerts by email (with the mail server's certificate verified), toast, webhook, or Discord. Agents buffer to disk when it's down and replay when it returns.
 - **Incident correlation.** Several rules triggering on one host at once become a single **incident** — one notification, with the Events table collapsing members behind a "+N related" count. Resolved alerts roll into a retention-managed history.
-- **At-a-glance status.** Dots on the **Events and metrics** and **Admin** tabs turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any tab. A separate run-activity dot on **LLM Control → Tools** tracks tool runs globally.
+- **At-a-glance status.** Dots next to **Events and metrics** and **Admin** in the sidebar turn red on active critical alerts or degraded system health, and amber when a new release is available. Both update from any page. A separate run-activity dot on **LLM Control → Tools** tracks tool runs globally.
 - **Phone companion (PWA).** An installable app at `/companion` — Home, Alerts, Tower (ask, prompts and insights), Energy, Models, Admin, and Settings screens sized for a phone, with alarm-engine alerts delivered as native push notifications even when the app is closed. Model swaps, pins, autopilot approvals, and service restarts each sit behind a confirm sheet, restricted to the admin role. See [Phone companion](DEPLOYMENT.md#phone-companion-pwa).
 - **Direct LLM chat.** Talk to any loaded model through the embedded `llama.cpp` web interface.
 - **OpenClaw cost analytics.** Session logs become token-usage, cost, and tool-attribution dashboards with monthly spend projection and — given a budget — warning, ceiling, and cost-anomaly alerts.
-- **Image generation.** An optional tab drives `stable-diffusion.cpp` for text-to-image creation.
+- **Image generation.** An optional page under Tools drives `stable-diffusion.cpp` for text-to-image creation.
 - **Multi-user access control.** **Admin** / **Operator** roles — operators can manage LLMs and watch dashboards, without access to the Admin tab, agent management, secrets, shells, or the Save buttons of service settings. There is no built-in password: the installer creates a temporary one for the first sign-in, and `admin_password.py reset` makes a new one at any time. Self-service password change plus username + source-IP lockout.
 - **Admin audit log.** Every mutating admin action is recorded and browsable in **Admin → Audit Log**. Rows are purged past a configurable retention window (60 days by default) behind a 100,000-row backstop, categorized against an event catalog with per-event toggles, searchable and filterable, and exportable to CSV.
 - **Scheduled backups.** Full export archives (config, agent registry, CA, users, model profiles, benchmarks) on an interval, with retention pruning, optional AES-256-GCM encryption, and an optional mirror directory. Each run writes a manager archive and, when `[alarm_engine].management_token` is set, an alarm-engine archive alongside it. Archives restore through **Restore…** and can be downloaded straight from the Backups card.
@@ -42,13 +42,11 @@ Everything LLM Systems Manager does, with a screenshot of each screen. To instal
 
 ## Screenshots
 
-**Video tour** — sign-in, Overall, every dashboard including Forecast, Tower, LLM Control, the Tools launcher with a Live benchmark, chat, image generation, the alarm console, every Admin page including System Health, agent enrollment and Jobs, and the settings drawer:
-
-https://github.com/user-attachments/assets/b2da9caf-9437-4001-acdc-cd12567fa786
+**[▶ Live demo](https://demo.llmsysmanager.com/?ref=gh)** — click through every dashboard, LLM Control, the Tools, alerts and the Admin pages with sample data, right in your browser.
 
 <img width="1920" height="1080" alt="Sign-in screen" src="screenshots/login.webp" />
 
-**[▶ Open the screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)** — step through all 30 screens full-size with the arrows.
+**[▶ Open the screenshot viewer](https://www.llmsyscore.com/?ref=gh#screenshots)** — step through all 31 screens full-size with the arrows.
 
 Or open any screen right here:
 
@@ -58,6 +56,22 @@ Or open any screen right here:
 At a glance tiles, token throughput by provider, each LLM server, power and energy, the watch list (forecast, Tower, alerts and hosts), and pinned cards from any dashboard. Pick a provider in the toolbar to narrow every panel, and pick 6, 12 or 24 hours for the throughput chart. Token throughput shows a bar for each 15 minutes (shorter on 6 and 12 hours) like the host pages: prompt speed in the top row, and generation speed below it with llama.cpp, LM Studio and vLLM stacked in their colours; the faint part reaches the highest speed and the solid part is the average.
 
 <img width="1920" height="1080" alt="Overall" src="screenshots/overall.webp" />
+</details>
+
+<details>
+<summary><b>All hosts</b> — every host's CPU, memory and disk at a glance, and charts that compare the hosts over time</summary>
+
+Every host's CPU, memory and disk at a glance, and charts that compare the hosts over time. Click a host to open its page; click a host's chip in a chart to show or hide it.
+
+<img width="1920" height="1080" alt="All hosts" src="screenshots/dashboard-all.webp" />
+</details>
+
+<details>
+<summary><b>Host page</b> — one host's CPU, memory, network, disk and power, for a machine with no LLM server</summary>
+
+One host's CPU, memory, network, disk and power, for a machine with no LLM server. Pick another host in the Host menu.
+
+<img width="1920" height="1080" alt="Host page" src="screenshots/dashboard-host.webp" />
 </details>
 
 <details>
@@ -197,17 +211,9 @@ Chat against any model the gateway serves, with file upload and a working direct
 </details>
 
 <details>
-<summary><b>Image generation</b> — native async image and video generation on a local stable-diffusion.cpp server</summary>
+<summary><b>Alarm console</b> — active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, on the Events and metrics page</summary>
 
-Native async image and video generation on a local stable-diffusion.cpp server.
-
-<img width="1920" height="1080" alt="Image generation" src="screenshots/image-generation.webp" />
-</details>
-
-<details>
-<summary><b>Alarm console</b> — active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events and metrics tab</summary>
-
-Active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, inside the Events and metrics tab.
+Active alerts, anomalies, suppressions, the 24-hour severity band, the event timeline and per-alert delivery history, on the Events and metrics page.
 
 <img width="1920" height="1080" alt="Alarm console" src="screenshots/alarm-console.webp" />
 </details>
@@ -277,9 +283,9 @@ Every configuration key in a category rail with nested groups, searchable, appli
 </details>
 
 <details>
-<summary><b>Settings drawer</b> — pinned cards, layout engine, density, themes and refresh cadence for the page you are on</summary>
+<summary><b>Settings drawer</b> — your account, the sections shown on this page, and cards pinned from other pages</summary>
 
-Pinned cards, layout engine, density, themes and refresh cadence for the page you are on.
+Your account, the sections shown on the page you are on, and cards pinned from other pages.
 
 <img width="1920" height="1080" alt="Settings drawer" src="screenshots/settings-drawer.webp" />
 </details>
