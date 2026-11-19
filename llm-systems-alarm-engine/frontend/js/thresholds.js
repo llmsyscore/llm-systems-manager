@@ -3,7 +3,7 @@
 
 // Severity → line color. Read from the page's theme tokens when a DOM is
 // present; the hex fallbacks serve the manager's tests.
-const _SEV_COLOR = { critical: '#ef4444', warning: '#f59e0b', info: '#7aa2ff' };
+const _SEV_COLOR = { critical: '#ef4444', warning: '#eab308', info: '#3987e5' };
 function _sevColor(sev) {
   if (typeof document === 'undefined' || !document.documentElement) return _SEV_COLOR[sev] || _SEV_COLOR.info;
   const v = getComputedStyle(document.documentElement)
