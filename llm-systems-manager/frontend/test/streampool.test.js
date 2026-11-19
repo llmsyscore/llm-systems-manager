@@ -1,8 +1,12 @@
 // #456: the stream-pool badge must reflect CURRENT pool state, not latch
 // forever on the since-boot refusal counter.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { trackRefusals } from '../js/lib/series.js';
-import { srcFile, fnSrc, evalGlobal } from './helpers/harness.js';
+import LMSeries, { trackRefusals } from '../js/lib/series.js';
+import MV from '../js/lib/manager-view.js';
+import OV from '../js/lib/overall-view.js';
+import { srcFile, evalGlobal } from './helpers/harness.js';
+
+evalGlobal(srcFile('kit/kit.js'));
 
 const dashSrc = srcFile('js/dashboard-manager.js');
 const indexSrc = srcFile('index.html');
@@ -60,26 +64,24 @@ describe('trackRefusals', () => {
   });
 });
 
-// Runs the real fetchManagerStreamsCard() with fetch/LMSeries/_dashSetStatus stubbed.
+// Runs the real fetchManagerStreamsCard() and the Manager page's kit panels with fetch stubbed (#1432).
 describe('dashboard-manager badge wiring (#456)', () => {
   let run;
+  const note = () => document.querySelector('[data-card="mgr-streams"] .p-hd .p-note');
+  // The value cell of a Connection health entry.
+  const cell = (label) => [...document.querySelectorAll('#mg-b-streams .r-lab')].find(d => d.textContent === label).parentElement.querySelector('.r-val');
 
   beforeEach(() => {
-    document.body.innerHTML = `
-      <div id="mgrStreamsSummary"></div>
-      <table><tbody id="mgrStreamsTable"></tbody></table>
-      <span id="mgrStreamsBadge"></span>`;
-    window._activeTab = 'manager';
-    window._subTabState = {};
+    document.body.innerHTML = '<div class="mg-root" id="mg-root"></div>';
+    window._activeTab = 'dashboard';
+    window._subTabState = { dashboard: 'manager' };
     window._ovPinned = () => false;
-    window._dashSetStatus = () => {};
-    window._mgrPoolRefusalTrack = null;
-    window._mgrAgentRefusalTrack = {};
-    // Real trackRefusals, stubbed sub-tab gate (the gate itself isn't under test here).
-    window.LMSeries = { trackRefusals, isManagerSubActive: () => true };
-    const fn = fnSrc(dashSrc, 'fetchManagerStreamsCard');
-    expect(fn, 'fetchManagerStreamsCard not found').toBeTruthy();
-    evalGlobal(fn + '\nwindow.fetchManagerStreamsCard = fetchManagerStreamsCard;');
+    window.mcShellStore = { getItem: () => null, setItem: () => {} };
+    window.layout = {};
+    window.LMSeries = LMSeries;
+    window.MV = MV;
+    window.OV = OV;
+    evalGlobal(dashSrc);
     run = window.fetchManagerStreamsCard;
   });
 
@@ -92,39 +94,34 @@ describe('dashboard-manager badge wiring (#456)', () => {
   it('shows the open-route counters and warns on refusals (#1216)', async () => {
     await poll({ active: 1, limit: 10, peak: 2, refusals: 0 },
                { anon_requests_per_min: 3210, anon_refused_per_min: 2610, anon_budget_per_min: 600 });
-    const html = document.getElementById('mgrStreamsSummary').innerHTML;
-    expect(html).toContain('Open routes');
-    expect(html).toContain('3210 /min');
-    expect(html).toContain('2610');
-    const badge = document.getElementById('mgrStreamsBadge');
-    expect(badge.className).toContain('status--warn');
-    expect(badge.innerHTML).toContain('flooded');
+    expect(cell('Open routes').textContent).toBe('3210 /min of 600');
+    expect(cell('Refused (open routes)').textContent).toBe('2610');
+    expect(cell('Refused (open routes)').parentElement.classList.contains('mg-over')).toBe(true);
+    expect(note().textContent).toBe('flooded');
+    expect(note().classList.contains('mg-warn')).toBe(true);
     await poll({ active: 1, limit: 10, peak: 2, refusals: 0 },
                { anon_requests_per_min: 12, anon_refused_per_min: 0, anon_budget_per_min: 600 });
-    expect(document.getElementById('mgrStreamsBadge').className).toContain('status--ok');
-    expect(document.getElementById('mgrStreamsSummary').innerHTML).toContain('12 /min');
+    expect(note().textContent).toBe('ok');
+    expect(note().classList.contains('mg-warn')).toBe(false);
+    expect(cell('Open routes').textContent).toBe('12 /min of 600');
   });
 
   it('no longer derives saturation from the lifetime refusal counter', async () => {
     // active well under limit, but a huge lifetime refusal count — must stay non-crit.
     await poll({ active: 2, limit: 10, peak: 15, refusals: 500 });
-    const badge = document.getElementById('mgrStreamsBadge');
-    expect(badge.className).not.toContain('status--crit');
+    expect(note().textContent).not.toBe('saturated');
+    expect(note().classList.contains('mg-bad')).toBe(false);
   });
 
   it('labels lifetime totals as since-boot', async () => {
     await poll({ active: 1, limit: 10, peak: 7, refusals: 2 });
-    const html = document.getElementById('mgrStreamsSummary').innerHTML;
-    expect(html).toContain('Peak (boot)');
-    expect(html).toContain('Refusals (boot)');
+    expect(cell('Peak (boot)').textContent).toBe('7');
+    expect(cell('Refusals (boot)').textContent).toBe('2');
   });
 
   it('no longer crit-styles the since-boot peak cell when peak alone reaches the limit', async () => {
     await poll({ active: 1, limit: 10, peak: 10, refusals: 0 });
-    const html = document.getElementById('mgrStreamsSummary').innerHTML;
-    const idx = html.indexOf('Peak (boot)');
-    const chunk = html.slice(idx, html.indexOf('</div>', idx));
-    expect(chunk).not.toContain('crit');
+    expect(cell('Peak (boot)').parentElement.classList.contains('mg-over')).toBe(false);
   });
 
   it('has a warn badge state for recent refusals below the cap', async () => {
@@ -137,12 +134,11 @@ describe('dashboard-manager badge wiring (#456)', () => {
     } finally {
       vi.useRealTimers();
     }
-    const badge = document.getElementById('mgrStreamsBadge');
-    expect(badge.className).toContain('status--warn');
-    expect(badge.innerHTML).toContain('refusing');
+    expect(note().textContent).toBe('refusing');
+    expect(note().classList.contains('mg-warn')).toBe(true);
   });
 
-  it('flags an agent row when its own refusal count grew recently', async () => {
+  it('flags a host row when its own refusal count grew recently', async () => {
     const agent = (refusals) => ([{
       hostname: 'h1', agent_id: 'a1', reachable: true,
       active: 1, cap: 5, peak: 2, refusals, terminal_sessions: 0,
@@ -156,8 +152,9 @@ describe('dashboard-manager badge wiring (#456)', () => {
     } finally {
       vi.useRealTimers();
     }
-    const rowHtml = document.getElementById('mgrStreamsTable').innerHTML;
-    expect(rowHtml).toContain('var(--crit');
+    const cells = [...document.querySelectorAll('#mg-b-hosts tbody tr td')].map(td => td.textContent);
+    expect(cells[0]).toBe('h1');
+    expect(cells).toContain('6 · recent');
   });
 
   // wiring (unexecutable): index.html loads both halves of the stream pool.

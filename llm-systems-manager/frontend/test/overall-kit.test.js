@@ -170,7 +170,7 @@ describe('Overall rows (#1432)', () => {
     for (const k of ['llama', 'lms', 'vllm']) expect(document.querySelector(`[data-card="srv-${k}"]`).hidden, k).toBe(false);
     expect(document.querySelector('[data-card="tp"] .p-title').textContent).toBe('Token throughput');
     expect(document.querySelector('[data-card="tp"] .p-note').textContent).toMatch(/^All providers · last 24 h · Updated /);
-    expect(document.querySelector('#ov-b-tp [data-kit-series="ov-tp|Prompt (all)"]').getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector('#ov-b-tp [data-kit-series="ov-tp|Prompt (all)"]').getAttribute('aria-pressed')).toBe('true');
     expect(text('ov-b-forecast')).toContain('Disk use on / has grown steadily.');
     expect(text('ov-b-hosts')).toContain('llm-systems-lmstudio.local');
     expect(document.getElementById('overallTab').getAttribute('data-kit-page')).toBe('overall');
@@ -189,10 +189,10 @@ describe('Overall rows (#1432)', () => {
     expect(text('ov-b-tp')).toBe('Nothing reported yet');
     await window.fetchOverallMetrics();
     expect(tpData().labels).toHaveLength(1);
-    now += 5 * 60000;
+    now += 15 * 60000;
     await window.fetchOverallMetrics();
     expect(tpData().labels).toHaveLength(2);
-    expect(tpData().keep).toBe(288);
+    expect(tpData().keep).toBe(96);
   });
 
   test('a failing tick keeps the last good payloads on the page', async () => {
@@ -274,7 +274,7 @@ describe('Throughput live updates (#1432)', () => {
   const T0 = Date.parse('2026-11-16T06:00:30Z');
   const agg = (tps) => ({ ...LLAMA_AGG, throughput: { total_tps: tps, total_pps: 0 } });
 
-  test('live append starts a new bucket only on a boundary', async () => {
+  test('live append starts a new slot only on a boundary; a slot keeps its peak and mean', async () => {
     load();
     let now = T0;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -282,27 +282,49 @@ describe('Throughput live updates (#1432)', () => {
     stubFetch(routes);
     await window.ovLoad();
     const d0 = tpData();
-    expect(d0.labels).toHaveLength(288);
-    expect(d0.keep).toBe(288);
+    expect(d0.labels).toHaveLength(96);
+    expect(d0.keep).toBe(96);
+    expect(d0.series.map(x => x.name)).toEqual(['Prompt (all)', 'llama.cpp', 'LM Studio', 'vLLM']);
     routes['/api/fleet/llama/aggregate'] = agg(5);
     await window.fetchOverallMetrics();
     now = T0 + 60000;
     routes['/api/fleet/llama/aggregate'] = agg(3);
     await window.fetchOverallMetrics();
     const d1 = tpData();
-    expect(d1.labels).toHaveLength(288);
-    expect(d1.labels[287]).toBe(d0.labels[287]);
-    expect(d1.series[0].values[287]).toBe(5);
-    now = T0 + 5 * 60000;
+    expect(d1.labels).toHaveLength(96);
+    expect(d1.labels[95]).toBe(d0.labels[95]);
+    expect(d1.series[1].values[95]).toBe(5);
+    expect(d1.series[1].avg[95]).toBe(4);
+    now = T0 + 15 * 60000;
     routes['/api/fleet/llama/aggregate'] = agg(2);
     await window.fetchOverallMetrics();
     const d2 = tpData();
-    expect(d2.labels).toHaveLength(288);
-    expect(d2.keep).toBe(288);
-    expect(d2.labels[286]).toBe(d0.labels[287]);
-    expect(d2.labels[287]).toBe(OV.rangeLabel(Date.parse('2026-11-16T06:05:00Z'), 24));
-    expect(d2.series[0].values[286]).toBe(5);
-    expect(d2.series[0].values[287]).toBe(2);
+    expect(d2.labels).toHaveLength(96);
+    expect(d2.keep).toBe(96);
+    expect(d2.labels[94]).toBe(d0.labels[95]);
+    expect(d2.labels[95]).toBe(OV.rangeLabel(Date.parse('2026-11-16T06:15:00Z'), 24));
+    expect(d2.series[1].values[94]).toBe(5);
+    expect(d2.series[1].values[95]).toBe(2);
+    expect(d2.series[1].avg[95]).toBe(2);
+  });
+
+  test('a range change to an empty history drops the old slot average from the live bar', async () => {
+    load();
+    let now = T0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const routes = { ...DEV, '/api/history': [{ ts: '2026-11-16T06:00:10+00:00', llama_tps: 50, llama_pps: 0, lms_tps: 0, lms_pps: 0 }] };
+    stubFetch(routes);
+    await window.ovLoad();
+    expect(tpData().series[1].avg[95]).toBe(50);
+    routes['/api/history'] = [];
+    await window.ovSetRange(12);
+    routes['/api/fleet/llama/aggregate'] = agg(3);
+    await window.fetchOverallMetrics();
+    now = T0 + 30000;
+    await window.fetchOverallMetrics();
+    const d = tpData(), i = d.labels.length - 1;
+    expect(d.series[1].name).toBe('llama.cpp');
+    expect(d.series[1].avg[i]).toBe(3);
   });
 
   test('zoomed chart holds on append', async () => {
@@ -312,14 +334,14 @@ describe('Throughput live updates (#1432)', () => {
     stubFetch(DEV);
     await window.ovLoad();
     const d = tpData();
-    const z = { from: d.labels[100], to: d.labels[200] };
+    const z = { from: d.labels[20], to: d.labels[60] };
     d.z = z;
     window.kitRedrawTs(chart(), d, d.w);
-    now = T0 + 5 * 60000;
+    now = T0 + 15 * 60000;
     await window.fetchOverallMetrics();
     const after = tpData();
     expect(after.z).toEqual(z);
-    expect(after.labels).toHaveLength(288);
+    expect(after.labels).toHaveLength(96);
     expect(document.querySelector('#ov-b-tp [data-kit-zoom-reset]')).toBeTruthy();
   });
 
@@ -406,16 +428,16 @@ describe('Overall final fixes (#1432)', () => {
     stubFetch(routes);
     await window.ovLoad();
     await flush();
-    expect(chips()).toEqual(['llama.cpp 10.2k tokens', 'LM Studio 55.0k tokens', 'vLLM 0 tokens', 'Prompt (all) 341.2k tokens hidden']);
+    expect(chips()).toEqual(['Prompt (all) 341.2k tokens', 'llama.cpp 10.2k tokens', 'LM Studio 55.0k tokens', 'vLLM 0 tokens']);
     now = T0 + 5000;
     await window.fetchOverallMetrics();
-    expect(chips()[0]).toBe('llama.cpp 10.2k tokens');
+    expect(chips()[1]).toBe('llama.cpp 10.2k tokens');
     routes['/api/energy/summary?days=1'] = { ...s1, hosts: [{ ...s1.hosts[0], tokens_gen: 20000 }, s1.hosts[1]] };
     now = T0 + 62000;
     await window.fetchOverallMetrics();
     await flush();
-    expect(chips()[0]).toBe('llama.cpp 20.0k tokens');
-    expect(tpData().series[0].legend).toBe('20.0k tokens');
+    expect(chips()[1]).toBe('llama.cpp 20.0k tokens');
+    expect(tpData().series[1].legend).toBe('20.0k tokens');
   });
 
   test('server panels keep the live speed, awake count, detail host and GPU hot', async () => {
@@ -427,14 +449,15 @@ describe('Overall final fixes (#1432)', () => {
     stubFetch({ ...DEV, '/api/fleet/lms/aggregate': lms });
     await window.ovLoad();
     await window.fetchOverallMetrics();
-    expect(text('ov-b-srv-lms')).toContain('SpeedNow 12.3 t/s · prompt 40.1 t/s · peak 197 t/s 12 min ago');
+    const dts = [...document.querySelectorAll('#ov-b-srv-lms dt')].map(d => [d.textContent, d.nextElementSibling.textContent]);
+    expect(dts.slice(1, 3)).toEqual([['Generation', '12.3 t/s · peak 197 t/s · 12 min ago'], ['Prompt', '40.1 t/s']]);
     expect(document.querySelector('[data-card="srv-lms"] .ov-pill.bad').textContent).toBe('GPU hot');
     expect(document.querySelector('[data-card="srv-llama"] .ov-pill.bad')).toBeNull();
     expect(document.querySelector('[data-card="srv-llama"] .p-note').textContent).toBe('llm-systems-agent-llama · 1 of 2 awake');
     expect(document.querySelector('[data-card="srv-lms"] .p-note').textContent).toBe('llm-systems-lmstudio · 2 of 2 hosts online');
     expect(document.querySelector('[data-card="srv-lms"] .p-note').title).toBe('llm-systems-lmstudio · 2 of 2 hosts online');
     expect(document.querySelector('[data-card="energy7"] .p-note').title).toBe('7 days · Wh per 3 hours');
-    expect(text('ov-b-srv-llama')).toContain('SpeedNow 0.0 t/s · prompt 0.0 t/s');
+    expect(text('ov-b-srv-llama')).toContain('Generation0.0 t/sPrompt0.0 t/s');
     delete window._selectedAgents;
   });
 
@@ -488,7 +511,7 @@ describe('Overall final fixes (#1432)', () => {
     stubFetch(DEV);
     const release = holdFetch(u => /^\/api\/(energy|tower)/.test(u));
     await window.ovLoad();
-    expect(tpData().labels).toHaveLength(288);
+    expect(tpData().labels).toHaveLength(96);
     for (const id of ['ov-b-energy7', 'ov-b-energy-hosts', 'ov-b-energy-split', 'ov-b-hosts-tokens', 'ov-b-tower']) {
       expect(text(id), id).toBe('Loading…');
     }
@@ -528,12 +551,12 @@ describe('Overall final fixes (#1432)', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => T0);
     stubFetch(DEV);
     await window.ovLoad();
-    const d = tpData(), z = { from: d.labels[100], to: d.labels[200] };
+    const d = tpData(), z = { from: d.labels[20], to: d.labels[60] };
     window.kitRedrawTs(chart(), { ...d, z }, d.w);
     await window.ovLoad();
     expect(tpData().z).toEqual(z);
     expect(document.querySelector('#ov-b-tp [data-kit-zoom-reset]')).toBeTruthy();
-    window.kitRedrawTs(chart(), { ...tpData(), z: { from: 'gone', to: d.labels[200] } }, d.w);
+    window.kitRedrawTs(chart(), { ...tpData(), z: { from: 'gone', to: d.labels[60] } }, d.w);
     await window.ovLoad();
     expect(tpData().z).toBeUndefined();
     await window.ovSetFilter('lms');
@@ -560,7 +583,7 @@ describe('Overall final fixes (#1432)', () => {
     expect(document.querySelector('#ov-b-hosts ul')).not.toBe(ul);
   });
 
-  test('a live gap over 3 buckets reseeds from history; up to 3 buckets fill with zeros', async () => {
+  test('a live gap over 3 slots reseeds from history; up to 3 slots fill with zeros', async () => {
     load();
     let now = T0;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -568,15 +591,15 @@ describe('Overall final fixes (#1432)', () => {
     await window.ovLoad();
     await window.fetchOverallMetrics();
     calls.length = 0;
-    now = T0 + 20 * 60000;
+    now = T0 + 50 * 60000;
     await window.fetchOverallMetrics();
     expect(calls.some(u => u.startsWith('/api/history'))).toBe(false);
-    expect(tpData().labels[287]).toBe(OV.rangeLabel(Date.parse('2026-11-16T06:20:00Z'), 24));
-    now = T0 + 45 * 60000;
+    expect(tpData().labels[95]).toBe(OV.rangeLabel(Date.parse('2026-11-16T06:45:00Z'), 24));
+    now = T0 + 125 * 60000;
     await window.fetchOverallMetrics();
     await flush();
     expect(calls.filter(u => u.startsWith('/api/history'))).toHaveLength(1);
-    expect(tpData().labels[287]).toBe(OV.rangeLabel(Date.parse('2026-11-16T06:45:00Z'), 24));
+    expect(tpData().labels[95]).toBe(OV.rangeLabel(Date.parse('2026-11-16T08:00:00Z'), 24));
   });
 
   test('an empty fleet says no LLM server has reported; a shown panel hides that sentence', async () => {
@@ -612,6 +635,9 @@ describe('Overall final fixes (#1432)', () => {
     expect(css.match(/\.ov-kv \{([^}]*)\}/)[1]).toMatch(/grid-template-columns: auto minmax\(0, 1fr\)/);
     expect(css.match(/\.ov-kv dt \{([^}]*)\}/)[1]).toMatch(/max-width: 11em/);
     expect(dd).not.toMatch(/min-width: (?!0)/);
+    // At a glance tiles are columns with the sparkline pushed to the bottom edge.
+    expect(css).toContain('#overallTab .panel.kpi > .p-body { flex: 1 1 auto; display: flex; flex-direction: column; }');
+    expect(css).toContain('#overallTab .panel.kpi > .p-body > .k-spark { margin-top: auto; }');
     // Overall panel headers stay on one line; a long note truncates with an ellipsis.
     expect(css).toMatch(/#overallTab \.panel > \.p-hd \{ flex-wrap: nowrap; \}/);
     const noteRule = css.match(/#overallTab \.panel > \.p-hd > \.p-note \{([^}]*)\}/)[1];

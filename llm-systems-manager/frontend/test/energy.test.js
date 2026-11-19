@@ -146,19 +146,6 @@ describe('modelRows', () => {
   });
 });
 
-describe('hourlySeries', () => {
-  it('splits idle from total and carries tokens', () => {
-    const s = EN.hourlySeries([
-      { hour_ts: 3600, energy_wh: 100, active_energy_wh: 60, tokens_gen: 5 },
-      { hour_ts: 7200, energy_wh: 40, active_energy_wh: 50, tokens_gen: 0 },
-    ]);
-    expect(s.labels).toHaveLength(2);
-    expect(s.activeWh).toEqual([60, 50]);
-    expect(s.idleWh).toEqual([40, 0]);
-    expect(s.tokens).toEqual([5, 0]);
-  });
-});
-
 describe('coverageNote', () => {
   it('mentions tracking start and partial coverage', () => {
     const note = EN.coverageNote({
@@ -175,26 +162,11 @@ describe('coverageNote', () => {
   });
 });
 
-// Mirrors reportcard-wiring: a sub-tab id missing from the base.css
-// id-scoped .btn restyle keeps the raw gradient and differs from siblings.
 describe('base.css wiring', () => {
   const css = readFileSync(resolve(ROOT, 'css/base.css'), 'utf8');
 
-  it('restyles #dash-energy buttons like the sibling sub-tabs', () => {
-    const block = css.split('}').find(b => b.includes('#llm-llamacpp .btn'));
-    expect(block).toContain('#dash-energy .btn');
-  });
-
-  it('hover selectors always carry :hover', () => {
-    css.split('}').forEach(block => {
-      block.split(',').forEach(sel => {
-        if (!sel.includes('#dash-energy .btn')) return;
-        const siblings = block.split(',').filter(s => s.includes('#llm-llamacpp'));
-        if (!siblings.length) return;
-        const sibHover = siblings.some(s => s.includes(':hover'));
-        expect(sel.includes(':hover')).toBe(sibHover);
-      });
-    });
+  it('the Energy page on the kit has no old .btn restyle', () => {
+    expect(css).not.toContain('#dash-energy .btn');
   });
 
   it('index.html loads both energy scripts and the stylesheet', () => {

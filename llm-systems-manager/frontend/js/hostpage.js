@@ -1,9 +1,10 @@
-// Dashboards · llama.cpp, LM Studio, vLLM and Host pages on the panel kit (#1432): one renderer for every host page.
+// Dashboards · llama.cpp, LM Studio, vLLM and Host pages and the Manager page's System row on the panel kit (#1432).
 // Panels fill from js/lib/host-view.js (window.HP); history comes from /api/history?agent= and a live poll appends to it.
 (function () {
-  const PAGES = ['llama', 'lms', 'vllm', 'host'];
-  const SUB = { llama: 'llamacpp', lms: 'lmstudio', vllm: 'vllm', host: 'host' };
-  const ROWS_HIDDEN_KEY = { llama: 'llamaRowsHidden', lms: 'lmsRowsHidden', vllm: 'vllmRowsHidden', host: 'hostRowsHidden' };
+  const PAGES = ['llama', 'lms', 'vllm', 'host', 'mgr'];
+  const SUB = { llama: 'llamacpp', lms: 'lmstudio', vllm: 'vllm', host: 'host', mgr: 'manager' };
+  const ROWS_HIDDEN_KEY = { llama: 'llamaRowsHidden', lms: 'lmsRowsHidden', vllm: 'vllmRowsHidden', host: 'hostRowsHidden', mgr: 'managerRowsHidden' };
+  const NO_MGR = 'No host reported for the manager yet.';
   const PCT = ['kv', 'gpu-busy', 'mac-gpu', 'cpu-mem', 'disk'];
   const HW = ['ups', 'aio', 'psu', 'fans'];
   const GPU_PANELS = ['gpu-busy', 'gpu-temp', 'gpu-details'], MAC_PANELS = ['mac-power', 'mac-gpu'];
@@ -11,7 +12,12 @@
   const NONZERO = ['active_slots', 'requests_processing', 'requests_deferred'];
   const DASH = '—', MODELS_MS = 60000, HOSTS_MS = 30000, BAD_PCT = 85, GAP_MIN = 5;
   const CHART_H = 170, FLOW_ROWS = 6;
+  const RATE_ROWS = ['Prompt tokens/s', 'Gen tokens/s'];
 
+  // How often a provider page refetches its tokens generated per hour.
+  const ENERGY_MS = 60000;
+  // Tokens per hour always shows the last 24 hourly bars.
+  const GEN_HOURS = 24;
   const P = {};
   // One page's state: markup flags, the picked host, its rows and live payloads, poll and generation.
   function st(page) {
@@ -19,7 +25,7 @@
       built: false, active: false, timer: null, gen: 0, run: null, busy: false,
       host: null, hostId: null, range: null, rows: [], seeded: false, live: null, state: null, models: null, modelsAt: 0,
       hosts: null, hostsFailed: false, hostsAt: 0, trackers: null, nonZero: {}, hwNone: null, pickHtml: null, last: {},
-      refreshing: null, auto: null, autoPanels: null, pollMs: null, lastLlama: null, fitH: {}, place: null,
+      refreshing: null, auto: null, autoPanels: null, pollMs: null, lastLlama: null, fitH: {}, place: null, energy: null, energyAt: 0,
     });
   }
 
@@ -30,6 +36,8 @@
   const lay = () => ((typeof layout !== 'undefined' && layout) || window.layout || null);
   const rootOf = (page) => document.getElementById('hp-' + page);
   const ids = (page) => HP.panelsFor(page).map(p => page + '-' + p.name);
+  // Pages of one host with no LLM server: the Host page and the manager host's System row.
+  const sysOnly = (page) => page === 'host' || page === 'mgr';
 
   // The Dashboards range; while Overall shows (pinned panels) the Overall range.
   function range() {
@@ -71,6 +79,12 @@
   }
   function hostsOf(page) {
     if (page === 'host') return st('host').hosts || [];
+    // The manager host is window.__MGR_AGENT, named from the host list.
+    if (page === 'mgr') {
+      const id = window.__MGR_AGENT;
+      if (!id) return [];
+      return [(st('host').hosts || []).find(h => h.id === id) || { id, hostname: null, name: String(id).slice(0, 8), online: null }];
+    }
     const list = ((window._agentsByProvider || {})[HP.PAGES[page].provider]) || [];
     return uniqueNames(list.filter(a => a && a.agent_id).map(a => ({ id: a.agent_id, hostname: a.hostname || null,
       name: HV.shortName(a.hostname || String(a.agent_id).slice(0, 8)), online: !!a.online })));
@@ -106,7 +120,13 @@
     }
   }
   function paintPicker(page) {
-    const s = st(page), sel = rootOf(page) && rootOf(page).querySelector('select.hp-pick');
+    const s = st(page);
+    if (page === 'mgr') {
+      const n = rootOf(page) && rootOf(page).querySelector('.hp-mgr-name'), name = s.host ? s.host.name : '—';
+      if (n && n.textContent !== name) n.textContent = name;
+      return;
+    }
+    const sel = rootOf(page) && rootOf(page).querySelector('select.hp-pick');
     if (!sel) return;
     const list = hostsOf(page);
     const html = list.length
@@ -129,7 +149,8 @@
     if (!root || typeof HP === 'undefined') return false;
     if (s.built) return true;
     const panels = HP.panelsFor(page);
-    let h = '<div class="hp-head"><label class="hp-pick-l">Host <select class="hp-pick" disabled></select></label></div>';
+    let h = page === 'mgr' ? '<div class="hp-head"><span class="hp-pick-l">Manager host: <span class="hp-mgr-name">—</span></span></div>'
+      : '<div class="hp-head"><label class="hp-pick-l">Host <select class="hp-pick" disabled></select></label></div>';
     HP.ROWS.forEach(([row, title]) => {
       const list = panels.filter(p => p.row === row);
       if (!list.length) return;
@@ -143,6 +164,7 @@
     root.innerHTML = h;
     s.built = true;
     kitDress(root);
+    if (typeof mcSoloTitles === 'function') mcSoloTitles(root);
     kitLayout('host-' + page, root, window.mcShellStore);
     if (root._hpPick) root.removeEventListener('change', root._hpPick);
     root._hpPick = onPick;
@@ -211,6 +233,12 @@
   // ---- Panel bodies ----
   // Key-value rows; six or more flow into two columns in a wide panel.
   function kvHtml(rows) { return '<div class="hp-kv' + (rows.length >= FLOW_ROWS ? ' flow' : '') + '" data-kit-nosort>' + kitTable(['Field', 'Value'], rows) + '</div>'; }
+  // Server details: the generation and prompt rates each on a full line of their own, above the other values.
+  function detailsHtml(rows) {
+    const rate = (r) => RATE_ROWS.indexOf(r[0]), rates = rows.filter(r => rate(r) >= 0).sort((a, b) => rate(a) - rate(b));
+    return (rates.length ? '<div class="hp-kv" data-kit-nosort>' + kitTable(['Field', 'Value'], rates) + '</div>' : '')
+      + kvHtml(rows.filter(r => rate(r) < 0));
+  }
   function pill(label, tone) { return '<span class="ov-pill' + (TONES.includes(tone) ? ' ' + tone : '') + '">' + esc(label) + '</span>'; }
   const lab = (text) => '<div class="ov-lab">' + esc(text) + '</div>';
   const watts = (v) => (+v || 0).toFixed(1) + ' W';
@@ -249,9 +277,9 @@
     return '<div class="hp-cores">' + cores.map((v, i) => (v == null ? '' : '<div class="hp-core"><span class="hp-cn">' + i + '</span>'
       + bar(v) + '<span class="hp-cv">' + esc(HV.fmtPct(v)) + '</span></div>')).join('') + '</div>';
   }
-  // Disk space bars: a Mac's data volumes only; the table view keeps every mount.
+  // Disk space bars of the host's real drives, each under its label or mount.
   function disksHtml(n, on) {
-    const items = HP.diskBars(n).map(d => '<li><span class="hp-dm" title="' + esc(d.mount) + '">' + esc(d.mount) + '</span><span class="hp-dv">'
+    const items = HP.diskBars(n).map(d => '<li><span class="hp-dm" title="' + esc(d.mount) + '">' + esc(d.label || d.mount) + '</span><span class="hp-dv">'
       + (on === false ? DASH : esc(HV.fmtPct(d.percent) + ' · ' + bytes(d.used) + ' of ' + bytes(d.total))) + '</span>'
       + (on === false ? '' : bar(d.percent)) + '</li>').join('');
     const isc = n.iscsi ? '<div class="hp-line">iSCSI: ' + esc(on === false ? DASH : [n.iscsi.state, n.iscsi.target].filter(Boolean).join(' · ') || DASH) + '</div>' : '';
@@ -283,9 +311,11 @@
   }
   // Draws a chart into a holder; a chart that only slid by whole buckets gets the new buckets appended. Returns its table.
   function drawChart(s, page, name, holderId) {
-    const c = HP.series(page, name, s.rows, range(), Date.now());
+    const gen = name === 'gen';
+    if (gen && s.energy == null) { fill(s, holderId, empty('Loading…')); return { cols: ['Time'], rows: [] }; }
+    const c = gen ? HP.genSeries(s.energy, GEN_HOURS, Date.now()) : HP.series(page, name, s.rows, range(), Date.now());
     if (!c.series.length || c.series.every(x => x.values.every(v => v == null))) {
-      fill(s, holderId, empty('Nothing in this period.'));
+      fill(s, holderId, empty(gen ? 'No token counts in this period.' : 'Nothing in this period.'));
       return { cols: ['Time'], rows: [] };
     }
     const cid = 'hp-' + page + '-' + name, holder = document.getElementById(holderId);
@@ -322,7 +352,7 @@
   // A "View … in metrics" item opens that metric of its page's picked host, also on a panel pinned to Overall.
   function onMetricItem(ev) {
     const b = ev.target && ev.target.closest ? ev.target.closest('.p-pop [data-hp-metric]') : null;
-    const panel = b && b.closest('.panel'), page = panel && (/^(llama|lms|vllm|host)-/.exec(panel.getAttribute('data-card') || '') || [])[1];
+    const panel = b && b.closest('.panel'), page = panel && (/^(llama|lms|vllm|host|mgr)-/.exec(panel.getAttribute('data-card') || '') || [])[1];
     const host = page && P[page] && P[page].host;
     if (!host || !host.hostname || typeof focusAlarmMetric !== 'function') return;
     const v = b.getAttribute('data-hp-metric'), at = v.indexOf('/'), menu = panel.querySelector('[data-kit-menu]');
@@ -420,9 +450,9 @@
   }
   function onlineOf(page) {
     const s = st(page), live = s.live || {}, state = s.state || {};
-    if (page === 'host' && typeof live.online === 'boolean') return live.online;
+    if (sysOnly(page) && typeof live.online === 'boolean') return live.online;
     if (page === 'llama' && typeof state.agent_online === 'boolean') return state.agent_online;
-    if (page !== 'host' && typeof live.agent_online === 'boolean') return live.agent_online;
+    if (!sysOnly(page) && typeof live.agent_online === 'boolean') return live.agent_online;
     return s.host ? s.host.online : null;
   }
   // Every panel of a page shows one sentence, with no table and no note.
@@ -488,7 +518,7 @@
     if (!s.host) {
       applyRows(page, {});
       if (page === 'host' && !s.hosts) paintAll(page, s.hostsFailed ? 'Could not load hosts.' : 'Loading…');
-      else paintAll(page, 'No hosts reported yet.');
+      else paintAll(page, page === 'mgr' ? NO_MGR : 'No hosts reported yet.');
       return;
     }
     if (!s.seeded && !s.live) { paintAll(page, 'Loading…'); return; }
@@ -536,7 +566,7 @@
       } else if (p.name === 'disk') {
         withChart(s, page, p.name, disksHtml(n, on));
         metricMenu(s, page, p.name, bid);
-        table = { cols: ['Mount', 'Used %', 'Used', 'Total'], rows: n.disks.map(d => [d.mount, num(d.percent), bytes(d.used), bytes(d.total)]) };
+        table = { cols: ['Mount', 'Used %', 'Used', 'Total'], rows: HP.diskBars(n).map(d => [d.label || d.mount, num(d.percent), bytes(d.used), bytes(d.total)]) };
       } else if (p.name === 'aio' || p.name === 'psu') {
         const rows = HP.details(page, p.name, n, inf, on);
         withChart(s, page, p.name, kvHtml(rows));
@@ -551,12 +581,12 @@
         metricMenu(s, page, p.name, bid);
       } else {
         const rows = HP.details(page, p.name, n, inf, on);
-        fill(s, bid, kvHtml(rows));
+        fill(s, bid, p.name === 'details' ? detailsHtml(rows) : kvHtml(rows));
         table = { cols: ['Field', 'Value'], rows: rows.map(r => r.map(c => (c && typeof c === 'object' && 'full' in c ? c.full : c))) };
       }
       setRows(s, bid, table);
       note(bid, p.name === 'net' ? notes.net : p.name === 'io' ? notes.io : p.name === 'fans' ? fanName
-        : p.name === 'details' ? HP.lastSeenNote(page, inf, on) : '');
+        : p.name === 'details' ? HP.lastSeenNote(page, inf, on) : p.name === 'gen' ? 'last 24 h' : '');
     });
   }
 
@@ -583,13 +613,13 @@
     return Object.assign({ tps: t.tps, pps: t.pps }, s.nonZero);
   }
   function seedPeaks(page, rows) {
-    if (page === 'host' || !rows.length) return;
+    if (sysOnly(page) || !rows.length) return;
     const t = ownTrackers(page), clock = LMPeaks.rowClock(rows, Date.now());
     rows.forEach(r => { t.tps.push(clock(r.ts), r[page + '_tps']); t.pps.push(clock(r.ts), r[page + '_pps']); });
   }
   function pushPeaks(page, row) {
     const s = st(page);
-    if (page !== 'host') {
+    if (!sysOnly(page)) {
       const t = ownTrackers(page), now = Date.now();
       t.tps.push(now, row[page + '_tps']);
       t.pps.push(now, row[page + '_pps']);
@@ -645,13 +675,26 @@
   function resetHost(s) {
     s.rows = []; s.seeded = false; s.live = null; s.state = null; s.models = null; s.modelsAt = 0;
     s.nonZero = {}; s.hwNone = null; s.last = {}; s.auto = null; s.autoPanels = null; s.lastLlama = null;
+    s.energy = null; s.energyAt = 0;
     if (s.trackers) { s.trackers.tps.reset(); s.trackers.pps.reset(); }
+  }
+  // Fetches the picked host's tokens per hour for the last 24 h for a provider page; false when not fetched.
+  async function fetchEnergy(page, h, gen) {
+    const s = st(page);
+    if (sysOnly(page) || !h) return false;
+    s.energyAt = Date.now();
+    const d = await getJson('/api/energy/hourly?hours=' + GEN_HOURS + '&agent=' + enc(h.id)).catch(() => null);
+    if (gen !== s.gen) return false;
+    if (d && Array.isArray(d.rows)) s.energy = d.rows;
+    else if (s.energy == null) s.energy = [];
+    return true;
   }
   // Fetches the picked host's history and live sample, then paints; answers for an older host or range are dropped.
   function load(page) {
     const s = st(page), gen = ++s.gen;
     const run = (async () => {
       if (page === 'host') await loadHostList(true);
+      else if (page === 'mgr' && window.__MGR_AGENT) await loadHostList(false);
       if (gen !== s.gen) return;
       const h = pick(page), hr = range();
       if (!h || h.id !== s.hostId || s.range !== hr) {
@@ -667,6 +710,7 @@
       const got = await Promise.all([
         getJson('/api/history?agent=' + enc(h.id) + '&since_minutes=' + hr * 60 + '&max_rows=' + want).catch(() => null),
         fetchLive(page, h, gen),
+        fetchEnergy(page, h, gen),
       ]);
       if (gen !== s.gen) return;
       if (Array.isArray(got[0])) {
@@ -691,12 +735,15 @@
     const gen = s.gen;
     s.busy = true;
     (async () => {
-      if (page === 'host') await loadHostList(false);
+      if (page === 'host' || (page === 'mgr' && window.__MGR_AGENT)) await loadHostList(false);
       if (gen !== s.gen) return;
       const h = pick(page);
       if ((h ? h.id : null) !== s.hostId || s.range !== range()) { load(page); return; }
+      // The manager host's name follows the host list.
+      if (page === 'mgr') s.host = h;
       if (!h) { paint(page); return; }
-      const ok = await fetchLive(page, h, gen);
+      const due = !sysOnly(page) && Date.now() - s.energyAt >= ENERGY_MS;
+      const got = await Promise.all([fetchLive(page, h, gen), due ? fetchEnergy(page, h, gen) : false]), ok = got[0];
       if (gen !== s.gen) return;
       if (ok) takeLive(page);
       paint(page);
@@ -768,7 +815,7 @@
   }
   // Picks a host for a page: provider pages share LLM Control's pick, the host page saves its own; a shown page reloads.
   function hpSetHost(page, id) {
-    if (!PAGES.includes(page) || !id) return Promise.resolve();
+    if (!PAGES.includes(page) || page === 'mgr' || !id) return Promise.resolve();
     if (page === 'host') saveSystem(id);
     else if (typeof _selectAgent === 'function') _selectAgent(HP.PAGES[page].provider, id);
     const s = st(page);

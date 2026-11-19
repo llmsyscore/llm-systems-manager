@@ -131,6 +131,8 @@ function alertsSummary(alerts) {
 const PROVS = ['llama', 'lms', 'vllm'];
 // Range hours → bucket width: 6 h → 1 min, 12 h and 24 h → 5 min.
 const RANGE_BUCKET_MS = { 6: 60000, 12: 300000, 24: 300000 };
+// Token throughput bar slots: 5, 10 and 15 minutes over 6, 12 and 24 hours.
+const TP_BUCKET_MS = { 6: 300000, 12: 600000, 24: 900000 };
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function _obj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
@@ -201,7 +203,8 @@ function _sumKey(rows, k) {
 
 function _rangeH(h) { const n = Number(h); return RANGE_BUCKET_MS[n] ? n : 24; }
 function rangeBucketMs(rangeH) { return RANGE_BUCKET_MS[_rangeH(rangeH)]; }
-function _keepFor(rangeH) { const h = _rangeH(rangeH); return h * 3600000 / RANGE_BUCKET_MS[h]; }
+function tpBucketMs(rangeH) { return TP_BUCKET_MS[_rangeH(rangeH)]; }
+function _keepFor(rangeH) { const h = _rangeH(rangeH); return h * 3600000 / TP_BUCKET_MS[h]; }
 
 // Epoch ms → local 'HH:MM'; '' when unreadable.
 function bucketLabel(ms) {
@@ -230,7 +233,7 @@ function bucketLabels(startMs, n, bucketMs) {
 // Label of the bucket at ms as the last bucket of a range window ending there.
 function rangeLabel(ms, rangeH) {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
-  const b = rangeBucketMs(rangeH), keep = _keepFor(rangeH), start = ms - (keep - 1) * b;
+  const b = tpBucketMs(rangeH), keep = _keepFor(rangeH), start = ms - (keep - 1) * b;
   if (new Date(start).getTimezoneOffset() === new Date(ms).getTimezoneOffset()) return bucketLabel(ms);
   return bucketLabels(start, keep, b)[keep - 1];
 }
@@ -257,57 +260,68 @@ function _rowPower(r) {
   return psu != null ? Math.max(psu, gpu) : gpu;
 }
 
-// History rows → keep buckets ending with the one holding nowMs: per-provider gen t/s
-// peaks, promptName(prov) as the peak of the shown providers' prompt sum, power as fleet watt peaks.
+// History rows → keep bar slots ending with the one holding nowMs: promptName(prov) as the shown providers' prompt sum, then
+// each provider's gen t/s in the Generation band; values are slot peaks, avg slot means; power is fleet watt peaks.
 function throughput(rows, rangeH, prov, nowMs) {
-  const b = rangeBucketMs(rangeH), keep = _keepFor(rangeH), shown = _shownProvs(prov);
+  const b = tpBucketMs(rangeH), keep = _keepFor(rangeH), shown = _shownProvs(prov);
   const start = Math.floor(_now(nowMs) / b) * b - (keep - 1) * b;
   const labels = bucketLabels(start, keep, b);
-  const gen = shown.map(() => new Array(keep).fill(0));
-  const prompt = new Array(keep).fill(0), power = new Array(keep).fill(0);
+  const n = shown.length + 1, zero = () => new Array(keep).fill(0);
+  const peak = Array.from({ length: n }, zero), sum = Array.from({ length: n }, zero);
+  const cnt = zero(), power = zero();
   _arr(rows).forEach(r => {
     const t = r && typeof r.ts === 'string' ? Date.parse(r.ts) : NaN;
     const i = Math.floor((t - start) / b);
     if (!(i >= 0 && i < keep)) return;
-    shown.forEach((p, k) => { gen[k][i] = Math.max(gen[k][i], _num(r[p + '_tps']) || 0); });
-    prompt[i] = Math.max(prompt[i], shown.reduce((s, p) => s + (_num(r[p + '_pps']) || 0), 0));
+    _rowValues(r, shown).forEach((v, k) => { peak[k][i] = Math.max(peak[k][i], v); sum[k][i] += v; });
+    cnt[i] += 1;
     power[i] = Math.max(power[i], _rowPower(r));
   });
-  const series = shown.map((p, k) => ({ name: PROVIDER_LABEL[p], values: gen[k] }))
-    .concat([{ name: promptName(prov), values: prompt }]);
-  return { labels, series, keep, power };
+  const names = [promptName(prov)].concat(shown.map(p => PROVIDER_LABEL[p]));
+  const series = names.map((name, k) => Object.assign({ name, values: peak[k], avg: sum[k].map((x, i) => (cnt[i] ? x / cnt[i] : 0)) },
+    k ? { band: GEN_BAND } : {}));
+  return { labels, series, keep, power, rangeH: _rangeH(rangeH) };
+}
+const GEN_BAND = 'Generation';
+// One history row's values in throughput's series order: the shown providers' prompt sum, then each one's gen t/s.
+function _rowValues(r, shown) {
+  return [shown.reduce((s, p) => s + (_num(r[p + '_pps']) || 0), 0)].concat(shown.map(p => _num(r[p + '_tps']) || 0));
 }
 
 // One live tick's values in throughput's series order, from the aggregates.
 function _tickValues(aggs, prov) {
   const shown = _shownProvs(prov), list = _aggList(aggs);
   const tp = p => _obj(_obj(list[PROVS.indexOf(p)]).throughput);
-  return shown.map(p => _num(tp(p).total_tps) || 0)
-    .concat([shown.reduce((s, p) => s + (_num(tp(p).total_pps) || 0), 0)]);
+  return [shown.reduce((s, p) => s + (_num(tp(p).total_pps) || 0), 0)].concat(shown.map(p => _num(tp(p).total_tps) || 0));
 }
 
-// Folds a tick into state {key: bucket start ms, values}, keeping the peak; update is the current bucket.
-// On a new bucket append lists the finished one, then zero buckets for the skipped ones (gap counts them).
+// Folds a tick into state {key: slot start ms, values, sums, n}: values keep the peak, avgs the mean; update is the current slot.
+// On a new slot append lists the finished one, then zero slots for the skipped ones (gap counts them).
 function liveBucket(state, nowMs, rangeH, aggs, prov) {
-  const b = rangeBucketMs(rangeH), keep = _keepFor(rangeH), key = Math.floor(_now(nowMs) / b) * b;
+  const b = tpBucketMs(rangeH), keep = _keepFor(rangeH), key = Math.floor(_now(nowMs) / b) * b;
   const vals = _tickValues(aggs, prov);
   const s = _obj(state);
   const prev = (typeof s.key === 'number' && Number.isFinite(s.key) && Array.isArray(s.values)
     && s.values.length === vals.length) ? s : null;
-  let values = vals, append = null, gap = 0;
-  if (prev && prev.key === key) values = vals.map((v, i) => Math.max(v, _num(prev.values[i]) || 0));
-  else if (prev && prev.key < key) {
-    append = [{ label: rangeLabel(prev.key, rangeH), values: prev.values.map(v => _num(v) || 0) }];
+  const sumsOf = (p) => (Array.isArray(p.sums) && p.sums.length === p.values.length ? p.sums : p.values);
+  const avgsOf = (p) => sumsOf(p).map(v => (_num(v) || 0) / Math.max(1, _num(p.n) || 1));
+  let values = vals, sums = vals.slice(), n = 1, append = null, gap = 0;
+  if (prev && prev.key === key) {
+    values = vals.map((v, i) => Math.max(v, _num(prev.values[i]) || 0));
+    sums = vals.map((v, i) => v + (_num(sumsOf(prev)[i]) || 0));
+    n = (_num(prev.n) || 1) + 1;
+  } else if (prev && prev.key < key) {
+    append = [{ label: rangeLabel(prev.key, rangeH), values: prev.values.map(v => _num(v) || 0), avgs: avgsOf(prev) }];
     gap = Math.round((key - prev.key) / b) - 1;
     const winStart = key - (keep - 1) * b;
     let win = null;
     for (let k = Math.max(prev.key + b, key - keep * b); k < key; k += b) {
       if (k >= winStart) win = win || bucketLabels(winStart, keep, b);
-      append.push({ label: k >= winStart ? win[(k - winStart) / b] : rangeLabel(k, rangeH), values: vals.map(() => 0) });
+      append.push({ label: k >= winStart ? win[(k - winStart) / b] : rangeLabel(k, rangeH), values: vals.map(() => 0), avgs: vals.map(() => 0) });
     }
   }
-  return { state: { key, values }, append, gap,
-           update: { label: rangeLabel(key, rangeH), values: values.slice() } };
+  const next = { key, values, sums, n };
+  return { state: next, append, gap, update: { label: rangeLabel(key, rangeH), values: values.slice(), avgs: avgsOf(next) } };
 }
 
 // kpiBody delta: percent change of cur over prev; null without a usable prev.
@@ -395,7 +409,7 @@ function fleetKpis(input) {
   const nb = _arr(tp.labels).length;
   const genSums = [];
   for (let i = 0; i < nb; i++) genSums.push(tpSeries.reduce((s, x) => s + (_num(_arr(x.values)[i]) || 0), 0));
-  const rangeH = [6, 12, 24].find(h => _keepFor(h) === tp.keep) || 24;
+  const rangeH = TP_BUCKET_MS[tp.rangeH] ? tp.rangeH : ([6, 12, 24].find(h => _keepFor(h) === tp.keep) || 24);
   const peak = genSums.length ? _rnd(Math.max(...genSums), 1) : null;
 
   const watts = _wattsNow(aggs, ids);
@@ -420,7 +434,7 @@ function fleetKpis(input) {
       sub: 'last 24 h' + (prevTok != null ? ` · ${fmtShort(prevTok)} the day before` : ''),
       delta: _delta(tokens, prevTok, true), spark: tokSpark.length ? tokSpark : null },
     { id: 'k-peak', title: 'Peak speed', value: peak != null ? peak.toFixed(1) : null, unit: 't/s',
-      sub: `highest combined rate in a ${rangeBucketMs(rangeH) / 60000} min slot · last ${rangeH} h`, delta: null,
+      sub: `highest combined rate in a ${tpBucketMs(rangeH) / 60000} min slot · last ${rangeH} h`, delta: null,
       spark: genSums.length ? genSums : null },
     { id: 'k-pow', title: 'Total power', value: watts != null ? watts.toFixed(1) : null, unit: 'W',
       sub: 'now · GPU and Mac power only', delta: null,
@@ -457,21 +471,19 @@ function _agoText(ms, now) {
   return s < 3600 ? Math.max(1, Math.round(s / 60)) + ' min ago'
     : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
 }
-// Live generation and prompt rates with the rolling peaks: "Now 12.3 t/s · prompt 40.1 t/s · peak 197 t/s 12 min ago".
+// Live generation and prompt rates, one row each with its rolling peak: ["Generation", "12.3 t/s · peak 197 t/s · 12 min ago"].
 function _speed(agg, now) {
   const tp = _obj(_obj(agg).throughput), w = _obj(tp.window);
   if (_num(tp.total_tps) == null && _num(tp.total_pps) == null) return null;
-  const parts = [`Now ${_tps(tp.total_tps)}`, `prompt ${_tps(tp.total_pps)}`];
-  [['peak', _obj(w.gen).peak], ['prompt peak', _obj(w.prompt).peak]].forEach(([word, p]) => {
-    const v = _num(_obj(p).v), ago = _agoText(_ms(_obj(p).ts), now);
-    if (v != null) parts.push(`${word} ${_tps(v)}${ago ? ' ' + ago : ''}`);
+  return [['Generation', tp.total_tps, w.gen], ['Prompt', tp.total_pps, w.prompt]].map(([label, cur, win]) => {
+    const p = _obj(_obj(win).peak), v = _num(p.v), ago = _agoText(_ms(p.ts), now);
+    return [label, [_tps(cur)].concat(v != null ? ['peak ' + _tps(v)] : [], v != null && ago ? [ago] : []).join(' · ')];
   });
-  return parts.join(' · ');
 }
-// Adds the live Speed line and the GPU hot flag (thermal_crit_count above 0) of a provider's aggregate to its panel.
+// Adds the live Generation and Prompt rows and the GPU hot flag (thermal_crit_count above 0) of a provider's aggregate to its panel.
 function _live(p, agg, now) {
   const s = _speed(agg, now);
-  if (s) { p.kv.unshift(['Speed', s]); p.table.rows.splice(1, 0, ['Speed', s]); }
+  if (s) { p.kv.unshift(...s); p.table.rows.splice(1, 0, ...s); }
   p.hot = (_num(_obj(_obj(agg).gpu).thermal_crit_count) || 0) > 0;
   if (p.hot) p.table.rows.splice(1, 0, ['GPU temperature', 'Hot']);
   return p;
@@ -649,8 +661,8 @@ function serverPanels(input) {
   };
 }
 
-// Legend text per throughput series: each shown provider's tokens generated in the summary window (a host
-// under several providers counts under each), then the shown hosts' prompt tokens; '–' without a summary.
+// Legend text per throughput series: the shown hosts' prompt tokens in the summary window, then each shown provider's
+// tokens generated (a host under several providers counts under each); '–' without a summary.
 function tpLegend(summary1, byProvider, prov) {
   const s = _obj(summary1), has = Array.isArray(s.hosts), hosts = _arr(s.hosts).filter(h => h && h.agent_id);
   const sum = (ids, k) => hosts.reduce((t, h) => t + (ids.has(h.agent_id) ? (_num(h[k]) || 0) : 0), 0);
@@ -661,33 +673,42 @@ function tpLegend(summary1, byProvider, prov) {
     ids.forEach(id => all.add(id));
     return text(sum(ids, 'tokens_gen'));
   });
-  return out.concat([text(sum(all, 'tokens_prompt'))]);
+  return [text(sum(all, 'tokens_prompt'))].concat(out);
 }
 
 function _hourLabel(ts) {
   const d = new Date(ts * 1000);
   return DOW[d.getDay()] + ' ' + _pad2(d.getHours()) + ':00';
 }
-// Hourly energy rows → local 'Ddd HH:00' labels, Idle and Generating Wh, and kWh totals of every hour; with stepH 2 to 6
-// the hours are summed into local steps of that many hours from midnight (see _hourGroups).
-function energyPerHour(hourlyRows, stepH) {
-  const step = Number.isInteger(stepH) && stepH >= 2 && stepH <= 6 ? stepH : 1;
-  const hours = _hourRows(hourlyRows), rows = _hourGroups(hours, step);
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Step label: 'Ddd HH:00' up to 6-hour steps, 'Mmm D HH:00' for 12- and 24-hour steps or when dated.
+function _stepLabel(ts, step, dated) {
+  if (step < 12 && !dated) return _hourLabel(ts);
+  const d = new Date(ts * 1000);
+  return MONTHS[d.getMonth()] + ' ' + d.getDate() + ' ' + _pad2(d.getHours()) + ':00';
+}
+// Hourly energy rows → local 'Ddd HH:00' labels ('Mmm D HH:00' at steps 12 and 24, or when the rows span over 7 days), Idle and Generating Wh, and kWh totals of every hour;
+// with stepH 2 to 6, 12 or 24 the hours are summed into local steps of that many hours from midnight (see _hourGroups); opts.wrap drops a first step a week before the last.
+function energyPerHour(hourlyRows, stepH, opts) {
+  const step = Number.isInteger(stepH) && ((stepH >= 2 && stepH <= 6) || stepH === 12 || stepH === 24) ? stepH : 1;
+  const hours = _hourRows(hourlyRows);
+  const dated = hours.length > 1 && hours[hours.length - 1].hour_ts - hours[0].hour_ts >= 7 * 86400;
+  const rows = _hourGroups(hours, step, !!(opts && opts.wrap), dated);
   const act = rows.map(r => _rnd(_num(r.active_energy_wh) || 0, 2));
   const idle = rows.map((r, i) => Math.max(0, _rnd((_num(r.energy_wh) || 0) - act[i], 2)));
   const wh = hours.reduce((s, r) => s + (_num(r.energy_wh) || 0), 0);
   const awh = hours.reduce((s, r) => s + _rnd(_num(r.active_energy_wh) || 0, 2), 0);
   const kwh = _rnd(wh / 1000, 3), active = _rnd(awh / 1000, 3);
   return {
-    labels: rows.map(r => _hourLabel(r.hour_ts)),
+    labels: rows.map(r => _stepLabel(r.hour_ts, step, dated)),
     series: [{ name: 'Idle', values: idle }, { name: 'Generating', values: act }],
     totals: { kwh, active_kwh: active, idle_kwh: _rnd(Math.max(0, kwh - active), 3) },
   };
 }
 
-// Hour rows summed per step of hours starting at a local hour divisible by the step; a first step that starts
-// before the first row and has the same label as the last one (a week earlier) is left out.
-function _hourGroups(rows, step) {
+// Hour rows summed per step of hours starting at a local hour divisible by the step; with wrap, a first step that
+// starts before the first row and has the same label as the last one (a week earlier) is left out.
+function _hourGroups(rows, step, wrap, dated) {
   if (step === 1) return rows;
   const out = [];
   rows.forEach(r => {
@@ -701,7 +722,7 @@ function _hourGroups(rows, step) {
       out.push({ hour_ts: start, energy_wh: _num(r.energy_wh) || 0, active_energy_wh: _num(r.active_energy_wh) || 0 });
     }
   });
-  if (out.length > 1 && out[0].hour_ts < rows[0].hour_ts && _hourLabel(out[0].hour_ts) === _hourLabel(out[out.length - 1].hour_ts)) out.shift();
+  if (wrap && out.length > 1 && out[0].hour_ts < rows[0].hour_ts && _stepLabel(out[0].hour_ts, step, dated) === _stepLabel(out[out.length - 1].hour_ts, step, dated)) out.shift();
   return out;
 }
 
@@ -878,7 +899,7 @@ function mapLegacyBand(layout) {
 }
 
 return { agentRows, alertsSummary, fleetWatts, fmtShort, PROVIDER_LABEL,
-         rangeBucketMs, bucketLabel, hostIds, throughput, liveBucket, fleetKpis, serverPanels,
+         rangeBucketMs, tpBucketMs, bucketLabel, hostIds, throughput, liveBucket, fleetKpis, serverPanels,
          energyPerHour, energyByHost, energySplit, powerNow, hostsByTokens, hostRows,
          forecastFeed, towerFeed, alertsFeed, mapLegacyBand, rangeLabel, bucketLabels, promptName, tpLegend,
          llamaPanel: _llamaPanel, lmsPanel: _lmsPanel };

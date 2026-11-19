@@ -3,14 +3,10 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { srcFile, fnSrc, blockSrc, evalGlobal } from './helpers/harness.js';
 
 const foundation = srcFile('js/foundation.js');
-const charts = srcFile('js/charts.js');
 
 evalGlobal([
   blockSrc(foundation, 'const _dirtyCharts = new Set();', '// Apply chart defaults once at load', { includeEnd: false }),
   'window._chartUpdate = _chartUpdate; window._flushDirtyCharts = _flushDirtyCharts; window._dirtyChartsRef = _dirtyCharts;',
-  blockSrc(charts, 'let _pushBatch = null;', 'const lastNonZero = {', { includeEnd: false }),
-  fnSrc(charts, '_clearChart'),
-  'window._withPushBatch = _withPushBatch; window._pushUpdate = _pushUpdate; window._clearChart = _clearChart;',
 ].join('\n'));
 
 // A chart stub whose canvas is shown or hidden by the test.
@@ -75,34 +71,17 @@ describe('chart visibility gate (#1439)', () => {
     expect(reads).toBe(2);
   });
 
-  test('live pushes, batch flushes and chart clears go through the gate', async () => {
-    await nextTask();
-    const shown = mkChart(true), hidden = mkChart(false);
-    window._pushUpdate(shown); window._pushUpdate(hidden);
-    window._withPushBatch(() => { window._pushUpdate(shown); window._pushUpdate(hidden); });
-    window._clearChart(hidden);
-    expect(shown.update).toHaveBeenCalledTimes(2);
-    expect(hidden.update).not.toHaveBeenCalled();
-    expect(hidden.data.labels).toEqual([]);
-  });
-
   test('every path that shows a tab, panel or card flushes', () => {
+    // toggleCard only shows host page panels now, which draw no Chart.js chart, and the old grid hidden helper is gone (#1432).
     const shows = [[foundation, 'switchTab'], [srcFile('js/boot.js'), 'switchSubTab'], [foundation, 'adoptPinnedCards'],
-                   [foundation, '_applyHiddenForGrid'], [foundation, 'toggleCard'], [foundation, 'applyLayout']];
+                   [foundation, 'applyLayout']];
     for (const [src, name] of shows) {
       expect(fnSrc(src, name), name).toMatch(/_flushDirtyCharts\(\)/);
     }
   });
 });
 
-describe('clears and retints (#1439)', () => {
-  test('a chart cleared inside a batch with no pushes redraws once when the batch closes', async () => {
-    await nextTask();
-    const ch = mkChart(true);
-    window._withPushBatch(() => { window._clearChart(ch); expect(ch.update).not.toHaveBeenCalled(); });
-    expect(ch.update).toHaveBeenCalledTimes(1);
-  });
-
+describe('retints (#1439)', () => {
   test('_retintCharts redraws only when the chrome colours changed', async () => {
     await nextTask();
     const vars = { '--fg-muted': '#111', '--border-soft': '#222', '--bg-card': '#333', '--fg': '#444', '--border': '#555' };

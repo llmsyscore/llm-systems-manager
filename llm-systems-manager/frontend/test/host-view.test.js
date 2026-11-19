@@ -63,13 +63,13 @@ describe('PAGES, ROWS, PANELS and panelsFor', () => {
     expect(host.map(p => p.name)).toContain('cpu-mem');
     const lms = HP.panelsFor('lms').map(p => p.name);
     expect(lms).toContain('models');
-    expect(lms).not.toContain('gen');
+    expect(lms).toContain('gen');
     expect(lms).not.toContain('kv');
     const llama = HP.panelsFor('llama').map(p => p.name);
     expect(llama).toContain('gen');
     expect(llama).toContain('details');
     expect(llama).not.toContain('requests');
-    expect(HP.panelsFor('vllm').map(p => p.name)).toEqual(expect.arrayContaining(['requests', 'kv']));
+    expect(HP.panelsFor('vllm').map(p => p.name)).toEqual(expect.arrayContaining(['requests', 'kv', 'gen']));
   });
   it('gives every panel a known kind', () => {
     const kinds = ['kv', 'ts', 'tiles', 'list', 'bars', 'split', 'table'];
@@ -146,10 +146,19 @@ describe('tiles', () => {
   });
   it('GPU tiles appear only with a GPU', () => {
     const withGpu = HP.tiles('vllm', HP.normalize(VLLM), { live: VLLM, now: NOW }, true).map(x => x.label);
-    expect(withGpu).toEqual(['State', 'CPU', 'Memory', 'GPU busy', 'VRAM', 'Gen tokens/s']);
+    expect(withGpu).toEqual(['State', 'CPU', 'Memory', 'GPU busy', 'VRAM', 'Prompt tokens/s', 'Gen tokens/s']);
     const mac = HP.tiles('lms', HP.normalize(LMS_MAC), { live: LMS_MAC, now: NOW }, true);
-    expect(mac.map(x => x.label)).toEqual(['State', 'CPU', 'Memory', 'Gen tokens/s']);
-    expect(mac[3].value).toBe('12.5');
+    expect(mac.map(x => x.label)).toEqual(['State', 'CPU', 'Memory', 'Prompt tokens/s', 'Gen tokens/s']);
+    expect(mac[4].value).toBe('12.5');
+  });
+  it('provider pages show Prompt tokens/s right before Gen tokens/s, from the Server details prompt rate; a dash when missing', () => {
+    const inf = { live: LLAMA_FLAT, now: NOW };
+    const t = HP.tiles('llama', HP.normalize(LLAMA_FLAT), inf, true), at = t.findIndex(x => x.label === 'Prompt tokens/s');
+    expect(t[at + 1].label).toBe('Gen tokens/s');
+    const detail = HP.details('llama', 'details', HP.normalize(LLAMA_FLAT), inf).find(r => r[0] === 'Prompt tokens/s')[1];
+    expect(detail.startsWith(t[at].value)).toBe(true);
+    const none = HP.tiles('llama', HP.normalize({ llama: {} }), { live: { llama: {} }, now: NOW }, true).find(x => x.label === 'Prompt tokens/s');
+    expect(none).toMatchObject({ value: '—', sub: '' });
   });
 });
 
@@ -206,15 +215,24 @@ describe('series', () => {
     expect(v.slice(n - 7, n - 2)).toEqual([null, null, null, null, null]);
     expect(v[n - 2]).toBe(3);
   });
-  it('gen carries the last total across empty buckets', () => {
-    const rows = [at(30, { llama_gen_tokens: 100 }), at(5, { llama_gen_tokens: 250 })];
-    const v = HP.series('llama', 'gen', rows, 6, NOW).series[0].values;
-    const n = v.length;
-    expect(v[n - 32]).toBeNull();
-    expect(v[n - 31]).toBe(100);
-    expect(v[n - 10]).toBe(100);
-    expect(v[n - 6]).toBe(250);
-    expect(v[n - 1]).toBe(250);
+  it('genSeries gives generated and prompt tokens per hour over the range, null for an hour with no row', () => {
+    const hr = 3600000, cur = Math.floor(NOW / hr) * hr / 1000;
+    const rows = [{ hour_ts: cur, tokens_gen: 40, tokens_prompt: 300 }, { hour_ts: cur - 3600, tokens_gen: 0, tokens_prompt: 0 },
+      { hour_ts: cur - 2 * 3600, tokens_gen: 900 }, { hour_ts: cur - 6 * 3600, tokens_gen: 5, tokens_prompt: 5 }];
+    const c = HP.genSeries(rows, 6, NOW);
+    expect(c.labels).toHaveLength(6);
+    expect(c.series).toEqual([{ name: 'Generated', values: [null, null, null, 900, 0, 40], slot: 1 },
+      { name: 'Prompt', values: [null, null, null, 0, 0, 300], slot: 2 }]);
+    expect(HP.genSeries(null, 12, NOW).series[0].values).toEqual(new Array(12).fill(null));
+    expect(HP.chartStyle('gen')).toMatchObject({ mode: 'stack', idleLine: true, idle: 'Idle · no tokens in this range' });
+    expect(HP.chartStyle('gen').barFill).toBe(0.8);
+  });
+  it('the Tokens chart links each provider page\'s stored token counters; LM Studio links the gateway ones', () => {
+    const at = (page) => HP.metricLinks(page, 'gen', []).map(l => l.source + '/' + l.name);
+    expect(at('llama')).toEqual(['llama/total_tokens_generated', 'llama/total_tokens_prompted']);
+    expect(at('lms')).toEqual(['gateway/lms_gen_tokens_total', 'gateway/lms_prompt_tokens_total']);
+    expect(at('vllm')).toEqual(['vllm/total_tokens_generated', 'vllm/total_tokens_prompted']);
+    expect(HP.metricLinks('lms', 'gen', [])[0].label).toBe('View gateway tokens generated in metrics');
   });
   it('gpu-busy has GTT only when a row has gpu_gtt', () => {
     const plain = [at(1, { gpu_util: 50, gpu_vram: 60 })];
@@ -225,7 +243,7 @@ describe('series', () => {
   it('tps follows the page fields; disk adds iSCSI only when reported', () => {
     const rows = [at(1, { lms_tps: 7, lms_pps: 9, llama_tps: 99, disk_root_pct: 40 })];
     const tps = HP.series('lms', 'tps', rows, 6, NOW).series;
-    expect(tps.map(s => s.values[s.values.length - 2])).toEqual([7, 9]);
+    expect(tps.map(s => s.values[s.values.length - 2])).toEqual([9, 7]);
     expect(HP.series('host', 'disk', rows, 6, NOW).series.map(s => s.name)).toEqual(['/']);
     expect(HP.series('host', 'nope', rows, 6, NOW).series).toEqual([]);
   });
@@ -450,9 +468,11 @@ describe('fix wave', () => {
       at(25, { llama_tps: 0, llama_pps: 0, cpu_total: 50 })];
     const last = (s) => s.values[s.values.length - 2];
     const tps = HP.series('llama', 'tps', rows, 6, NOW).series;
-    expect(tps.map(last)).toEqual([40, 100]);
+    expect(tps.map(s => s.name)).toEqual(['Prompt t/s', 'Gen t/s']);
+    expect(tps.map(s => s.slot)).toEqual([2, 1]);
+    expect(tps.map(last)).toEqual([100, 40]);
     expect(last(HP.series('llama', 'cpu-mem', rows, 6, NOW).series[0])).toBe(30);
-    expect(last(HP.series('lms', 'tps', [at(5, { lms_tps: 3 }), at(15, { lms_tps: 9 })], 6, NOW).series[0])).toBe(9);
+    expect(last(HP.series('lms', 'tps', [at(5, { lms_tps: 3 }), at(15, { lms_tps: 9 })], 6, NOW).series[1])).toBe(9);
   });
   it('peak-bar charts take each bucket\'s max with its mean as avg, in coarser buckets and with no held gaps', () => {
     const at = (minAgo, extra) => Object.assign({ ts: iso(minAgo * MIN) }, extra);
@@ -468,7 +488,7 @@ describe('fix wave', () => {
     expect(s.values.slice(n - 10, n - 2)).toEqual(new Array(8).fill(null));
     expect(s.values[n - 2]).toBe(4);
     expect(s.avg[n - 2]).toBe(2);
-    const t = HP.series('llama', 'tps', rows, 24, NOW).series[0];
+    const t = HP.series('llama', 'tps', rows, 24, NOW).series.find(x => x.name === 'Gen t/s');
     expect(t.avg[t.avg.length - 2]).toBe(5);
     expect(HP.series('llama', 'cpu-mem', [at(1, { cpu_total: 3 })], 6, NOW).series[0].avg).toBeUndefined();
   });
@@ -477,7 +497,7 @@ describe('fix wave', () => {
     expect(HP.metricLinks('llama', 'cpu-mem', [])).toEqual([
       { label: 'View CPU % in metrics', source: 'system', name: 'cpu_total' },
       { label: 'View Memory % in metrics', source: 'system', name: 'ram_percent' }]);
-    expect(HP.metricLinks('lms', 'tps', []).map(l => l.name)).toEqual(['lms_tokens_per_second', 'lms_prompt_tokens_per_second']);
+    expect(HP.metricLinks('lms', 'tps', []).map(l => l.name)).toEqual(['lms_prompt_tokens_per_second', 'lms_tokens_per_second']);
     expect(HP.metricLinks('llama', 'net', []).map(l => l.label)).toEqual(['View network out in metrics', 'View network in in metrics']);
     expect(HP.metricLinks('llama', 'gpu-busy', []).map(l => l.name)).toEqual(['gpu_gpu_util_percent', 'gpu_vram_usage_percent']);
     expect(HP.metricLinks('llama', 'gpu-busy', [at(1, { gpu_gtt: 3 })]).map(l => l.name)).toContain('gpu_gtt_usage_percent');
@@ -512,8 +532,8 @@ describe('fix wave', () => {
 describe('live-check fixes', () => {
   const at = (minAgo, extra) => Object.assign({ ts: iso(minAgo * MIN) }, extra);
   const last = (s) => s.values[s.values.length - 2];
-  it('the tiles panel is titled "Right now" in the Host row', () => {
-    expect(HP.PANELS.find(p => p.name === 'tiles')).toMatchObject({ row: 'tiles', title: 'Right now' });
+  it('the tiles panel is titled "Snapshot" in the Host row', () => {
+    expect(HP.PANELS.find(p => p.name === 'tiles')).toMatchObject({ row: 'tiles', title: 'Snapshot' });
     expect(HP.ROWS[0]).toEqual(['tiles', 'Host']);
   });
   it('threshold lines carry no label', () => {
@@ -579,15 +599,21 @@ describe('operator fixes', () => {
     const mac = HP.normalize(Object.assign({}, LMS_MAC, { system: Object.assign({}, SYS, { disk: MAC_DISKS }) }), { page: 'lms' });
     expect(mac.mac).toBe(true);
     expect(mac.disks).toHaveLength(12);
-    expect(HP.diskBars(mac).map(d => d.mount)).toEqual(['/', '/System/Volumes/Data', '/Volumes/Backup']);
+    const bars = HP.diskBars(mac);
+    expect(bars.map(d => d.mount)).toEqual(['/System/Volumes/Data', '/Volumes/Backup']);
+    expect(bars[0].label).toBe('Macintosh HD (/)');
     // A Mac without its power block is still known by its system volumes.
     const bare = HP.normalize({ system: Object.assign({}, SYS, { disk: MAC_DISKS }) });
     expect(bare.mac).toBe(true);
-    expect(HP.diskBars(bare)).toHaveLength(3);
+    expect(HP.diskBars(bare)).toHaveLength(2);
     // Linux lists are unchanged, even for a mount under a macOS-like path.
     const lin = HP.normalize(Object.assign({}, LLAMA_FLAT, { disk: SYS.disk.concat([{ mountpoint: '/Library/Developer/CoreSimulator/x', total_bytes: 5e11, percent: 1 }]) }));
     expect(lin.mac).toBe(false);
     expect(HP.diskBars(lin).map(d => d.mount)).toEqual(['/', '/mnt/iscsi', '/Library/Developer/CoreSimulator/x']);
+    // Linux pseudo and runtime mounts are left out; a look-alike name is kept.
+    const sys = HP.normalize(Object.assign({}, LLAMA_FLAT, { disk: SYS.disk.concat(['/sys/class/drm', '/proc', '/dev/shm', '/run/user/1000', '/system',
+      '/run/media/ann/USB', '/run/lock', '/run/media'].map(m => ({ mountpoint: m, total_bytes: 5e11, percent: 1 }))) }));
+    expect(HP.diskBars(sys).map(d => d.mount)).toEqual(['/', '/mnt/iscsi', '/system', '/run/media/ann/USB']);
   });
 
   it('a Mac\'s memory details leave out Cached and Buffers; Linux keeps them', () => {
@@ -647,5 +673,22 @@ describe('llama last-seen counters', () => {
     expect(HP.lastSeenNote('llama', inf(), false)).toBe('');
     expect(HP.llamaHasCounters({ tokens_per_second: 3 })).toBe(false);
     expect(HP.llamaHasCounters({ total_slots: 4 })).toBe(true);
+  });
+});
+
+describe('manager host page (#1432 phase 4d)', () => {
+  it('has a mgr page with only the System row', () => {
+    expect(HP.PAGES.mgr).toEqual({ provider: null, label: 'Manager host', sub: 'manager' });
+    expect(HP.panelsFor('mgr').map(p => p.name)).toEqual(['cpu-mem', 'cpu-details', 'mem-details', 'net', 'io', 'disk']);
+    expect(HP.panelsFor('mgr').every(p => p.row === 'sys')).toBe(true);
+  });
+  it('mapLegacyLayout keeps the manager page panel ids and still drops unknown ids', () => {
+    const mgr = ['mgr-services', 'mgr-db', 'mgr-streams', 'mgr-hosts', 'mgr-cpu-mem', 'mgr-disk', 'mgr-net', 'mgr-procs',
+      'mgr-tiles', 'mgr-perf', 'mgr-ae-perf', 'mgr-influx-perf', 'mgr-tower', 'mgr-io', 'mgr-cpu-details', 'mgr-mem-details'];
+    const lay = { overallBorrowed: mgr.concat(['mgr-nope', 'gpu']),
+      overallOrder: mgr.map(id => 'ov-borrow-' + id).concat(['ov-borrow-mgr-nope']) };
+    HP.mapLegacyLayout(lay, []);
+    expect(lay.overallBorrowed).toEqual(mgr.concat(['llama-gpu-busy']));
+    expect(lay.overallOrder).toEqual(mgr.map(id => 'ov-borrow-' + id));
   });
 });

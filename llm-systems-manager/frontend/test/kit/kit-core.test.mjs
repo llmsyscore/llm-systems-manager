@@ -42,7 +42,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.4.0');
+    assert.equal(first, '// Panel kit 1.4.1');
   });
 
   test('coexists with an old copy', () => {
@@ -962,6 +962,19 @@ describe('kit 1.4.0 stacked bands and stack idle', () => {
     assert.equal(count(d, /M/g), 1);
     assert.equal(tsJson(out).idleLine, true);
     assert.ok(!kit().tsHtml({ ...o, idleLine: undefined }).includes('ts-idle'));
+  });
+
+  test('a stacked chart with barFill draws bars that share of the slot, uncapped, and keeps it on redraw', () => {
+    const o = { id: 't', labels: L6, mode: 'stack', w: 600, height: 220,
+      series: [{ name: 'Gen', values: [5, 0, 2, 0, 0, 1], slot: 1 }] };
+    const widths = h => [...h.matchAll(/class="ts-bar" d="M[\d.]+ [\d.]+V[\d.]+q0 -[\d.]+ [\d.]+ -[\d.]+h([\d.]+)/g)].map(m => +m[1]);
+    const narrow = widths(kit().tsHtml(o)), wide = widths(kit().tsHtml({ ...o, barFill: 0.8 }));
+    assert.equal(wide.length, 3);
+    assert.ok(Math.max(...narrow) <= 28);
+    assert.ok(wide[0] > 28 && wide[0] > narrow[0]);
+    assert.equal(tsJson(kit().tsHtml({ ...o, barFill: 0.8 })).barFill, 0.8);
+    assert.equal(tsJson(kit().tsHtml({ ...o, barFill: 2 })).barFill, undefined);
+    assert.equal(kit().tsHtml({ ...o, barFill: 'x' }), kit().tsHtml(o));
   });
 
   test('a stacked chart shows the idle message when every shown value is 0', () => {

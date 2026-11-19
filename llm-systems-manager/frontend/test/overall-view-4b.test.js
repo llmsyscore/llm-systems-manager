@@ -232,26 +232,26 @@ describe('4b: clock change (America/New_York, 2026-11-01)', () => {
       const late = OV.throughput([], 6, 'all', Date.parse('2026-11-01T11:59:00Z'));
       expect(late.labels[0]).toBe('01:00');
       expect(late.labels.some(l => l.endsWith('′'))).toBe(false);
-      // window 01:45 EDT .. 06:44 EST: 01:00-01:44 EST are first copies here, 01:45 EST repeats
+      // window 01:45 EDT .. 06:44 EST in 5 min slots: 01:00-01:40 EST are first copies here, 01:45 EST repeats
       const mid = OV.throughput([], 6, 'all', Date.parse('2026-11-01T11:44:00Z'));
       expect(mid.labels[0]).toBe('01:45');
       expect(mid.labels).toContain('01:00');
       expect(mid.labels).not.toContain('01:00′');
       expect(mid.labels).toContain('01:45′');
-      expect(new Set(mid.labels).size).toBe(360);
-      expect(OV.rangeLabel(Date.parse('2026-11-01T06:45:00Z'), 6)).toBe(OV.bucketLabels(Date.parse('2026-11-01T00:46:00Z'), 360, 60000)[359]);
+      expect(new Set(mid.labels).size).toBe(72);
+      expect(OV.rangeLabel(Date.parse('2026-11-01T06:45:00Z'), 6)).toBe(OV.bucketLabels(Date.parse('2026-11-01T00:50:00Z'), 72, 300000)[71]);
     });
   });
   it('zero-filled gap buckets take their labels from the window ending at the current bucket', () => {
     inNY(() => {
-      const first = Date.parse('2026-11-01T05:20:00Z');
+      const first = Date.parse('2026-11-01T05:15:00Z');
       const a = OV.liveBucket(null, first, 24, {}, 'all');
       const b = OV.liveBucket(a.state, Date.parse('2026-11-01T06:40:00Z'), 24, {}, 'all');
       const labels = b.append.map(x => x.label).concat([b.update.label]);
-      expect(labels[0]).toBe('01:20');
+      expect(labels[0]).toBe('01:15');
       expect(labels).toContain('01:30');
-      expect(labels).toContain('01:30′');
-      expect(b.update.label).toBe('01:40′');
+      expect(labels).toContain('01:00′');
+      expect(b.update.label).toBe('01:30′');
       expect(new Set(labels).size).toBe(labels.length);
     });
   });
@@ -262,7 +262,7 @@ describe('4b: clock change (America/New_York, 2026-11-01)', () => {
       const live = OV.liveBucket(null, second + 1000, 24, {}, 'all');
       expect(live.update.label).toBe('01:30′');
       expect(t.labels[t.labels.length - 1]).toBe(live.update.label);
-      const next = OV.liveBucket(live.state, second + 300000, 24, {}, 'all');
+      const next = OV.liveBucket(live.state, second + 900000, 24, {}, 'all');
       expect(next.append[0].label).toBe('01:30′');
       expect(OV.rangeLabel(Date.parse('2026-11-01T05:30:00Z'), 24)).toBe('01:30');
     });
@@ -270,108 +270,114 @@ describe('4b: clock change (America/New_York, 2026-11-01)', () => {
 });
 
 describe('4b: throughput', () => {
-  it('keeps 288/144/360 buckets with unique labels ending at the current bucket', () => {
+  it('keeps 96/72/72 bar slots of 15/10/5 minutes with unique labels ending at the current slot', () => {
     const t24 = OV.throughput(HIST, 24, 'all', NOW);
-    expect(t24.keep).toBe(288);
-    expect(t24.labels).toHaveLength(288);
-    expect(new Set(t24.labels).size).toBe(288);
-    expect(t24.labels[287]).toBe(localHHMM(Math.floor(NOW / 300000) * 300000));
-    expect(OV.throughput(HIST, 12, 'all', NOW).keep).toBe(144);
+    expect(t24.keep).toBe(96);
+    expect(t24.rangeH).toBe(24);
+    expect(new Set(t24.labels).size).toBe(96);
+    expect(t24.labels[95]).toBe(localHHMM(Math.floor(NOW / 900000) * 900000));
+    expect(OV.throughput(HIST, 12, 'all', NOW).keep).toBe(72);
     const t6 = OV.throughput(HIST, 6, 'all', NOW);
-    expect(t6.keep).toBe(360);
-    expect(new Set(t6.labels).size).toBe(360);
+    expect(t6.keep).toBe(72);
+    expect(t6.labels[71]).toBe(localHHMM(Math.floor(NOW / 300000) * 300000));
+    expect([6, 12, 24].map(OV.tpBucketMs)).toEqual([300000, 600000, 900000]);
   });
-  it('one series per provider plus Prompt (all), bucket peaks, empty buckets 0', () => {
+  it('Prompt (all) first, then one Generation-band series per provider, with slot peaks and means; empty slots 0', () => {
     const t = OV.throughput(HIST, 24, 'all', NOW);
-    expect(t.series.map(s => s.name)).toEqual(['llama.cpp', 'LM Studio', 'vLLM', 'Prompt (all)']);
-    const start = Math.floor(NOW / 300000) * 300000 - 287 * 300000;
-    const at = iso => Math.floor((Date.parse(iso) - start) / 300000);
-    const i1030 = at('2026-11-15T10:30:00Z'), i1105 = at('2026-11-15T11:05:00Z'), i1300 = at('2026-11-15T13:00:00Z');
-    expect(t.series[1].values[i1030]).toBe(29.46);
-    expect(t.series[3].values[i1030]).toBe(1005);
-    expect(t.series[1].values[i1105]).toBe(196.5);
-    expect(t.series[0].values[i1300]).toBe(94.1566);
-    expect(t.series[2].values.every(v => v === 0)).toBe(true);
-    expect(t.series[0].values[0]).toBe(0);
+    expect(t.series.map(s => s.name)).toEqual(['Prompt (all)', 'llama.cpp', 'LM Studio', 'vLLM']);
+    expect(t.series.map(s => s.band)).toEqual([undefined, 'Generation', 'Generation', 'Generation']);
+    const start = Math.floor(NOW / 900000) * 900000 - 95 * 900000;
+    const at = iso => Math.floor((Date.parse(iso) - start) / 900000);
+    const i1030 = at('2026-11-15T10:30:00Z'), i1100 = at('2026-11-15T11:00:00Z'), i1300 = at('2026-11-15T13:00:00Z');
+    expect(t.series[2].values[i1030]).toBe(29.46);
+    expect(t.series[2].avg[i1030]).toBeCloseTo(20.73, 5);
+    expect(t.series[0].values[i1030]).toBe(1005);
+    expect(t.series[0].avg[i1030]).toBeCloseTo(992.245, 5);
+    expect(t.series[2].values[i1100]).toBe(196.5);
+    expect(t.series[1].values[i1300]).toBe(94.1566);
+    expect(t.series[3].values.every(v => v === 0)).toBe(true);
+    expect(t.series[1].values[0]).toBe(0);
+    expect(t.series[1].avg[0]).toBe(0);
     expect(t.power[i1030]).toBe(12);
-    expect(t.series.every(s => s.values.length === 288)).toBe(true);
+    expect(t.series.every(s => s.values.length === 96 && s.avg.length === 96)).toBe(true);
   });
   it('drops rows outside the range and junk timestamps', () => {
     const t = OV.throughput(HIST, 6, 'all', NOW);
     expect(t.series.every(s => s.values.every(v => v === 0))).toBe(true);
-    const sum = OV.throughput(HIST, 24, 'all', NOW).series[0].values.reduce((a, b) => a + b, 0);
+    const sum = OV.throughput(HIST, 24, 'all', NOW).series[1].values.reduce((a, b) => a + b, 0);
     expect(sum).toBe(94.1566);
   });
   it('fleet power per row is the larger of psu_in and gpu_power when psu_in is reported', () => {
     const rows = [{ ts: '2026-11-16T06:00:00Z', gpu_power: 30, psu_in: 120 }, { ts: '2026-11-16T06:05:00Z', gpu_power: 50, psu_in: 20 },
       { ts: '2026-11-16T06:10:00Z', gpu_power: 9 }];
-    const t = OV.throughput(rows, 24, 'all', Date.parse('2026-11-16T06:12:00Z'));
+    const t = OV.throughput(rows, 6, 'all', Date.parse('2026-11-16T06:12:00Z'));
     expect(t.power.slice(-3)).toEqual([120, 50, 9]);
   });
-  it('tpLegend: tokens per provider over 24 h, a host under two providers counts under each, prompt tokens last', () => {
+  it('tpLegend: prompt tokens first, then tokens per provider over 24 h, a host under two providers counting under each', () => {
     const s1 = { hosts: [
       { agent_id: ID_LLAMA, tokens_gen: 10237, tokens_prompt: 91227 },
       { agent_id: ID_LMS, tokens_gen: 55007, tokens_prompt: 250000 },
       { agent_id: ID_LMS2, tokens_gen: 0, tokens_prompt: 8782 }] };
     const by = { ...BY_PROVIDER, vllm: [{ agent_id: ID_LMS, hostname: 'llm-systems-lmstudio.local' }] };
-    expect(OV.tpLegend(s1, by, 'all')).toEqual(['10.2k tokens', '55.0k tokens', '55.0k tokens', '350.0k tokens']);
-    expect(OV.tpLegend(s1, by, 'lms')).toEqual(['55.0k tokens', '258.8k tokens']);
+    expect(OV.tpLegend(s1, by, 'all')).toEqual(['350.0k tokens', '10.2k tokens', '55.0k tokens', '55.0k tokens']);
+    expect(OV.tpLegend(s1, by, 'lms')).toEqual(['258.8k tokens', '55.0k tokens']);
     expect(OV.tpLegend(s1, { llama: [], lms: [], vllm: [] }, 'vllm')).toEqual(['0 tokens', '0 tokens']);
     expect(OV.tpLegend(null, by, 'all')).toEqual(['–', '–', '–', '–']);
   });
   it('a provider filter keeps that provider and its prompt rate only, named after it', () => {
     const t = OV.throughput(HIST, 24, 'lms', NOW);
-    expect(t.series.map(s => s.name)).toEqual(['LM Studio', 'Prompt (LM Studio)']);
+    expect(t.series.map(s => s.name)).toEqual(['Prompt (LM Studio)', 'LM Studio']);
     expect(['all', 'llama', 'lms', 'vllm', 'x'].map(OV.promptName))
       .toEqual(['Prompt (all)', 'Prompt (llama.cpp)', 'Prompt (LM Studio)', 'Prompt (vLLM)', 'Prompt (all)']);
-    const start = Math.floor(NOW / 300000) * 300000 - 287 * 300000;
-    expect(t.series[1].values[Math.floor((Date.parse('2026-11-15T10:30:00Z') - start) / 300000)]).toBe(1000);
+    const start = Math.floor(NOW / 900000) * 900000 - 95 * 900000;
+    expect(t.series[0].values[Math.floor((Date.parse('2026-11-15T10:30:00Z') - start) / 900000)]).toBe(1000);
   });
 });
 
 describe('4b: liveBucket', () => {
   const tick = (tps, pps) => ({ llama: { throughput: { total_tps: tps, total_pps: pps } }, lms: LMS_AGG, vllm: VLLM_AGG });
-  const B0 = Math.floor(NOW / 300000) * 300000;
-  it('folds ticks in one bucket into the peak without appending', () => {
+  const S15 = 900000, B0 = Math.floor(NOW / S15) * S15;
+  it('folds ticks in one slot into the peak and the mean without appending', () => {
     const a = OV.liveBucket(null, B0 + 1000, 24, tick(40, 100), 'all');
     expect(a.append).toBeNull();
-    expect(a.update).toEqual({ label: localHHMM(B0), values: [40, 0, 0, 100] });
-    const b = OV.liveBucket(a.state, B0 + 60000, 24, tick(25, 300), 'all');
+    expect(a.update).toEqual({ label: localHHMM(B0), values: [100, 40, 0, 0], avgs: [100, 40, 0, 0] });
+    const b = OV.liveBucket(a.state, B0 + 60000, 24, tick(20, 300), 'all');
     expect(b.append).toBeNull();
-    expect(b.update.values).toEqual([40, 0, 0, 300]);
+    expect(b.update.values).toEqual([300, 40, 0, 0]);
+    expect(b.update.avgs).toEqual([200, 30, 0, 0]);
   });
-  it('a tick in the next bucket appends the finished bucket', () => {
+  it('a tick in the next slot appends the finished slot with its mean', () => {
     const a = OV.liveBucket(null, B0 + 1000, 24, tick(40, 100), 'all');
-    const b = OV.liveBucket(a.state, B0 + 300000, 24, tick(5, 7), 'all');
-    expect(b.append).toEqual([{ label: localHHMM(B0), values: [40, 0, 0, 100] }]);
-    expect(b.update).toEqual({ label: localHHMM(B0 + 300000), values: [5, 0, 0, 7] });
-    expect(b.state.key).toBe(B0 + 300000);
+    const a2 = OV.liveBucket(a.state, B0 + 2000, 24, tick(0, 100), 'all');
+    const b = OV.liveBucket(a2.state, B0 + S15, 24, tick(5, 7), 'all');
+    expect(b.append).toEqual([{ label: localHHMM(B0), values: [100, 40, 0, 0], avgs: [100, 20, 0, 0] }]);
+    expect(b.update).toEqual({ label: localHHMM(B0 + S15), values: [7, 5, 0, 0], avgs: [7, 5, 0, 0] });
+    expect(b.state.key).toBe(B0 + S15);
   });
-  it('a state from another provider filter restarts the bucket', () => {
+  it('a state from another provider filter restarts the slot', () => {
     const a = OV.liveBucket(null, B0 + 1000, 24, tick(40, 100), 'all');
-    const b = OV.liveBucket(a.state, B0 + 300000, 24, tick(40, 100), 'llama');
+    const b = OV.liveBucket(a.state, B0 + S15, 24, tick(40, 100), 'llama');
     expect(b.append).toBeNull();
-    expect(b.update.values).toEqual([40, 100]);
+    expect(b.update.values).toEqual([100, 40]);
   });
-  it('a 3-bucket gap appends the finished bucket and zero-fills the skipped ones', () => {
+  it('a 3-slot gap appends the finished slot and zero-fills the skipped ones', () => {
     const a = OV.liveBucket(null, B0 + 1000, 24, tick(40, 100), 'all');
-    const b = OV.liveBucket(a.state, B0 + 4 * 300000 + 10, 24, tick(5, 7), 'all');
+    const b = OV.liveBucket(a.state, B0 + 4 * S15 + 10, 24, tick(5, 7), 'all');
+    const z = { values: [0, 0, 0, 0], avgs: [0, 0, 0, 0] };
     expect(b.append).toEqual([
-      { label: localHHMM(B0), values: [40, 0, 0, 100] },
-      { label: localHHMM(B0 + 300000), values: [0, 0, 0, 0] },
-      { label: localHHMM(B0 + 600000), values: [0, 0, 0, 0] },
-      { label: localHHMM(B0 + 900000), values: [0, 0, 0, 0] },
+      { label: localHHMM(B0), values: [100, 40, 0, 0], avgs: [100, 40, 0, 0] },
+      { label: localHHMM(B0 + S15), ...z }, { label: localHHMM(B0 + 2 * S15), ...z }, { label: localHHMM(B0 + 3 * S15), ...z },
     ]);
-    expect(b.update).toEqual({ label: localHHMM(B0 + 1200000), values: [5, 0, 0, 7] });
+    expect(b.update.label).toBe(localHHMM(B0 + 4 * S15));
     expect(b.gap).toBe(3);
-    expect(OV.liveBucket(b.state, B0 + 9 * 300000, 24, tick(1, 1), 'all').gap).toBe(4);
-    expect(OV.liveBucket(b.state, B0 + 4 * 300000 + 20, 24, tick(1, 1), 'all').gap).toBe(0);
+    expect(OV.liveBucket(b.state, B0 + 9 * S15, 24, tick(1, 1), 'all').gap).toBe(4);
+    expect(OV.liveBucket(b.state, B0 + 4 * S15 + 20, 24, tick(1, 1), 'all').gap).toBe(0);
   });
-  it('a gap longer than the range appends at most keep buckets', () => {
+  it('a gap longer than the range appends at most keep slots', () => {
     const a = OV.liveBucket(null, B0, 6, tick(1, 1), 'all');
     const b = OV.liveBucket(a.state, B0 + 3 * 86400000, 6, tick(1, 1), 'all');
-    expect(b.append.length).toBeLessThanOrEqual(361);
-    expect(b.append[b.append.length - 1].label).toBe(localHHMM(B0 + 3 * 86400000 - 60000));
+    expect(b.append.length).toBeLessThanOrEqual(73);
+    expect(b.append[b.append.length - 1].label).toBe(localHHMM(B0 + 3 * 86400000 - 300000));
   });
 });
 
@@ -386,10 +392,13 @@ describe('4b: fleetKpis', () => {
     expect(by['k-agents'].title).toBe('Hosts online');
     expect(by['k-tok']).toMatchObject({ title: 'Tokens', value: '65.2k', sub: 'last 24 h · 7.1k the day before', spark: [2647, 0] });
     expect(by['k-tok'].delta).toEqual({ dir: 'up', text: '814%', tone: 'good' });
-    expect(by['k-peak']).toMatchObject({ value: '196.5', unit: 't/s', sub: 'highest combined rate in a 5 min slot · last 24 h', delta: null });
-    expect(by['k-peak'].spark).toHaveLength(288);
+    expect(by['k-peak']).toMatchObject({ value: '196.5', unit: 't/s', sub: 'highest combined rate in a 15 min slot · last 24 h', delta: null });
+    expect(by['k-peak'].spark).toHaveLength(96);
     expect(by['k-pow']).toMatchObject({ value: '11.5', unit: 'W', delta: null });
-    expect(by['k-pow'].spark).toHaveLength(288);
+    expect(by['k-pow'].spark).toHaveLength(96);
+    // 6 and 12 hours both keep 72 slots; the range comes from tp.rangeH.
+    const k12 = OV.fleetKpis({ ...base, tp: OV.throughput(HIST, 12, 'all', NOW) }).find(x => x.id === 'k-peak');
+    expect(k12.sub).toBe('highest combined rate in a 10 min slot · last 12 h');
     expect(by['k-en']).toMatchObject({ value: '0.29', unit: 'kWh', sub: '$0.04 at $0.15/kWh', spark: [12.52, 4.7] });
     expect(by['k-en'].delta).toEqual({ dir: 'up', text: '841%', tone: 'bad' });
     expect(by['k-save']).toMatchObject({ value: '$3.34', sub: 'same tokens at Opus 5 prices', delta: null, spark: null });
@@ -433,7 +442,7 @@ describe('4b: serverPanels', () => {
     expect(p.state).toEqual({ label: 'Sleeping', tone: 'sl', detail: 'wakes on the next request' });
     expect(p.note).toBe('1 of 2 awake');
     expect(p.kv).toEqual([
-      ['Speed', 'Now 0.0 t/s · prompt 0.0 t/s'],
+      ['Generation', '0.0 t/s'], ['Prompt', '0.0 t/s'],
       ['Model', 'Qwen3.8-27B-GGUF:Q4_K_M'],
       ['Context', '124.2k tokens · 1 slot · KV q8_0'],
       ['Extras', 'speculative decoding (draft-mtp) · reasoning on'],
@@ -470,14 +479,14 @@ describe('4b: serverPanels', () => {
   });
   it('llama.cpp without preset args leaves the context lines out', () => {
     const p = OV.serverPanels({ ...input, llmModels: { data: [] } }).llama;
-    expect(p.kv.map(r => r[0])).toEqual(['Speed', 'Model', 'Loaded models', 'GPU power']);
+    expect(p.kv.map(r => r[0])).toEqual(['Generation', 'Prompt', 'Model', 'Loaded models', 'GPU power']);
   });
   it('LM Studio: server, loaded model, installed, gateway tokens, memory, Mac power', () => {
     const p = OV.serverPanels(input).lms;
     expect(p.state).toEqual({ label: 'Server on', tone: 'ok', detail: 'port 1235' });
     expect(p.note).toBe('llm-systems-lmstudio · 2 of 2 hosts online');
     expect(p.kv).toEqual([
-      ['Speed', 'Now 0.0 t/s · prompt 0.0 t/s'],
+      ['Generation', '0.0 t/s'], ['Prompt', '0.0 t/s'],
       ['Loaded', 'qwen3.5-9b@q6_k · Idle'],
       ['Model', '9B · Q6_K · 9.28 GB · 32.8k ctx'],
       ['Installed', '10 models'],
@@ -500,7 +509,7 @@ describe('4b: serverPanels', () => {
     const p = OV.serverPanels(input).vllm;
     expect(p.state.label).toBe('Server off');
     expect(p.kv).toEqual([
-      ['Speed', 'Now 0.0 t/s · prompt 0.0 t/s'],
+      ['Generation', '0.0 t/s'], ['Prompt', '0.0 t/s'],
       ['Model', 'none served'], ['Requests', '0 running · 0 waiting'], ['KV cache', '0% full'],
       ['GPU power', '0 W'], ['Last report', '2.8 s ago'], ['Loaded models', '0'],
     ]);
@@ -513,9 +522,9 @@ describe('4b: serverPanels', () => {
         gen: { peak: { ts: '2026-11-16T05:48:00+00:00', v: 197.2 } },
         prompt: { peak: { ts: '2026-11-16T03:00:00+00:00', v: 899.78 } } } } };
     const p = OV.serverPanels({ ...input, aggs: { ...AGGS, lms }, now, llamaHost: 'llm-systems-agent-llama.local' });
-    expect(p.lms.kv[0]).toEqual(['Speed', 'Now 12.3 t/s · prompt 40.1 t/s · peak 197 t/s 12 min ago · prompt peak 900 t/s 3 h ago']);
-    expect(p.lms.table.rows.slice(0, 3)).toEqual([['State', 'Server on'], ['GPU temperature', 'Hot'],
-      ['Speed', 'Now 12.3 t/s · prompt 40.1 t/s · peak 197 t/s 12 min ago · prompt peak 900 t/s 3 h ago']]);
+    expect(p.lms.kv.slice(0, 2)).toEqual([['Generation', '12.3 t/s · peak 197 t/s · 12 min ago'], ['Prompt', '40.1 t/s · peak 900 t/s · 3 h ago']]);
+    expect(p.lms.table.rows.slice(0, 4)).toEqual([['State', 'Server on'], ['GPU temperature', 'Hot'],
+      ['Generation', '12.3 t/s · peak 197 t/s · 12 min ago'], ['Prompt', '40.1 t/s · peak 900 t/s · 3 h ago']]);
     expect(p.lms.hot).toBe(true);
     expect(p.llama.hot).toBe(false);
     expect(p.llama.note).toBe('llm-systems-agent-llama · 1 of 2 awake');
@@ -550,19 +559,34 @@ describe('4b: energy and power panels', () => {
     expect(e.totals.kwh).toBe(0.05);
     expect(OV.energyPerHour(rows, 1).labels).toHaveLength(5);
     expect(OV.energyPerHour(rows, 9).labels).toHaveLength(5);
+    expect(OV.energyPerHour(rows, 12).labels).toEqual(['Nov 16 00:00']);
+    expect(OV.energyPerHour(rows, 24).series[1].values).toEqual([11]);
+  });
+  it('energyPerHour at step 12 labels steps with the date and keeps a leading partial step', () => {
+    const start = new Date(2026, 9, 20, 5, 0, 0).getTime() / 1000;
+    const rows = Array.from({ length: 672 }, (_, i) => ({ hour_ts: start + i * 3600, energy_wh: 10, active_energy_wh: 4 }));
+    const e = OV.energyPerHour(rows, 12);
+    expect(e.labels[0]).toBe('Oct 20 00:00');
+    expect(new Set(e.labels).size).toBe(e.labels.length);
+    const sum = a => a.reduce((x, y) => x + y, 0);
+    expect(Math.round(sum(e.series[1].values))).toBe(672 * 4);
+    expect(Math.round(sum(e.series[0].values))).toBe(672 * 6);
+    expect(OV.energyPerHour(rows, 3).labels[0]).toBe('Oct 20 03:00');
+    expect(OV.energyPerHour(rows.slice(0, 100), 3).labels[0]).toMatch(/^[A-Z][a-z]{2} \d\d:00$/);
   });
   it('energyPerHour with a step leaves out a first step a week before the last one with the same label, keeping its energy in the totals', () => {
     const now = new Date(2026, 10, 17, 10, 0, 0).getTime() / 1000;
     const rows = [];
     for (let h = 167; h >= 0; h--) rows.push({ hour_ts: now - h * 3600, energy_wh: 1, active_energy_wh: 0 });
-    const e = OV.energyPerHour(rows, 3);
+    const e = OV.energyPerHour(rows, 3, { wrap: true });
     expect(e.labels[0]).toBe('Tue 12:00');
+    expect(OV.energyPerHour(rows, 3).labels[0]).toBe('Tue 09:00');
     expect(e.labels[e.labels.length - 1]).toBe('Tue 09:00');
     expect(new Set(e.labels).size).toBe(e.labels.length);
     expect(e.totals.kwh).toBe(0.168);
     // Data that starts mid-step without a week of rows keeps its first bar.
     const short = rows.slice(-5);
-    expect(OV.energyPerHour(short, 3).labels).toEqual(['Tue 06:00', 'Tue 09:00']);
+    expect(OV.energyPerHour(short, 3, { wrap: true }).labels).toEqual(['Tue 06:00', 'Tue 09:00']);
   });
   it('energyPerHour with a step groups a fall-back DST day by local hour', () => {
     const tz = process.env.TZ;

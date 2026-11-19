@@ -73,7 +73,7 @@ function stubChart() {
 // _syncResetZoomBtn and _layoutResetZoomBtns.
 function loadChartFactory() {
   stubChart();
-  const body = fnBlock('const xAxis = {', '\n// N-line chart factory');
+  const body = fnBlock('const xAxis = {', '\n// Redraws through the visibility gate in foundation.js');
   evalAtGlobal(body
     + '\nwindow._syncResetZoomBtn = _syncResetZoomBtn;'
     + '\nwindow._layoutResetZoomBtns = _layoutResetZoomBtns;');

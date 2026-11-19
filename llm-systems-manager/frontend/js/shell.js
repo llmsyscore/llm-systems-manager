@@ -26,8 +26,14 @@
       if (typeof saveLayout === 'function') saveLayout();
     },
   };
-  // Full-size panels redraw their charts to fit the full-size box; a refit evens out the host page rows.
-  kitConfigure({ prefix: 'mgr', store: STORE, fullRedraw: true, onRefit: (root) => { if (typeof window.hpFit === 'function') window.hpFit(root); } });
+  // Full-size panels redraw their charts to fit the full-size box; a refit evens out the host, Energy, Forecast and Manager page rows.
+  // A double-click inside the Forecast findings browser does not open its panel full size.
+  kitConfigure({ prefix: 'mgr', store: STORE, fullRedraw: true, dblSkip: '#fc-b-findings', onRefit: (root) => {
+    if (typeof window.hpFit === 'function') window.hpFit(root);
+    if (typeof window.enRefit === 'function') window.enRefit(root);
+    if (typeof window.fcRefit === 'function') window.fcRefit(root);
+    if (typeof window.mgRefit === 'function') window.mgRefit(root);
+  } });
   kitWire(document);
 
   // Overall toolbar group: provider chips and the time range, pressed as window.ovState says.
@@ -63,7 +69,7 @@
   const ahBar = document.querySelector('#toolbar .tb-ah');
   const AH_RANGE_KEY = 'mgr.ahRange';
   // Dashboards pages that use the All hosts range.
-  const AH_SUBS = ['all', 'llamacpp', 'lmstudio', 'vllm', 'host'];
+  const AH_SUBS = ['all', 'llamacpp', 'lmstudio', 'vllm', 'host', 'manager'];
   function mcShellPaintAh() {
     if (!ahBar) return;
     const r = +(window.ahState || {}).range || 24;

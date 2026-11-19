@@ -1,5 +1,5 @@
-// Forecast (#1031) — Dashboard › Forecast sub-tab and the payload snapshot for the Overall page.
-// Pure helpers live in js/lib/forecast.js (window.FC); every API string is written with textContent only.
+// Forecast (#1031, #1432) — Dashboard › Forecast on the panel kit and the payload snapshot for the Overall page.
+// Pure helpers live in js/lib/forecast.js (window.FC); API strings go in with textContent, or kitEsc in kit panel HTML.
 (function () {
   'use strict';
 
@@ -18,6 +18,9 @@
     + 'a load change, a model that keeps failing — and tells you before the alarm does.';
   const ERR_TEXT = 'Forecast is unavailable right now.';
   const VERIFIED_CLS = { code: '', 'tower+code': 'fc-vboth', model: 'fc-vunv' };
+  const TILE_LABELS = ['Open findings', 'Last run', 'Next run', 'Checks ran', 'Writing model', 'Looking back'];
+  // Tiles whose day-and-time value keeps the full tile size.
+  const WHEN_TILES = [TILE_LABELS[1], TILE_LABELS[2]];
 
   let _view = null;      // last /api/forecast payload
   let _error = '';
@@ -38,6 +41,8 @@
   const _canvas = {};        // finding id → canvas element
   const _holder = {};        // finding id → canvas wrapper
   const _note = {};          // finding id → chart note element
+  // Kit page state: the dressed root, panel writes, the reader's place, and the Tower payloads with their fetch time.
+  const S = { root: null, last: {}, place: null, tower: null, insights: null, towerEnded: false, towerAt: 0, towerRun: null };
 
   // ── DOM helpers ──
   function byId(id) { return document.getElementById(id); }
@@ -52,6 +57,15 @@
     if (typeof showToast === 'function') showToast('Forecast', msg, sev || 'info');
   }
   function paint(node, text) { if (node) node.textContent = text; }
+  const esc = (v) => kitEsc(v);
+  const empty = (text) => '<div class="ov-empty">' + esc(text) + '</div>';
+  const lay = () => ((typeof layout !== 'undefined' && layout) || window.layout || null);
+  async function getJson(url) {
+    try {
+      const r = await fetch(url);
+      return r && r.ok ? await r.json() : null;
+    } catch (_) { return null; }
+  }
 
   // ── session ──
   function canOperate() {
@@ -77,7 +91,25 @@
     _timer = null;
     if (!panelVisible()) return;
     if (window.LivePause && LivePause.on) { schedule(); return; }
-    refresh().then(schedule, schedule);
+    Promise.all([refresh(), refreshTower()]).then(schedule, schedule);
+  }
+
+  // Tower state and insights for the Tower panel, fetched at most once a minute, failed attempts included;
+  // a failed fetch keeps the last payload.
+  function refreshTower() {
+    if (S.towerRun) return S.towerRun;
+    if (S.towerAt && Date.now() - S.towerAt < POLL_MS) return Promise.resolve();
+    const at = Date.now();
+    S.towerRun = Promise.all([getJson('/api/tower/state'), getJson('/api/tower/insights')])
+      .then(got => {
+        if (got[0] != null) S.tower = got[0];
+        if (got[1] != null) S.insights = got[1];
+        S.towerAt = at;
+        S.towerEnded = true;
+        if (ensure()) { const place = holdPlace(); paintTower(); fit(); restorePlace(place); }
+      })
+      .finally(() => { S.towerRun = null; });
+    return S.towerRun;
   }
 
   function refresh() {
@@ -97,13 +129,7 @@
     return _inflight;
   }
 
-  // ── run bar ──
-  function kv(label, value) {
-    const n = mk('div', 'fc-kv');
-    n.append(mk('span', 'k', label), mk('span', 'v', value || '—'));
-    return n;
-  }
-
+  // ── page head ──
   // Tracks a run starting and finishing between two payloads.
   function noteRun(prev, next) {
     const run = next.run;
@@ -145,6 +171,7 @@
     }
   }
 
+  // The Forecast row's header: the error note, the run in flight, the finished flash, and Run now or Enable in Settings.
   function runBar() {
     const bar = wipe(byId('fcRunbar'));
     if (!bar) return;
@@ -153,18 +180,12 @@
     if (_error && _view) bar.append(mk('div', 'fc-note', _error));
     if (!_view) return;
     const v = _view;
-    const now = Date.now();
     if (!v.enabled) {
-      bar.append(kv('Forecast', 'Off'), mk('span', 'fc-sp'));
-      if (isAdmin()) bar.append(settingsButton());
+      if (isAdmin()) bar.append(mk('span', 'fc-sp'), settingsButton());
       return;
     }
     if (v.run) { liveStrip(bar, v.run); return; }
     stopClock();
-    bar.append(kv('Last run', FC.whenLabel(v.last_run, now) || 'Never'));
-    bar.append(kv('Next run', v.enabled ? (FC.whenLabel(v.next_run, now) || 'Not scheduled') : 'Off'));
-    bar.append(kv('Tower effort', FC.towerLine(v.tower)));
-    bar.append(kv('Looking back', v.window_days ? v.window_days + ' days' : '—'));
     bar.append(mk('span', 'fc-sp'));
     if (Date.now() < _doneUntil) {
       bar.append(mk('span', 'fc-done', '✓ Finished' + (v.last_result ? ' — ' + v.last_result : '')));
@@ -313,30 +334,93 @@
     try { localStorage.setItem(key, value); } catch (_) { /* storage unavailable */ }
   }
 
-  // ── checks (collapsed by default) ──
+  // ── kit panel writes that skip a body, table or note equal to the last one written ──
+  function fill(id, html) {
+    const el = byId(id), was = S.last[id];
+    if (!el || (was && was.el === el && was.html === html)) return;
+    S.last[id] = { el, html };
+    kitFill(id, html);
+  }
+  function setRows(id, table) {
+    const t = JSON.stringify(table), el = byId(id), was = S.last['t:' + id];
+    if (!el || (was && was.el === el && was.t === t)) return;
+    S.last['t:' + id] = { el, t };
+    kitSetRows(id, table);
+  }
+  // The header note of a body's panel; warn colours it.
+  function note(id, text, warn) {
+    const el = byId(id), panel = el && el.closest('.panel'), n = panel && panel.querySelector('.p-hd .p-note');
+    if (!(n ? n.textContent === text : !text)) kitNote(id, text);
+    const now = panel && panel.querySelector('.p-hd .p-note');
+    if (now && now.classList.contains('fc-warn') !== !!warn) now.classList.toggle('fc-warn', !!warn);
+  }
+
+  // ── tiles ──
+  function countState(checks, state) { return checks.filter(c => c.state === state).length; }
+  // Label, value, sub line and tone of each tile; while Forecast is off, every tile but Last run says Off.
+  function tileList(v) {
+    const now = Date.now(), f = v.findings || [], checks = v.checks || [];
+    if (!v.enabled) {
+      return TILE_LABELS.map(label => ({ label, value: label === TILE_LABELS[1] ? (FC.whenLabel(v.last_run, now) || 'Never') : 'Off', sub: '' }));
+    }
+    const has = (sev) => f.some(x => String(x.severity || '').toLowerCase() === sev);
+    return [
+      { label: TILE_LABELS[0], value: String(f.length), sub: '', tone: has('critical') ? 'bad' : (has('warning') ? 'warn' : '') },
+      { label: TILE_LABELS[1], value: FC.whenLabel(v.last_run, now) || 'Never', sub: '' },
+      { label: TILE_LABELS[2], value: FC.whenLabel(v.next_run, now) || 'Not scheduled', sub: '' },
+      { label: TILE_LABELS[3], value: countState(checks, 'ok') + ' / ' + checks.length,
+        sub: countState(checks, 'collecting') + ' collecting · ' + countState(checks, 'failed') + ' could not run' },
+      { label: TILE_LABELS[4], value: (v.tower && v.tower.model) || 'Off', sub: FC.towerLine(v.tower) },
+      { label: TILE_LABELS[5], value: v.window_days ? v.window_days + ' days' : '—', sub: '' },
+    ];
+  }
+  function renderTiles() {
+    const bid = 'fc-b-tiles', cols = ['Tile', 'Value'];
+    if (!_view) { fill(bid, empty(_error || 'Loading…')); setRows(bid, { cols, rows: [] }); return; }
+    const tiles = tileList(_view);
+    fill(bid, '<div class="fc-tiles">' + tiles.map(t => '<div class="fc-tile' + (t.tone ? ' ' + t.tone : '') + (WHEN_TILES.includes(t.label) ? ' fc-tw' : '') + '">'
+      + '<div class="fc-tl">' + esc(t.label) + '</div>' + kpiBody({ value: t.value, sub: t.sub }) + '</div>').join('') + '</div>');
+    setRows(bid, { cols, rows: tiles.map(t => [t.label, t.sub ? t.value + ' · ' + t.sub : t.value]) });
+  }
+
+  // ── checks ──
   function renderChecks() {
-    const box = byId('fcChecksBox');
+    const bid = 'fc-b-checks', cols = ['Check', 'State', 'Detail'];
     const host = wipe(byId('fcChecks'));
-    const v = _view;
-    const on = !!(v && v.enabled && (v.checks || []).length);
-    if (box) box.hidden = !on;
-    if (!on || !host) return;
-    const ran = v.checks.filter(c => c.state === 'ok').length;
-    const collecting = v.checks.filter(c => c.state === 'collecting').length;
-    const failed = v.checks.filter(c => c.state === 'failed').length;
-    const sum = wipe(byId('fcChecksSum'));
-    sum.append(mk('b', null, v.checks.length + ' checks'));
-    const parts = [ran + ' ran'];
+    if (!host) return;
+    const v = _view, checks = (v && v.checks) || [];
+    const msg = !v ? (_error || 'Loading…') : (checks.length ? '' : 'No checks yet');
+    if (msg) { host.append(mk('div', 'ov-empty', msg)); setRows(bid, { cols, rows: [] }); note(bid, ''); return; }
+    const collecting = countState(checks, 'collecting'), failed = countState(checks, 'failed');
+    const parts = [countState(checks, 'ok') + ' ran'];
     if (collecting) parts.push(collecting + ' still collecting data');
     if (failed) parts.push(failed + ' could not run');
-    sum.append(mk('span', failed ? 'fc-warn-text' : null, parts.join(', ')));
-    v.checks.forEach(c => {
+    note(bid, checks.length + ' checks · ' + parts.join(', '), failed > 0);
+    checks.forEach(c => {
       const st = FC.checkState(c);
       const chip = mk('div', 'fc-cstate fc-' + st.cls);
       chip.append(mk('span', 'fc-dot'), document.createTextNode(c.title || ''));
       if (st.note) chip.append(mk('small', null, st.note));
       host.append(chip);
     });
+    setRows(bid, { cols, rows: checks.map(c => [c.title || '', c.state || '', FC.checkState(c).note]) });
+  }
+
+  // ── Tower ──
+  function paintTower() {
+    const bid = 'fc-b-tower';
+    if (!byId(bid)) return;
+    if (typeof window.ovTowerBody !== 'function') {
+      fill(bid, empty('Tower unavailable'));
+      setRows(bid, { cols: ['Field', 'Value'], rows: [] });
+      note(bid, '');
+      return;
+    }
+    if (!S.towerEnded) { fill(bid, empty('Loading…')); setRows(bid, { cols: ['Field', 'Value'], rows: [] }); note(bid, ''); return; }
+    const b = window.ovTowerBody(S.tower, S.insights);
+    fill(bid, b.html);
+    setRows(bid, { cols: b.cols, rows: b.rows });
+    note(bid, b.note);
   }
 
   // ── tabs ──
@@ -860,29 +944,132 @@
     };
   }
 
+  // ── kit page: build, equal rows and place keeping ──
+  function visible() {
+    return !!S.root && S.root.isConnected
+      && (typeof _activeTab === 'undefined' || _activeTab === 'dashboard')
+      && (typeof _subTabState === 'undefined' || !_subTabState || _subTabState.dashboard === 'forecast');
+  }
+  // Dresses the page's panels and applies the saved kit layout once per root.
+  function ensure() {
+    const root = byId('fc-root');
+    if (!root || typeof kitDress !== 'function') return false;
+    if (S.root === root && root.hasAttribute('data-kit-page')) return true;
+    S.root = root; S.last = {}; S.place = null; _sig = null;
+    kitDress(root);
+    if (typeof mcSoloTitles === 'function') mcSoloTitles(root);
+    kitLayout('forecast', root, window.mcShellStore);
+    // The run bar sits in the Forecast row's header line, left of the row's ⋯ menu.
+    const bar = byId('fcRunbar'), menu = bar && bar.parentNode && Array.from(bar.parentNode.children).find(c => c.classList.contains('row-menu'));
+    if (menu && bar.nextElementSibling !== menu) bar.parentNode.insertBefore(bar, menu);
+    if (root._fcClick) root.removeEventListener('click', root._fcClick);
+    root._fcClick = onClick;
+    root.addEventListener('click', onClick);
+    return true;
+  }
+  // Show as table or chart evens out the rows again.
+  function onClick(ev) {
+    const b = ev.target && ev.target.closest ? ev.target.closest('[data-kit-do="table"]') : null;
+    if (!b) return;
+    setTimeout(() => { const at = holdPlace(); fit(); restorePlace(at); }, 0);
+  }
+  // Rows hidden by the operator in layout.forecastRowsHidden.
+  function applyRows() {
+    const l = lay(), user = (l && l.forecastRowsHidden) || [];
+    S.root.querySelectorAll('section.row[data-row]').forEach(r => {
+      const hide = user.includes(r.dataset.row);
+      if (r.hidden !== hide) r.hidden = hide;
+    });
+    kitRowMenus(S.root);
+  }
+  // The last panel of a box spans the columns left empty after it; spans clear first so the column count read is the grid's own.
+  function widen(box) {
+    if (!box.clientWidth) return;
+    const list = Array.from(box.children).filter(p => p.classList.contains('panel') && !p.hidden && !p.classList.contains('full'));
+    list.forEach(p => { if (p.style.gridColumn) p.style.gridColumn = ''; });
+    const cols = getComputedStyle(box).gridTemplateColumns.split(' ').filter(Boolean).length || 1, pos = list.length % cols;
+    if (list.length && pos > 0) list[list.length - 1].style.gridColumn = 'span ' + (cols - pos + 1);
+  }
+  function fit() {
+    const root = S.root;
+    if (!root || !root.isConnected || !root.clientWidth) return;
+    root.querySelectorAll('.panels').forEach(widen);
+  }
+  // The first panel still in view is noted before a repaint and the window scrolls back by however far it moved.
+  function holdPlace() {
+    const root = S.root;
+    if (!root || !root.isConnected || !root.clientWidth || !(window.scrollY > 0)) return null;
+    for (const p of root.querySelectorAll('.panels > .panel')) {
+      const r = p.getBoundingClientRect();
+      if (!p.classList.contains('full') && r.height && r.bottom > 0) return { el: p, top: r.top, w: root.clientWidth };
+    }
+    return null;
+  }
+  // A panel hidden or folded away by the repaint is no place to return to.
+  function restorePlace(at) {
+    if (!at || !at.el.isConnected) return;
+    const r = at.el.getBoundingClientRect();
+    if (!r.height) return;
+    const d = r.top - at.top;
+    if (Math.abs(d) >= 1) window.scrollBy(0, d);
+  }
+  // Notes the shown page's place as the reader scrolls; a scroll while the page width differs from the noted one
+  // comes from a resize not yet refit and keeps the old place.
+  function onScroll() {
+    if (onScroll.due) return;
+    onScroll.due = true;
+    (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : setTimeout)(() => {
+      onScroll.due = false;
+      if (!visible()) return;
+      if (S.place && S.place.el.isConnected && S.place.w !== S.root.clientWidth) return;
+      S.place = holdPlace();
+    });
+  }
+  if (window._fcOnScroll) window.removeEventListener('scroll', window._fcOnScroll);
+  window._fcOnScroll = onScroll;
+  window.addEventListener('scroll', onScroll, { passive: true });
+
   // ── panel paint ──
   function paintPanel() {
-    if (!byId('fcRows')) return;
+    if (!byId('fcRows') || !ensure()) return;
     if (!_ui.ready) {
       _ui.ready = true;
       _ui.view = pref('fcView', 'outlook') === 'briefing' ? 'briefing' : 'outlook';
       _ui.drawer = pref('fcDrawer', '1') === '1';
     }
-    // The run in flight repaints only the strip, never the lists and charts under it.
+    const at = holdPlace();
+    applyRows();
+    // The run in flight repaints only the head and tiles, never the lists and charts under them.
     const sig = _error + '|' + JSON.stringify(_view, (k, val) => (k === 'run' || k === 'running' ? undefined : val));
-    if (sig === _sig) { runBar(); return; }
-    _sig = sig;
     runBar();
-    renderChecks();
-    renderBrief();
-    paintList();
+    renderTiles();
+    if (sig !== _sig) {
+      _sig = sig;
+      renderChecks();
+      renderBrief();
+      paintList();
+    }
+    paintTower();
+    fit();
+    restorePlace(at);
+    S.place = holdPlace();
   }
 
   // ── entry points ──
-  // Sub-tab entry: paint what we have, refresh, and start the poll.
+  // Sub-tab entry: paint what we have, refresh the payload and Tower, and start the poll.
   function forecastLoad() {
     paintPanel();
-    refresh().then(schedule, schedule);
+    return Promise.all([refresh(), refreshTower()]).then(schedule, schedule);
+  }
+
+  // Kit refit hook: evens out the page's rows when root holds it or sits inside it.
+  function fcRefit(root) {
+    const el = byId('fc-root');
+    if (!(S.root === el && el && root && (root === document || root.contains(el) || el.contains(root)))) return;
+    const at = S.place && S.place.el.isConnected ? S.place : holdPlace();
+    fit();
+    restorePlace(at);
+    S.place = holdPlace();
   }
 
   // Overall's Forecast panel: the cached /api/forecast payload, refetched at most once a minute.
@@ -897,4 +1084,5 @@
 
   window.forecastLoad = forecastLoad;
   window.forecastSnapshot = forecastSnapshot;
+  window.fcRefit = fcRefit;
 })();

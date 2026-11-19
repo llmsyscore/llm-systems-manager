@@ -1,10 +1,11 @@
-/* Dashboards host pages (#1432): the Host picker, tiles, key-value tables, core grid, disk bars and fan table. Kit tokens only. */
+/* Dashboards host pages and the Manager page (#1432): the Host picker, tiles, key-value tables, core grid, disk bars and fan table. Kit tokens only. */
 .hp-root:not(:empty) { padding: 12px 16px 0; }
 .hp-head { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
 .hp-pick-l { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; font-size: 12px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .hp-pick { min-width: 14em; max-width: 100%; font: inherit; font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
 .hp-pick:disabled { color: var(--text-2); opacity: 1; }
 .hp-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hp-mgr-name { font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text); }
 .panels > .panel.hp-wide { grid-column: 1 / -1; }
 /* Equal rows: panels on a line share one height (charts grow to fill, js/hostpage.js); key-value lists flow into two columns when wide. */
 .hp-root .panels { align-items: stretch; }
@@ -55,8 +56,33 @@
 .hp-fans th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); }
 .hp-fans td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hp-fans tr:last-child td { border-bottom: 0; }
+/* Dashboards · Manager (js/dashboard-manager.js): equal rows, tables, the databases list, footnotes and toned notes. */
+.mg-root:not(:empty) { padding: 12px 16px 0; }
+.mg-root { overflow-anchor: none; }
+.mg-root .panels { align-items: stretch; }
+.mg-root .panels > .panel { container-type: inline-size; }
+/* Performance: the two latency charts in equal halves from 700px. */
+@media (min-width: 700px) { .mg-root .panels.mg-thirds { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.mg-table { overflow-x: auto; }
+.mg-table table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.mg-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.mg-table td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mg-table th.num, .mg-table td.num { text-align: right; }
+.mg-table tr:last-child td { border-bottom: 0; }
+/* Databases: InfluxDB, manager SQLite and alarm engine SQLite side by side, stacked on narrow screens. */
+.mg-dbs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 28px; }
+.mg-dbg { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mg-foot { margin-top: 8px; }
+.p-note.mg-bad { color: var(--bad-text); }
+.p-note.mg-warn { color: var(--warn-text); }
 @media (max-width: 600px) {
-  .hp-root:not(:empty) { padding: 8px 8px 0; }
+  .hp-root:not(:empty), .mg-root:not(:empty) { padding: 8px 8px 0; }
   .hp-pick-l { flex: 1; }
   .hp-pick { min-width: 0; flex: 1; }
+  .mg-dbs { grid-template-columns: minmax(0, 1fr); }
 }
+/* Connection health bars: wider value column; a warning row draws red. */
+.mg-meters { display: grid; grid-template-columns: minmax(0, max-content) minmax(40px, 1fr) max-content; column-gap: 12px; }
+.mg-meters li { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.mg-meters li.mg-over .r-val { color: var(--bad-text); }
+.mg-meters li.mg-over .r-bar i { background: var(--bad); }

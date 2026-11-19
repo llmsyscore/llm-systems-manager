@@ -112,7 +112,7 @@ function switchSubTab(parent, sub) {
     ahLeave();
   }
   // Host pages fetch their picked host and start the live poll on entry; any other Dashboards page stops it.
-  const hpPage = { llamacpp: 'llama', lmstudio: 'lms', vllm: 'vllm', host: 'host' }[sub];
+  const hpPage = { llamacpp: 'llama', lmstudio: 'lms', vllm: 'vllm', host: 'host', manager: 'mgr' }[sub];
   if (parent === 'dashboard' && hpPage) {
     if (typeof hpEnter === 'function') hpEnter(hpPage);
   } else if (parent === 'dashboard' && typeof hpLeave === 'function') {
@@ -139,14 +139,13 @@ function switchSubTab(parent, sub) {
       && typeof forecastLoad === 'function') {
     forecastLoad();
   }
-  // Manager sub-tab is poll-gated to skip when not active; kick a one-shot
-  // refresh on entry so cards aren't stale up to the 10s interval boundary.
+  // Manager sub-tab builds its page and refreshes its fetches on entry.
   if (parent === 'dashboard' && sub === 'manager') {
+    if (typeof mgEnter === 'function') mgEnter();
     fetchServicesAndInflux();
     fetchManagerAgentsCard();
     fetchManagerStreamsCard();
-    // Re-backfill the perf sparklines on every entry — the cards are poll-gated
-    // off-tab, so the series gaps whenever the operator is elsewhere (#506).
+    // Re-seeds the perf charts on every entry.
     if (typeof loadManagerPerfHistory === 'function') {
       loadManagerPerfHistory().catch(() => {});
     }
@@ -243,7 +242,7 @@ function _rebackfillActiveView() {
   }
   if (_activeTab !== 'dashboard') return;
   const sub = _subTabState.dashboard;
-  if (['llamacpp', 'lmstudio', 'vllm', 'host'].includes(sub)) run(typeof hpRefresh !== 'undefined' ? hpRefresh : null);
+  if (['llamacpp', 'lmstudio', 'vllm', 'host', 'manager'].includes(sub)) run(typeof hpRefresh !== 'undefined' ? hpRefresh : null);
   if (sub === 'llamacpp')       run(typeof loadHistory !== 'undefined' ? loadHistory : null);
   else if (sub === 'manager')   run(typeof loadManagerPerfHistory !== 'undefined' ? loadManagerPerfHistory : null);
   else if (sub === 'all')       run(typeof ahRefresh !== 'undefined' ? ahRefresh : null);
@@ -291,7 +290,7 @@ function _rebackfillActiveView() {
   // Poll vLLM metrics every 6 seconds
   fetchVllmMetrics();
   LivePause.every(fetchVllmMetrics, 6000);
-  // Services + InfluxDB cards poll the alarm engine catalog every 10s.
+  // The Manager page and its pinned panels poll the alarm engine catalog, the hosts and the stream stats every 10s.
   fetchServicesAndInflux();
   LivePause.every(fetchServicesAndInflux, 10000);
   fetchManagerAgentsCard();
