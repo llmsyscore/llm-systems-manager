@@ -1,4 +1,4 @@
-"""#924 Tower routes: disabled → 404, state, threads per user, run → SSE, one run per user, model pin audit."""
+"""#924 Tower routes: disabled → 404 (state and insights list answer 200), state, threads per user, run → SSE, one run per user, model pin audit."""
 from __future__ import annotations
 
 import json
@@ -88,6 +88,17 @@ def test_disabled_routes_404(client):
     body = d.get_json()
     assert body["ok"] and body["enabled"] is False and body["admin"] is False  # session role is "operator"
     assert client.get("/api/tower/threads").status_code == 404
+    r = client.get("/api/tower/insights")
+    assert r.status_code == 200 and r.get_json() == {"ok": True, "insights": [], "new": 0}
+    assert client.post("/api/tower/insights/dismiss_all").status_code == 404
+
+
+def test_disabled_insights_never_200_without_a_role(client, monkeypatch):
+    settings.manager.tower.enabled = False
+    monkeypatch.setattr(auth, "effective_role", lambda: None)
+    assert client.get("/api/tower/insights").status_code == 404
+    with M.app.test_client() as anon:
+        assert anon.get("/api/tower/insights").status_code != 200
 
 
 def test_state_reports_model_and_tiers(client):
@@ -724,8 +735,6 @@ def test_insight_routes_list_seen_dismiss(client):
     assert client.post(f"/api/tower/insights/{running}/dismiss").status_code == 409             # not while applying
     _insight(alert_id="a2"); _insight(alert_id="a5", status="applied")
     assert client.post("/api/tower/insights/dismiss_all").get_json() == {"ok": True, "dismissed": 2}
-    settings.manager.tower.enabled = False
-    assert client.get("/api/tower/insights").status_code == 404
 
 
 def test_insight_apply_rechecks_tier_role_and_alert_runs_once_and_audits(client, monkeypatch):

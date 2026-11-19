@@ -379,6 +379,9 @@ def register_routes(app, ctx, *, runs, registry_factory: Callable[[], dict], dep
 
     @app.route("/api/tower/insights")
     def tower_insights():
+        signed_in = auth.effective_role() is not None
+        if signed_in and not bool(getattr(_cfg(), "enabled", False)):
+            return jsonify({"ok": True, "insights": [], "new": 0})
         deny = _gate()
         if deny: return deny
         try:
