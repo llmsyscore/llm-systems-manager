@@ -151,8 +151,11 @@ setInterval(() => {
 }, 15000);
 
 // ── theme: ?theme= on the iframe URL, then live postMessage from the manager ──
-const THEMES = new Set(['dark', 'medium', 'light', 'modern', 'slate', 'enterprise', 'oled', 'graphite', 'frost']);
-const LEGACY_THEMES = { classic: 'oled' };
+const THEMES = new Set(['dark', 'light']);
+const LEGACY_THEMES = {
+    frost: 'light', modern: 'dark', medium: 'dark', slate: 'dark',
+    enterprise: 'dark', oled: 'dark', graphite: 'dark', classic: 'dark',
+};
 (function _applyThemeFromQuery() {
     const params = new URLSearchParams(window.location.search);
     const requested = (params.get('theme') || '').toLowerCase();
