@@ -1364,7 +1364,7 @@ The job's own user (operator) or any admin (#1044). Marks a failed job as seen: 
 
 ## Tower assistant
 
-Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state`, answers 404 while `manager.tower.enabled` is false.
+Opt-in assistant over the inference gateway (#924). Every route needs a dashboard session and, except `state` and the `GET /api/tower/insights` list, answers 404 while `manager.tower.enabled` is false.
 
 ### `GET /api/tower/state`
 Returns `{enabled, admin, model, provider, hosts, capabilities, off_topic, diagnose_alarms, insights_new, latest_insight, insights_rev, check, thinking_options}`; responds 200 with `enabled: false` (no other fields) while Tower is off. `thinking_options` is the list of reasoning settings LM Studio accepts for the resolved model (for example `["off", "on"]`), read from its native model list through the agent; `null` for other providers or an LM Studio older than 0.4. `insights_new` counts new or applied insights not yet seen; `latest_insight` is `{id, rule, host, severity, summary, created}` for the newest of them, or `null`; `insights_rev` is the newest insight create or resolve time, and changes whenever the list does. `check` is `{model, grade: native|fenced|failed|unknown, mode, size_b, small, at, detail}` for the resolved model (`unknown` = no reply in any mode, e.g. the model was loading; carries `retry_at` and is re-run after it), `{model, grade: "pending"}` while its first check runs, or `null` without a resolved model; polling state starts a missing check. `fallback` is `{model, provider, hosts, check}` for the alternate model when `manager.tower.fallback` is on and one is resident, else `null`; `fallback_enabled` mirrors the toggle.
@@ -1450,7 +1450,7 @@ The shipped list of recommended Tower models (`backend/tower_models.json`): `{ok
 ---
 
 ### `GET /api/tower/insights`
-Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after `manager.tower.diagnose_timeout_s`, default 180 s), and `checks` lists what it read. Insights are shared by every session.
+Lists Tower's insights that are not dismissed, newest first (`?limit=`, default 50, max 200) → `{insights: [{id, alert_id, rule, host, severity, summary, detail, suggested_action, playbook_id, playbook_title, playbook_safe, steps, checks, thread_id, status: new|seen|applying|applied, created, resolved, applied_by, result, seen_at}], new}`; `new` counts new or applied insights not yet seen. Insights are written by the alert watcher (`manager.tower.diagnose_alarms`): every new active alert at or above `manager.tower.min_severity` gets one read-only diagnosis (at most five reads, stopped after `manager.tower.diagnose_timeout_s`, default 180 s), and `checks` lists what it read. Insights are shared by every session. While Tower is off it responds 200 with `{ok: true, insights: [], new: 0}`.
 
 ---
 
