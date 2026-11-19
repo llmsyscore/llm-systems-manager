@@ -36,9 +36,10 @@ def test_base_url_raises_when_no_candidate_answers():
         rc.bench_base_url("llama", AGENT, probe=lambda u: False)
 
 
-def test_lms_base_url_is_direct_lmstudio():
-    url, headers = rc.bench_base_url("lms", AGENT)
-    assert url == "http://203.0.113.7:1235/v1" and headers == {}
+def test_lms_base_url_uses_agent_openai_passthrough():
+    url, headers = rc.bench_base_url("lms", AGENT, probe=lambda u: True)
+    assert url.endswith("/lms/openai") and ":1235" not in url
+    assert headers["Authorization"] == "Bearer tok"
 
 
 def test_unknown_provider_rejected():
