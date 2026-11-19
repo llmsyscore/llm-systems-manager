@@ -183,7 +183,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.19-4"
+__version__ = "v2026.11.19-5"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -10735,6 +10735,33 @@ def tool_ticket():
     url = (f"{'https' if https else 'http'}://{_host_for_url(_request_host_no_port())}:{port}"
            f"/proxy/{tool}/?tool_ticket={ticket}")
     return jsonify({"url": url, "ttl_s": _TOOL_TICKET_TTL_S, "port": port})
+
+
+_TOOL_PROXY_KEYS = {"openclaw": "openclaw", "llmchat": "llm_chat", "imggen": "image_gen"}
+
+
+@app.route("/api/tool-health", methods=["GET"])
+def tool_health():
+    """Whether a tool's server answers; `up` is false with no answer or a 502/503/504."""
+    tool = (flask_request.args.get("tool") or "").strip()
+    if tool not in _TOOL_NAMES:
+        return jsonify({"ok": False, "error": "unknown tool"}), 404
+    role = getattr(g, "auth_role", None)
+    if role is None:
+        return jsonify({"ok": False, "error": "authentication required"}), 401
+    if role != "admin" and auth._operator_denied(f"/proxy/{tool}/"):
+        return jsonify({"ok": False, "error": "operator role: forbidden", "role_denied": True}), 403
+    target = proxies.resolve_proxy_target(_TOOL_PROXY_KEYS[tool])
+    status = None
+    if target:
+        try:
+            with requests.get(target.rstrip("/") + "/", timeout=(2, 3), stream=True,
+                              allow_redirects=False) as r:
+                status = r.status_code
+        except requests.exceptions.RequestException:
+            status = None
+    up = status is not None and status not in (502, 503, 504)
+    return jsonify({"ok": True, "up": up, "status": status})
 
 
 auth.tool_origin.listener_kind = _listener_kind

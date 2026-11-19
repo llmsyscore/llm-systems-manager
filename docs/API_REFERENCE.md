@@ -1800,6 +1800,13 @@ Issues a one-shot sign-in link for one tool page on the tool port. **Query:** `t
 
 ---
 
+### `GET /api/tool-health`
+Says whether a tool's own server is answering. The Tools tab calls it each time a tool is opened and shows the "not answering" notice instead of the tool page when `up` is false. **Query:** `tool` (`llmchat`, `openclaw` or `imggen`).
+
+**Response:** `{"ok": true, "up": <bool>, "status": <HTTP status or null>}`. `up` is false when the server does not answer, answers 502, 503 or 504, or the tool is turned off. Returns 401 without a session, 403 when the operator role may not use that tool, and 404 for an unknown tool.
+
+---
+
 ### `GET /tools-ping`
 Answers `{"ok": true}`. The Tools tab calls it on the tool port to check that the port is reachable and its certificate accepted before loading a tool page. Needs no sign-in on the tool port.
 

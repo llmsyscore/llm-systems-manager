@@ -49,7 +49,7 @@ describe('Tools frames (#1213)', () => {
     const calls = mockFetch(u => u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5447 } }
                                 : { status: 200 });
     await window._toolsLoadFrame('openclaw');
-    expect(calls).toEqual(['/api/tool-ticket?tool=openclaw', 'http://mgr.example:5447/tools-ping']);
+    expect(calls).toEqual(['/api/tool-health?tool=openclaw', '/api/tool-ticket?tool=openclaw', 'http://mgr.example:5447/tools-ping']);
     expect(document.querySelector('#tools-openclaw iframe').src).toBe(url);
     expect(document.querySelector('#tools-openclaw .tools-unreachable').hidden).toBe(true);
   });
@@ -91,7 +91,7 @@ describe('Tools frames (#1213)', () => {
     const calls = mockFetch(u => u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5448 } }
                                 : { status: 200 });
     await window._toolsLoadFrame('openclaw');
-    expect(calls[0]).toBe('/api/tool-ticket?tool=openclaw&https=1');
+    expect(calls[1]).toBe('/api/tool-ticket?tool=openclaw&https=1');
   });
 
   it('falls back to the same-origin path when the tool origin is disabled (409)', async () => {
@@ -128,5 +128,43 @@ describe('Tools frames (#1213)', () => {
     await window._toolsLoadFrame('openclaw');
     await window._toolsLoadFrame('openclaw');
     expect(calls.filter(c => c.startsWith('/api/tool-ticket')).length).toBe(1);
+  });
+
+  it('shows the unreachable notice when the tool server is down (#1449)', async () => {
+    const calls = mockFetch(u => u.startsWith('/api/tool-health')
+      ? { status: 200, body: { ok: true, up: false, status: 502 } } : { status: 200 });
+    await window._toolsLoadFrame('imggen');
+    const note = document.querySelector('#tools-imggen .tools-unreachable');
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe('The Image Generation server is not answering. Start it, then open this tab again.');
+    expect(document.querySelector('#tools-imggen iframe').hasAttribute('src')).toBe(false);
+    expect(calls).toEqual(['/api/tool-health?tool=imggen']);
+  });
+
+  it('clears an already loaded frame when the tool server goes down (#1449)', async () => {
+    const url = 'http://mgr.example:5447/proxy/llmchat/?tool_ticket=abc';
+    let up = true;
+    mockFetch(u => u.startsWith('/api/tool-health') ? { status: 200, body: { ok: true, up } }
+      : u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5447 } } : { status: 200 });
+    await window._toolsLoadFrame('llmchat');
+    const frame = document.querySelector('#tools-llmchat iframe');
+    expect(frame.src).toBe(url);
+    up = false;
+    await window._toolsLoadFrame('llmchat');
+    expect(frame.hasAttribute('src')).toBe(false);
+    expect(frame.dataset.loadedAt).toBeUndefined();
+    expect(document.querySelector('#tools-llmchat .tools-unreachable').hidden).toBe(false);
+    up = true;
+    await window._toolsLoadFrame('llmchat');
+    expect(frame.src).toBe(url);
+    expect(document.querySelector('#tools-llmchat .tools-unreachable').hidden).toBe(true);
+  });
+
+  it('loads the frame when the health check is unavailable (#1449)', async () => {
+    const url = 'http://mgr.example:5447/proxy/openclaw/?tool_ticket=abc';
+    mockFetch(u => u.startsWith('/api/tool-health') ? { status: 404 }
+      : u.startsWith('/api/tool-ticket') ? { status: 200, body: { url, port: 5447 } } : { status: 200 });
+    await window._toolsLoadFrame('openclaw');
+    expect(document.querySelector('#tools-openclaw iframe').src).toBe(url);
   });
 });

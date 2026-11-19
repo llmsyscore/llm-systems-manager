@@ -238,6 +238,69 @@ class TestToolTicketRoute:
             assert c.get("/api/tool-ticket?tool=openclaw").status_code == 401
 
 
+class _Resp:
+    def __init__(self, status):
+        self.status_code = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestToolHealthRoute:
+    """#1449: the Tools tab asks whether a tool's server answers before showing it."""
+
+    def _get(self, tool="imggen"):
+        with M.app.test_client() as c:
+            _admin(c)
+            return c.get(f"/api/tool-health?tool={tool}")
+
+    def _upstream(self, monkeypatch, status=None, exc=None, target="http://sd.example:1234"):
+        seen = []
+        monkeypatch.setattr(proxies, "resolve_proxy_target", lambda name: seen.append(name) or target)
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            if exc:
+                raise exc
+            return _Resp(status)
+        monkeypatch.setattr(M.requests, "get", fake_get)
+        return seen
+
+    @pytest.mark.parametrize("status", [502, 503, 504])
+    def test_gateway_errors_are_down(self, monkeypatch, status):
+        self._upstream(monkeypatch, status=status)
+        assert self._get().get_json() == {"ok": True, "up": False, "status": status}
+
+    @pytest.mark.parametrize("status", [200, 302, 401, 404, 500])
+    def test_any_other_answer_is_up(self, monkeypatch, status):
+        self._upstream(monkeypatch, status=status)
+        assert self._get().get_json()["up"] is True
+
+    def test_no_answer_is_down(self, monkeypatch):
+        self._upstream(monkeypatch, exc=M.requests.exceptions.ConnectionError("refused"))
+        assert self._get().get_json() == {"ok": True, "up": False, "status": None}
+
+    def test_disabled_tool_is_down_without_a_request(self, monkeypatch):
+        seen = self._upstream(monkeypatch, status=200, target=None)
+        assert self._get("llmchat").get_json()["up"] is False
+        assert seen == ["llm_chat"]
+
+    def test_probes_the_tool_root_by_proxy_name(self, monkeypatch):
+        seen = self._upstream(monkeypatch, status=200)
+        self._get("openclaw")
+        assert seen == ["openclaw", "http://sd.example:1234/"]
+
+    def test_unknown_tool_is_404(self):
+        assert self._get("shell").status_code == 404
+
+    def test_needs_a_session(self):
+        with M.app.test_client() as c:
+            assert c.get("/api/tool-health?tool=imggen").status_code == 401
+
+
 class TestToolFrameAncestors:
     @pytest.mark.parametrize("host,want", [
         ("mgr.example:5447", "mgr.example"),
