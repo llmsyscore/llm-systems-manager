@@ -275,7 +275,6 @@ def _openai_stream_post(url: str, payload: dict, headers=None, timeout=300,
 # ── Provider endpoints + power sampling ──────────────────────────────
 
 PROVIDERS = ("llama", "vllm", "lms")
-LMS_OPENAI_PORT = 1235
 
 
 def _probe_agent(base: str, agent: "dict | None" = None) -> bool:
@@ -292,15 +291,9 @@ def _probe_agent(base: str, agent: "dict | None" = None) -> bool:
 
 def bench_base_url(provider: str, agent: dict, probe=None) -> "tuple[str, dict]":
     """OpenAI-compatible base URL + auth headers for one provider/agent.
-    llama/vllm use the agent passthrough; LM Studio is dialed directly."""
+    Every provider goes through the agent's /<provider>/openai passthrough."""
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider: {provider}")
-    if provider == "lms":
-        import proxies
-        host = proxies._host_from_agent(agent)
-        if not host:
-            raise ValueError("no reachable host for LM Studio")
-        return f"http://{host}:{LMS_OPENAI_PORT}/v1", {}
     import agent_registry
     urls = agent_registry.agent_callback_urls(agent)
     if not urls:
@@ -1150,7 +1143,7 @@ def _run_one(job: dict, req: dict, agent: dict, emit, check,
 
     import requests as _requests
     import agent_registry
-    dialed = agent_registry.agent_http(agent) if provider != "lms" else _requests
+    dialed = agent_registry.agent_http(agent)
     sess = dialed if isinstance(dialed, _requests.Session) else _requests.Session()
     try:
         bench = run_bench(
