@@ -1,4 +1,4 @@
-// Panel kit 1.4.0
+// Panel kit 1.4.1
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
@@ -225,6 +225,8 @@ var KIT_TS_FANCY = ['split', 'bars', 'idle', 'strip', 'stripLabel', 'step'];
 function kitTsFancy(o) {
   return !!(o && (o.split === true || o.bars === 'peak' || o.step === true || (typeof o.strip === 'string' && o.strip)));
 }
+// A stacked chart's o.barFill when it is a number above 0 and at most 1, else null.
+function kitBarFill(o) { return typeof o.barFill === 'number' && o.barFill > 0 && o.barFill <= 1 ? o.barFill : null; }
 // The muted idle line along the baseline under each run of slots where zero(j) is true.
 function kitTsIdle(n, x, y, step, zero) {
   var idle = '', run = -1;
@@ -406,7 +408,8 @@ function tsHtml(o) {
   var every = Math.max(Math.ceil(n / 7), Math.ceil(n / Math.max(2, Math.floor(W / 90))));
   for (var j = 0; j < n; j += every) g += '<text x="' + kitN(x(j)) + '" y="' + (H - 6) + '" text-anchor="middle" class="ax ax-x">' + kitEsc(shown[j]) + '</text>';
   if (stack) {
-    var bw = Math.max(3, Math.min(28, step * 0.62));
+    // o.barFill (0 to 1) sets each stacked bar's share of its slot width, with no 28 px cap.
+    var fill = kitBarFill(o), bw = fill ? Math.max(3, step * fill) : Math.max(3, Math.min(28, step * 0.62));
     for (var b = 0; b < n; b++) {
       var acc = 0, lastK = -1;
       for (var q = 0; q < vis.length; q++) if (+vis[q].values[b]) lastK = q;
@@ -478,6 +481,7 @@ function tsHtml(o) {
   if (o.joined === true) hover.joined = true;
   if (stack && typeof o.idle === 'string' && o.idle) hover.idle = o.idle;
   if (stack && o.idleLine === true) hover.idleLine = true;
+  if (stack && kitBarFill(o)) hover.barFill = o.barFill;
   return legend + '<div class="ts"' + (o.zoom ? ' data-kit-zoom' : '') + ' data-kit-ts="' + kitEsc(JSON.stringify(hover)) + '">' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + kitEsc(series.map(function(s) { return s.name; }).join(', ')) + '">' + g + marks + mkLines + thLines +
     '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (T + ih) + '" stroke="var(--text-2)" stroke-width="1" vector-effect="non-scaling-stroke" visibility="hidden"/></svg>' +

@@ -187,9 +187,9 @@ Backend API endpoints consumed:
   <!-- All hosts dashboard: kit rows filled by js/allhosts.js -->
   <div id="dash-all" class="sub-tab-panel active">
     <section class="row" data-row="ah-now">
-      <button type="button" class="row-hd" data-row-fold>Right now</button>
+      <button type="button" class="row-hd" data-row-fold>Snapshot</button>
       <div class="panels">
-        <section class="panel full-w" data-card="ah-now" data-title="Right now" data-note="click a host to open it" data-kit-table><div class="p-body" id="ah-b-now"></div></section>
+        <section class="panel full-w" data-card="ah-now" data-title="Snapshot" data-note="click a host to open it" data-kit-table><div class="p-body" id="ah-b-now"></div></section>
       </div>
     </section>
     <section class="row" data-row="ah-cmp">
@@ -1164,279 +1164,44 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
   <!-- Host page for a host with no LLM server, opened from All hosts -->
   <div id="dash-host" class="sub-tab-panel"><div class="hp-root" id="hp-host" data-hp-page="host"></div></div>
 
-  <!-- Manager dashboard sub-tab — host-side service + InfluxDB health -->
-  <div id="dash-manager" class="sub-tab-panel">
-    <div class="grid" id="managerCardGrid">
-
-      <div class="card" data-card="services">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Services <span class="status status--muted" id="services-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
-        <table class="fan-table" style="width:100%;">
-          <thead><tr><th>Service</th><th>Status</th><th>PID</th><th>RSS</th><th>Uptime</th></tr></thead>
-          <tbody id="servicesTable"><tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent…</td></tr></tbody>
-        </table>
-      </div>
-
-      <div class="card" data-card="influxdb">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Database Performance <span class="status status--muted" id="influxdb-badge" style="font-size:0.7em;font-weight:normal;margin-left:8px;">—</span></h3>
-        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:6px 0 4px;">InfluxDB</div>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="influxPing">—</div><div class="lbl">Ping ms</div></div>
-          <div class="lq-item"><div class="val" id="influxQuery">—</div><div class="lbl">Query ms</div></div>
-          <div class="lq-item"><div class="val" id="influxWrite">—</div><div class="lbl">Write ms</div></div>
-          <div class="lq-item"><div class="val" id="influxWriteOk">—</div><div class="lbl">Write OK %</div></div>
-          <div class="lq-item"><div class="val" id="influxDisk">—</div><div class="lbl">On disk</div></div>
-          <div class="lq-item"><div class="val" id="influxCardMetrics">—</div><div class="lbl">Metrics series</div></div>
-        </div>
-        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">Manager SQLite</div>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="mgrDbManagerSize">—</div><div class="lbl">manager.db</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbAuditSize">—</div><div class="lbl">audit.db</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbEnergySize">—</div><div class="lbl">energy.db</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbWalSize">—</div><div class="lbl">WAL total</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbAuditRows">—</div><div class="lbl">Audit rows</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbEnergyRows">—</div><div class="lbl">Energy rows</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbRunRows">—</div><div class="lbl">Bench + tool runs</div></div>
-          <div class="lq-item"><div class="val" id="mgrDbQueryMs">—</div><div class="lbl">SELECT 1 ms</div></div>
-        </div>
-        <div class="sub" style="font-size:0.78em;color:var(--fg-muted);margin:10px 0 4px;">Alarm engine SQLite</div>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="sqliteAlertsRows">—</div><div class="lbl">Alerts rows</div></div>
-          <div class="lq-item"><div class="val" id="sqliteSettingsRows">—</div><div class="lbl">Settings rows</div></div>
-          <div class="lq-item"><div class="val" id="sqliteAlarmsSize">—</div><div class="lbl">Alarms DB</div></div>
-          <div class="lq-item"><div class="val" id="sqliteSettingsSize">—</div><div class="lbl">Settings DB</div></div>
-          <div class="lq-item"><div class="val" id="sqliteWalSize">—</div><div class="lbl">WAL total</div></div>
-          <div class="lq-item"><div class="val" id="sqlitePages">—</div><div class="lbl">Pages (a+s)</div></div>
-          <div class="lq-item"><div class="val" id="sqliteQueryMs">—</div><div class="lbl">SELECT 1 ms</div></div>
-          <div class="lq-item"><div class="val" id="sqliteDeliveries">—</div><div class="lbl">Deliveries</div></div>
-        </div>
-      </div>
-
-      <!-- Performance cards for the llm-systems-manager host agent. Fed from
-           the alarm-engine catalog (/api/alarm/metrics) filtered to
-           hostname=llm-systems-manager. -->
-      <div class="card" data-card="mgr-agents">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Agents</h3>
-        <table class="fan-table" style="width:100%;">
-          <thead><tr><th>Agent</th><th>Status</th><th>Last sample</th></tr></thead>
-          <tbody id="mgrAgentsTable"><tr><td colspan="3" style="color:var(--fg-dim);font-size:0.85em;">Loading…</td></tr></tbody>
-        </table>
-      </div>
-
-      <div class="card" data-card="mgr-streams">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Stream &amp; Connection Health
-          <span id="mgrStreamsBadge" class="status status--ok"><span class="status__dot"></span>ok</span></h3>
-        <div id="mgrStreamsSummary" style="display:grid;grid-template-columns:repeat(2,1fr);gap:3px 16px;font-size:0.85em;margin-bottom:8px;">
-          <div style="color:var(--fg-dim);">Loading…</div>
-        </div>
-        <table class="fan-table" style="width:100%;">
-          <thead><tr><th>Agent</th><th>Active</th><th>Peak</th><th>Refusals</th><th>Terminals</th></tr></thead>
-          <tbody id="mgrStreamsTable"><tr><td colspan="5" style="color:var(--fg-dim);font-size:0.85em;">Loading…</td></tr></tbody>
-        </table>
-        <div style="font-size:0.75em;color:var(--fg-dim);margin-top:6px;">
-          Pushed to the alarm engine as <code>manager_streams</code> / <code>agent_streams</code> — add rules in the Events and metrics tab to alert on these.</div>
-      </div>
-
-      <div class="card" data-card="mgr-ram">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>CPU, RAM &amp; Swap</h3>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="mgrCpuTotal">—</div><div class="lbl">CPU %</div></div>
-          <div class="lq-item"><div class="val" id="mgrRamPct">—</div><div class="lbl">RAM %</div></div>
-          <div class="lq-item"><div class="val" id="mgrRamUsed">—</div><div class="lbl">RAM used / total</div></div>
-          <div class="lq-item"><div class="val" id="mgrRamCached">—</div><div class="lbl">Cached</div></div>
-          <div class="lq-item"><div class="val" id="mgrRamBuffers">—</div><div class="lbl">Buffers</div></div>
-          <div class="lq-item"><div class="val" id="mgrSwapPct">—</div><div class="lbl">Swap %</div></div>
-          <div class="lq-item"><div class="val" id="mgrSwapUsed">—</div><div class="lbl">Swap used / total</div></div>
-        </div>
-      </div>
-
-      <div class="card" data-card="mgr-disk">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Disk Usage &amp; IO</h3>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="mgrDiskRootPct">—</div><div class="lbl">/ %</div></div>
-          <div class="lq-item"><div class="val" id="mgrDiskRootUsed">—</div><div class="lbl">/ used / total</div></div>
-          <div class="lq-item"><div class="val" id="mgrDiskBootPct">—</div><div class="lbl">/boot %</div></div>
-          <div class="lq-item"><div class="val" id="mgrDiskBootUsed">—</div><div class="lbl">/boot used / total</div></div>
-          <div class="lq-item"><div class="val" id="mgrIoRead">—</div><div class="lbl">MiB/s read</div></div>
-          <div class="lq-item"><div class="val" id="mgrIoWrite">—</div><div class="lbl">MiB/s write</div></div>
-        </div>
-      </div>
-
-      <div class="card" data-card="mgr-network">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Network</h3>
-        <div class="lq-grid">
-          <div class="lq-item"><div class="val" id="mgrNetRecv">—</div><div class="lbl">MiB/s in</div></div>
-          <div class="lq-item"><div class="val" id="mgrNetSent">—</div><div class="lbl">MiB/s out</div></div>
-        </div>
-      </div>
-
-      <div class="card" data-card="mgr-processes">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Processes</h3>
-        <table class="fan-table" style="width:100%;">
-          <thead><tr><th>Process</th><th>PID</th><th>RSS</th><th>Uptime</th></tr></thead>
-          <tbody id="mgrProcTable"><tr><td colspan="4" style="color:var(--fg-dim);font-size:0.85em;">Waiting for agent…</td></tr></tbody>
-        </table>
-      </div>
-
-      <!-- Agent-driven self-monitor cards (manager / alarm engine / Influx).
-           Fed by /api/alarm/metrics rows where source='manager_self_monitor'.
-           Probes run on agent hosts that have MONITOR_*_ENABLED set. -->
-      <div class="card" data-card="mgr-perf-summary">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Self-Monitor Summary</h3>
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-          <div class="stat" id="selfMonWorst">—</div>
-          <div class="sub" id="selfMonWorstLabel" style="font-size:0.78em;color:var(--fg-muted);">—</div>
-        </div>
-        <div class="sub">worst current probe latency</div>
-        <div style="margin-top:10px;font-size:0.78em;color:var(--fg-muted);" id="selfMonAgeNote">—</div>
-      </div>
-
-      <div class="card" data-card="mgr-perf">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Manager Perf</h3>
-        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-          <div class="stat" id="mgrPerfApi">—</div>
-          <div class="sub" style="text-align:right;font-size:0.78em;color:var(--fg-muted);">
-            /api/metrics latency<br>
-            <span id="mgrPerfHistory" style="color:var(--fg-dim);">history: —</span><br>
-            <span id="mgrPerfAnon" style="color:var(--fg-dim);" title="Requests on the pages and routes that need no login or token, last full minute">open routes: —</span>
-          </div>
-        </div>
-        <div class="sub">ms — <span style="color:#8af;">api</span> / <span style="color:#fa8;">history</span></div>
-        <div class="chart-wrap"><canvas id="mgrPerfChart" role="img" aria-label="Manager API latency over time"></canvas></div>
-      </div>
-
-      <div class="card" data-card="ae-perf">
-        <span class="card-handle" title="Drag to reorder">⠿</span>
-        <h3>Alarm Engine + Influx Perf</h3>
-        <div class="stat" id="aePerfWorst">—</div>
-        <div class="sub">ms — worst of seven AE/Influx probes</div>
-        <div class="chart-wrap"><canvas id="aePerfChart" role="img" aria-label="Alarm engine and InfluxDB latency over time"></canvas></div>
-        <div style="margin-top:6px;font-size:0.82em;color:var(--fg-muted);display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;">
-          <div><span style="color:#4ea1ff;">●</span> ae_health</div>
-          <div><span style="color:#ff8a3d;">●</span> ae_ingest</div>
-          <div><span style="color:#3ad17f;">●</span> ae_query_24h</div>
-          <div><span style="color:#ff5775;">●</span> rule_eval_cycle</div>
-          <div><span style="color:#36d7e6;">●</span> influx_write</div>
-          <div><span style="color:#ffd042;">●</span> influx_q_5m</div>
-          <div><span style="color:#b88aff;">●</span> influx_q_24h</div>
-        </div>
-      </div>
-
-    </div>
+  <!-- Manager sub-tab (#1432): js/dashboard-manager.js builds the kit page, js/hostpage.js the manager host's System row -->
+  <div id="dash-manager" class="sub-tab-panel"><div class="mg-root" id="mg-root"></div><div class="hp-root" id="hp-mgr" data-hp-page="mgr"></div>
   </div><!-- end dash-manager sub-panel -->
 
   <!-- OpenClaw analytics sub-tab -->
-  <!-- Energy & cost sub-tab (#470) — measured $/Mtok + cloud savings -->
-  <div id="dash-energy" class="sub-tab-panel" style="padding:8px 20px 20px;">
-    <div class="llm-section" id="enSection">
-      <div class="llm-section-title" onclick="toggleSection('enSection')">Energy &amp; Cost<span class="llm-collapse-icon">▾</span></div>
-      <div class="llm-section-body">
-    <div class="en-panel">
-      <div class="en-controls">
-        <div class="en-field">
-          <label for="enWindow">Window</label>
-          <select id="enWindow" onchange="enOnControlChange()"></select>
-        </div>
-        <div class="en-field" id="enCustomFromField" style="display:none;">
-          <label for="enCustomFrom">From</label>
-          <input id="enCustomFrom" type="date" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field" id="enCustomToField" style="display:none;">
-          <label for="enCustomTo">To</label>
-          <input id="enCustomTo" type="date" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field">
-          <label for="enPrice">Electricity $/kWh</label>
-          <input id="enPrice" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field">
-          <label for="enCloudIn">Cloud $/Mtok in</label>
-          <input id="enCloudIn" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-field">
-          <label for="enCloudOut">Cloud $/Mtok out</label>
-          <input id="enCloudOut" type="number" min="0" step="0.01" onchange="enOnControlChange()">
-        </div>
-        <div class="en-spacer"></div>
-        <button class="btn btn-gray-muted-gradient" onclick="enRefresh()">↺ Refresh</button>
-      </div>
+  <!-- Energy sub-tab (#470, #1432): js/energy.js builds the kit page -->
+  <div id="dash-energy" class="sub-tab-panel"><div class="en-root" id="en-root"></div></div>
 
-      <div class="en-note" id="enNote"></div>
-
-      <div class="en-hero-card">
-        <div class="en-window-label" id="enWindowLabel"></div>
-        <div class="en-hero" id="enHero">—</div>
-        <div class="en-hero-sub" id="enHeroSub"></div>
-      </div>
-
-      <div class="en-tiles" id="enTiles"></div>
-
-      <div class="en-table-wrap">
-        <table class="en-table">
-          <thead>
-            <tr>
-              <th>Host</th><th>Energy</th><th>Active</th><th>Tokens</th>
-              <th>Cost</th><th>$/Mtok</th><th>Coverage</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="enHostRows"></tbody>
-        </table>
-      </div>
-
-      <div class="en-table-wrap" style="margin-top:12px;">
-        <table class="en-table">
-          <thead>
-            <tr>
-              <th>Model</th><th>Hosts</th><th>Energy</th><th>Resident</th>
-              <th>Tokens</th><th>Cost</th><th>$/Mtok</th>
-            </tr>
-          </thead>
-          <tbody id="enModelRows"></tbody>
-        </table>
-      </div>
-
-      <div class="en-chart-card">
-        <div class="en-window-label" id="enChartLabel"></div>
-        <canvas id="enChart"></canvas>
-      </div>
-
-      <div class="en-coverage" id="enCoverage"></div>
-    </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Forecast sub-tab (#1031) — scheduled trend analysis, rendered by js/forecast.js -->
-  <div id="dash-forecast" class="sub-tab-panel" style="padding:8px 20px 20px;">
-    <div class="card fc-card">
-      <div class="fc-runbar" id="fcRunbar"></div>
-      <details class="fc-checks-box" id="fcChecksBox" hidden>
-        <summary id="fcChecksSum"></summary>
-        <div class="fc-checks" id="fcChecks"></div>
-      </details>
-      <details class="fc-brief" id="fcBrief" hidden>
-        <summary id="fcBriefSum"></summary>
-        <div class="fc-brief-body" id="fcBriefBody"></div>
-      </details>
-      <div class="fc-tabs" id="fcTabs" role="tablist" hidden></div>
-      <div class="fc-horizon" id="fcHorizon" hidden></div>
-      <div class="fc-toolbar" id="fcToolbar" hidden></div>
-      <div class="fc-split" id="fcSplit">
-        <div class="fc-list">
-          <div id="fcRows"></div>
-          <div class="fc-pager" id="fcPager" hidden></div>
-        </div>
-        <div class="fc-detail-pane" id="fcDetail"></div>
-      </div>
+  <!-- Forecast sub-tab (#1031, #1432): js/forecast.js paints the run bar in the Forecast row's header and the kit panels -->
+  <div id="dash-forecast" class="sub-tab-panel">
+    <div class="fc-root" id="fc-root">
+      <section class="row" data-row="fc-run"><button type="button" class="row-hd" data-row-fold>Forecast</button><div class="fc-head" id="fcRunbar"></div><div class="panels">
+        <section class="panel" data-card="fc-tiles" data-title="Forecast" data-kit-table><div class="p-body" id="fc-b-tiles"></div></section>
+      </div></section>
+      <section class="row" data-row="fc-find"><button type="button" class="row-hd" data-row-fold>Findings</button><div class="panels">
+        <section class="panel fc-wide" data-card="fc-findings" data-title="Findings">
+          <div class="p-body fc-fbody" id="fc-b-findings" data-kit-nosort>
+            <details class="fc-brief" id="fcBrief" hidden>
+              <summary id="fcBriefSum"></summary>
+              <div class="fc-brief-body" id="fcBriefBody"></div>
+            </details>
+            <div class="fc-tabs" id="fcTabs" role="tablist" hidden></div>
+            <div class="fc-horizon" id="fcHorizon" hidden></div>
+            <div class="fc-toolbar" id="fcToolbar" hidden></div>
+            <div class="fc-split" id="fcSplit">
+              <div class="fc-list">
+                <div id="fcRows"></div>
+                <div class="fc-pager" id="fcPager" hidden></div>
+              </div>
+              <div class="fc-detail-pane" id="fcDetail"></div>
+            </div>
+          </div>
+        </section>
+      </div></section>
+      <section class="row" data-row="fc-more"><button type="button" class="row-hd" data-row-fold>Checks and Tower</button><div class="panels">
+        <section class="panel" data-card="fc-checks" data-title="Checks" data-kit-table><div class="p-body" id="fc-b-checks"><div class="fc-checks" id="fcChecks"></div></div></section>
+        <section class="panel" data-card="fc-tower" data-title="Tower" data-kit-table><div class="p-body" id="fc-b-tower"></div></section>
+      </div></section>
     </div>
   </div>
 
@@ -2492,6 +2257,7 @@ Measurements are the newest Benchmark · Live run per host. A run older than the
 <script src="/static/js/lib/energy.js"></script>
 <script src="/static/js/lib/forecast.js"></script>
 <script src="/static/js/lib/overall-view.js"></script>
+<script src="/static/js/lib/manager-view.js"></script>
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/terminal.js"></script>
 <script src="/static/js/llmcontrol.js"></script>

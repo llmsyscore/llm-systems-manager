@@ -116,8 +116,6 @@
     :root[data-density="compact"] .grid > .ov-shell > .card { padding: 10px 12px; }
     :root[data-density="compact"] .grid .card h3 { margin-bottom: 8px; }
     :root[data-density="compact"] .grid .chart-wrap { flex-basis: 110px; min-height: 110px; }
-    :root[data-density="compact"] .grid .fan-table td { padding: 3px 6px; }
-    :root[data-density="compact"] .grid .fan-table th { padding: 3px 6px; }
     /* Size-cycle button — small, unobtrusive, in the card's top-right. */
     .card-size-btn {
       position: absolute; top: 10px; right: 10px;
@@ -166,13 +164,6 @@
     .stat { font-size: 1.6em; font-weight: bold; margin-bottom: 4px; }
     .sub { font-size: 0.8em; color: var(--fg-dim); }
     .badge { display: inline-block; font-size: 0.75em; padding: 2px 8px; border-radius: 4px; background: var(--border); color: var(--fg); margin-top: 4px; }
-    .lq-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
-    .lq-item { background: var(--bg-card-alt); border-radius: 4px; padding: 10px; }
-    .lq-item .val { font-size: 1.1em; font-weight: bold; color: var(--ok); }
-    .lq-item .lbl { font-size: 0.75em; color: var(--fg-dim); margin-top: 2px; }
-    .fan-table { width: 100%; font-size: 0.85em; margin-top: 8px; border-collapse: collapse; }
-    .fan-table th { color: var(--fg-dim); font-weight: normal; text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
-    .fan-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
     .trending-table { width: 100%; border-collapse: collapse; font-size: 0.82em; margin-top: 4px; }
     .trending-table th { color: var(--fg-dim); font-weight: normal; text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--bg-card-alt); text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.05em; }
     .trending-table td { padding: 8px 10px; border-bottom: 1px solid var(--bg-card); color: var(--fg); vertical-align: top; }
@@ -276,7 +267,6 @@
     #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     #llm-tools .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
-    #dash-energy .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log),
     .svcconfig-panel .btn {
       background: var(--bg-card-alt); color: var(--fg-muted);
@@ -287,7 +277,6 @@
     #llm-llamacpp .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
     #llm-lmstudio .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
     #llm-tools .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
-    #dash-energy .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
     #llm-vllm .btn:not([data-act]):not([data-lmsact]):not(.btn-log):not(:disabled):hover,
     .svcconfig-panel .btn:not(:disabled):hover { background: var(--border); color: var(--fg); opacity: 1; }
     /* Retain a semantic hover for destructive/caution actions via their
@@ -295,13 +284,11 @@
     #llm-llamacpp .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     #llm-lmstudio .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     #llm-tools .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
-    #dash-energy .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     #llm-vllm .btn[class*="btn-red"]:not([data-act]):not([data-lmsact]):hover,
     .svcconfig-panel .btn[class*="btn-red"]:hover { border-color: var(--crit); color: var(--crit); background: var(--bg-card-alt); }
     #llm-llamacpp .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
     #llm-lmstudio .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
     #llm-tools .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
-    #dash-energy .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover,
     #llm-vllm .btn[class*="btn-amber"]:not([data-act]):not([data-lmsact]):hover { border-color: var(--warn); color: var(--warn); background: var(--bg-card-alt); }
     .btn { border: none; border-radius: 5px; cursor: pointer; font-size: 0.8em; padding: 6px 14px; transition: opacity 0.2s; }
     .btn:not(:disabled):hover { opacity: 0.8; }
@@ -442,14 +429,12 @@
        .status / .status--* chip (see the status system above). */
 
     /* ===== Shared enterprise card theme (Overall + Dashboard) ===== */
-    #overallGrid .card,
-    #managerCardGrid .card {
+    #overallGrid .card {
       border-left: 3px solid var(--border);
       background: linear-gradient(160deg, var(--bg-card) 0%, color-mix(in srgb, var(--bg) 60%, var(--bg-card)) 100%);
       transition: border-color 0.4s, background 0.3s;
     }
-    #overallGrid .card h3,
-    #managerCardGrid .card h3 {
+    #overallGrid .card h3 {
       font-size: clamp(0.58em, 0.8vw, 0.68em);
       text-transform: uppercase;
       letter-spacing: 0.12em;
@@ -457,28 +442,25 @@
       margin-bottom: 14px;
       padding-right: 25px;
     }
-    #overallGrid .stat,
-    #managerCardGrid .stat {
+    #overallGrid .stat {
       font-size: clamp(1.4rem, 2vw, 2.3rem);
       font-weight: 300;
       letter-spacing: -0.02em;
       font-variant-numeric: tabular-nums;
       line-height: 1;
     }
-    #overallGrid .sub,
-    #managerCardGrid .sub {
+    #overallGrid .sub {
       font-size: clamp(0.55em, 0.7vw, 0.62em);
       letter-spacing: 0.08em;
       color: var(--fg-faint);
       text-transform: uppercase;
     }
-    :root[data-density="compact"] #overallGrid .stat,
-    :root[data-density="compact"] #managerCardGrid .stat { font-size: clamp(1.1rem, 1.5vw, 1.6rem); }
+    :root[data-density="compact"] #overallGrid .stat { font-size: clamp(1.1rem, 1.5vw, 1.6rem); }
     /* Status-driven accent borders applied by JS */
-    #overallGrid .dash-ok,   #managerCardGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
-    #overallGrid .dash-warn, #managerCardGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
-    #overallGrid .dash-crit, #managerCardGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
-    #overallGrid .dash-off,  #managerCardGrid .dash-off  { border-left-color: var(--border); }
+    #overallGrid .dash-ok   { border-left-color: color-mix(in srgb, var(--ok)   55%, var(--border)); }
+    #overallGrid .dash-warn { border-left-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+    #overallGrid .dash-crit { border-left-color: color-mix(in srgb, var(--crit) 55%, var(--border)); }
+    #overallGrid .dash-off  { border-left-color: var(--border); }
 
     /* ===== Settings panel additions ===== */
     /* ===== Server Config overlay ===== */
@@ -875,4 +857,10 @@
   color: var(--fg); background: var(--bg-card); text-decoration: none;
   border: 1px solid var(--border-strong); border-radius: 99px;
   padding: 9px 15px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+}
+
+/* #1432: a row's only panel titled like its row keeps the title for screen readers only (mcSoloTitles, js/foundation.js). */
+.row[data-row] > .panels > .panel.mc-solo:only-child:not(.full) > .p-hd > .p-title {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
 }

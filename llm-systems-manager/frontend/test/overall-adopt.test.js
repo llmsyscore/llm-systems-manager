@@ -40,8 +40,10 @@ beforeEach(() => {
           <section class="panel" data-card="llama-cpu-mem"><div class="p-body"></div></section>
         </div></section>
       </div>
-      <div class="grid" id="managerCardGrid">
-        <div class="card" data-card="mgr-agents"><h3>Agents</h3></div>
+      <div class="mg-root" id="mg-root">
+        <section class="row" data-row="mgr-conn"><div class="panels">
+          <section class="panel" data-card="mgr-streams"><div class="p-body" id="mg-b-streams"></div></section>
+        </div></section>
       </div>
     </div>
     <div id="overallTab">
@@ -49,15 +51,14 @@ beforeEach(() => {
         <button type="button" class="row-hd" data-row-fold>Pinned</button>
         <div class="grid" id="overallGrid">
           <div class="card ov-shell" data-card="ov-borrow-llama-gpu-busy"></div>
-          <div class="card ov-shell" data-card="ov-borrow-mgr-agents"></div>
+          <div class="card ov-shell" data-card="ov-borrow-mgr-streams"></div>
           <div class="card ov-shell" data-card="ov-borrow-lms-mac-power"></div>
         </div>
       </section>
     </div>`;
-  window.layout = { overallBorrowed: ['llama-gpu-busy', 'mgr-agents', 'lms-mac-power'] };
+  window.layout = { overallBorrowed: ['llama-gpu-busy', 'mgr-streams', 'lms-mac-power'] };
   window._ensureSizeBtn = () => {};
   window._resizeChartsIn = () => {};
-  window._applyHiddenForGrid = () => {};
   loadAdoption();
 });
 
@@ -122,9 +123,9 @@ describe('returnPinnedCards', () => {
 describe('_returnOneAdopted', () => {
   it('returns a single card home so its shell can be removed', () => {
     adoptPinnedCards();
-    _returnOneAdopted('mgr-agents');
-    expect(document.querySelector('#managerCardGrid [data-card="mgr-agents"]')).toBeTruthy();
-    expect(window._ovAdopted.has('mgr-agents')).toBe(false);
+    _returnOneAdopted('mgr-streams');
+    expect(document.querySelector('#mg-root [data-card="mgr-streams"]')).toBeTruthy();
+    expect(window._ovAdopted.has('mgr-streams')).toBe(false);
     // The other adopted card is untouched.
     expect(document.querySelector('#overallGrid [data-card="ov-borrow-llama-gpu-busy"] [data-card="llama-gpu-busy"]')).toBeTruthy();
   });
@@ -132,10 +133,10 @@ describe('_returnOneAdopted', () => {
 
 describe('_ovPinned', () => {
   it('reflects layout.overallBorrowed', () => {
-    expect(_ovPinned('mgr-agents')).toBe(true);
+    expect(_ovPinned('mgr-streams')).toBe(true);
     expect(_ovPinned('nope')).toBe(false);
     window.layout = null;
-    expect(_ovPinned('mgr-agents')).toBe(false);
+    expect(_ovPinned('mgr-streams')).toBe(false);
   });
 });
 
@@ -149,19 +150,19 @@ describe('adoption visibility (hidden-at-home cards)', () => {
     expect(adopted.style.display).toBe('');
   });
 
-  it('re-applies the Manager grid hidden state and size on return; a host page panel keeps the kit layout', () => {
-    const calls = [], sized = [];
-    window._applyHiddenForGrid = (gridId, key) => calls.push([gridId, key]);
+  it('Manager page and host page panels keep the kit layout on return (#1432)', () => {
+    const sized = [];
     window._applyCardSize = (card, size) => sized.push([card.dataset.card, size]);
-    window._sizeMapFor = () => ({ 'mgr-agents': '2x1' });
+    window._sizeMapFor = () => ({ 'mgr-streams': '2x1' });
     window._defaultCardSize = () => 'auto';
     adoptPinnedCards();
     returnPinnedCards();
-    expect(calls).toEqual([['managerCardGrid', 'managerHidden']]);
-    expect(sized).toEqual([['mgr-agents', '2x1']]);
-    const panel = document.querySelector('#hp-llama [data-card="llama-gpu-busy"]');
-    expect(panel.dataset.size).toBeUndefined();
-    expect([...panel.classList].some(c => c.startsWith('size-'))).toBe(false);
+    expect(sized).toEqual([]);
+    for (const sel of ['#hp-llama [data-card="llama-gpu-busy"]', '#mg-root [data-card="mgr-streams"]']) {
+      const panel = document.querySelector(sel);
+      expect(panel.dataset.size, sel).toBeUndefined();
+      expect([...panel.classList].some(c => c.startsWith('size-')), sel).toBe(false);
+    }
     ['_applyCardSize', '_sizeMapFor', '_defaultCardSize'].forEach(k => { delete window[k]; });
   });
 });
@@ -194,10 +195,10 @@ describe('hidden Pinned row (#1432)', () => {
     window.CARD_LABELS = { 'llama-gpu-busy': 'GPU busy and memory' };
     window.CARD_LABELS_LMS = {};
     window.CARD_LABELS_VLLM = {};
-    window.CARD_LABELS_MANAGER = { 'mgr-agents': 'Agents' };
+    window.CARD_LABELS_MANAGER = { 'mgr-streams': 'Connection health' };
     window._activeTab = 'overall';
   }
-  const home = (id) => document.querySelector(`#hp-llama [data-card="${id}"], #managerCardGrid [data-card="${id}"]`);
+  const home = (id) => document.querySelector(`#hp-llama [data-card="${id}"], #mg-root [data-card="${id}"]`);
   const inShell = (id) => document.querySelector(`#overallGrid [data-card="ov-borrow-${id}"] [data-card="${id}"]`);
 
   it('adopts nothing while hidden, returns adopted cards on hide and adopts again on show', () => {
@@ -207,18 +208,18 @@ describe('hidden Pinned row (#1432)', () => {
     expect(home('llama-gpu-busy')).toBeTruthy();
     expect(inShell('llama-gpu-busy')).toBeNull();
     expect(window._ovAdopted.size).toBe(0);
-    expect(window._ovPinned('mgr-agents')).toBe(false);
+    expect(window._ovPinned('mgr-streams')).toBe(false);
 
     window.toggleOverallRow('pinned', true);
     expect(window.layout.overallRowsHidden).toEqual([]);
     expect(inShell('llama-gpu-busy')).toBeTruthy();
-    expect(inShell('mgr-agents')).toBeTruthy();
-    expect(window._ovPinned('mgr-agents')).toBe(true);
+    expect(inShell('mgr-streams')).toBeTruthy();
+    expect(window._ovPinned('mgr-streams')).toBe(true);
 
     window.toggleOverallRow('pinned', false);
     expect(document.querySelector('section.row[data-row="pinned"]').hidden).toBe(true);
     expect(home('llama-gpu-busy')).toBeTruthy();
-    expect(home('mgr-agents')).toBeTruthy();
+    expect(home('mgr-streams')).toBeTruthy();
     expect(inShell('llama-gpu-busy')).toBeNull();
     expect(window._ovAdopted.size).toBe(0);
   });
@@ -256,7 +257,7 @@ describe('Pinned row empty sentence (#1432)', () => {
     const none = document.getElementById('ovPinNone');
     expect(none.hidden).toBe(true);
     adoptPinnedCards();
-    ['llama-gpu-busy', 'mgr-agents', 'lms-mac-power'].forEach(id => window.removeBorrowedCard(id));
+    ['llama-gpu-busy', 'mgr-streams', 'lms-mac-power'].forEach(id => window.removeBorrowedCard(id));
     expect(window.layout.overallBorrowed).toEqual([]);
     expect(none.hidden).toBe(false);
     expect(document.querySelector('#hp-llama [data-card="llama-gpu-busy"]')).toBeTruthy();

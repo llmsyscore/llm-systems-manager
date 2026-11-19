@@ -71,7 +71,6 @@ function loadFoundation() {
   ].join('\n'));
   window.applyTheme = () => {};
   window.applyAllGridCols = () => {};
-  window.applyManagerLayout = () => {};
   window._applyRowsHidden = () => {};
   window._ensureSizeBtn = () => {};
   window._resizeChartsIn = () => {};
@@ -109,7 +108,7 @@ describe('Old provider grids are gone (#1432)', () => {
     expect(SettingsLib.settingsScope('dashboard', 'llamacpp')).toMatchObject({ kind: 'rows', rowsHidden: 'llamaRowsHidden', root: 'hp-llama' });
     expect(SettingsLib.settingsScope('dashboard', 'vllm')).toMatchObject({ kind: 'rows', rowsHidden: 'vllmRowsHidden', root: 'hp-vllm' });
     expect(SettingsLib.settingsScope('dashboard', 'host')).toMatchObject({ kind: 'rows', rowsHidden: 'hostRowsHidden', root: 'hp-host' });
-    expect(SettingsLib.settingsScope('dashboard', 'manager').kind).toBe('cards');
+    expect(SettingsLib.settingsScope('dashboard', 'manager')).toMatchObject({ kind: 'rows', rowsHidden: 'managerRowsHidden', root: 'dash-manager' });
   });
 });
 
@@ -164,7 +163,7 @@ describe('Saved layouts map to the host page panels (#1432)', () => {
     expect(home).not.toBeNull();
     expect(window._applyCardSize).not.toHaveBeenCalled();
     expect(home.dataset.size).toBeUndefined();
-    ['_applyCardSize', '_activeTab', 'applyTheme', 'applyAllGridCols', 'applyManagerLayout', '_applyRowsHidden',
+    ['_applyCardSize', '_activeTab', 'applyTheme', 'applyAllGridCols', '_applyRowsHidden',
       '_ensureSizeBtn', '_resizeChartsIn'].forEach(k => { delete window[k]; });
   });
 });
@@ -181,7 +180,7 @@ describe('Layout load errors (#1432)', () => {
     await window.loadLayout();
     expect(mapped).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('layout load failed', boom);
-    ['applyTheme', 'applyAllGridCols', 'applyManagerLayout', '_applyRowsHidden', '_ensureSizeBtn', '_resizeChartsIn'].forEach(k => { delete window[k]; });
+    ['applyTheme', 'applyAllGridCols', '_applyRowsHidden', '_ensureSizeBtn', '_resizeChartsIn'].forEach(k => { delete window[k]; });
   });
 });
 
@@ -242,7 +241,7 @@ describe('Pinned host page panels on Overall (#1432)', () => {
   });
 
   test('initCardResize sizes old-style cards and shells, never kit panels', () => {
-    document.body.innerHTML = '<div class="grid" id="managerCardGrid"><div class="card" data-card="services"></div></div>'
+    document.body.innerHTML = '<div class="grid" id="oldGrid"><div class="card" data-card="old-card"></div></div>'
       + '<div id="dash-all"><section class="panel" data-card="ah-cpu"></section></div>'
       + '<div class="hp-root" id="hp-llama"><section class="panel" data-card="llama-cpu-mem"></section></div>'
       + '<div id="overallTab"><section class="panel" data-card="ov-fleet"></section>'
@@ -255,7 +254,7 @@ describe('Pinned host page panels on Overall (#1432)', () => {
     window._defaultCardSize = () => 'auto';
     window._cycleCardSize = () => {};
     window.initCardResize();
-    expect(sized).toEqual(['services', 'ov-borrow-llama-gpu-busy']);
+    expect(sized).toEqual(['old-card', 'ov-borrow-llama-gpu-busy']);
     expect([...document.querySelectorAll('section.panel .card-size-btn')]).toEqual([]);
     expect(document.querySelectorAll('.card-size-btn').length).toBe(2);
     ['_applyCardSize', '_sizeMapFor', '_defaultCardSize', '_cycleCardSize'].forEach(k => { delete window[k]; });

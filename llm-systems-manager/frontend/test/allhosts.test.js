@@ -1,4 +1,4 @@
-// #1432 phase 4c-1: Dashboards · All hosts — Right now table, Compare over time charts, minute poll and range.
+// #1432 phase 4c-1: Dashboards · All hosts — Snapshot table, Compare over time charts, minute poll and range.
 // Runs kit.js, js/lib/overall-view.js, js/lib/hosts-view.js and js/allhosts.js on the real #dash-all markup with fetch stubbed.
 import { describe, test, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
@@ -114,7 +114,7 @@ describe('All hosts page (#1432)', () => {
     expect(window._SUB_TAB_MAP.dashboard.subs[0]).toBe('all');
   });
 
-  test('Right now lists each host; a host with an LLM server opens its page', async () => {
+  test('Snapshot lists each host; a host with an LLM server opens its page', async () => {
     load();
     stubFetch(THREE, { [ID_LLAMA]: 90, [ID_LMS]: 20, [ID_SYS]: 5 });
     await window.ahEnter();
@@ -291,7 +291,7 @@ describe('All hosts page (#1432)', () => {
     expect(keys).toEqual(['ah-cpu_total|dup (aaaaaa)', 'ah-cpu_total|dup (bbbbbb)']);
   });
 
-  test('Reset this page resets All hosts only; Forecast has nothing to reset', async () => {
+  test('Reset this page resets All hosts only; OpenClaw has nothing to reset', async () => {
     load();
     stubFetch(THREE, { [ID_LLAMA]: 30, [ID_LMS]: 20, [ID_SYS]: 5 });
     await window.ahEnter();
@@ -312,7 +312,7 @@ describe('All hosts page (#1432)', () => {
     window.KIT_SERIES_OFF[k] = true;
     window.fetch = vi.fn();
 
-    window._getDashSubTab = () => 'forecast';
+    window._getDashSubTab = () => 'openclaw';
     await window.resetCurrentTabLayout();
     expect(window._themedConfirm).not.toHaveBeenCalled();
     expect(window.layout.allHostsRowsHidden).toEqual(['ah-cmp']);
@@ -443,7 +443,7 @@ describe('All hosts page (#1432)', () => {
     for (const u of urls) expect(/since_minutes=(5|1440)\b/.test(u), u).toBe(true);
   });
 
-  test('Right now has values right after the whole-range seed, whose newest point is 8 minutes old', async () => {
+  test('Snapshot has values right after the whole-range seed, whose newest point is 8 minutes old', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
     load();
     const calls = [];

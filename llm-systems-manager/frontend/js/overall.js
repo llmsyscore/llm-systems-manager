@@ -3,7 +3,7 @@
 (function () {
   const TP = 'ov-tp';
   const SLOW_MS = 60000;
-  const SLOT = { 'llama.cpp': 1, 'LM Studio': 2, 'vLLM': 3, 'Prompt (all)': 5 };
+  const SLOT = { 'llama.cpp': 1, 'LM Studio': 2, 'vLLM': 3, 'Prompt (all)': 4 };
   const FILTER_LABEL = { all: 'All providers', llama: 'llama.cpp', lms: 'LM Studio', vllm: 'vLLM' };
   const SRV_NONE = { llama: 'No llama.cpp hosts', lms: 'No LM Studio hosts', vllm: 'No vLLM hosts' };
   const TONES = ['ok', 'sl', 'warn', 'bad', 'off'];
@@ -18,14 +18,9 @@
     aggs: { llama: null, lms: null, vllm: null }, llamaState: null, lms: null, llmModels: null,
     summary1: null, summary7: null, hourly168: null, hourly48: null, hourlyProv: null, hourlyBy: {}, hourlyWait: null,
     tower: null, insights: null, slowEnded: false, modelsAt: 0, modelsRun: null, last: {},
-    rows: null, histTried: false, histFailed: false, tp: null, tpKey: null, tpPainted: false, live: null, updated: 0,
+    rows: null, histTried: false, histFailed: false, tp: null, tpKey: null, tpPainted: false, live: null, updated: 0, tpHistLast: null,
     slowAt: 0, slowRun: null, histGen: 0, dressed: false, laidOut: false,
   };
-
-  // The prompt series starts hidden on each page load under every filter's name.
-  if (typeof KIT_SERIES_OFF !== 'undefined' && typeof OV !== 'undefined') {
-    Object.keys(FILTER_LABEL).forEach(p => { KIT_SERIES_OFF[TP + '|' + OV.promptName(p)] = true; });
-  }
 
   function st() {
     const o = window.ovState || {};
@@ -112,21 +107,27 @@
     const b = document.getElementById('ov-b-tp');
     return b ? b.querySelector('.ts[data-kit-ts]') : null;
   }
+  // Time, then each series' peak and average t/s.
   function tpTable(o) {
-    const series = o.series || [];
-    return { cols: ['Time'].concat(series.map(s => s.name + ' t/s')),
-             rows: (o.labels || []).map((l, i) => [l].concat(series.map(s => Math.round((+s.values[i] || 0) * 100) / 100))) };
+    const series = o.series || [], r2 = (v) => Math.round((+v || 0) * 100) / 100;
+    return { cols: ['Time'].concat(...series.map(s => [s.name + ' peak t/s', s.name + ' avg t/s'])),
+             rows: (o.labels || []).map((l, i) => [l].concat(...series.map(s => [r2(s.values[i]), r2((s.avg || [])[i])]))) };
   }
   // Legend chips: each provider's tokens generated in the last 24 h, the prompt chip its prompt tokens.
   function tpLegends() { return OV.tpLegend(S.summary1, window._agentsByProvider || {}, st().prov); }
-  function tpSeries(names, values) {
+  // Chart series: Prompt in its own band on top, the providers stacked in the Generation band; values are peaks, avgs means.
+  function tpSeries(names, values, avgs) {
     const legend = tpLegends();
-    return names.map((name, k) => ({ name, values: values[k], slot: SLOT[name] || (/^Prompt \(/.test(name) ? 5 : undefined),
-      legend: legend[k] }));
+    return names.map((name, k) => {
+      const prompt = /^Prompt \(/.test(name);
+      return Object.assign({ name, values: values[k], avg: avgs[k], slot: SLOT[name] || (prompt ? 4 : undefined), legend: legend[k] },
+        prompt ? {} : { band: 'Generation' });
+    });
   }
   // Draws the chart; a zoom z is kept when both its labels are still drawn.
   function drawTp(labels, series, keep, z) {
-    const opts = { id: TP, labels, series, keep, zoom: true, w: kitWidth('ov-b-tp'), height: 220 };
+    const opts = { id: TP, labels, series, keep, zoom: true, w: kitWidth('ov-b-tp'), height: 260,
+      bars: 'peak', split: true, idle: 'Idle · no requests in this range' };
     const a = z ? labels.indexOf(z.from) : -1;
     if (a >= 0 && labels.indexOf(z.to) > a) opts.z = { from: z.from, to: z.to };
     S.last['ov-b-tp'] = null;
@@ -149,22 +150,29 @@
     if (!same) { S.tpKey = key; S.live = null; }
     const was = same && tpChart() ? kitTsData(tpChart()) : null;
     S.tpPainted = true;
+    S.tpHistLast = null;
     const tp = OV.throughput(S.rows || [], o.range, o.prov, Date.now());
     S.tp = tp;
     const names = tp.series.map(x => x.name);
     if (!(S.rows && S.rows.length)) {
       if (S.live && histEnded()) {
-        drawTp([OV.rangeLabel(S.live.key, o.range)], tpSeries(names, S.live.values.map(v => [v])), tp.keep);
+        const n = Math.max(1, +S.live.n || 1), sums = S.live.sums || S.live.values;
+        drawTp([OV.rangeLabel(S.live.key, o.range)], tpSeries(names, S.live.values.map(v => [v]), sums.map(v => [(+v || 0) / n])), tp.keep);
       } else {
         fill('ov-b-tp', empty(S.histTried ? 'Nothing reported yet' : 'Loading…'));
         setRows('ov-b-tp', { cols: ['Time'], rows: [] });
       }
       return;
     }
-    const series = tpSeries(names, tp.series.map(x => x.values.slice()));
+    const series = tpSeries(names, tp.series.map(x => x.values.slice()), tp.series.map(x => x.avg.slice()));
     const last = tp.labels.length - 1;
+    S.tpHistLast = last >= 0 ? { label: tp.labels[last], avgs: tp.series.map(x => +x.avg[last] || 0) } : null;
     if (S.live && last >= 0 && OV.rangeLabel(S.live.key, o.range) === tp.labels[last]) {
-      series.forEach((x, k) => { x.values[last] = Math.max(+x.values[last] || 0, +S.live.values[k] || 0); });
+      const n = Math.max(1, +S.live.n || 1), sums = S.live.sums || S.live.values;
+      series.forEach((x, k) => {
+        x.values[last] = Math.max(+x.values[last] || 0, +S.live.values[k] || 0);
+        x.avg[last] = Math.max(+x.avg[last] || 0, (+sums[k] || 0) / n);
+      });
     }
     drawTp(tp.labels, series, tp.keep, was && was.z);
   }
@@ -180,7 +188,7 @@
     if (!tpChart()) {
       if (!histEnded()) return;
       const tp = OV.throughput([], o.range, o.prov, Date.now()), names = tp.series.map(x => x.name);
-      drawTp(pts.map(p => p.label), tpSeries(names, names.map((n, k) => pts.map(p => p.values[k]))), tp.keep);
+      drawTp(pts.map(p => p.label), tpSeries(names, names.map((n, k) => pts.map(p => p.values[k])), names.map((n, k) => pts.map(p => p.avgs[k]))), tp.keep);
       return;
     }
     let grew = false;
@@ -189,9 +197,13 @@
       if (!d || !d.series) return;
       const labels = d.labels || [], i = labels.length - 1;
       if (i >= 0 && labels[i] === p.label) {
-        d.series.forEach((x, k) => { x.values[i] = Math.max(+x.values[i] || 0, +p.values[k] || 0); });
+        d.series.forEach((x, k) => {
+          x.values[i] = Math.max(+x.values[i] || 0, +p.values[k] || 0);
+          const h = S.tpHistLast && S.tpHistLast.label === p.label ? +S.tpHistLast.avgs[k] || 0 : 0;
+          if (Array.isArray(x.avg)) x.avg[i] = Math.max(h, +p.avgs[k] || 0);
+        });
         kitRedrawTs(ts, d, d.w);
-      } else if (kitTsAppend(body, TP, p.label, p.values)) grew = true;
+      } else if (kitTsAppend(body, TP, p.label, p.values, p.avgs)) grew = true;
     });
     const d = grew && kitTsData(tpChart());
     if (d) setRows('ov-b-tp', tpTable(d));
@@ -205,7 +217,7 @@
   function tpNow() {
     const ts = tpChart(), d = ts && kitTsData(ts);
     if (!d || !d.series) return S.tp;
-    return { labels: d.labels, series: d.series, keep: d.keep, power: (S.tp && S.tp.power) || [] };
+    return { labels: d.labels, series: d.series, keep: d.keep, power: (S.tp && S.tp.power) || [], rangeH: S.tp && S.tp.rangeH };
   }
 
   // ---- Fleet tiles ----
@@ -319,7 +331,7 @@
       return;
     }
     // Three-hour steps; idle draws faint under generating with no gap between them.
-    const e = OV.energyPerHour(S.hourly168, 3);
+    const e = OV.energyPerHour(S.hourly168, 3, { wrap: true });
     const series = [{ name: 'Idle', values: e.series[0].values, slot: 5, dim: true }, { name: 'Generating', values: e.series[1].values, slot: 2 }];
     fill('ov-b-energy7', tsHtml({ id: 'ov-en7', labels: e.labels, series, mode: 'stack', joined: true, w: kitWidth('ov-b-energy7'), height: 190 }));
     setRows('ov-b-energy7', { cols: ['From', 'Idle Wh', 'Generating Wh'],
@@ -337,26 +349,35 @@
     fill('ov-b-energy-hosts', rankHtml(e.rows, { unit: 'Wh', dim: 'Host', fmt: wh }) + sub(e.sub));
     setRows('ov-b-energy-hosts', { cols: ['Host', 'Wh'], rows: e.rows.map(r => [r.label, r.v]) });
   }
+  // Today's split body (generating vs idle, then by model) of a days=1 summary for the host ids (null: all).
+  function ovSplitBody(summary1, scope) {
+    const e = OV.energySplit(summary1, scope);
+    let html = lab('Generating vs idle') + splitHtml(e.split, { unit: 'Wh', fmt: wh });
+    if (e.models.length) html += lab('By model') + splitHtml(e.models, { unit: 'Wh', fmt: wh });
+    return { html, cols: ['Where', 'Wh'], rows: e.split.concat(e.models).map(r => [r.label, r.v]) };
+  }
   function paintEnergySplit() {
     if (slowLoading(S.summary1)) { loadingPanel('ov-b-energy-split', ['Where', 'Wh']); return; }
-    const e = OV.energySplit(S.summary1, ids());
-    let h = lab('Generating vs idle') + splitHtml(e.split, { unit: 'Wh', fmt: wh });
-    if (e.models.length) h += lab('By model') + splitHtml(e.models, { unit: 'Wh', fmt: wh });
-    fill('ov-b-energy-split', h);
-    setRows('ov-b-energy-split', { cols: ['Where', 'Wh'], rows: e.split.concat(e.models).map(r => [r.label, r.v]) });
+    const b = ovSplitBody(S.summary1, ids());
+    fill('ov-b-energy-split', b.html);
+    setRows('ov-b-energy-split', { cols: b.cols, rows: b.rows });
+  }
+  // Power now body of the provider aggregates for the host ids (null: all); a GPU power spark shows for all hosts only.
+  function ovPowerBody(aggs, byProvider, scope, sparkPower) {
+    const p = OV.powerNow(aggs, byProvider || {}, scope);
+    const rows = p.rows.map(r => ({ label: r.label + ' · ' + r.sub, v: r.v, val: r.val }));
+    let html = rankHtml(rows, { dim: 'Host', fmt: watts });
+    if (p.noSensor) html += sub(p.noSensor + (p.noSensor === 1 ? ' host has' : ' hosts have') + ' no power sensor.');
+    if (!scope && sparkPower && sparkPower.length) {
+      html += lab('GPU power, last ' + st().range + ' h') + '<div class="ov-spark">' + kpiBody({ value: null, spark: sparkPower }) + '</div>';
+    }
+    return { html, cols: ['Host', 'Watts', 'Source'], rows: p.rows.map(r => [r.label, r.v, r.sub]), note: p.rows.length ? watts(p.total) : '' };
   }
   function paintPowerNow() {
-    const scope = ids(), p = OV.powerNow(S.aggs, window._agentsByProvider || {}, scope);
-    const rows = p.rows.map(r => ({ label: r.label + ' · ' + r.sub, v: r.v, val: r.val }));
-    let h = rankHtml(rows, { dim: 'Host', fmt: watts });
-    if (p.noSensor) h += sub(p.noSensor + (p.noSensor === 1 ? ' host has' : ' hosts have') + ' no power sensor.');
-    const power = S.tp && S.tp.power;
-    if (!scope && power && power.length) {
-      h += lab('GPU power, last ' + st().range + ' h') + '<div class="ov-spark">' + kpiBody({ value: null, spark: power }) + '</div>';
-    }
-    fill('ov-b-power-now', h);
-    setRows('ov-b-power-now', { cols: ['Host', 'Watts', 'Source'], rows: p.rows.map(r => [r.label, r.v, r.sub]) });
-    note('ov-b-power-now', p.rows.length ? watts(p.total) : '');
+    const b = ovPowerBody(S.aggs, window._agentsByProvider || {}, ids(), S.tp && S.tp.power);
+    fill('ov-b-power-now', b.html);
+    setRows('ov-b-power-now', { cols: b.cols, rows: b.rows });
+    note('ov-b-power-now', b.note);
   }
   function paintHostsTokens() {
     if (slowLoading(S.summary1)) { loadingPanel('ov-b-hosts-tokens', ['Host', 'Tokens']); return; }
@@ -393,19 +414,23 @@
     const last = ago(f.lastAt, now);
     note('ov-b-forecast', f.note + (last ? ' · ' + last : ''));
   }
+  // Tower body: the newest insight with its action and checks, then Tower's model and activity.
+  function ovTowerBody(tower, insights) {
+    const t = OV.towerFeed(tower, insights), i = t.insight;
+    let html = i ? feedHtml([i], Date.now()) : empty('No insights');
+    if (i && i.action) html += '<div class="ov-act">' + esc(i.action) + '</div>';
+    if (i && i.checks.length) {
+      html += '<div class="ov-pills">' + i.checks.map(c => pill((c.ok ? '✓ ' : '✗ ') + c.label, c.ok ? 'ok' : 'off', c.title)).join('') + '</div>';
+    }
+    if (t.kv.length) html += '<dl class="ov-kv">' + kvRows(t.kv) + '</dl>';
+    return { html, cols: ['Field', 'Value'], rows: t.kv.concat(i ? [['Insight (' + i.kind + ')', i.title]] : []), note: t.note };
+  }
   function paintTower() {
     if (slowLoading(S.tower) && slowLoading(S.insights)) { loadingPanel('ov-b-tower', ['Field', 'Value']); return; }
-    const t = OV.towerFeed(S.tower, S.insights), i = t.insight;
-    let h = i ? feedHtml([i], Date.now()) : empty('No insights');
-    if (i && i.action) h += '<div class="ov-act">' + esc(i.action) + '</div>';
-    if (i && i.checks.length) {
-      h += '<div class="ov-pills">' + i.checks.map(c => pill((c.ok ? '✓ ' : '✗ ') + c.label, c.ok ? 'ok' : 'off', c.title)).join('') + '</div>';
-    }
-    if (t.kv.length) h += '<dl class="ov-kv">' + kvRows(t.kv) + '</dl>';
-    fill('ov-b-tower', h);
-    setRows('ov-b-tower', { cols: ['Field', 'Value'],
-      rows: t.kv.concat(i ? [['Insight (' + i.kind + ')', i.title]] : []) });
-    note('ov-b-tower', t.note);
+    const b = ovTowerBody(S.tower, S.insights);
+    fill('ov-b-tower', b.html);
+    setRows('ov-b-tower', { cols: b.cols, rows: b.rows });
+    note('ov-b-tower', b.note);
   }
   // Active alerts newest first, top ALERTS_TOP and "N more"; the table keeps them all.
   function paintAlerts() {
@@ -451,6 +476,7 @@
     if (!S.dressed) {
       S.dressed = true;
       kitDress(root);
+      if (typeof mcSoloTitles === 'function') mcSoloTitles(root);
       root.querySelectorAll('.panel > .p-hd > .p-note').forEach(n => { n.title = n.textContent; });
       root.addEventListener('click', onGo);
       if (typeof keepPlace === 'function') keepPlace(root, '.panel, #overallGrid > .card');
@@ -608,6 +634,9 @@
   window.ovSetFilter = ovSetFilter;
   window.ovSetRange = ovSetRange;
   window.fetchOverallMetrics = fetchOverallMetrics;
+  window.ovSplitBody = ovSplitBody;
+  window.ovPowerBody = ovPowerBody;
+  window.ovTowerBody = ovTowerBody;
 })();
 
 // Enable/disable llama.cpp server control buttons.
@@ -632,14 +661,4 @@ function _setLmsBtns(serverUp) {
   });
   const start = document.getElementById('lmsBtnStart');
   if (start) start.disabled = serverUp;
-}
-
-// Applies severity accent border to Dashboard cards, including any card
-// currently adopted into the Overall pinned grid (#565).
-// cls: 'dash-ok' | 'dash-warn' | 'dash-crit' | 'dash-off'
-function _dashSetStatus(cardId, cls) {
-  const el = document.querySelector(`#managerCardGrid [data-card="${cardId}"], #overallGrid [data-card="${cardId}"]`);
-  if (!el) return;
-  el.classList.remove('dash-ok','dash-warn','dash-crit','dash-off');
-  if (cls) el.classList.add(cls);
 }

@@ -1,10 +1,11 @@
 // Energy & cost intelligence display helpers (#470); sub-tab wiring is in
 // js/energy.js. IIFE-scoped, exposed as window.EN.
 (function (root, factory) {
-  const api = factory();
+  const ov = () => (root && root.OV) || (typeof require === 'function' ? require('./overall-view') : null);
+  const api = factory(ov);
   if (typeof root !== 'undefined') root.EN = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-})(typeof window !== 'undefined' ? window : globalThis, function () {
+})(typeof window !== 'undefined' ? window : globalThis, function (_ov) {
 
 const SOURCE_LABEL = { psu: 'wall', mac: 'SoC', gpu: 'GPU' };
 
@@ -151,17 +152,6 @@ function modelRows(models) {
   });
 }
 
-// Chart series from /api/energy/hourly rows.
-function hourlySeries(rows) {
-  const r = rows || [];
-  return {
-    labels: r.map(x => new Date(x.hour_ts * 1000)),
-    activeWh: r.map(x => x.active_energy_wh),
-    idleWh: r.map(x => Math.max(0, (x.energy_wh || 0) - (x.active_energy_wh || 0))),
-    tokens: r.map(x => x.tokens_gen),
-  };
-}
-
 // "tracking since …" + coverage caveat for the footer.
 function coverageNote(summary) {
   const t = (summary || {}).totals || {};
@@ -211,7 +201,80 @@ function windowQuery(value, custom) {
   return {};
 }
 
+const PAGE_TILE_LABELS = ['Energy', 'Electricity cost', 'Tokens generated', 'Cost per million, all-in',
+  'Cost per million, marginal', 'Average draw'];
+const STEP_HOURS = [1, 3, 6, 12, 24];
+const MAX_STEPS = 60;
+
+// Energy page tile row: saved vs cloud with the cloud cost it is measured against ("vs $51.65 at Opus 5"), then the
+// totals tiles under page labels.
+function pageTiles(summary) {
+  const view = savingsView(summary), s = (summary || {}).savings_usd;
+  const cloud = ((summary || {}).totals || {}).cloud_cost_usd;
+  const label = ((summary || {}).config || {}).cloud_price_label || 'cloud API';
+  const vs = typeof cloud === 'number' && Number.isFinite(cloud) ? `vs ${fmtUsd(cloud)} at ${label}` : `vs ${label}`;
+  const saved = s == null
+    ? { label: 'Saved vs cloud', value: '—', sub: view.headline, tone: 'off' }
+    : { label: 'Saved vs cloud', value: fmtUsd(Math.abs(s)), sub: vs, tone: view.cls === 'good' ? 'good' : 'warn' };
+  return [saved].concat(totalTiles((summary || {}).totals).map((t, i) =>
+    ({ label: PAGE_TILE_LABELS[i], value: t.value, sub: t.sub, tone: '' })));
+}
+
+function savingsLine(summary) { return savingsView(summary).sub; }
+
+// Smallest step in hours that keeps the chart at 60 bars or fewer (a step over 1 h may start part-way); 24 when none does.
+function stepHours(rowCount) {
+  const n = Number.isFinite(rowCount) && rowCount > 0 ? rowCount : 0;
+  return STEP_HOURS.find(s => Math.ceil(n / s) + (s > 1 ? 1 : 0) <= MAX_STEPS) || 24;
+}
+
+// Hourly rows → per-step labels, Idle and Generating Wh (OV.energyPerHour) and tokens grouped the same way.
+function stepSeries(rows, stepH) {
+  const OV = _ov();
+  const list = Array.isArray(rows) ? rows : ((rows && Array.isArray(rows.rows)) ? rows.rows : []);
+  const e = OV.energyPerHour(list, stepH);
+  const tok = OV.energyPerHour(list.map(r => (r && typeof r === 'object'
+    ? { hour_ts: r.hour_ts, energy_wh: r.tokens_gen, active_energy_wh: r.tokens_gen } : r)), stepH);
+  const idle = e.series[0].values, gen = e.series[1].values, tokens = tok.series[1].values;
+  return {
+    labels: e.labels, idle, gen, tokens,
+    table: { cols: ['From', 'Idle Wh', 'Generating Wh', 'Tokens'],
+             rows: e.labels.map((l, i) => [l, idle[i], gen[i], tokens[i]]) },
+  };
+}
+
+function _cell(text, v) { return { text, v: (typeof v === 'number' && Number.isFinite(v)) ? v : null }; }
+function _pctCell(p) { return p == null ? _cell('—', null) : _cell(p + '%', p); }
+
+// Per-host kit table; number cells are {text, v} so they sort by value.
+function hostTable(hosts) {
+  const list = hosts || [];
+  return {
+    cols: ['Host', 'Source', 'Energy', 'Generating share', 'Active', 'Tokens', 'Cost', 'Cost per million', 'Coverage', 'Notes'],
+    rows: hostRows(list).map((r, i) => {
+      const h = list[i] || {};
+      return [r.hostname, r.source || '—', _cell(r.kwh, h.kwh), _pctCell(r.split), _cell(r.activePct, h.active_pct),
+        _cell(r.tokens, h.tokens_gen), _cell(r.cost, h.cost_usd), _cell(r.mtok, h.usd_per_mtok),
+        _cell(r.coverage, h.coverage_pct), r.notes];
+    }),
+  };
+}
+
+// Per-model kit table; number cells are {text, v} so they sort by value.
+function modelTable(models) {
+  const list = models || [];
+  return {
+    cols: ['Model', 'Hosts', 'Energy', 'Share', 'Resident', 'Tokens', 'Cost', 'Cost per million'],
+    rows: modelRows(list).map((r, i) => {
+      const m = list[i] || {};
+      return [r.model, r.hosts, _cell(r.kwh, m.kwh), _pctCell(r.share), _cell(r.resident, m.resident_pct),
+        _cell(r.tokens, m.tokens_gen), _cell(r.cost, m.cost_usd), _cell(r.mtok, m.usd_per_mtok)];
+    }),
+  };
+}
+
 return { fmtUsd, fmtKwh, fmtTokens, fmtWatts, fmtPct, fmtMtokRate,
-         sourceLabel, savingsView, totalTiles, hostRows, modelRows, hourlySeries,
-         coverageNote, windowOptions, windowQuery, SOURCE_LABEL };
+         sourceLabel, savingsView, totalTiles, hostRows, modelRows,
+         coverageNote, windowOptions, windowQuery, SOURCE_LABEL,
+         pageTiles, savingsLine, stepHours, stepSeries, hostTable, modelTable };
 });

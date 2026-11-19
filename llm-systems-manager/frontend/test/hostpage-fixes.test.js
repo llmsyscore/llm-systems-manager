@@ -85,6 +85,7 @@ function stubFetch(routes) {
     if (url.startsWith('/api/lmstudio/metrics?')) return ok(routes.lms(aid));
     if (url.startsWith('/api/vllm/metrics?')) return ok(routes.vllm(aid));
     if (url === '/api/agents/hosts') return ok(routes.hosts());
+    if (url.startsWith('/api/energy/hourly?') && routes.energy) return ok(routes.energy(aid, url));
     const m = /^\/api\/agents\/([^/]+)\/system$/.exec(url);
     if (m) return ok(routes.system(decodeURIComponent(m[1])));
     return ok({});
@@ -341,7 +342,7 @@ describe('Host page live-check fixes (#1432)', () => {
     expect([...table.tHead.rows[0].cells].map(c => c.textContent)).toEqual(['Time', 'Read (MB/s)', 'Write (MB/s)']);
     const filled = [...table.tBodies[0].rows].find(tr => tr.cells[1].textContent !== '');
     expect(filled.cells[1].textContent).toBe('500');
-    expect(document.querySelector('#hp-host [data-card="host-tiles"] .p-title').textContent).toBe('Right now');
+    expect(document.querySelector('#hp-host [data-card="host-tiles"] .p-title').textContent).toBe('Snapshot');
   });
 });
 
@@ -489,7 +490,7 @@ describe('Host page operator fixes (#1432)', () => {
     expect((d.match(/M/g) || []).length).toBe(2);
   });
 
-  test('a Mac\'s Disk space bars list its data volumes; the table view keeps every mount', async () => {
+  test('a Mac\'s Disk space bars and table list its data volume once as Macintosh HD (/), then other drives', async () => {
     load({ llama: [], lms: [agent(ID_A)], vllm: [] });
     const mounts = ['/', '/System/Volumes/VM', '/System/Volumes/Preboot', '/System/Volumes/Data',
       '/private/var/run/com.apple.security.cryptexd/mnt/a1', '/Library/Developer/CoreSimulator/Volumes/iOS', '/Volumes/Backup'];
@@ -500,9 +501,42 @@ describe('Host page operator fixes (#1432)', () => {
     await window.hpEnter('lms');
     await settle();
     const bars = [...document.querySelectorAll('#hp-b-lms-disk .hp-disks .hp-dm')].map(e => e.textContent);
-    expect(bars).toEqual(['/', '/System/Volumes/Data', '/Volumes/Backup']);
+    expect(bars).toEqual(['Macintosh HD (/)', '/Volumes/Backup']);
     const table = document.getElementById('hp-b-lms-disk').closest('.panel').querySelector('.p-table table');
-    expect([...table.tBodies[0].rows].map(tr => tr.cells[0].textContent)).toEqual(mounts);
+    expect([...table.tBodies[0].rows].map(tr => tr.cells[0].textContent)).toEqual(['Macintosh HD (/)', '/Volumes/Backup']);
+  });
+
+  test('Tokens per hour stacks prompt on generated tokens from the host\'s energy record, LM Studio and vLLM pages too', async () => {
+    load({ llama: [], lms: [agent(ID_A)], vllm: [] });
+    const r = defaults(), hr = 3600000, cur = Math.floor(Date.now() / hr) * hr / 1000;
+    r.energy = () => ({ ok: true, rows: [{ hour_ts: cur - 3600, tokens_gen: 1200, tokens_prompt: 4000 }, { hour_ts: cur, tokens_gen: 300 }] });
+    const calls = stubFetch(r);
+    await window.hpEnter('lms');
+    await settle();
+    expect(calls).toContain('/api/energy/hourly?hours=24&agent=' + encodeURIComponent(ID_A));
+    const ts = document.querySelector('#hp-b-lms-gen .ts[data-kit-ts]');
+    const o = JSON.parse(ts.getAttribute('data-kit-ts'));
+    expect(o.mode).toBe('stack');
+    expect(o.idleLine).toBe(true);
+    expect(o.labels).toHaveLength(24);
+    expect(o.series.map(x => x.name)).toEqual(['Generated', 'Prompt']);
+    expect(o.series[0].values.slice(-2)).toEqual([1200, 300]);
+    expect(o.series[1].values.slice(-2)).toEqual([4000, 0]);
+    expect(document.querySelector('[data-card="lms-gen"] .p-hd .p-note').textContent).toBe('last 24 h');
+  });
+
+  test('Tokens per hour keeps the last 24 hourly bars on a 6 h range', async () => {
+    load({ llama: [], lms: [agent(ID_A)], vllm: [] });
+    window.ahState.range = 6;
+    const r = defaults(), cur = Math.floor(Date.now() / 3600000) * 3600;
+    r.energy = () => ({ ok: true, rows: [{ hour_ts: cur - 20 * 3600, tokens_gen: 50, tokens_prompt: 70 }] });
+    const calls = stubFetch(r);
+    await window.hpEnter('lms');
+    await settle();
+    expect(calls).toContain('/api/energy/hourly?hours=24&agent=' + encodeURIComponent(ID_A));
+    const o = JSON.parse(document.querySelector('#hp-b-lms-gen .ts[data-kit-ts]').getAttribute('data-kit-ts'));
+    expect(o.labels).toHaveLength(24);
+    expect(o.series[0].values[3]).toBe(50);
   });
 });
 
@@ -587,8 +621,9 @@ describe('Host page equal rows and chart styles (#1432)', () => {
     expect(tp.bars).toBe('peak');
     expect(tp.split).toBe(true);
     expect(tp.idle).toBe('Idle · no requests in this range');
-    expect(tp.series.map(x => x.name)).toEqual(['Gen t/s', 'Prompt t/s']);
-    expect(tp.series[0].avg.filter(v => v != null).length).toBeGreaterThan(0);
+    expect(tp.series.map(x => x.name)).toEqual(['Prompt t/s', 'Gen t/s']);
+    expect(tp.series.map(x => x.slot)).toEqual([2, 1]);
+    expect(tp.series[1].avg.filter(v => v != null).length).toBeGreaterThan(0);
     // 15-minute buckets over 24 hours.
     expect(tp.labels.length).toBe(96);
     const gb = tsOf('#hp-b-llama-gpu-busy');
@@ -597,13 +632,28 @@ describe('Host page equal rows and chart styles (#1432)', () => {
     expect(gb.step).toBe(true);
     expect(gb.labels.length).toBe(288);
     const head = [...document.querySelectorAll('[data-card="llama-tps"] .p-table th')].map(th => th.textContent);
-    expect(head).toEqual(['Time', 'Gen t/s peak', 'Gen t/s avg', 'Prompt t/s peak', 'Prompt t/s avg']);
+    expect(head).toEqual(['Time', 'Prompt t/s peak', 'Prompt t/s avg', 'Gen t/s peak', 'Gen t/s avg']);
   });
 
   test('a key-value list of six or more rows is marked to flow and a short one is not', async () => {
     await llamaPage();
-    expect(document.querySelector('#hp-b-llama-details .hp-kv').classList.contains('flow')).toBe(true);
+    expect(document.querySelector('#hp-b-llama-details > .hp-kv:last-child').classList.contains('flow')).toBe(true);
     expect(document.querySelector('#hp-b-llama-cpu-details .hp-kv').classList.contains('flow')).toBe(false);
+  });
+
+  test('Server details gives the generation and prompt rates their own lines above the flowing list; the tiles add Prompt tokens/s', async () => {
+    await llamaPage();
+    const rates = document.querySelector('#hp-b-llama-details > .hp-kv:first-child');
+    expect(rates.classList.contains('flow')).toBe(false);
+    expect([...rates.querySelectorAll('tbody tr')].map(tr => tr.cells[0].textContent)).toEqual(['Prompt tokens/s', 'Gen tokens/s']);
+    expect(rates.nextElementSibling.classList.contains('flow')).toBe(true);
+    const rest = [...rates.nextElementSibling.querySelectorAll('tbody tr')].map(tr => tr.cells[0].textContent);
+    expect(rest).not.toContain('Gen tokens/s');
+    expect(rest).not.toContain('Prompt tokens/s');
+    const table = [...document.querySelectorAll('[data-card="llama-details"] .p-table tbody tr')].map(tr => tr.cells[0].textContent);
+    expect(table.slice(0, 2)).toEqual(['Prompt tokens/s', 'Gen tokens/s']);
+    const labels = [...document.querySelectorAll('#hp-b-llama-tiles .hp-tl')].map(t => t.textContent), at = labels.indexOf('Prompt tokens/s');
+    expect(labels.slice(at, at + 2)).toEqual(['Prompt tokens/s', 'Gen tokens/s']);
   });
 
   test('the last panel on a line spans the empty columns after it, and charts grow to the tallest panel on their line', async () => {
@@ -684,7 +734,7 @@ describe('Host page equal rows and chart styles (#1432)', () => {
     await llamaPage();
     const items = (card) => [...document.querySelectorAll(`[data-card="${card}"] .p-pop [data-hp-metric]`)];
     expect(items('llama-cpu-mem').map(b => b.textContent)).toEqual(['View CPU % in metrics', 'View Memory % in metrics']);
-    expect(items('llama-tps').map(b => b.getAttribute('data-hp-metric'))).toEqual(['llama/tokens_per_second', 'llama/prompt_tokens_per_second']);
+    expect(items('llama-tps').map(b => b.getAttribute('data-hp-metric'))).toEqual(['llama/prompt_tokens_per_second', 'llama/tokens_per_second']);
     expect(items('llama-disk').map(b => b.textContent)).toEqual(['View disk / used % in metrics']);
     expect(items('llama-details')).toEqual([]);
     window.focusAlarmMetric = vi.fn();

@@ -15,15 +15,18 @@ const PAGES = {
   lms: { provider: 'lms', label: 'LM Studio', sub: 'lmstudio' },
   vllm: { provider: 'vllm', label: 'vLLM', sub: 'vllm' },
   host: { provider: null, label: 'Host', sub: 'host' },
+  mgr: { provider: null, label: 'Manager host', sub: 'manager' },
 };
+// Manager page panels outside the System row, kept by mapLegacyLayout.
+const MGR_PANELS = ['services', 'db', 'streams', 'hosts', 'procs', 'tiles', 'perf', 'ae-perf', 'influx-perf', 'tower'];
 const ROWS = [['tiles', 'Host'], ['inf', 'Inference'], ['gpu', 'GPU'], ['sys', 'System'], ['hw', 'Power hardware']];
 const _P = (row, name, title, kind) => ({ row, name, title, kind });
 const PANELS = [
-  _P('tiles', 'tiles', 'Right now', 'tiles'),
+  _P('tiles', 'tiles', 'Snapshot', 'tiles'),
   _P('inf', 'tps', 'Throughput', 'ts'),
   _P('inf', 'server', 'Server', 'kv'),
   _P('inf', 'details', 'Server details', 'kv'),
-  _P('inf', 'gen', 'Tokens generated', 'ts'),
+  _P('inf', 'gen', 'Tokens per hour', 'ts'),
   _P('inf', 'models', 'Models', 'list'),
   _P('inf', 'requests', 'Requests', 'kv'),
   _P('inf', 'kv', 'KV cache', 'ts'),
@@ -43,7 +46,7 @@ const PANELS = [
   _P('hw', 'psu', 'Power supply', 'kv'),
   _P('hw', 'fans', 'Fan controller', 'table'),
 ];
-const ONLY_ON = { gen: 'llama', models: 'lms', requests: 'vllm', kv: 'vllm' };
+const ONLY_ON = { models: 'lms', requests: 'vllm', kv: 'vllm' };
 // Alarm metrics [source, name] whose threshold lines a chart draws.
 const CHART_METRIC = {
   'cpu-mem': [['system', 'cpu_total'], ['system', 'ram_percent']],
@@ -69,6 +72,10 @@ const HIDDEN_NOT_MAPPED = ['lms-power'];
 const CHAT_TITLE_MAX = 600;
 // macOS system mounts left out of the Disk space bars; the first also marks a sample as a Mac's.
 const MAC_SYS_MOUNTS = ['/System/Volumes/', '/private/var/run/com.apple.security.cryptexd/', '/Library/Developer/CoreSimulator/'];
+const LINUX_SYS_MOUNTS = ['/sys', '/proc', '/dev', '/run'];
+// Removable drives under /run that stay listed.
+const LINUX_KEEP_MOUNTS = ['/run/media'];
+const MAC_DATA = '/System/Volumes/Data', MAC_DISK_LABEL = 'Macintosh HD (/)';
 const THERMAL = ['Nominal', 'Fair', 'Serious', 'Critical'];
 const WINDOW_STATE = { unsupported: 'Not reported', off: 'Not in use', idle: 'Idle', reset: 'Reset', paused: 'Paused' };
 const SEV_TONE = { critical: 'bad', warning: 'warn' };
@@ -116,6 +123,7 @@ function _inf(inf) {
 
 function panelsFor(page) {
   const p = Object.prototype.hasOwnProperty.call(PAGES, page) ? page : 'host';
+  if (p === 'mgr') return PANELS.filter(x => x.row === 'sys');
   return PANELS.filter(x => !(p === 'host' && x.row === 'inf') && (!ONLY_ON[x.name] || ONLY_ON[x.name] === p));
 }
 
@@ -201,11 +209,15 @@ function normalize(raw, opts) {
   };
 }
 
-// Disks for the Disk space bars: on a Mac only its data volumes (/, /System/Volumes/Data and mounts outside the system ones).
+// Disks for the Disk space bars, real drives only: Linux leaves out /sys, /proc, /dev and /run mounts; a Mac shows its
+// data volume once as "Macintosh HD (/)" plus mounts outside the system ones.
 function diskBars(n) {
   const list = _arr(n && n.disks);
-  if (!(n && n.mac)) return list;
-  return list.filter(d => d.mount === '/' || d.mount === '/System/Volumes/Data' || !MAC_SYS_MOUNTS.some(m => d.mount.indexOf(m) === 0));
+  const under = (d, m) => d.mount === m || d.mount.indexOf(m + '/') === 0;
+  if (!(n && n.mac)) return list.filter(d => LINUX_KEEP_MOUNTS.some(m => d.mount.indexOf(m + '/') === 0) || !LINUX_SYS_MOUNTS.some(m => under(d, m)));
+  const data = list.find(d => d.mount === MAC_DATA) || list.find(d => d.mount === '/');
+  const rest = list.filter(d => d.mount !== '/' && d.mount !== MAC_DATA && !MAC_SYS_MOUNTS.some(m => d.mount.indexOf(m) === 0));
+  return (data ? [Object.assign({}, data, { label: MAC_DISK_LABEL })] : []).concat(rest);
 }
 
 function hasGpu(n) {
@@ -259,9 +271,11 @@ function tiles(page, n, inf, online) {
     out.push({ label: 'VRAM', value: val(n.gpu.vramPct, HV.fmtPct), tone: '' });
   }
   if (page !== 'host') {
-    const st = _rateStat(page, 'gen', inf);
-    out.push({ label: 'Gen tokens/s', value: val(st.v, v => _fix(v, 1)), tone: '',
-               sub: off || st.v == null ? '' : [st.mode, _peakText(st)].filter(Boolean).join(' · ') });
+    [['prompt', 'Prompt tokens/s'], ['gen', 'Gen tokens/s']].forEach(([which, label]) => {
+      const st = _rateStat(page, which, inf);
+      out.push({ label, value: val(st.v, v => _fix(v, 1)), tone: '',
+                 sub: off || st.v == null ? '' : [st.mode, _peakText(st)].filter(Boolean).join(' · ') });
+    });
   }
   return out;
 }
@@ -456,12 +470,12 @@ const CHARTS = {
   disk: [['disk_root_pct', '/', 1], ['disk_iscsi_pct', '/mnt/iscsi', 2, true]],
   aio: [['aio_temp', 'Liquid °C', 1]],
   psu: [['psu_out', 'Output W', 1], ['psu_in', 'Input W', 2]],
-  gen: [['llama_gen_tokens', 'Tokens generated', 1]],
 };
+// Throughput draws Prompt in the top band and Generation below it; the colour slots stay gen 1, prompt 2.
 function _chartDefs(page, chart) {
   if (chart === 'tps') {
     return PAGES[page] && PAGES[page].provider
-      ? [[page + '_tps', 'Gen t/s', 1], [page + '_pps', 'Prompt t/s', 2]] : [];
+      ? [[page + '_pps', 'Prompt t/s', 2], [page + '_tps', 'Gen t/s', 1]] : [];
   }
   return CHARTS[chart] || [];
 }
@@ -471,6 +485,7 @@ const CHART_STYLE = {
   tps: { bars: 'peak', split: true, idle: 'Idle · no requests in this range' },
   'mac-gpu': { bars: 'peak' },
   'gpu-busy': { strip: 'GPU busy %', stripLabel: 'Busy', step: true },
+  gen: { mode: 'stack', idleLine: true, barFill: 0.8, idle: 'Idle · no tokens in this range' },
 };
 // Bar charts use coarser buckets (15 minutes over 24 hours).
 const BAR_BUCKET_MS = { 6: 300000, 12: 600000, 24: 900000 };
@@ -488,19 +503,41 @@ const STORED_METRIC = {
   net_sent: ['system', 'net_bytes_sent_per_sec', 'network out'], net_recv: ['system', 'net_bytes_recv_per_sec', 'network in'],
   io_read: ['system', 'disk_io_read_bytes_per_sec', 'disk read'], io_write: ['system', 'disk_io_write_bytes_per_sec', 'disk write'],
   disk_root_pct: ['system', 'disk_root_percent', 'disk / used %'],
-  llama_tps: ['llama', 'tokens_per_second'], llama_pps: ['llama', 'prompt_tokens_per_second'], llama_gen_tokens: ['llama', 'total_tokens_generated'],
+  llama_tps: ['llama', 'tokens_per_second'], llama_pps: ['llama', 'prompt_tokens_per_second'],
   lms_tps: ['gateway', 'lms_tokens_per_second'], lms_pps: ['gateway', 'lms_prompt_tokens_per_second'],
 };
-// "View <series> in metrics" links of a chart's shown series that have a stored metric.
+// Stored token counter metrics [source, name, label] of each provider page's Tokens chart.
+const TOKEN_METRICS = {
+  llama: [['llama', 'total_tokens_generated', 'tokens generated'], ['llama', 'total_tokens_prompted', 'tokens prompted']],
+  lms: [['gateway', 'lms_gen_tokens_total', 'gateway tokens generated'], ['gateway', 'lms_prompt_tokens_total', 'gateway tokens prompted']],
+  vllm: [['vllm', 'total_tokens_generated', 'tokens generated'], ['vllm', 'total_tokens_prompted', 'tokens prompted']],
+};
+// "View <series> in metrics" links of a chart's shown series that have a stored metric; the Tokens chart links its page's counters.
 function metricLinks(page, chartName, rows) {
+  if (chartName === 'gen') return _arr(TOKEN_METRICS[page]).map(m => ({ label: 'View ' + m[2] + ' in metrics', source: m[0], name: m[1] }));
   const list = _arr(rows);
   return _chartDefs(page, chartName).filter(d => !d[3] || list.some(r => r && _num(r[d[0]]) != null))
     .filter(d => STORED_METRIC[d[0]])
     .map(d => { const m = STORED_METRIC[d[0]]; return { label: 'View ' + (m[2] || d[1]) + ' in metrics', source: m[0], name: m[1] }; });
 }
 
+// Generated and prompt tokens per hour over the range ending at nowMs, from /api/energy/hourly rows; an hour with no row is null.
+function genSeries(rows, rangeH, nowMs) {
+  const hours = [6, 12, 24].includes(Number(rangeH)) ? Number(rangeH) : 24, b = 3600000;
+  const end = Math.floor(_now(nowMs) / b) * b, start = end - (hours - 1) * b;
+  const gen = new Array(hours).fill(null), prompt = new Array(hours).fill(null);
+  _arr(rows).forEach(r => {
+    const t = _num(r && r.hour_ts), i = t == null ? -1 : Math.floor((t * 1000 - start) / b);
+    if (!(i >= 0 && i < hours)) return;
+    gen[i] = (gen[i] || 0) + (_num(r.tokens_gen) || 0);
+    prompt[i] = (prompt[i] || 0) + (_num(r.tokens_prompt) || 0);
+  });
+  return { labels: OV.bucketLabels(start, hours, b),
+           series: [{ name: 'Generated', values: gen, slot: 1 }, { name: 'Prompt', values: prompt, slot: 2 }] };
+}
+
 // Bucket means of each chart field over the range ending at nowMs (gaps of up to 3 buckets hold); peak-bar charts take
-// each bucket's max with its mean as avg and no held gaps; gen takes each bucket's newest total and carries it across empty buckets.
+// each bucket's max with its mean as avg and no held gaps.
 function series(page, chartName, rows, rangeH, nowMs) {
   const bars = (CHART_STYLE[chartName] || {}).bars === 'peak';
   const hours = [6, 12, 24].includes(Number(rangeH)) ? Number(rangeH) : 24, b = bars ? BAR_BUCKET_MS[hours] : OV.rangeBucketMs(hours);
@@ -509,7 +546,7 @@ function series(page, chartName, rows, rangeH, nowMs) {
   const labels = OV.bucketLabels(start, n, b), list = _arr(rows);
   const defs = _chartDefs(page, chartName).filter(d => !d[3] || list.some(r => r && _num(r[d[0]]) != null));
   const out = defs.map(([key, name, slot]) => {
-    const sum = new Array(n).fill(0), cnt = new Array(n).fill(0), last = new Array(n).fill(null), lastT = new Array(n).fill(-Infinity);
+    const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
     const max = new Array(n).fill(null);
     for (const r of list) {
       const t = _ms(r && r.ts), v = _num(r && r[key]);
@@ -518,18 +555,10 @@ function series(page, chartName, rows, rangeH, nowMs) {
       if (i < 0 || i >= n) continue;
       sum[i] += v; cnt[i] += 1;
       if (max[i] == null || v > max[i]) max[i] = v;
-      if (t >= lastT[i]) { last[i] = v; lastT[i] = t; }
     }
     const mean = sum.map((s, i) => (cnt[i] ? s / cnt[i] : null));
     if (bars) return { name, values: max, avg: mean, slot };
-    let values;
-    if (chartName === 'gen') {
-      let carry = null;
-      values = last.map(v => (v != null ? (carry = v) : carry));
-    } else {
-      values = HV.holdShortGaps(mean);
-    }
-    return { name, values, slot };
+    return { name, values: HV.holdShortGaps(mean), slot };
   });
   return { labels, series: RATE_CHARTS.includes(chartName) ? _rateUnit(out) : out };
 }
@@ -658,6 +687,7 @@ function thresholdsFor(rules, source, metric, host) {
 
 const PANEL_IDS = new Set();
 Object.keys(PAGES).forEach(pg => panelsFor(pg).forEach(p => PANEL_IDS.add(pg + '-' + p.name)));
+MGR_PANELS.forEach(name => PANEL_IDS.add('mgr-' + name));
 // Old card id → new panel id; null drops it. New panel ids and ids in keep stay; other ids drop.
 function _mapId(id, keep) {
   if (Object.prototype.hasOwnProperty.call(LEGACY_IDS, id)) return LEGACY_IDS[id];
@@ -722,6 +752,6 @@ function mapLegacyLayout(layout, keepIds) {
   return { changed: true };
 }
 
-return { PAGES, ROWS, PANELS, CHART_METRIC, LEGACY_IDS, HIDDEN_KEYS, panelsFor, normalize, hasGpu, diskBars, tiles, details, liveNotes, fanTable,
+return { PAGES, ROWS, PANELS, CHART_METRIC, LEGACY_IDS, HIDDEN_KEYS, panelsFor, normalize, hasGpu, diskBars, genSeries, tiles, details, liveNotes, fanTable,
          series, chartStyle, chartMetrics, metricLinks, liveRow, serverPanel, thresholdsFor, mapLegacyLayout, llamaHasCounters, lastSeenNote };
 });

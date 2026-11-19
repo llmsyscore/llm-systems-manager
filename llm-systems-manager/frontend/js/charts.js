@@ -11,13 +11,6 @@ function initSortable() {
       saveLayout();
     },
   });
-  const mgrGrid = document.getElementById('managerCardGrid');
-  if (mgrGrid) {
-    Sortable.create(mgrGrid, {
-      handle: '.card-handle', animation: 150,
-      onEnd: saveManagerLayout,
-    });
-  }
   initCardResize();
 }
 
@@ -467,94 +460,9 @@ function _layoutResetZoomBtns(host) {
   btns.forEach((b, i) => { b.style.right = (30 + i * 28) + 'px'; });
 }
 
-// N-line chart factory — used by the self-monitor cards which graph more
-// than two latency series on one canvas. `lines` is [{label, color}, ...].
-function mkMultiChart(id, lines) {
-  const canvas = document.getElementById(id);
-  if (!canvas) return null;
-  return new Chart(canvas.getContext('2d'), {
-    type: 'line',
-    data: {
-      labels: [],
-      datasets: lines.map(l => ({
-        label: l.label, data: [], borderColor: l.color,
-        borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2,
-      })),
-    },
-    options: { animation: false, responsive: true, maintainAspectRatio: false,
-      interaction: _sparkInteraction,
-      plugins: { legend: { display: false }, tooltip: _sparkTooltip, zoom: _zoomOpts, annotation: { annotations: {} } },
-      scales: { x: xAxis, y: { beginAtZero: true, ticks: { color: cssVar('--fg-muted'), font: { size: 10 } }, grid: { color: cssVar('--border-soft') } } }
-    }
-  });
-}
-
-// Snap a timestamp down to the current poll-interval grid so live points and
-// history backfill share one resolution (= the settings cadence). Same-grid
-// appends collapse onto the prior point instead of densifying one side (#129).
-function _bucketDate(ts) {
-  const w = (typeof fetchInterval === 'number' && fetchInterval > 0) ? fetchInterval : 0;
-  return LMSeries.bucketDate(ts, w);
-}
-
-// Push the same timestamp to all datasets in a multi-line chart; missing
-// values come in as `null` so Chart.js draws a gap rather than connecting
-// across stale points.
-function pushMulti(chart, ts, values) {
-  if (!chart) return;
-  const t = _bucketDate(ts);
-  const l = chart.data.labels;
-  if (l.length && t.getTime() <= l[l.length - 1].getTime()) {
-    chart.data.datasets.forEach((ds, i) => {
-      if (values[i] != null) ds.data[ds.data.length - 1] = values[i];
-    });
-  } else {
-    l.push(t);
-    chart.data.datasets.forEach((ds, i) => ds.data.push(values[i] != null ? values[i] : null));
-    if (l.length > MAX_POINTS) {
-      l.shift();
-      chart.data.datasets.forEach(ds => ds.data.shift());
-    }
-  }
-  _pushUpdate(chart);
-}
-
-// Self-monitor cards — manager_self_monitor source. Order of datasets in
-// each chart must match the order of values passed to pushMulti() below.
-const mgrPerfChart = mkMultiChart('mgrPerfChart', [
-  { label: 'manager_api',     color: '#8af' },
-  { label: 'manager_history', color: '#fa8' },
-]);
-// 7-color palette chosen for dark-background contrast — the previous
-// palette had three near-duplicate pairs (#8af/#88f, #fa8/#f88, #af8/#8f8)
-// making it impossible to tell ae_health from influx_q_24h at a glance.
-const aePerfChart = mkMultiChart('aePerfChart', [
-  { label: 'ae_health',         color: '#4ea1ff' },  // blue
-  { label: 'ae_ingest',         color: '#ff8a3d' },  // orange
-  { label: 'ae_query_24h',      color: '#3ad17f' },  // emerald
-  { label: 'rule_eval_cycle',   color: '#ff5775' },  // rose
-  { label: 'influx_write',      color: '#36d7e6' },  // cyan
-  { label: 'influx_query_5m',   color: '#ffd042' },  // gold
-  { label: 'influx_query_24h',  color: '#b88aff' },  // lavender
-]);
-
-
-// Backfill batching: inside _withPushBatch the push helpers collect the
-// charts they touched and redraw each once when the batch closes.
-let _pushBatch = null;
-function _withPushBatch(fn) {
-  const outer = _pushBatch;
-  _pushBatch = outer || new Set();
-  try { fn(); } finally {
-    if (!outer) { const b = _pushBatch; _pushBatch = null; b.forEach(_redrawChart); }
-  }
-}
 // Redraws through the visibility gate in foundation.js when it is loaded.
 function _redrawChart(ch) {
   if (typeof window._chartUpdate === 'function') window._chartUpdate(ch); else ch.update('none');
-}
-function _pushUpdate(chart) {
-  if (_pushBatch) _pushBatch.add(chart); else _redrawChart(chart);
 }
 
 // ---------------------------------------------------------------------------
@@ -990,15 +898,6 @@ async function checkConfig() {
 // ---------------------------------------------------------------------------
 // History backfill
 // ---------------------------------------------------------------------------
-// Empty a chart's labels + every dataset so a backfill replaces rather than
-// appends; inside a push batch the redraw waits for the batch to close.
-function _clearChart(ch) {
-  if (!ch || !ch.data) return;
-  ch.data.labels = [];
-  (ch.data.datasets || []).forEach(d => { d.data = []; });
-  _pushUpdate(ch);
-}
-
 // Fetch a /api/history* row array, returning null on any failure. An auth-gated
 // 401 returns a JSON object, so a shape check is required, not just r.ok.
 async function _historyRows(url, label) {
@@ -1044,61 +943,28 @@ async function loadHistory() {
   } catch(e) { console.error('History error:', e); }
 }
 
-// Backfill manager + alarm-engine self-monitor charts from the alarm engine
-// catalog. Fired at startup and on every manager-tab entry (#506).
+// Seeds the Manager page's perf charts with the last hour of self-monitor points (window._mgPerf: the manager probes
+// and the alarm engine and InfluxDB probes, each a list of points), then repaints the page.
 async function loadManagerPerfHistory() {
-  // Scope to the manager's own host by agent id (resolved server-side via the
-  // alarm proxy); no id → unfiltered, fine since these series are single-host
-  // (#140). Never keyed by a browser-held hostname.
+  // Scoped to the manager's own host by agent id; no id fetches unfiltered.
   const AGENT = window.__MGR_AGENT;
   const agentQ = AGENT ? `&agent=${encodeURIComponent(AGENT)}` : '';
-  const url = (name) =>
-    `/api/alarm/metrics/manager_self_monitor/${encodeURIComponent(name)}`
-    + `?since_minutes=60${agentQ}`;
   const fetchPoints = async (name) => {
     try {
-      const r = await fetch(url(name));
+      const r = await fetch(`/api/alarm/metrics/manager_self_monitor/${encodeURIComponent(name)}?since_minutes=60${agentQ}`);
       if (!r.ok) return [];
       const pts = await r.json();
       return Array.isArray(pts) ? pts : [];
     } catch { return []; }
   };
-
-  // Timestamp alignment lives in lib/series.js (shared with the unit tests).
-  const zipByTs = LMSeries.zipByTs;
-
-  // Manager Perf (2 series)
-  if (typeof mgrPerfChart !== 'undefined' && mgrPerfChart) {
-    const [api, hist] = await Promise.all([
-      fetchPoints('manager_api_latency_ms'),
-      fetchPoints('manager_history_latency_ms'),
-    ]);
-    const rows = zipByTs([api, hist]);
-    if (rows.length) {
-      _withPushBatch(() => {
-        _clearChart(mgrPerfChart);  // discard any racing live point (#137)
-        for (const [ts, vals] of rows) pushMulti(mgrPerfChart, ts, vals);
-      });
-    }
-  }
-
-  // AE + Influx Perf (7 series — keep order in sync with pushMulti call
-  // in fetchServicesAndInflux + the aePerfChart factory).
-  if (typeof aePerfChart !== 'undefined' && aePerfChart) {
-    const names = [
-      'ae_health_latency_ms', 'ae_ingest_latency_ms', 'ae_query_24h_latency_ms',
-      'rule_eval_cycle_ms',
-      'influx_write_latency_ms', 'influx_query_5m_latency_ms', 'influx_query_24h_latency_ms',
-    ];
-    const series = await Promise.all(names.map(fetchPoints));
-    const rows = zipByTs(series);
-    if (rows.length) {
-      _withPushBatch(() => {
-        _clearChart(aePerfChart);  // discard any racing live point (#137)
-        for (const [ts, vals] of rows) pushMulti(aePerfChart, ts, vals);
-      });
-    }
-  }
+  const [mgr, ae, influx] = await Promise.all([
+    Promise.all(['manager_api_latency_ms', 'manager_history_latency_ms'].map(fetchPoints)),
+    Promise.all(['ae_health_latency_ms', 'ae_ingest_latency_ms', 'ae_query_24h_latency_ms', 'rule_eval_cycle_ms'].map(fetchPoints)),
+    Promise.all(['influx_write_latency_ms', 'influx_query_5m_latency_ms', 'influx_query_24h_latency_ms'].map(fetchPoints)),
+  ]);
+  window._mgPerf = { mgr, ae, influx };
+  if (typeof window.mgPaint === 'function') window.mgPaint();
+  return window._mgPerf;
 }
 
 // ---------------------------------------------------------------------------

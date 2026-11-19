@@ -1,4 +1,4 @@
-// Dashboards · All hosts on the panel kit (#1432): a Right now table and Compare over time charts for every host.
+// Dashboards · All hosts on the panel kit (#1432): a Snapshot table and Compare over time charts for every host.
 // Panels fill from the pure transforms in js/lib/hosts-view.js (window.HV); every host's history comes from one
 // /api/history/hosts request and is cached per host for the visit.
 (function () {
@@ -69,7 +69,7 @@
   const empty = (text) => '<div class="ov-empty">' + esc(text) + '</div>';
   const num = (v) => (typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : '');
 
-  // ---- Right now ----
+  // ---- Snapshot ----
   function pctCell(v) {
     if (typeof v !== 'number' || !isFinite(v)) return '<td class="ah-v"><span class="ah-t">—</span></td>';
     const w = Math.max(0, Math.min(100, v));
@@ -219,6 +219,7 @@
     if (!S.dressed) {
       S.dressed = true;
       kitDress(root);
+      if (typeof mcSoloTitles === 'function') mcSoloTitles(root);
       root.querySelectorAll('.panel > .p-hd > .p-note').forEach(n => { n.title = n.textContent; });
       root.addEventListener('click', onClick);
     }
@@ -291,7 +292,7 @@
       const full = S.hosts ? await loadHistory(minutes, gen) : false;
       if (gen !== S.gen) return;
       ahRender();
-      // A whole-range answer comes in coarse buckets, so the last 5 minutes follow at once for Right now.
+      // A whole-range answer comes in coarse buckets, so the last 5 minutes follow at once for Snapshot.
       if (full) {
         await loadHistory(LIVE_MIN, gen);
         if (gen === S.gen) ahRender();

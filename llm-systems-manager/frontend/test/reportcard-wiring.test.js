@@ -99,7 +99,7 @@ describe('report card panel', () => {
   });
 
   it('is covered by the per-sub-tab .btn restyle (real cascade, not just llamacpp)', () => {
-    const tabs = ['llm-llamacpp', 'llm-lmstudio', 'llm-tools', 'dash-energy', 'llm-vllm'];
+    const tabs = ['llm-llamacpp', 'llm-lmstudio', 'llm-tools', 'llm-vllm'];
     const markup = tabs.map(id => `<div id="${id}"><button class="btn" id="btn-${id}"></button></div>`).join('')
       + '<div id="llm-bogus"><button class="btn" id="btn-bogus"></button></div>';
     const dom = new JSDOM(`<!doctype html><head><style>${css}</style></head><body>${markup}</body></html>`);
@@ -205,7 +205,7 @@ describe('report card panel', () => {
   // explicit exclusion a disabled button brightens to opacity 1 on hover.
   describe('disabled buttons keep their greyed state on hover (#509)', () => {
     it.each([
-      '#llm-llamacpp', '#llm-lmstudio', '#llm-tools', '#dash-energy', '#llm-vllm',
+      '#llm-llamacpp', '#llm-lmstudio', '#llm-tools', '#llm-vllm',
     ])('%s hover restyle excludes :disabled', (tab) => {
       const found = findAlt(baseRules, [tab, '.btn', ':not(:disabled)', ':hover']);
       expect(found, `${tab} hover-exclusion rule not found`).toBeTruthy();

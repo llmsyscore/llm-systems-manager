@@ -5,7 +5,7 @@ import { srcFile, runHarness } from './helpers/harness.js';
 
 const src = srcFile('js/lmstudio.js');
 const foundation = srcFile('js/foundation.js');
-const PICKER = foundation.slice(foundation.indexOf('// ── Multi-agent picker state'), foundation.indexOf('const MAX_POINTS'));
+const PICKER = foundation.slice(foundation.indexOf('// ── Multi-agent picker state'), foundation.indexOf('// Shared helpers: HTML escaping'));
 const BEGIN = '// ===== LM Studio settings notices (#1422) begin';
 const END = '// ===== LM Studio settings notices (#1422) end';
 const BLOCK = src.slice(src.indexOf(BEGIN), src.indexOf(END));

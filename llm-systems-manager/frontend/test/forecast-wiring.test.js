@@ -42,8 +42,8 @@ describe('Forecast markup (#1031)', () => {
     const panel = document.getElementById('dash-forecast');
     expect(panel).toBeTruthy();
     expect(panel.classList.contains('sub-tab-panel')).toBe(true);
-    for (const id of ['fcBrief', 'fcRunbar', 'fcChecksBox', 'fcChecks', 'fcTabs', 'fcHorizon', 'fcToolbar',
-                      'fcRows', 'fcPager', 'fcDetail']) {
+    for (const id of ['fc-root', 'fcBrief', 'fcRunbar', 'fcChecks', 'fcTabs', 'fcHorizon', 'fcToolbar',
+                      'fcRows', 'fcPager', 'fcDetail', 'fc-b-tiles', 'fc-b-findings', 'fc-b-checks', 'fc-b-tower']) {
       expect(panel.querySelector('#' + id), id).toBeTruthy();
     }
   });
@@ -57,12 +57,13 @@ describe('Forecast markup (#1031)', () => {
     expect(panel.querySelector('.p-body#ov-b-forecast')).toBeTruthy();
   });
 
-  it('the run bar and checks lead, Tower\'s analysis folds away beneath them', () => {
+  it('the run bar sits in the Forecast row header, Tower\'s analysis folds away above the tabs, the checks follow the findings', () => {
     const panel = document.getElementById('dash-forecast');
-    const order = [...panel.querySelectorAll('#fcBrief, #fcRunbar, #fcChecksBox, #fcTabs, #fcSplit')].map(n => n.id);
-    expect(order).toEqual(['fcRunbar', 'fcChecksBox', 'fcBrief', 'fcTabs', 'fcSplit']);
+    const order = [...panel.querySelectorAll('#fcBrief, #fcRunbar, #fcChecks, #fcTabs, #fcSplit')].map(n => n.id);
+    expect(order).toEqual(['fcRunbar', 'fcBrief', 'fcTabs', 'fcSplit', 'fcChecks']);
+    expect(document.getElementById('fcRunbar').parentNode.getAttribute('data-row')).toBe('fc-run');
     expect(document.getElementById('fcBrief').tagName).toBe('DETAILS');
-    expect(document.getElementById('fcChecksBox').tagName).toBe('DETAILS');
+    expect(document.getElementById('fcChecks').closest('details')).toBeNull();
   });
 });
 
@@ -106,12 +107,12 @@ describe('js/forecast.js scope and escaping rules (#1031)', () => {
     expect(pageSrc).not.toMatch(/^(?:const|let|var|function)\s/m);
   });
 
-  it('exposes only the two page hooks', () => {
+  it('exposes only the two page hooks, the kit refit hook and its scroll listener', () => {
     expect(pageSrc).toContain('window.forecastLoad');
     expect(pageSrc).toContain('window.forecastSnapshot');
     // Assignments only — `window.x === y` comparisons are not exports.
     const globals = [...pageSrc.matchAll(/window\.([A-Za-z_$][\w$]*)\s*=(?!=)/g)].map(m => m[1]);
-    expect([...new Set(globals)].sort()).toEqual(['forecastLoad', 'forecastSnapshot']);
+    expect([...new Set(globals)].sort()).toEqual(['_fcOnScroll', 'fcRefit', 'forecastLoad', 'forecastSnapshot']);
   });
 
   it('never writes API strings as HTML', () => {

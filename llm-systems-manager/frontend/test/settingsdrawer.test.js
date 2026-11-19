@@ -77,8 +77,13 @@ describe('settingsScope', () => {
   it('card pages get the card sections with their layout keys', () => {
     expect(L.settingsScope('overall')).toMatchObject({ kind: 'cards', cols: 'overallCols', grid: 'overallGrid', borrowed: 'overallBorrowed' });
     expect(L.settingsScope('dashboard', undefined).key).toBe('dashboard/all');
-    expect(L.settingsScope('dashboard', 'manager')).toMatchObject({ kind: 'cards', cols: 'managerCols', grid: 'managerCardGrid' });
-    expect(Object.keys(L.CARD_PAGES)).toEqual(['overall', 'dashboard/manager']);
+    expect(Object.keys(L.CARD_PAGES)).toEqual(['overall']);
+  });
+
+  it('the Manager page gets the rows of both its roots under one layout key (#1432)', () => {
+    expect(L.settingsScope('dashboard', 'manager')).toMatchObject({ kind: 'rows', key: 'dashboard/manager', label: 'Dashboards · Manager',
+      rowsHidden: 'managerRowsHidden', root: 'dash-manager' });
+    expect(L.settingsScope('dashboard', 'manager').panelsHidden).toBeUndefined();
   });
 
   it('host pages get their rows with their layout key and root (#1432)', () => {
@@ -87,12 +92,23 @@ describe('settingsScope', () => {
     expect(L.settingsScope('dashboard', 'host')).toMatchObject({ kind: 'rows', label: 'Dashboards · Host', root: 'hp-host' });
   });
 
+  it('the Energy page gets its rows with their layout key and root (#1432)', () => {
+    expect(L.settingsScope('dashboard', 'energy')).toMatchObject({ kind: 'rows', key: 'dashboard/energy', label: 'Dashboards · Energy',
+      rowsHidden: 'energyRowsHidden', root: 'en-root' });
+    expect(L.settingsScope('dashboard', 'energy').panelsHidden).toBeUndefined();
+  });
+
+  it('the Forecast page gets its rows with their layout key and root (#1432)', () => {
+    expect(L.settingsScope('dashboard', 'forecast')).toMatchObject({ kind: 'rows', key: 'dashboard/forecast', label: 'Dashboards · Forecast',
+      rowsHidden: 'forecastRowsHidden', root: 'fc-root' });
+    expect(L.settingsScope('dashboard', 'forecast').panelsHidden).toBeUndefined();
+  });
+
   it('proxy tabs, control tabs and non-card dashboard sub-tabs get no card sections', () => {
     for (const tab of ['llm', 'events', 'tools', 'admin']) {
       expect(L.settingsScope(tab).kind, tab).toBe('none');
     }
     expect(L.settingsScope('tools').label).toBe('Tools');
-    expect(L.settingsScope('dashboard', 'energy')).toMatchObject({ kind: 'none', label: 'Dashboards · Energy' });
     expect(L.settingsScope('dashboard', 'openclaw').kind).toBe('none');
   });
 
@@ -116,23 +132,20 @@ describe('interval helpers', () => {
 const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'index.html'), 'utf8');
 
 describe('flow engine (#823)', () => {
-  const gridIds = ['managerCardGrid'];
+  // The Manager page panels js/dashboard-manager.js builds, outside the host page System row.
+  const MGR_IDS = ['mgr-tiles', 'mgr-perf', 'mgr-ae-perf', 'mgr-influx-perf', 'mgr-services', 'mgr-db', 'mgr-streams', 'mgr-hosts', 'mgr-procs', 'mgr-tower'];
 
-  it('every card in the Manager grid has a declared role', () => {
-    const doc = new JSDOM(html).window.document;
-    for (const gid of gridIds) {
-      const grid = doc.getElementById(gid);
-      expect(grid, gid).not.toBeNull();
-      const ids = [...grid.querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
-      expect(ids.length, gid).toBeGreaterThan(0);
-      for (const id of ids) expect(L.CARD_ROLES[id], `${gid} ${id}`).toBeDefined();
-    }
+  it('every Manager page panel has a declared role (#1432)', () => {
+    expect(Object.keys(L.CARD_ROLES)).toEqual(MGR_IDS);
     for (const r of Object.values(L.CARD_ROLES)) expect(L.ROLES).toContain(r);
+    expect(L.roleOf('mgr-hosts')).toBe('table');
+    expect(L.roleOf('mgr-ae-perf')).toBe('chart');
+    expect(L.roleOf('mgr-db')).toBe('stats');
   });
 
   it('roleOf resolves pinned shells to their home card and unknown ids to stats', () => {
     expect(L.roleOf('mgr-perf')).toBe('chart');
-    expect(L.roleOf('ov-borrow-services')).toBe('table');
+    expect(L.roleOf('ov-borrow-mgr-services')).toBe('table');
     expect(L.roleOf('nope')).toBe('stats');
     expect(L.roleOf(undefined)).toBe('stats');
   });
@@ -246,21 +259,14 @@ describe('fresh-install defaults (#823)', () => {
   });
 });
 
-describe('card label maps cover their grids', () => {
-  it('every card in the Manager grid has a CARD_LABELS_MANAGER entry', () => {
+describe('card label maps cover their pages', () => {
+  it('CARD_LABELS_MANAGER lists every Manager page panel and the System row panels (#1432)', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'js', 'foundation.js'), 'utf8');
-    const keysOf = (name) => {
-      const m = src.match(new RegExp(`const ${name} = \\{([\\s\\S]*?)\\n\\};`));
-      expect(m, name).not.toBeNull();
-      return [...m[1].matchAll(/^\s*'([^']+)':/gm)].map(x => x[1]);
-    };
-    const doc = new JSDOM(html).window.document;
-    const pairs = { managerCardGrid: 'CARD_LABELS_MANAGER' };
-    for (const [gid, name] of Object.entries(pairs)) {
-      const labels = keysOf(name);
-      const ids = [...doc.getElementById(gid).querySelectorAll(':scope > [data-card]')].map(c => c.dataset.card);
-      for (const id of ids) expect(labels, `${gid} ${id} missing from ${name}`).toContain(id);
-    }
+    const m = src.match(/const CARD_LABELS_MANAGER = \{([\s\S]*?)\n\};/);
+    expect(m).not.toBeNull();
+    const labels = [...m[1].matchAll(/^\s*'([^']+)':/gm)].map(x => x[1]);
+    const sys = HP.panelsFor('mgr').map(p => 'mgr-' + p.name);
+    expect(labels).toEqual(Object.keys(L.CARD_ROLES).concat(sys));
   });
 });
 
@@ -400,7 +406,7 @@ describe('All hosts drawer sections (#1432)', () => {
     const chips = () => [...el.querySelectorAll('[data-sd="ahrow"]')].map(b => [b.dataset.id, b.textContent, b.getAttribute('aria-pressed')]);
     expect(el.textContent).toContain('Sections on this page');
     expect(el.textContent).toContain('2 of 2 shown');
-    expect(chips()).toEqual([['ah-now', 'Right now', 'true'], ['ah-cmp', 'Compare over time', 'true']]);
+    expect(chips()).toEqual([['ah-now', 'Snapshot', 'true'], ['ah-cmp', 'Compare over time', 'true']]);
     el.querySelector('[data-sd="ahrow"][data-id="ah-cmp"]').click();
     expect(window.layout.allHostsRowsHidden).toEqual(['ah-cmp']);
     expect(document.querySelector('#dash-all section.row[data-row="ah-cmp"]').hidden).toBe(true);
@@ -472,8 +478,8 @@ describe('Dashboards · Forecast drawer (#1432)', () => {
   };
   const dash = new JSDOM(html).window.document.getElementById('dashboardTab').outerHTML;
 
-  it('shows the no-cards notice, not All hosts sections or llama.cpp cards', () => {
-    expect(L.settingsScope('dashboard', 'forecast')).toMatchObject({ kind: 'none', key: 'dashboard/forecast' });
+  it('shows the Forecast page sections, not the no-cards notice or the card layout', () => {
+    expect(L.settingsScope('dashboard', 'forecast')).toMatchObject({ kind: 'rows', key: 'dashboard/forecast', root: 'fc-root' });
     document.body.innerHTML = dash + '<section id="sdNoCards" hidden></section><section id="sdCards"></section><section id="sdLayout"></section>';
     document.querySelectorAll('#dashboardTab .sub-tab-panel').forEach(p => p.classList.remove('active'));
     document.getElementById('dash-forecast').classList.add('active');
@@ -486,9 +492,10 @@ describe('Dashboards · Forecast drawer (#1432)', () => {
     for (const n of ['_sdRenderAccount', '_sdRenderHeader', '_sdRenderAppearance', '_sdRenderRefresh']) window[n] = vi.fn();
     expect(window._getDashSubTab()).toBe('forecast');
     window.renderSettingsPanel();
-    expect(document.getElementById('sdNoCards').hidden).toBe(false);
-    expect(document.getElementById('sdCards').hidden).toBe(true);
+    expect(document.getElementById('sdNoCards').hidden).toBe(true);
+    expect(document.getElementById('sdCards').hidden).toBe(false);
     expect(document.getElementById('sdLayout').hidden).toBe(true);
-    expect(window._sdRenderCards).not.toHaveBeenCalled();
+    expect(window._sdRenderCards).toHaveBeenCalledWith(expect.objectContaining({ key: 'dashboard/forecast', rowsHidden: 'forecastRowsHidden' }));
+    expect(window._sdRenderLayout).not.toHaveBeenCalled();
   });
 });

@@ -194,7 +194,7 @@ describe('Overall provider filter (#1432)', () => {
     const e = en7(), want = OV.energyPerHour([
       { hour_ts: END_TS - 30 * 3600, energy_wh: 4, active_energy_wh: 0 },
       { hour_ts: END_TS - 7200, energy_wh: 1.5, active_energy_wh: 0.5 },
-      { hour_ts: END_TS - 3600, energy_wh: 5, active_energy_wh: 1 }], 3);
+      { hour_ts: END_TS - 3600, energy_wh: 5, active_energy_wh: 1 }], 3, { wrap: true });
     expect(e.labels).toEqual(want.labels);
     expect(e.series[0].values).toEqual(want.series[0].values);
     expect(e.series[1].values).toEqual(want.series[1].values);
@@ -237,8 +237,8 @@ describe('Overall time range (#1432)', () => {
     const calls = stubFetch(DEV);
     await window.ovLoad();
     const d = tpData();
-    expect(d.keep).toBe(288);
-    d.z = { from: d.labels[100], to: d.labels[200] };
+    expect(d.keep).toBe(96);
+    d.z = { from: d.labels[20], to: d.labels[60] };
     window.kitRedrawTs(chart(), d, d.w);
     expect(tpData().z).toBeTruthy();
     calls.length = 0;
@@ -246,8 +246,8 @@ describe('Overall time range (#1432)', () => {
     expect(window.mcShellStore.saved['mgr.ovRange']).toBe('6');
     expect(calls).toContain('/api/history?fleet=all&since_minutes=360&max_rows=360');
     const after = tpData();
-    expect(after.keep).toBe(360);
-    expect(after.labels).toHaveLength(360);
+    expect(after.keep).toBe(72);
+    expect(after.labels).toHaveLength(72);
     expect(after.z).toBeFalsy();
     expect(document.querySelector('#ov-b-tp [data-kit-zoom-reset]')).toBeNull();
     expect(document.querySelector('[data-card="tp"] .p-note').textContent).toMatch(/^All providers · last 6 h/);
@@ -276,7 +276,7 @@ describe('Overall history seed (#1432)', () => {
     routes['/api/history'] = HIST;
     now = T0 + 5000;
     await window.ovLoad();
-    expect(tpData().labels).toHaveLength(288);
+    expect(tpData().labels).toHaveLength(96);
   });
 
   test('no one-point Throughput before the first history lands', async () => {
@@ -298,7 +298,7 @@ describe('Overall history seed (#1432)', () => {
     release();
     await loading;
     expect(calls.some(u => u.startsWith('/api/history'))).toBe(true);
-    expect(tpData().labels).toHaveLength(288);
+    expect(tpData().labels).toHaveLength(96);
   });
 });
 
@@ -412,21 +412,22 @@ describe('Overall toolbar on the page (#1432)', () => {
 });
 
 describe('Overall filter fix round 1 (#1432)', () => {
-  test('the prompt series is named after the filter and starts hidden', async () => {
+  test('the prompt series is named after the filter and shows in its own band on top', async () => {
     load();
     vi.spyOn(Date, 'now').mockImplementation(() => T0);
     stubFetch({ ...DEV, '/api/history': [{ ts: '2026-11-16T05:00:00+00:00', gpu_power: 20, llama_tps: 0, llama_pps: 0, lms_tps: 10, lms_pps: 500 }] });
     await window.ovLoad();
     const series = () => [...document.querySelectorAll('#ov-b-tp [data-kit-series]')]
       .map(b => [b.getAttribute('data-kit-series'), b.getAttribute('aria-pressed')]);
-    expect(series()).toContainEqual(['ov-tp|Prompt (all)', 'false']);
+    expect(series()[0]).toEqual(['ov-tp|Prompt (all)', 'true']);
+    expect(tpData()).toMatchObject({ bars: 'peak', split: true });
     expect(text('ov-b-k-peak')).toMatch(/^10\.0 t\/s/);
     await window.ovSetFilter('lms');
-    expect(series()).toEqual([['ov-tp|LM Studio', 'true'], ['ov-tp|Prompt (LM Studio)', 'false']]);
-    expect(tpData().series.map(x => x.name)).toEqual(['LM Studio', 'Prompt (LM Studio)']);
+    expect(series()).toEqual([['ov-tp|Prompt (LM Studio)', 'true'], ['ov-tp|LM Studio', 'true']]);
+    expect(tpData().series.map(x => [x.name, x.band])).toEqual([['Prompt (LM Studio)', undefined], ['LM Studio', 'Generation']]);
     expect(text('ov-b-k-peak')).toMatch(/^10\.0 t\/s/);
     await window.ovSetFilter('vllm');
-    expect(series()).toContainEqual(['ov-tp|Prompt (vLLM)', 'false']);
+    expect(series()[0]).toEqual(['ov-tp|Prompt (vLLM)', 'true']);
   });
 
   test('a slow run for an old filter does not delay the new filter\'s energy after a hidden filter change', async () => {
