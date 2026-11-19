@@ -182,12 +182,29 @@ function switchSubTab(parent, sub) {
   if (parent === 'tools') _toolsLoadFrame(sub).catch(() => {});
 }
 
-// Mints a tool-origin ticket, probes the tool port, then points the frame at it.
+// Checks the tool's server, mints a tool-origin ticket, probes the tool port, then points the frame at it.
 async function _toolsLoadFrame(sub) {
   const panel = document.getElementById(`tools-${sub}`);
   const frame = panel && panel.querySelector('iframe[data-tool]');
   const note = panel && panel.querySelector('.tools-unreachable');
   if (!frame) return;
+  let health = null;
+  try {
+    const h = await fetch(`/api/tool-health?tool=${encodeURIComponent(sub)}`, { credentials: 'same-origin' });
+    if (h.ok) health = await h.json();
+  } catch (e) {
+    health = null;
+  }
+  if (health && health.up === false) {
+    const names = { openclaw: 'OpenClaw', llmchat: 'LLM Chat', imggen: 'Image Generation' };
+    frame.removeAttribute('src');
+    delete frame.dataset.loadedAt;
+    if (note) {
+      note.textContent = `The ${names[sub] || 'tool'} server is not answering. Start it, then open this tab again.`;
+      note.hidden = false;
+    }
+    return;
+  }
   if (frame.dataset.loadedAt && Date.now() - Number(frame.dataset.loadedAt) < 8 * 3600 * 1000) return;
   const https = location.protocol === 'https:' ? '&https=1' : '';
   const r = await fetch(`/api/tool-ticket?tool=${encodeURIComponent(sub)}${https}`, { credentials: 'same-origin' });
