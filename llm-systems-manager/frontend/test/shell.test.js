@@ -222,7 +222,24 @@ describe('manager shell', () => {
     expect(nav.querySelector('#towerNavBadge').getAttribute('aria-hidden')).toBe('true');
     expect(nav.getAttribute('aria-expanded')).toBe('false');
     const flat = shellCss.replace(/\s+/g, '');
-    expect(flat).toContain('@media(max-width:600px){.tb-tower{padding:08px;}.tb-tower.tb-tower-lab{display:none;}}');
+    expect(flat).toContain('@media(max-width:600px){.tb-tower{padding:09px;}.tb-tower.off{padding:08px;}.tb-tower.tb-tower-lab{display:none;}}');
+  });
+
+  test('toolbar pills draw their outline as an inset ring; Tower off stays dashed', () => {
+    const flat = shellCss.replace(/\s+/g, '');
+    const ring = (c) => `box-shadow:inset0001px${c},inset001px1px${c}`;
+    expect(flat).toMatch(/\.tb-tower\{[^}]*border:0;box-shadow:inset0001pxvar\(--accent\),inset001px1pxvar\(--accent\)/);
+    expect(flat).toContain(`.tb-chip[aria-pressed="true"]{${ring('var(--accent)')};`);
+    expect(flat).toMatch(/\.tb-chip\{[^}]*border:0;box-shadow:inset0001pxvar\(--border\),inset001px1pxvar\(--border\)/);
+    expect(flat).toContain('.tb-tower.off{border:1pxdashedvar(--accent);box-shadow:none;');
+    expect(flat).toContain('#towerBtn.unread:not(.off){animation:tw-glow-ring');
+    const kf = flat.slice(flat.indexOf('@keyframestw-glow-ring'), flat.indexOf('/*Toolbar:providerstatepills'));
+    expect(kf.match(/inset0001pxvar\(--accent\),inset001px1pxvar\(--accent\)/g)).toHaveLength(2);
+    const fc = '@media(forced-colors:active){.tb-chip{border:1pxsolidButtonText;padding:4px11px;}.tb-tower{border:1pxsolidButtonText;padding:012px010px;}.tb-tower.n{top:-5px;right:-5px;}}';
+    expect(flat).toContain(fc);
+    expect(flat.indexOf(fc)).toBeGreaterThan(flat.indexOf('.tb-chip{'));
+    expect(flat.indexOf(fc)).toBeGreaterThan(flat.indexOf('.tb-tower{'));
+    expect(flat).toContain('@media(forced-colors:active)and(max-width:600px){.tb-tower{padding:08px;}}');
   });
 
   test('phone-width Tower item click closes the overlay', async () => {
