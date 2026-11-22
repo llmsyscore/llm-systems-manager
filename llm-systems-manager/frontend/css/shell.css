@@ -30,14 +30,16 @@
 }
 
 /* Toolbar Tower button: icon, label and count badge in an accent-outlined pill */
-.tb-tower { height: 28px; padding: 0 12px 0 10px; border-radius: 14px; border: 1px solid var(--accent); background: var(--card); color: var(--text); display: inline-flex; align-items: center; gap: 7px; flex: none; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 500; white-space: nowrap; position: relative; transition: color .12s, background .12s, opacity .12s; }
+.tb-tower { height: 28px; padding: 0 13px 0 11px; border-radius: 14px; border: 0; box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 1px 1px var(--accent); background: var(--card); color: var(--text); display: inline-flex; align-items: center; gap: 7px; flex: none; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 500; white-space: nowrap; position: relative; transition: color .12s, background .12s, opacity .12s; }
 .tb-tower svg { width: 16px; height: 16px; display: block; flex: none; }
 .tb-tower:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--card)); }
 .tb-tower:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.tb-tower .n { position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 600 9.5px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--bg); }
-.tb-tower.off { border-style: dashed; }
+.tb-tower .n { position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font: 600 9.5px var(--font-mono); display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--bg); }
+.tb-tower.off { border: 1px dashed var(--accent); box-shadow: none; padding: 0 12px 0 10px; }
+.tb-tower.off .n { top: -5px; right: -5px; }
 @media (max-width: 600px) {
-  .tb-tower { padding: 0 8px; }
+  .tb-tower { padding: 0 9px; }
+  .tb-tower.off { padding: 0 8px; }
   .tb-tower .tb-tower-lab { display: none; }
 }
 /* Narrow toolbar: the controls fit one row; Live keeps its switch, the Overall filters take a row of their own. */
@@ -55,7 +57,12 @@
 #towerBtn.off, #towerNav.off { opacity: .55; }
 @media (prefers-reduced-motion: no-preference) {
   #towerBtn.streaming svg, #towerNav.streaming svg { animation: tw-pulse 1.6s ease-in-out infinite; }
-  #towerBtn.unread, #towerNav.unread { animation: tw-glow 2.4s ease-in-out infinite; }
+  #towerNav.unread, #towerBtn.off.unread { animation: tw-glow 2.4s ease-in-out infinite; }
+  #towerBtn.unread:not(.off) { animation: tw-glow-ring 2.4s ease-in-out infinite; }
+}
+@keyframes tw-glow-ring {
+  0%, 100% { box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 1px 1px var(--accent), 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 1px 1px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); }
 }
 
 /* Toolbar: provider state pills after the page title */
@@ -69,15 +76,24 @@
 .tb-ov { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .tb-ah { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .tb-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.tb-chip { background: var(--card); color: var(--text-2); border: 1px solid var(--border); border-radius: 14px; padding: 4px 11px; font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.tb-chip { background: var(--card); color: var(--text-2); border: 0; box-shadow: inset 0 0 0 1px var(--border), inset 0 0 1px 1px var(--border); border-radius: 14px; padding: 5px 12px; font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
 .tb-chip:hover { color: var(--text); }
-.tb-chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.tb-chip[aria-pressed="true"] { box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 1px 1px var(--accent); color: var(--accent); }
 .tb-seg { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--card); }
 .tb-seg button { background: none; border: 0; color: var(--muted); font: inherit; font-size: 12.5px; padding: 4px 9px; white-space: nowrap; cursor: pointer; }
 .tb-seg button + button { border-left: 1px solid var(--border); }
 .tb-seg button:hover { color: var(--text); }
 .tb-seg button[aria-pressed="true"] { color: var(--text); background: var(--hover); box-shadow: inset 0 -2px 0 var(--accent); }
 .tb-chip:focus-visible, .tb-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Forced colours drop box-shadow: pills get a plain border there, at the same size */
+@media (forced-colors: active) {
+  .tb-chip { border: 1px solid ButtonText; padding: 4px 11px; }
+  .tb-tower { border: 1px solid ButtonText; padding: 0 12px 0 10px; }
+  .tb-tower .n { top: -5px; right: -5px; }
+}
+@media (forced-colors: active) and (max-width: 600px) {
+  .tb-tower { padding: 0 8px; }
+}
 
 /* Tower overlay lock: the root stops scrolling; body stays visible so the sticky toolbar keeps its place. */
 html:has(body.tw-lock) { overflow: hidden; }
