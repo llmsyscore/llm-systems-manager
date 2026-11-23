@@ -176,13 +176,13 @@ def remember(llama_bin: str, seen_file) -> list:
 
 
 def scan(cfg, probe: Callable, build_root: str, seen_file=None,
-         plain_check: Optional[Callable] = None) -> dict:
-    """Runs a fresh inventory and caches it; a caller that waited on a running scan gets its result."""
+         plain_check: Optional[Callable] = None, live_bin: str = "") -> dict:
+    """Runs a fresh inventory and caches it; live_bin stands in for an empty LLAMA_BIN as the active build."""
     seen_gen = _state["gen"]
     with _lock:
         if _state["gen"] != seen_gen and _state["last"] is not None:
             return _state["last"]
-        llama_bin = (getattr(cfg, "LLAMA_BIN", "") or "").strip()
+        llama_bin = (getattr(cfg, "LLAMA_BIN", "") or "").strip() or (live_bin or "").strip()
         seen = remember(llama_bin, seen_file) if seen_file else []
         notes = getattr(cfg, "LLAMA_BUILD_NOTES", {}) or {}
         if not isinstance(notes, dict):

@@ -3230,7 +3230,7 @@ def _validate_builds(raw) -> "list[str]":
         ctx = _require_ctx()
         llama_inventory.scan(ctx.config, llama_install.installed_build_id,
                              str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
-                             plain_check=_switch_preflight)
+                             plain_check=_switch_preflight, live_bin=_llama_live_binary())
     out: list = []
     for p in raw:
         row = llama_inventory.listed_build(p.strip()) if p.strip() else None
@@ -3704,7 +3704,7 @@ def _build_identity(bin_path: str) -> "Optional[dict]":
             ctx = _require_ctx()
             llama_inventory.scan(ctx.config, llama_install.installed_build_id,
                                  str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
-                                 plain_check=_switch_preflight)
+                                 plain_check=_switch_preflight, live_bin=_llama_live_binary())
             row = llama_inventory.listed_build(bin_path)
     if row:
         return {"name": row.get("name") or llama_inventory._build_name(bin_path), "path": row.get("path"),
@@ -3928,7 +3928,7 @@ def _bench_live_run_all(req: dict, server: dict, python: str, script: str, provi
 def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, builds: list, results: list) -> None:
     """Runs the cells once per build, switching the service to each; always switches back and reloads the start model."""
     cfg = _require_ctx().config
-    start = (cfg.LLAMA_BIN or "").strip()
+    start = _llama_live_binary()
     start_model = server.get("loaded_id")
     model_id = req["model_id"]
     base = _bench_replay.run_id
@@ -3940,7 +3940,7 @@ def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, bu
             name = llama_inventory._build_name(bpath)
             if len(builds) > 1:
                 _bench_put({"type": "build_start", "build": name, "path": bpath, "index": bi, "total": len(builds)})
-            if os.path.realpath(bpath) != os.path.realpath(cfg.LLAMA_BIN or ""):
+            if os.path.realpath(bpath) != os.path.realpath((cfg.LLAMA_BIN or "").strip() or start):
                 _build_return_note(start, start_model, "live")
                 res = _switch_build(bpath)
                 if not res.get("ok"):
@@ -3963,7 +3963,7 @@ def _bench_live_run_builds(req: dict, server: dict, python: str, script: str, bu
     finally:
         ok, err = True, None
         try:
-            if os.path.realpath(cfg.LLAMA_BIN or "") != os.path.realpath(start):
+            if start and os.path.realpath((cfg.LLAMA_BIN or "").strip() or start) != os.path.realpath(start):
                 res = _switch_build(start, wait_s=_SWITCH_BACK_WAIT_S)
                 ok, err = bool(res.get("ok")), res.get("error")
             if ok and start_model and _bench_live_server().get("loaded_id") != start_model:
@@ -5290,7 +5290,7 @@ def llama_builds_endpoint(rescan: bool = Query(default=False),
     if res is None:
         res = llama_inventory.scan(cfg, llama_install.installed_build_id,
                                    str(llama_install._build_root(cfg)), _llama_seen_builds_file(),
-                                   plain_check=_switch_preflight)
+                                   plain_check=_switch_preflight, live_bin=_llama_live_binary())
     return res
 
 
@@ -5450,15 +5450,84 @@ def _switch_wait_ready() -> "tuple[bool, Optional[str]]":
     return False, f"the server did not answer within {_SWITCH_READY_TIMEOUT_S} s"
 
 
+_UNIT_ETC = "/etc/systemd/system"
+_AGENT_DROPIN = "50-llm-systems-agent.conf"
+
+
+def _file_exec_tokens(path: str, last: bool) -> "Optional[list[str]]":
+    """ExecStart= tokens set in a unit or drop-in file (first or last non-empty one); None when unreadable or unparsable."""
+    try:
+        lines = Path(path).read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    found: "list[str]" = []
+    for line in lines:
+        s = line.strip()
+        if s.startswith("ExecStart="):
+            v = s[len("ExecStart="):].strip()
+            if s.endswith("\\"):
+                return None
+            if v:
+                try:
+                    found = shlex.split(v)
+                except ValueError:
+                    return None
+                if not last:
+                    return found
+    return found
+
+
+def _restore_exec_tokens(unit: str, svc_path: str) -> "Optional[list[str]]":
+    """ExecStart the wrapper's restore op would leave in place (mirrors its order); None when unknown."""
+    dropin = os.path.join(_UNIT_ETC, f"{unit}.d", _AGENT_DROPIN)
+    if os.path.isfile(dropin + ".llmsys-bak"):
+        return _file_exec_tokens(dropin + ".llmsys-bak", last=True) or _file_exec_tokens(svc_path, last=False)
+    if os.path.exists(dropin):
+        return _file_exec_tokens(svc_path, last=False)
+    if os.path.isfile(svc_path + ".llmsys-bak"):
+        return _file_exec_tokens(svc_path + ".llmsys-bak", last=False)
+    return None
+
+
+def _same_exec(a: "Optional[list[str]]", b: "list[str]") -> bool:
+    """Same arguments and the same binary after symlinks are resolved."""
+    return bool(a and b) and a[1:] == b[1:] and os.path.realpath(a[0]) == os.path.realpath(b[0])
+
+
+def _switch_restore(unit: str, svc_path: str, tokens: "list[str]") -> "Optional[dict]":
+    """Undoes the last service edit when that leaves tokens in effect; None when it would not."""
+    if not tokens or not _same_exec(_restore_exec_tokens(unit, svc_path), tokens):
+        return None
+    res = _shared.svcconfig_op(_SVCCONFIG_WRAPPER, "restore", unit) or {}
+    _unit_info_invalidate()
+    if not res.get("ok"):
+        return None
+    try:
+        now = shlex.split(llama_unit_info(force=True).get("exec_start") or "")
+    except ValueError:
+        now = []
+    if not _same_exec(now, tokens):
+        return None
+    rs = _shared.svcconfig_op(_SVCCONFIG_WRAPPER, "restart", unit, timeout=30) or {}
+    return {"ok": True} if rs.get("ok") else {"ok": False, "error": f"restart failed: {rs.get('error')}"}
+
+
 def _switch_apply(tokens: "list[str]") -> dict:
     svc_path = _llama_svc_file_path()
     if not svc_path:
         return {"ok": False, "error": _NO_UNIT_ERR}
     unit = _llama_effective_unit()
     new_wrapper = _shared.wrapper_version(_SVCCONFIG_WRAPPER) >= 3
+    vendor = not svc_path.startswith(_UNIT_ETC + "/")
+    restored = _switch_restore(unit, svc_path, tokens) if new_wrapper and vendor else None
+    if restored is not None:
+        _unit_info_invalidate()
+        reconcile_now()
+        return restored
     res = _shared.svcconfig_apply(
         _SVCCONFIG_WRAPPER, svc_path, tokens, sudoers_hint="llm-svcconfig-apply",
         restart_unit=unit, restart_timeout=30, **({"unit": unit} if new_wrapper else {}))
+    _unit_info_invalidate()
     reconcile_now()
     return res
 
@@ -5502,7 +5571,7 @@ def llama_builds_activate(body: dict, authorization: Optional[str] = Header(defa
     if target and llama_inventory.cached() is None:
         llama_inventory.scan(ctx.config, llama_install.installed_build_id,
                              str(llama_install._build_root(ctx.config)), _llama_seen_builds_file(),
-                             plain_check=_switch_preflight)
+                             plain_check=_switch_preflight, live_bin=_llama_live_binary())
     row = llama_inventory.listed_build(target) if target else None
     if not row:
         return {"ok": False, "error": "that build is not in the current list; rescan and try again"}
@@ -5546,7 +5615,7 @@ def _switch_build_locked(target: str) -> dict:
         tokens = _llama_exec_tokens()
     except (OSError, ValueError) as e:
         return {"ok": False, "error": str(e)}
-    current = (_require_ctx().config.LLAMA_BIN or "").strip()
+    current = (_require_ctx().config.LLAMA_BIN or "").strip() or _llama_live_binary()
     if not tokens or not current or os.path.realpath(tokens[0]) != os.path.realpath(current):
         return {"ok": False, "error": "the service does not run LLAMA_BIN directly; switch it by hand"}
     log.info("llama build switch: %s -> %s", tokens[0], target)
