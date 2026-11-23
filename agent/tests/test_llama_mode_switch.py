@@ -72,6 +72,7 @@ def _body(resp):
 def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(llama, "_mode_probe_memo", {"ts": 0.0, "url": None, "ok": False})
     monkeypatch.setattr(llama, "_cached_models_memo", {"ts": 0.0, "key": None, "rows": []})
+    monkeypatch.setattr(llama, "_models_dir_memo", {"ts": 0.0, "key": None, "rows": [], "gen": 0})
     c = SimpleNamespace(LLAMA_ENABLED=True, LLAMA_SYSTEMD_UNIT="llama-server.service",
                         LLAMA_API_URL="http://localhost:9931", LLAMA_CONFIG_INI=str(tmp_path / "p" / "models.ini"),
                         LLAMA_CACHE_DIR="", LLAMA_MODELS_DIR="", AGENT_USER="")
