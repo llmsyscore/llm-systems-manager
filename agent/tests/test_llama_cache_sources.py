@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ def env(monkeypatch):
     monkeypatch.setattr(llama, "_detected", {})
     monkeypatch.setattr(llama, "_mode_probe_memo", {"ts": 0.0, "url": None, "ok": False})
     monkeypatch.setattr(llama, "_cached_models_memo", {"ts": 0.0, "key": None, "rows": []})
+    monkeypatch.setattr(llama, "_models_dir_memo", {"ts": 0.0, "key": None, "rows": [], "gen": 0})
     return cfg
 
 
@@ -221,20 +223,82 @@ def test_cached_models_invalidate_rescans(env, monkeypatch, tmp_path):
     _wire(env, monkeypatch, tmp_path / "none", None, md)
     n = _count_scans(monkeypatch)
     llama.cached_models()
+    st = md.stat()
     (md / "more-Q8_0.gguf").write_bytes(b"x")
+    os.utime(md, ns=(st.st_atime_ns, st.st_mtime_ns))
     llama._cached_models_invalidate()
     assert len(llama.cached_models()) == 2 and n["walk"] == 2
 
 
-def test_cached_models_rescans_after_ttl(env, monkeypatch, tmp_path):
+def test_models_dir_kept_after_ttl_while_mtime_unchanged(env, monkeypatch, tmp_path):
+    md = tmp_path / "md"
+    md.mkdir()
+    (md / "tiny-Q4_0.gguf").write_bytes(b"x")
+    _wire(env, monkeypatch, tmp_path / "none", None, md)
+    n = _count_scans(monkeypatch)
+    llama.cached_models()
+    llama._cached_models_memo["ts"] -= llama._CACHED_MODELS_TTL_S + 1
+    assert [r["model_id"] for r in llama.cached_models()] == ["tiny-Q4_0"] and n["walk"] == 1
+
+
+def test_models_dir_rescans_when_a_subfolder_changes(env, monkeypatch, tmp_path):
+    md = tmp_path / "md"
+    (md / "sub").mkdir(parents=True)
+    _wire(env, monkeypatch, tmp_path / "none", None, md)
+    n = _count_scans(monkeypatch)
+    llama.cached_models()
+    root_st = md.stat()
+    (md / "sub" / "deep-Q4_0.gguf").write_bytes(b"x")
+    os.utime(md / "sub", ns=(1, 1))
+    assert md.stat().st_mtime_ns == root_st.st_mtime_ns
+    llama._cached_models_memo["ts"] -= llama._CACHED_MODELS_TTL_S + 1
+    assert [r["model_id"] for r in llama.cached_models()] == ["deep-Q4_0"] and n["walk"] == 2
+
+
+def test_models_dir_scan_racing_invalidate_is_not_stored(env, monkeypatch, tmp_path):
+    md = tmp_path / "md"
+    md.mkdir()
+    real = llama._list_models_dir_ggufs
+
+    def racing(root):
+        rows = real(root)
+        llama._cached_models_invalidate()
+        return rows
+    monkeypatch.setattr(llama, "_list_models_dir_ggufs", racing)
+    llama._models_dir_rows(md)
+    assert llama._models_dir_memo["key"] is None
+
+
+def test_models_dir_rescans_when_mtime_changes(env, monkeypatch, tmp_path):
+    md = tmp_path / "md"
+    md.mkdir()
+    _wire(env, monkeypatch, tmp_path / "none", None, md)
+    n = _count_scans(monkeypatch)
+    llama.cached_models()
+    (md / "new-Q4_0.gguf").write_bytes(b"x")
+    os.utime(md, ns=(1, 1))
+    llama._cached_models_memo["ts"] -= llama._CACHED_MODELS_TTL_S + 1
+    assert [r["model_id"] for r in llama.cached_models()] == ["new-Q4_0"] and n["walk"] == 2
+
+
+def test_models_dir_rescans_after_its_own_ttl(env, monkeypatch, tmp_path):
     md = tmp_path / "md"
     md.mkdir()
     _wire(env, monkeypatch, tmp_path / "none", None, md)
     n = _count_scans(monkeypatch)
     llama.cached_models()
     llama._cached_models_memo["ts"] -= llama._CACHED_MODELS_TTL_S + 1
+    llama._models_dir_memo["ts"] -= llama._MODELS_DIR_TTL_S + 1
     llama.cached_models()
     assert n["walk"] == 2
+
+
+def test_models_dir_missing_folder_then_created(env, monkeypatch, tmp_path):
+    md = tmp_path / "later"
+    assert llama._models_dir_rows(md) == []
+    md.mkdir()
+    (md / "tiny-Q4_0.gguf").write_bytes(b"x")
+    assert [r["file"] for r in llama._models_dir_rows(md)] == ["tiny-Q4_0.gguf"]
 
 
 def test_mode_probe_runs_once_for_two_blocks(env, monkeypatch):
@@ -252,13 +316,14 @@ def test_mode_probe_runs_once_for_two_blocks(env, monkeypatch):
 
 def test_delete_quant_invalidates_cached_models(env, monkeypatch, tmp_path):
     llama._cached_models_memo.update({"ts": 9e12, "key": ("k",), "rows": [{"model_id": "x"}]})
+    llama._models_dir_memo.update({"ts": 9e12, "key": ("k",), "rows": [{"model_id": "x"}]})
     f = tmp_path / "m.gguf"
     f.write_bytes(b"x")
     monkeypatch.setattr(llama, "_locate_quant_files", lambda model_id: ([f], None))
     monkeypatch.setattr(llama, "_hf_cache_root", lambda: tmp_path)
     deleted, err = llama._delete_quant_from_hf_cache("a/b:Q4")
     assert err is None and deleted == [str(f)]
-    assert llama._cached_models_memo["key"] is None
+    assert llama._cached_models_memo["key"] is None and llama._models_dir_memo["key"] is None
 
 
 def test_models_endpoint_unreachable_still_carries_mode(env, monkeypatch):

@@ -965,12 +965,43 @@ def _models_dir_root(block: "Optional[dict]" = None) -> "Optional[Path]":
 
 
 _CACHED_MODELS_TTL_S = 15.0
+_MODELS_DIR_TTL_S = 300.0
 _cached_models_memo: dict[str, Any] = {"ts": 0.0, "key": None, "rows": []}
+_models_dir_memo: dict[str, Any] = {"ts": 0.0, "key": None, "rows": [], "gen": 0}
+_models_dir_lock = threading.Lock()
 
 
 def _cached_models_invalidate() -> None:
     """Forces the next cached_models() call to rescan the disks."""
     _cached_models_memo.update(ts=0.0, key=None, rows=[])
+    with _models_dir_lock:
+        _models_dir_memo.update(ts=0.0, key=None, rows=[], gen=_models_dir_memo["gen"] + 1)
+
+
+def _models_dir_signature(root: Path) -> tuple:
+    """Path and mtime of the folder and every subfolder under it; files are listed, not read."""
+    sig = []
+    for dirpath, _dirs, _files in os.walk(root):
+        try:
+            sig.append((dirpath, os.stat(dirpath).st_mtime_ns))
+        except OSError:
+            sig.append((dirpath, None))
+    return tuple(sorted(sig))
+
+
+def _models_dir_rows(root: Path) -> list[dict]:
+    """_list_models_dir_ggufs, reused for up to _MODELS_DIR_TTL_S while no folder under root changed."""
+    memo = _models_dir_memo
+    gen = memo["gen"]
+    key = (str(root), _models_dir_signature(root))
+    now = time.monotonic()
+    if memo["key"] == key and now - memo["ts"] < _MODELS_DIR_TTL_S:
+        return list(memo["rows"])
+    rows = _list_models_dir_ggufs(root)
+    with _models_dir_lock:
+        if memo["gen"] == gen:
+            memo.update(ts=now, key=key, rows=list(rows))
+    return rows
 
 
 def cached_models(mode: "Optional[dict]" = None) -> list[dict]:
@@ -989,7 +1020,7 @@ def cached_models(mode: "Optional[dict]" = None) -> list[dict]:
         if flat:
             rows += [r for r in _list_llama_cache_ggufs(flat) if r["repo"] or r["file"] not in hub_files]
         if mdir:
-            rows += _list_models_dir_ggufs(mdir)
+            rows += _models_dir_rows(mdir)
         memo.update(ts=now, key=key, rows=list(rows))
     deployable = block["mode"] == "router" and bool(block["presets_writable"]) and bool(block["managed"])
     seen: set = set()

@@ -91,6 +91,7 @@ def env(monkeypatch):
     monkeypatch.setattr(llama, "reconcile_now", lambda: None)
     monkeypatch.setattr(llama, "_mode_probe_memo", {"ts": 0.0, "url": None, "ok": False})
     monkeypatch.setattr(llama, "_cached_models_memo", {"ts": 0.0, "key": None, "rows": []})
+    monkeypatch.setattr(llama, "_models_dir_memo", {"ts": 0.0, "key": None, "rows": [], "gen": 0})
     monkeypatch.setattr(llama.requests, "get", lambda *a, **k: (_ for _ in ()).throw(OSError("down")),
                         raising=False)
     llama._unit_info_invalidate()
