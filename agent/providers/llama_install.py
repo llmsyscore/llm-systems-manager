@@ -100,6 +100,7 @@ _COMMIT_RE = re.compile(r"\bcommit[\s:]+([0-9a-f]{7,40})\b")
 _BUILD_NO_RE = re.compile(r"\bbuild[\s:]+b?(\d+)\b")
 _VERSION_RE = re.compile(r"\bversion\s*:\s*(\S+)")
 _BUILD_ID_RE = re.compile(r"\b(?:version|build)\s*:\s*b?(\d+)\s*\(([0-9a-f]{7,40})\)")
+_BUILD_ONLY_RE = re.compile(r"^\s*version\s*:\s*b?([1-9]\d*)(?=\s|$)", re.MULTILINE)
 # Upstream's tool set, minus tests and examples.
 _TOOLSET_CMAKE = ["-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
                   "-DLLAMA_BUILD_TOOLS=ON", "-DLLAMA_BUILD_SERVER=ON"]
@@ -128,6 +129,7 @@ def installed_build_id(bin_path, timeout: int = 30) -> dict:
     text = ((r.stdout or "") + (r.stderr or "")).strip()
     commit = _COMMIT_RE.search(text)
     legacy = None if commit else _BUILD_ID_RE.search(text)
+    build_only = None if commit or legacy else _BUILD_ONLY_RE.search(text)
     if commit:
         out["commit"] = commit.group(1)
         bn = _BUILD_NO_RE.search(text)
@@ -137,6 +139,8 @@ def installed_build_id(bin_path, timeout: int = 30) -> dict:
             out["version"] = ver.group(1)
     elif legacy:
         out["build"], out["commit"] = legacy.group(1), legacy.group(2)
+    elif build_only:
+        out["build"] = build_only.group(1)
     else:
         first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
         out["text"] = (first[:200] or f"no output, exit {r.returncode}")

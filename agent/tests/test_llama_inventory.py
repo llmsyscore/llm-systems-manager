@@ -45,6 +45,19 @@ def test_finds_builds_under_root_and_marks_active(tmp_path, monkeypatch):
     assert inv.cached() is res
 
 
+def test_live_binary_marks_active_when_llama_bin_is_empty(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    live = _exe(tmp_path / "opt" / "llama-server")
+    other = _exe(root / "b2" / "llama-server")
+    monkeypatch.setattr(inv.shutil, "which", lambda _n: None)
+    res = inv.scan(_cfg(), llama_install.installed_build_id, str(root), live_bin=str(live))
+    rows = {r["path"]: r for r in res["builds"]}
+    assert rows[os.path.realpath(live)]["active"] and not rows[os.path.realpath(other)]["active"]
+    res = inv.scan(_cfg(LLAMA_BIN=str(other)), llama_install.installed_build_id, str(root),
+                   live_bin=str(live))
+    assert [r["path"] for r in res["builds"] if r["active"]] == [os.path.realpath(other)]
+
+
 def test_skips_backup_and_hidden_dirs(tmp_path, monkeypatch):
     root = tmp_path / "root"
     live = _exe(root / "llama-server")

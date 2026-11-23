@@ -487,6 +487,27 @@ def test_live_builds_switch_each_then_back(llama, tmp_path, monkeypatch):
     assert llama._bench_active is False
 
 
+def test_live_builds_switch_back_with_empty_llama_bin(llama, tmp_path, monkeypatch):
+    ctx, p, st, done = _builds_env(llama, tmp_path, monkeypatch)
+    ctx.config.LLAMA_BIN = ""
+    monkeypatch.setattr(llama, "_llama_live_binary", lambda: p["a"])
+    srv = llama._bench_live_server
+
+    def server():
+        if ctx.config.LLAMA_BIN:
+            return srv()
+        ctx.config.LLAMA_BIN = p["a"]
+        try:
+            return srv()
+        finally:
+            ctx.config.LLAMA_BIN = ""
+    monkeypatch.setattr(llama, "_bench_live_server", server)
+    ev = _run_builds(llama, [p["a"], p["b"]], done)
+    assert st["switches"] == [p["b"], p["a"]]
+    assert ctx.config.LLAMA_BIN == p["a"]
+    assert [e for e in ev if e["type"] == "switch_back"] == [{"type": "switch_back", "ok": True, "error": None}]
+
+
 def test_live_failed_switch_continues(llama, tmp_path, monkeypatch):
     ctx2, p, st, done = _builds_env(llama, tmp_path, monkeypatch, fail=(str(tmp_path / "llama-b" / "build" / "bin" / "llama-server"),))
     ev = _run_builds(llama, [p["a"], p["b"], p["c"]], done)
@@ -617,6 +638,130 @@ def test_switch_build_runs_switch_and_forgets_cache(llama, tmp_path, monkeypatch
     assert llama._switch_build(target) == {"ok": True, "active": target}
     assert seen == {"tgt": target, "tokens": [ctx.config.LLAMA_BIN, "--port", "8080"]} and forgot == [1]
     assert not llama._switch_lock.locked()
+
+
+def test_switch_build_with_empty_llama_bin_uses_the_service_binary(llama, tmp_path, monkeypatch):
+    target = _activate_env(llama, tmp_path, monkeypatch)
+    ctx = llama._require_ctx()
+    ctx.config.LLAMA_BIN = ""
+    svc_bin = str(tmp_path / "opt" / "llama-server")
+    monkeypatch.setattr(llama, "_llama_exec_tokens", lambda: [svc_bin, "--port", "8080"])
+    monkeypatch.setattr(llama, "_llama_live_binary", lambda: svc_bin)
+    seen = {}
+    monkeypatch.setattr(llama.llama_inventory, "switch",
+                        lambda tgt, tokens, **k: seen.update(tokens=tokens) or {"ok": True, "active": tgt})
+    monkeypatch.setattr(llama.llama_inventory, "forget_cache", lambda: None)
+    assert llama._switch_build(target) == {"ok": True, "active": target}
+    assert seen == {"tokens": [svc_bin, "--port", "8080"]}
+    ctx.config.LLAMA_BIN = str(tmp_path / "elsewhere" / "llama-server")
+    res = llama._switch_build(target)
+    assert res == {"ok": False, "error": "the service does not run LLAMA_BIN directly; switch it by hand"}
+
+
+def test_switch_apply_drops_the_cached_unit_info(llama, tmp_path, monkeypatch):
+    unit_path = tmp_path / "llama-server.service"
+    unit_path.write_text("[Service]\nExecStart=/x/llama-server\n")
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(unit_path))
+    monkeypatch.setattr(llama, "_llama_effective_unit", lambda: "llama-server.service")
+    monkeypatch.setattr(llama._shared, "wrapper_version", lambda w: 3)
+    monkeypatch.setattr(llama._shared, "svcconfig_apply", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(llama, "reconcile_now", lambda: None)
+    monkeypatch.setattr(llama, "_UNIT_ETC", str(tmp_path / "etc"))
+    llama._unit_info_cache["llama-server.service"] = (llama.time.monotonic(), {"exec_start": "/old"})
+    assert llama._switch_apply(["/new/llama-server"]) == {"ok": True}
+    assert "llama-server.service" not in llama._unit_info_cache
+
+
+def _restore_env(llama, tmp_path, monkeypatch, now_exec):
+    unit = "llama-server.service"
+    vendor = tmp_path / "usr" / "llama-server.service"
+    vendor.parent.mkdir()
+    vendor.write_text("[Service]\nExecStart=/usr/bin/llama-server --port 9931\nUser=llmsys\n")
+    dropdir = tmp_path / "etc" / f"{unit}.d"
+    dropdir.mkdir(parents=True)
+    (dropdir / "50-llm-systems-agent.conf").write_text("[Service]\nExecStart=\nExecStart=/new/llama-server --port 9931\n")
+    monkeypatch.setattr(llama, "_UNIT_ETC", str(tmp_path / "etc"))
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(vendor))
+    monkeypatch.setattr(llama, "_llama_effective_unit", lambda: unit)
+    monkeypatch.setattr(llama._shared, "wrapper_version", lambda w: 3)
+    monkeypatch.setattr(llama, "reconcile_now", lambda: None)
+    monkeypatch.setattr(llama, "llama_unit_info", lambda force=False: {"exec_start": now_exec})
+    calls = []
+    monkeypatch.setattr(llama._shared, "svcconfig_op",
+                        lambda w, op, u, timeout=30: calls.append(op) or {"ok": True})
+    monkeypatch.setattr(llama._shared, "svcconfig_apply",
+                        lambda *a, **k: calls.append("apply") or {"ok": True})
+    return dropdir, calls
+
+
+def test_switch_back_to_the_vendor_command_restores_instead_of_writing(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/usr/bin/llama-server --port 9931")
+    assert llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["restore", "restart"]
+
+
+def test_switch_to_another_build_writes_the_drop_in(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/usr/bin/llama-server --port 9931")
+    assert llama._switch_apply(["/other/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["apply"]
+
+
+def test_switch_back_restores_the_earlier_drop_in_from_its_backup(llama, tmp_path, monkeypatch):
+    dropdir, calls = _restore_env(llama, tmp_path, monkeypatch, "/mode/llama-server --models-preset x")
+    (dropdir / "50-llm-systems-agent.conf.llmsys-bak").write_text(
+        "[Service]\nExecStart=\nExecStart=/mode/llama-server --models-preset x\n")
+    assert llama._switch_apply(["/mode/llama-server", "--models-preset", "x"]) == {"ok": True}
+    assert calls == ["restore", "restart"]
+
+
+def test_switch_restore_falls_back_to_apply_when_the_result_differs(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/somewhere/else --port 9931")
+    assert llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["restore", "apply"]
+
+
+def test_switch_restore_not_ok_falls_back_to_apply(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/usr/bin/llama-server --port 9931")
+    monkeypatch.setattr(llama._shared, "svcconfig_op",
+                        lambda w, op, u, timeout=30: calls.append(op) or {"ok": False, "error": "x"})
+    assert llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["restore", "apply"]
+
+
+def test_switch_restore_reports_a_failed_restart(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/usr/bin/llama-server --port 9931")
+    monkeypatch.setattr(llama._shared, "svcconfig_op", lambda w, op, u, timeout=30: calls.append(op) or (
+        {"ok": False, "error": "boom"} if op == "restart" else {"ok": True}))
+    res = llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"])
+    assert res == {"ok": False, "error": "restart failed: boom"} and calls == ["restore", "restart"]
+
+
+def test_switch_restore_matches_a_symlinked_binary(llama, tmp_path, monkeypatch):
+    real = tmp_path / "opt" / "llama-server"
+    real.parent.mkdir()
+    real.write_text("")
+    link = tmp_path / "llama-link"
+    link.symlink_to(real)
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, f"{link} --port 9931")
+    (tmp_path / "usr" / "llama-server.service").write_text(f"[Service]\nExecStart={link} --port 9931\n")
+    assert llama._switch_apply([str(real), "--port", "9931"]) == {"ok": True}
+    assert calls == ["restore", "restart"]
+
+
+def test_switch_restore_skipped_for_old_helper_and_etc_units(llama, tmp_path, monkeypatch):
+    _, calls = _restore_env(llama, tmp_path, monkeypatch, "/usr/bin/llama-server --port 9931")
+    monkeypatch.setattr(llama._shared, "wrapper_version", lambda w: 2)
+    assert llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["apply"]
+    calls.clear()
+    monkeypatch.setattr(llama._shared, "wrapper_version", lambda w: 3)
+    etc_unit = tmp_path / "etc" / "llama-server.service"
+    etc_unit.write_text("[Service]\nExecStart=/new/llama-server --port 9931\n")
+    (tmp_path / "etc" / "llama-server.service.llmsys-bak").write_text(
+        "[Service]\nExecStart=/usr/bin/llama-server --port 9931\n")
+    monkeypatch.setattr(llama, "_llama_svc_file_path", lambda: str(etc_unit))
+    assert llama._switch_apply(["/usr/bin/llama-server", "--port", "9931"]) == {"ok": True}
+    assert calls == ["apply"]
 
 
 def test_live_load_and_wait_polls_until_loaded(llama, tmp_path, monkeypatch):

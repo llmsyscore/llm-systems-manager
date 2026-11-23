@@ -740,6 +740,22 @@ def test_installed_build_id_keeps_version_empty_for_the_legacy_format(tmp_path, 
     assert got["commit"] == "a0f7016d" and got["build"] == "6150" and got["version"] is None
 
 
+def test_installed_build_id_accepts_a_distro_build_without_a_commit(tmp_path, monkeypatch):
+    binp = tmp_path / "llama-server"
+    binp.write_text("x")
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(
+        0, "", "load_backend: loaded CPU backend from /usr/lib/x/libggml-cpu.so\n"
+               "version: 8681 (dfsg)\nbuilt with cc for x86_64-linux-gnu\n"))
+    got = li.installed_build_id(str(binp))
+    assert (got["build"], got["commit"], got["version"], got["text"]) == ("8681", None, None, "")
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "version: 8681\n"))
+    assert li.installed_build_id(str(binp))["build"] == "8681"
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "version: 1.0.0-dev\n"))
+    assert li.installed_build_id(str(binp))["build"] is None
+    monkeypatch.setattr(li.subprocess, "run", lambda *a, **k: _Run(0, "version: 0 (unknown)\n"))
+    assert li.installed_build_id(str(binp))["build"] is None
+
+
 def test_installed_build_id_reports_why_it_got_nothing(tmp_path, monkeypatch):
     """The reason reaches the operator instead of a bare 'no usable commit'."""
     binp = tmp_path / "llama-server"
