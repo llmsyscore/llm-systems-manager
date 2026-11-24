@@ -1,4 +1,4 @@
-/* Panel kit 1.4.2: theme tokens, shell, panel kit and chart styles for kit.js. */
+/* Panel kit 1.4.3: theme tokens, shell, panel kit and chart styles for kit.js. */
 /* Theme tokens: dark on :root, light on :root[data-theme="light"], then the kit names mapped onto the cloud set and shared tints.
    The *-text tokens colour status text; light sets darker shades that meet 4.5:1 on --card. */
 :root{color-scheme:dark;
@@ -177,9 +177,6 @@ table[data-kit-sortable] thead th:not(.no-copy):not(:empty){cursor:pointer;user-
 .fd-a{font-size:11.5px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .p-table{overflow:auto;max-height:340px;flex:none}
 .panel.full>.p-table{flex:0 1 auto}
-/* Thin themed scrollbars on scrolling kit boxes; with a mouse the thumb shows only while the box is hovered or focused. */
-.p-table,.panel.full{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--text) 30%,transparent) transparent}
-@media (hover:hover){.p-table:not(:hover):not(:focus-within),.panel.full:not(:hover):not(:focus-within){scrollbar-color:transparent transparent}}
 .p-table table{border-collapse:collapse;width:100%;font-size:12.5px}
 .p-table th,.p-table td{padding:6px 8px;border-top:0;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
 .p-table td{color:var(--text)}

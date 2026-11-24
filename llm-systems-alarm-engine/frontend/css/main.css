@@ -356,3 +356,14 @@ table.tbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-va
 @media (prefers-reduced-motion: reduce) {
   .chev, .mc-toggle .track, .mc-toggle .track::after, .toast, .stamp .rf { animation: none; transition: none; }
 }
+
+/* Scrollbars: thin and theme-coloured; a box's thumb shows while it is scrolled (.mc-scrolling) or the thumb is hovered. */
+:root { --sb-thumb: color-mix(in srgb, var(--fg-dim) 65%, transparent); }
+::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: transparent; border: 2px solid transparent; border-radius: 4px; background-clip: padding-box; }
+.mc-scrolling::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background-color: var(--sb-thumb); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  .mc-scrolling { scrollbar-color: var(--sb-thumb) transparent; }
+}

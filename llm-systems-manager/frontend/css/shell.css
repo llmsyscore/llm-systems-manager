@@ -42,11 +42,8 @@
   .tb-tower.off { padding: 0 8px; }
   .tb-tower .tb-tower-lab { display: none; }
 }
-/* Narrow toolbar: the controls fit one row; Live keeps its switch, the Overall filters take a row of their own. */
+/* Narrow toolbar: tighter range buttons and refresh badge. */
 @media (max-width: 600px) {
-  #toolbar .tb-right { gap: 6px; }
-  #toolbar #liveT { display: none; }
-  #toolbar .tb-ov { flex-basis: 100%; }
   #toolbar .tb-seg button { padding: 4px 7px; }
   #toolbar .hdr-badge { padding: 0 7px; gap: 5px; }
 }
@@ -75,6 +72,20 @@
 /* Toolbar: Overall provider chips and time range segment, and the All hosts range; groups and chips wrap on narrow screens. */
 .tb-ov { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .tb-ah { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+/* Toolbar: line 1 holds the title, the pills (one line, shortened with an ellipsis) and the buttons at the right;
+   the page filters take the last line. Below 1100 px the pills take a line of their own under the title. */
+#toolbar > .tb-right { display: contents; }
+#toolbar > .mc-pills { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; }
+#toolbar .mc-pills .state-banner, #toolbar .mc-pills .state-pill { flex-shrink: 1; }
+#toolbar .tb-right > * { flex: none; order: 1; }
+#toolbar .tb-right > :is(.tb-ov, .tb-ah) { order: 3; flex: 0 1 100%; min-width: 0; flex-wrap: nowrap; overflow-x: auto; }
+#toolbar .tb-chips { flex: none; flex-wrap: nowrap; }
+@media (max-width: 1099px) {
+  #toolbar #liveT { display: none; }
+  #toolbar > .mc-pills { order: 2; flex-basis: 100%; }
+  #toolbar > h1 { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+@media (max-width: 600px) { #toolbar { column-gap: 6px; } }
 .tb-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .tb-chip { background: var(--card); color: var(--text-2); border: 0; box-shadow: inset 0 0 0 1px var(--border), inset 0 0 1px 1px var(--border); border-radius: 14px; padding: 5px 12px; font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer; }
 .tb-chip:hover { color: var(--text); }
@@ -99,4 +110,15 @@
 html:has(body.tw-lock) { overflow: hidden; }
 html:has(body.tw-lock) body.tw-lock { overflow: visible; }
 /* In-page jumps (scrollIntoView) stop below the sticky toolbar. */
-html { scroll-padding-top: var(--mc-top, 61px); }
+html { scroll-padding-top: var(--mc-top, 90px); }
+
+/* Scrollbars: thin and theme-coloured; a box's thumb shows while it is scrolled (.mc-scrolling) or the thumb is hovered. */
+:root { --sb-thumb: color-mix(in srgb, var(--muted) 65%, transparent); }
+::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: transparent; border: 2px solid transparent; border-radius: 4px; background-clip: padding-box; }
+.mc-scrolling::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background-color: var(--sb-thumb); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  .mc-scrolling { scrollbar-color: var(--sb-thumb) transparent; }
+}

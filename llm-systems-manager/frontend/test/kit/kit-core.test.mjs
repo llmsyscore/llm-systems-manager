@@ -42,7 +42,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.4.2');
+    assert.equal(first, '// Panel kit 1.4.3');
   });
 
   test('coexists with an old copy', () => {

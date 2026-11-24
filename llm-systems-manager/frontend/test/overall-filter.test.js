@@ -468,7 +468,9 @@ describe('Overall filter fix round 1 (#1432)', () => {
     expect(text('ov-b-energy7')).toBe('Loading…');
     for (const id of ['k-tok', 'k-en']) {
       expect(kpi(id).querySelector('.k-delta').textContent, id).toBe('Loading…');
+      expect(kpi(id).querySelector('.k-delta').getAttribute('title'), id).toBe('Loading…');
       expect(kpi(id).querySelector('.k-spark'), id).toBeNull();
+      expect(kpi(id).querySelector('.ov-spark-wait'), id).not.toBeNull();
     }
     expect(text('ov-b-k-tok')).not.toContain('777');
     await window.fetchOverallMetrics();
@@ -479,6 +481,14 @@ describe('Overall filter fix round 1 (#1432)', () => {
     expect(en7().series[0].values.reduce((x, y) => x + y, 0)).toBe(9);
     expect(text('ov-b-k-tok')).toContain('300 the day before');
     expect(document.getElementById('overallTab').textContent).not.toContain('Loading…');
+    // Once the hourly data lands the sparkline replaces the wait box; other tiles never get one.
+    for (const id of ['k-tok', 'k-en']) {
+      expect(kpi(id).querySelector('.k-spark'), id).not.toBeNull();
+      expect(kpi(id).querySelector('.ov-spark-wait'), id).toBeNull();
+    }
+    for (const id of ['k-agents', 'k-peak', 'k-pow', 'k-save']) expect(kpi(id).querySelector('.ov-spark-wait'), id).toBeNull();
+    const sub = kpi('k-tok').querySelector('.k-sub');
+    expect(sub.getAttribute('title')).toBe(sub.textContent);
   });
 
   test('the Loading… change slot shows on Tokens and Energy tiles even with an empty sub line', async () => {

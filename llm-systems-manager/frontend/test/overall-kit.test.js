@@ -648,6 +648,12 @@ describe('Overall final fixes (#1432)', () => {
     // At a glance tiles are columns with the sparkline pushed to the bottom edge.
     expect(css).toContain('#overallTab .panel.kpi > .p-body { flex: 1 1 auto; display: flex; flex-direction: column; }');
     expect(css).toContain('#overallTab .panel.kpi > .p-body > .k-spark { margin-top: auto; }');
+    // At a glance tiles keep value and change on one line, the change cut with an ellipsis.
+    expect(css).toContain('#overallTab .panel.kpi .k-row { flex-wrap: nowrap; min-width: 0; }');
+    expect(css).toContain('#overallTab .panel.kpi :is(.k-delta, .k-sub) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }');
+    expect(css).toContain('#overallTab .panel.kpi .ov-spark-wait { height: 44px;');
+    expect(css).toContain('#overallTab .panel.kpi .k-val:not(.long) { flex: none; }');
+    expect(css).toContain('@container (max-width: 199px) { #overallTab .panel.kpi .k-val:not(.long) { font-size: 22px; } }');
     // Chart panels and the waiting servers row keep their drawn height while loading.
     expect(css).toContain('#ov-b-tp { min-height: 290px; }');
     expect(css).toContain('#ov-b-energy7 { min-height: 220px; }');
