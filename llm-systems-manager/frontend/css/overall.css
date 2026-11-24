@@ -58,6 +58,17 @@
 /* At a glance tiles: each tile is a column with its sparkline pushed to the bottom, so sparklines line up along the row. */
 #overallTab .panel.kpi > .p-body { flex: 1 1 auto; display: flex; flex-direction: column; }
 #overallTab .panel.kpi > .p-body > .k-spark { margin-top: auto; }
+/* At a glance tiles: value and change on one line, the sub-line on one line; text too long ends in an ellipsis.
+   Tiles under 200 px wide draw the value at 22 px. */
+#overallTab .panel.kpi .k-row { flex-wrap: nowrap; min-width: 0; }
+#overallTab .panel.kpi .k-val:not(.long) { flex: none; }
+#overallTab .panel.kpi { container-type: inline-size; }
+/* A tile with its ⋯ menu open draws above the tiles after it. */
+#overallTab .panel.kpi:has(.p-menu[aria-expanded="true"]) { z-index: 6; }
+@container (max-width: 199px) { #overallTab .panel.kpi .k-val:not(.long) { font-size: 22px; } }
+#overallTab .panel.kpi :is(.k-delta, .k-sub) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The empty box a Tokens or Energy tile shows where its sparkline goes, until one arrives. */
+#overallTab .panel.kpi .ov-spark-wait { height: 44px; margin: auto -12px -12px; }
 /* Power now: only the sparkline of the kit's KPI body. */
 .ov-spark .k-row, .ov-spark .k-sub { display: none; }
 

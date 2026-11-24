@@ -355,14 +355,27 @@ describe('manager shell', () => {
     const flat = shellCss.replace(/\s+/g, '');
     expect(flat).toContain('html:has(body.tw-lock){overflow:hidden;}');
     expect(flat).toContain('html:has(body.tw-lock)body.tw-lock{overflow:visible;}');
-    expect(flat).toContain('html{scroll-padding-top:var(--mc-top,61px);}');
+    expect(flat).toContain('html{scroll-padding-top:var(--mc-top,90px);}');
+  });
+
+  test('a box shows its scrollbar thumb for 900 ms after the user scrolls it, not after a script scroll', async () => {
+    const w = await boot();
+    const d = w.document, box = d.getElementById('overallTab');
+    box.dispatchEvent(new w.Event('scroll'));
+    expect(box.classList.contains('mc-scrolling'), 'script scroll').toBe(false);
+    box.dispatchEvent(new w.Event('wheel', { bubbles: true }));
+    box.dispatchEvent(new w.Event('scroll'));
+    expect(box.classList.contains('mc-scrolling')).toBe(true);
+    await new Promise(r => setTimeout(r, 1000));
+    expect(box.classList.contains('mc-scrolling')).toBe(false);
   });
 
   test('toolbar group shows only on Overall', async () => {
     const w = await boot();
     const d = w.document;
     const bar = d.querySelector('#toolbar .tb-ov');
-    expect(new JSDOM(indexSrc).window.document.querySelector('#toolbar .tb-ov').hidden, 'hidden in the markup').toBe(true);
+    // Overall is the start page: its filters show from the first paint.
+    expect(new JSDOM(indexSrc).window.document.querySelector('#toolbar .tb-ov').hidden, 'shown in the markup').toBe(false);
     expect(bar.hidden).toBe(false);
     expect([...bar.querySelectorAll('#ovProv button')].map(b => [b.dataset.ovProv, b.textContent, b.getAttribute('aria-pressed')]))
       .toEqual([['all', 'All providers', 'true'], ['llama', 'llama.cpp', 'false'], ['lms', 'LM Studio', 'false'], ['vllm', 'vLLM', 'false']]);
@@ -430,14 +443,25 @@ describe('manager shell', () => {
 
   test('toasts start below the sticky toolbar', () => {
     const flat = srcFile('css/toasts.css').replace(/\s+/g, '');
-    expect(flat).toContain('#alarmToastContainer{position:fixed;top:calc(var(--mc-top,61px)+12px);');
+    expect(flat).toContain('#alarmToastContainer{position:fixed;top:calc(var(--mc-top,90px)+12px);');
   });
 
   test('toolbar group wraps and takes its colours from kit tokens', () => {
     const flat = shellCss.replace(/\s+/g, '');
     expect(flat).toContain('.tb-ov{display:flex;flex-wrap:wrap;');
     expect(flat).toContain('.tb-ah{display:flex;flex-wrap:wrap;');
-    expect(flat).toContain('@media(max-width:600px){#toolbar.tb-right{gap:6px;}#toolbar#liveT{display:none;}#toolbar.tb-ov{flex-basis:100%;}');
+    // Line 1: title, pills and buttons; line 2: the page filters; phones put the pills on a line of their own.
+    expect(flat).toContain('#toolbar>.tb-right{display:contents;}');
+    expect(flat).toContain('#toolbar>.mc-pills{flex:110;min-width:0;flex-wrap:nowrap;}');
+    expect(flat).toContain('#toolbar.tb-right>*{flex:none;order:1;}');
+    expect(flat).toContain('#toolbar.tb-chips{flex:none;flex-wrap:nowrap;}');
+    expect(flat).toContain('#toolbar.tb-right>:is(.tb-ov,.tb-ah){order:3;flex:01100%;min-width:0;flex-wrap:nowrap;overflow-x:auto;}');
+    expect(flat).toContain('@media(max-width:1099px){#toolbar#liveT{display:none;}#toolbar>.mc-pills{order:2;flex-basis:100%;}#toolbar>h1{flex:110;min-width:0;overflow:hidden;text-overflow:ellipsis;}}');
+    expect(flat).toContain('@media(max-width:600px){#toolbar{column-gap:6px;}}');
+    // Thin theme-coloured scrollbars whose thumb shows while the box scrolls.
+    expect(flat).toContain('::-webkit-scrollbar{width:8px;height:8px;background:transparent;}');
+    expect(flat).toContain('.mc-scrolling::-webkit-scrollbar-thumb,::-webkit-scrollbar-thumb:hover{background-color:var(--sb-thumb);}');
+    expect(flat).toContain('@media(max-width:600px){#toolbar.tb-segbutton{padding:4px7px;}');
     expect(new JSDOM(indexSrc).window.document.getElementById('liveBtn').getAttribute('aria-label')).toBe('Live updates');
     expect(flat).toContain('.tb-chips{display:flex;flex-wrap:wrap;');
     const rules = [...shellCss.matchAll(/^[^{\n]*\.tb-(?:ov|chips?|seg)[^{]*\{([^}]*)\}/gm)].map(m => m[1]);

@@ -229,13 +229,12 @@ describe('kit css', () => {
     assert.match(bodyOf(css, '.panel.full .p-close'), /display:\s*inline-block/);
   });
 
-  test('the table box keeps its height, full size lets it shrink, and its scrollbar is thin and hover-only with a mouse', () => {
+  test('the table box keeps its height, full size lets it shrink, and the kit leaves scrollbars to the app', () => {
     const css = stripComments(kitCss());
     assert.match(bodyOf(css, '.p-table'), /flex:\s*none/);
     assert.match(bodyOf(css, '.panel.full>.p-table'), /flex:\s*0 1 auto/);
-    assert.match(bodyOf(css, '.panel.full'), /scrollbar-width:\s*thin/);
-    assert.match(bodyOf(css, '.p-table'), /scrollbar-color:\s*color-mix/);
-    assert.match(css, /@media \(hover:hover\)\{\.p-table:not\(:hover\):not\(:focus-within\),\.panel\.full:not\(:hover\):not\(:focus-within\)\{scrollbar-color:transparent transparent\}\}/);
+    assert.ok(!/scrollbar-(width|color)/.test(css), 'no standard scrollbar properties in the kit');
+    assert.match(css, /--sb-thumb:color-mix\(in srgb,var\(--muted\) 65%,transparent\)/);
   });
 
   test('no app selectors', () => {

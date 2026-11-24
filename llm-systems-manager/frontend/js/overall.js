@@ -227,13 +227,15 @@
     const v = typeof k.value === 'number' ? kitFmt(k.value) : String(k.value);
     return k.unit ? v + ' ' + k.unit : v;
   }
-  // A KPI body's HTML with a Loading… change slot appended to its value row when asked.
-  function kpiHtmlWith(h, loading) {
-    if (!loading) return h;
+  // A KPI body's HTML: a Loading… change slot on its value row when loading, an empty sparkline-sized box
+  // when sparked has no sparkline yet, and each change and sub-line with its full text as a tooltip.
+  function kpiHtmlWith(h, loading, sparked) {
     const box = document.createElement('div');
     box.innerHTML = h;
     const row = box.querySelector('.k-row');
-    if (row) row.insertAdjacentHTML('beforeend', '<span class="k-delta flat">Loading…</span>');
+    if (loading && row) row.insertAdjacentHTML('beforeend', '<span class="k-delta flat">Loading…</span>');
+    if (sparked && !box.querySelector('.k-spark')) box.insertAdjacentHTML('beforeend', '<div class="ov-spark-wait"></div>');
+    box.querySelectorAll('.k-delta, .k-sub').forEach(d => { if (d.textContent) d.setAttribute('title', d.textContent); });
     return box.innerHTML;
   }
   // While the filter's hourly energy loads, the Tokens and Energy tiles show Loading… where their change would be.
@@ -242,7 +244,7 @@
     OV.fleetKpis({ aggs: S.aggs, summary1: S.summary1, hourly48: S.hourly48, tp: tpNow(), ids: ids() }).forEach(k => {
       const hourly = k.id === 'k-tok' || k.id === 'k-en';
       fill('ov-b-' + k.id, kpiHtmlWith(kpiBody({ value: kpiValue(k), sub: k.sub, delta: wait && hourly ? null : k.delta, spark: k.spark }),
-        wait && hourly));
+        wait && hourly, hourly));
     });
   }
 

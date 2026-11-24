@@ -198,6 +198,24 @@
     new ResizeObserver(() => document.documentElement.style.setProperty('--mc-top', tb.offsetHeight + 'px')).observe(tb);
   }
 
+  // Marks a box .mc-scrolling for 900 ms after the user scrolls it (wheel, touch, keys or a drag inside it, keys with
+  // focus on the page) and while it keeps scrolling; scrolls the page makes itself leave its thumb hidden.
+  const SB = { input: 0, at: null, down: 0, timers: new Map() };
+  ['wheel', 'touchmove', 'keydown'].forEach(ev => document.addEventListener(ev, (e) => { SB.input = Date.now(); SB.at = e.target; }, { capture: true, passive: true }));
+  document.addEventListener('pointerdown', (e) => { SB.down = SB.input = Date.now(); SB.at = e.target; }, { capture: true, passive: true });
+  ['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, () => { SB.down = 0; SB.input = Date.now(); }, { capture: true, passive: true }));
+  document.addEventListener('scroll', (e) => {
+    const el = e.target === document ? document.documentElement : e.target, now = Date.now();
+    if (!el || !el.classList) return;
+    const held = SB.down && now - SB.down < 10000, going = el.classList.contains('mc-scrolling');
+    if (!going && !held && now - SB.input > 1000) return;
+    const loose = !SB.at || SB.at === document.body || SB.at === document.documentElement;
+    if (!going && el !== document.documentElement && !loose && !(el.contains && el.contains(SB.at))) return;
+    el.classList.add('mc-scrolling');
+    clearTimeout(SB.timers.get(el));
+    SB.timers.set(el, setTimeout(() => { el.classList.remove('mc-scrolling'); SB.timers.delete(el); }, 900));
+  }, { capture: true, passive: true });
+
   // Once the layout has loaded, its saved sidebar state wins and refreshes the pre-paint copy.
   let inited = false;
   function mcShellInit() {
