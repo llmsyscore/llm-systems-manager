@@ -234,6 +234,7 @@ describe('kit css', () => {
     assert.match(bodyOf(css, '.p-table'), /flex:\s*none/);
     assert.match(bodyOf(css, '.panel.full>.p-table'), /flex:\s*0 1 auto/);
     assert.ok(!/scrollbar-(width|color)/.test(css), 'no standard scrollbar properties in the kit');
+    assert.match(css, /--sb-thumb:color-mix\(in srgb,var\(--muted\) 65%,transparent\)/);
   });
 
   test('no app selectors', () => {

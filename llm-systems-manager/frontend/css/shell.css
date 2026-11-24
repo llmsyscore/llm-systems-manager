@@ -112,8 +112,7 @@ html:has(body.tw-lock) body.tw-lock { overflow: visible; }
 /* In-page jumps (scrollIntoView) stop below the sticky toolbar. */
 html { scroll-padding-top: var(--mc-top, 90px); }
 
-/* Scrollbars: thin and theme-coloured; a box's thumb shows while it is scrolled (.mc-scrolling) or the thumb is hovered. */
-:root { --sb-thumb: color-mix(in srgb, var(--muted) 65%, transparent); }
+/* Scrollbars: thin, thumb in the kit's --sb-thumb; a box's thumb shows while it is scrolled (.mc-scrolling) or hovered. */
 ::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
 ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: transparent; border: 2px solid transparent; border-radius: 4px; background-clip: padding-box; }

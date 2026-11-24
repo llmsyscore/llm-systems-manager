@@ -18,7 +18,8 @@
   --good-text:var(--good);--bad-text:var(--bad);--warn-text:var(--warn);
   --good-bg:color-mix(in srgb,var(--good) 14%,var(--card));
   --warn-bg:color-mix(in srgb,var(--warn) 14%,var(--card));
-  --bad-bg:color-mix(in srgb,var(--bad) 14%,var(--card))}
+  --bad-bg:color-mix(in srgb,var(--bad) 14%,var(--card));
+  --sb-thumb:color-mix(in srgb,var(--muted) 65%,transparent)}
 
 /* Border-box sizing on the kit's own parts only (no global reset). */
 :where(.side,.side *,.top,.top *,.row,.row *,.panel,.panel *,#toast){box-sizing:border-box}
