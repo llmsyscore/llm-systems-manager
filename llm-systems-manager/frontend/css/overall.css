@@ -2,6 +2,11 @@
 #overallTab { padding: 12px 16px 0; }
 /* The page keeps the reader's place itself (keepPlace in js/foundation.js). */
 #overallTab { overflow-anchor: none; }
+/* Throughput and Energy use bodies keep their drawn chart's height (plot + legend) before the chart arrives. */
+#ov-b-tp { min-height: 290px; }
+#ov-b-energy7 { min-height: 220px; }
+/* The LLM servers row's Loading… sentence holds a typical panel height, centred. */
+#ov-srv-none.ov-wait { min-height: 460px; display: flex; align-items: center; justify-content: center; }
 
 /* Panel parts the kit has no class for: empty sentence, hint, key-value list, state pills, labels, model and host lists. */
 .ov-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }

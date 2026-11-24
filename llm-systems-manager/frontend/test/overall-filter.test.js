@@ -507,6 +507,7 @@ describe('Overall filter fix round 1 (#1432)', () => {
     stubFetch({ ...DEV, [`/api/energy/hourly?hours=168&agent=${ID_LLAMA}`]: LLAMA_H,
       [`/api/energy/hourly?hours=168&agent=${ID_LLAMA2}`]: LLAMA_H });
     await window.ovLoad();
+    await window.fetchOverallMetrics();
     await flush();
     const before = en7();
     expect(before.series[1].values.reduce((x, y) => x + y, 0)).toBe(2.35);

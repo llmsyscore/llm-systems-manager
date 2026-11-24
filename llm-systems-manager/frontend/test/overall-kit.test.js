@@ -608,17 +608,27 @@ describe('Overall final fixes (#1432)', () => {
     window._pollCfg = {};
     stubFetch({});
     await window.ovLoad();
-    await window.fetchOverallMetrics();
     const none = document.getElementById('ov-srv-none');
     expect(none.hidden).toBe(false);
+    expect(none.textContent).toBe('Loading…');
+    // No server hosts: nothing is held free for panels that will not come.
+    expect(none.classList.contains('ov-wait')).toBe(false);
+    await window.fetchOverallMetrics();
+    expect(none.hidden).toBe(false);
     expect(none.textContent).toBe('No LLM servers reported yet.');
+    expect(none.classList.contains('ov-wait')).toBe(false);
     expect(none.closest('section.row').dataset.row).toBe('servers');
     for (const k of ['llama', 'lms', 'vllm']) expect(document.querySelector(`[data-card="srv-${k}"]`).hidden).toBe(true);
     load();
+    window._agentsByProvider = { llama: [{ agent_id: 'a1', hostname: 'h1' }], lms: [], vllm: [] };
     stubFetch(DEV);
     await window.ovLoad();
+    // Server hosts exist: the waiting sentence holds the panels' height until the first poll.
+    expect(document.getElementById('ov-srv-none').textContent).toBe('Loading…');
+    expect(document.getElementById('ov-srv-none').classList.contains('ov-wait')).toBe(true);
     await window.fetchOverallMetrics();
     expect(document.getElementById('ov-srv-none').hidden).toBe(true);
+    expect(document.getElementById('ov-srv-none').classList.contains('ov-wait')).toBe(false);
     await window.ovSetFilter('vllm');
     expect(document.getElementById('ov-srv-none').hidden).toBe(true);
   });
@@ -638,6 +648,10 @@ describe('Overall final fixes (#1432)', () => {
     // At a glance tiles are columns with the sparkline pushed to the bottom edge.
     expect(css).toContain('#overallTab .panel.kpi > .p-body { flex: 1 1 auto; display: flex; flex-direction: column; }');
     expect(css).toContain('#overallTab .panel.kpi > .p-body > .k-spark { margin-top: auto; }');
+    // Chart panels and the waiting servers row keep their drawn height while loading.
+    expect(css).toContain('#ov-b-tp { min-height: 290px; }');
+    expect(css).toContain('#ov-b-energy7 { min-height: 220px; }');
+    expect(css).toMatch(/#ov-srv-none\.ov-wait \{ min-height: 460px;/);
     // Overall panel headers stay on one line; a long note truncates with an ellipsis.
     expect(css).toMatch(/#overallTab \.panel > \.p-hd \{ flex-wrap: nowrap; \}/);
     const noteRule = css.match(/#overallTab \.panel > \.p-hd > \.p-note \{([^}]*)\}/)[1];
