@@ -229,6 +229,15 @@ describe('kit css', () => {
     assert.match(bodyOf(css, '.panel.full .p-close'), /display:\s*inline-block/);
   });
 
+  test('the table box keeps its height, full size lets it shrink, and its scrollbar is thin and hover-only with a mouse', () => {
+    const css = stripComments(kitCss());
+    assert.match(bodyOf(css, '.p-table'), /flex:\s*none/);
+    assert.match(bodyOf(css, '.panel.full>.p-table'), /flex:\s*0 1 auto/);
+    assert.match(bodyOf(css, '.panel.full'), /scrollbar-width:\s*thin/);
+    assert.match(bodyOf(css, '.p-table'), /scrollbar-color:\s*color-mix/);
+    assert.match(css, /@media \(hover:hover\)\{\.p-table:not\(:hover\):not\(:focus-within\),\.panel\.full:not\(:hover\):not\(:focus-within\)\{scrollbar-color:transparent transparent\}\}/);
+  });
+
   test('no app selectors', () => {
     const css = stripComments(kitCss());
     ['#v-', '.ov-', '.run-', '.mcp-', '.lab-', '.st-', '#asst', '.hdr-asst', '#toolbarExtra'].forEach((s) => {

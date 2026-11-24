@@ -19,7 +19,7 @@
     summary1: null, summary7: null, hourly168: null, hourly48: null, hourlyProv: null, hourlyBy: {}, hourlyWait: null,
     tower: null, insights: null, slowEnded: false, modelsAt: 0, modelsRun: null, last: {},
     rows: null, histTried: false, histFailed: false, tp: null, tpKey: null, tpPainted: false, live: null, updated: 0, tpHistLast: null,
-    slowAt: 0, slowRun: null, histGen: 0, dressed: false, laidOut: false,
+    slowAt: 0, slowRun: null, histGen: 0, dressed: false, laidOut: false, srvTried: false,
   };
 
   function st() {
@@ -295,7 +295,7 @@
     });
   }
   // Under a provider filter only that provider's panel shows, with its "No … hosts" sentence when it has none;
-  // under All with no panel shown the row says no server has reported yet.
+  // under All with no panel shown the row says Loading… until the first server poll, then that none has reported.
   function paintServers() {
     const panels = OV.serverPanels({ llamaState: S.llamaState, llmModels: S.llmModels, lms: S.lms, aggs: S.aggs,
       caps: (window._pollCfg || {}).agents, llamaHost: llamaHost(), now: Date.now() });
@@ -319,8 +319,14 @@
       const row = body.closest('section.row');
       if (k === 'llama' && sec && !sec.hidden && !(row && (row.hidden || row.classList.contains('folded')))) refreshModels();
     });
+    // While waiting, a fleet with server hosts keeps a typical panel height free (ov-wait).
     const none = document.getElementById('ov-srv-none');
-    if (none) none.hidden = shown > 0;
+    if (!none) return;
+    const wait = !S.srvTried && shown === 0, text = wait ? 'Loading…' : 'No LLM servers reported yet.';
+    const byProv = window._agentsByProvider || {};
+    none.hidden = shown > 0;
+    none.classList.toggle('ov-wait', wait && ['llama', 'lms', 'vllm'].some(k => (byProv[k] || []).length > 0));
+    if (none.textContent !== text) none.textContent = text;
   }
 
   // ---- Power and energy ----
@@ -562,6 +568,7 @@
     const got = await Promise.all(['/api/fleet/llama/aggregate', '/api/fleet/lms/aggregate', '/api/fleet/vllm/aggregate',
       '/api/llama-state', '/api/lmstudio/metrics'].map(getJson));
     const fresh = got.slice(0, 3).some(v => v != null);
+    S.srvTried = true;
     S.aggs = { llama: got[0] || S.aggs.llama, lms: got[1] || S.aggs.lms, vllm: got[2] || S.aggs.vllm };
     if (keep([['llamaState', got[3]], ['lms', got[4]]]) || fresh) S.updated = Date.now();
     if (!visible()) return;
