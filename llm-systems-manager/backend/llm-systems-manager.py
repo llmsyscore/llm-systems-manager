@@ -183,7 +183,7 @@ def _local_hostname() -> str:
 # banner reads it. Bump suffix (-1, -2, …) for same-day iterations; roll
 # the date for a new day's first change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.24-3"
+__version__ = "v2026.11.26-1"
 
 # Wall-clock at first import (Cheroot main process); the shutdown banner
 # reads it for the uptime line.
@@ -11411,7 +11411,7 @@ if __name__ == "__main__":
         # doesn't have to escalate. The registry was flushed above; the
         # OS cleanup on exit covers the rest (no other on-disk state).
         def _force_exit():
-            log.warning("forced exit after stop timeout")
+            log.info("forced exit after stop timeout")
             os._exit(0)
         threading.Timer(3.0, _force_exit).start()
         try:
