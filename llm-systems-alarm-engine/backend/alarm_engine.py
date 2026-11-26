@@ -74,7 +74,7 @@ from .storage.influxdb_client import InfluxDBClient
 # (-1, -2, …) for same-day iterations; roll the date for a new day's first
 # change.
 # ---------------------------------------------------------------------------
-__version__ = "v2026.11.24-1"
+__version__ = "v2026.11.26-1"
 from .storage import influx_monitor as _influx_monitor
 from .models.alarm_rule import (
     AlarmRuleCreate,
@@ -1920,7 +1920,7 @@ def main() -> None:
         if crt.is_file() and key.is_file():
             ssl_kwargs = {"ssl_certfile": str(crt), "ssl_keyfile": str(key)}
             _tls_status = {"enabled": True, "active": True, "error": None}
-            logger.warning("Alarm engine: serving HTTPS on %s:%d (cert %s)", host, port, crt)
+            logger.info("Alarm engine: serving HTTPS on %s:%d (cert %s)", host, port, crt)
         else:
             msg = (f"tls_enabled but cert/key not found: {crt} / {key} — "
                    "copy ae-tls.{crt,key} from the manager's data/ dir into this "
