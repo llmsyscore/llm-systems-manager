@@ -167,7 +167,8 @@ kitConfigure({ prefix: 'gallery' });
     panelHtml('rank', 'Top models', rankHtml(MODELS, { key: 'model', n: 6, unit: 'requests', dim: 'Model' }), { cls: 'span2',
       table: { cols: ['Model', 'Requests'], rows: MODELS.map(function(m) { return [m.label, m.v]; }) } }) +
     panelHtml('fun', 'From visit to report', funnelHtml([
-      { label: 'Visited the site', v: 1200 }, { label: 'Downloaded', v: 430 }, { label: 'Installed', v: 310 }, { label: 'Sent a report', v: 190 }])) +
+      { label: 'Visited the site', v: 1200 }, { label: 'Downloaded', v: 430 }, { label: 'Installed', v: 310 }, { label: 'Sent a report', v: 190 },
+      { label: 'Sent a first daily report', v: 120, base: 250, baseLabel: 'of installs with a manager' }])) +
     panelHtml('map', 'Visits by country', mapHtml([
       { code: 'US', v: 5200 }, { code: 'DE', v: 2100 }, { code: 'GB', v: 1800 }, { code: 'FR', v: 1300 }, { code: 'JP', v: 900 },
       { code: 'IN', v: 700 }, { code: 'BR', v: 600 }, { code: 'AU', v: 400 }, { code: 'CA', v: 350 }],
