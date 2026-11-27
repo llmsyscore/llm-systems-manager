@@ -107,6 +107,7 @@ LLAMA_BUILD_SCRIPT_OVERRIDE=""
 # Setup-time llama.cpp install via install/install_llama.py (run as the agent
 # user); wires LLAMA_BIN and the build method to the result.
 INSTALL_LLAMA=false
+LLAMA_INSTALLED_THIS_RUN=false   # set when this run installed llama.cpp
 INSTALL_LLAMA_METHOD="release_binary"
 INSTALL_LLAMA_BACKEND="cpu"
 LMS_API_URL_OVERRIDE=""
@@ -1558,7 +1559,7 @@ if $DO_UPDATE; then
     echo "ⓘ the root helper on this computer is v$_have_wrap_ver (newest v$_want_wrap_ver). Everything that"
     echo "  worked before keeps working; the multi-model switch for a self-managed llama-server"
     echo "  needs a one-time root update on this host:"
-    echo "      sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update"
+    echo "      bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update"
   fi
 
   # Root --update: install the sudoers file + root-owned svcconfig helper BEFORE
@@ -3099,6 +3100,7 @@ _detect_llama() {
           detected_bin="$_newbin"
           detected_dir="$(dirname "$_newbin")"
           _llama_just_installed=true
+          LLAMA_INSTALLED_THIS_RUN=true
           _llama_installed_method="$_m"
           _llama_installed_backend="$_b"
           found=true
@@ -4133,6 +4135,7 @@ $SUDO chown -R "$USER_ARG:$USER_GROUP" "$INSTALL_DIR"
 _write_enrollment_secret
 
 # Anonymous install and crash report consent: writes state/install-id and state/telemetry.json.
+_tele_event=install _tele_outcome=ok _tele_stage=files _tele_sent=false
 _tele_py="${PYTHON3:-$(command -v python3 || true)}"
 if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
   _tele_t="${LLMSYS_TELEMETRY:-}"
@@ -4152,6 +4155,8 @@ if [[ -n "$_tele_py" && -z "${CI:-}" ]]; then
     fi
   fi
   [[ "$_tele_t" == "1" ]] || _tele_t=0
+  # An install ID left by an earlier install makes this run an update.
+  _run_as "$USER_ARG" test -s "$INSTALL_DIR/state/install-id" 2>/dev/null && _tele_event=update
   _run_as "$USER_ARG" "$_tele_py" -I - "$INSTALL_DIR/state" "$_tele_t" <<'PY' || true
 import json, os, sys, time, uuid
 d, t = sys.argv[1], sys.argv[2] == "1"
@@ -4175,6 +4180,100 @@ put("telemetry.json", json.dumps({"install_report": t, "crash_reports": t,
 PY
   export LLMSYS_TELEMETRY="$_tele_t"
 fi
+
+# Agent-only install report (Mode 5 or standalone); full installs report from install.sh.
+# _agent_tele_report OUTCOME — sends the report once; never fails the caller.
+_agent_tele_report() {
+  local _tele_root _tele_ver _tele_src _tele_rel _tele_tmp _tele_provider=none
+  $_tele_sent && return 0
+  [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
+      && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]] || return 0
+  _tele_sent=true
+  if [[ "$ENABLE_LLAMA" == "true" ]]; then _tele_provider=llama
+  elif [[ "$ENABLE_LMS" == "true" ]]; then _tele_provider=lms
+  elif [[ "$ENABLE_VLLM" == "true" ]]; then _tele_provider=vllm
+  fi
+  _tele_root="$(cd "$SRC_DIR/.." && pwd)"
+  _tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)"
+  _tele_ver="${_tele_ver:-$VERSION}"
+  # Code source: the parent installer's answer, else .git = git, .llmsys-release = release, else local.
+  _tele_src="${LLMSYS_TELEMETRY_SOURCE:-}" _tele_rel="${LLMSYS_TELEMETRY_RELEASE:-}"
+  if [[ -z "$_tele_src" ]]; then
+    if [[ -e "$_tele_root/.git" ]]; then _tele_src=git
+    elif [[ -f "$_tele_root/.llmsys-release" ]]; then
+      _tele_src=release; _tele_rel="$(head -n1 "$_tele_root/.llmsys-release" 2>/dev/null)"
+    else _tele_src=local
+    fi
+  fi
+  if [[ -z "$_tele_rel" && -f "$_tele_root/RELEASE" ]]; then _tele_rel="$(head -n1 "$_tele_root/RELEASE" 2>/dev/null)"; fi
+  [[ "$_tele_rel" == \$Format* ]] && _tele_rel=""
+  # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
+  if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
+    _tele_tmp=""
+    if _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
+      && $SUDO chmod 0755 "$_tele_tmp" \
+      && $SUDO install -d -m 0755 -o "$USER_ARG" "$_tele_tmp/llm-systems-manager/backend" "$_tele_tmp/tools/installer" \
+      && $SUDO install -m 0644 -o "$USER_ARG" "$_tele_root/llm-systems-manager/backend/telemetry.py" "$_tele_tmp/llm-systems-manager/backend/" \
+      && $SUDO install -m 0755 -o "$USER_ARG" "$_tele_root/tools/installer/lib-common.sh" \
+           "$_tele_root/tools/installer/telemetry-report.sh" "$_tele_root/tools/installer/telemetry-retry.sh" \
+           "$_tele_tmp/tools/installer/" \
+      && $SUDO chown "$USER_ARG" "$_tele_tmp"; then
+      _tele_root="$_tele_tmp"
+    else
+      if [[ -n "$_tele_tmp" ]]; then $SUDO rm -rf "$_tele_tmp"; fi
+      _tele_root=""
+    fi
+  fi
+  if [[ -n "$_tele_root" ]]; then
+    _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
+      LLMSYS_TELEMETRY_SOURCE="$_tele_src" LLMSYS_TELEMETRY_RELEASE="$_tele_rel" \
+      LLMSYS_TELEMETRY_PROVIDER="$_tele_provider" \
+      LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
+      LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
+      bash "$_tele_root/tools/installer/telemetry-report.sh" --event "$_tele_event" --channel script --mode 5 \
+      --outcome "$1" --data-dir "$INSTALL_DIR/state" --version "$_tele_ver" --root "$_tele_root" </dev/null || true
+  fi
+  return 0
+}
+# EXIT hook: a run that stops with an error reports the step it stopped at.
+_agent_tele_on_exit() {
+  local rc=$?
+  (( rc != 0 )) || return 0
+  (( rc == 130 )) && _tele_stage=cancelled
+  if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
+        && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]] && ! $_tele_sent; then
+    echo "  … sending the failure report" >&2
+  fi
+  _agent_tele_report "failed:$_tele_stage" >/dev/null 2>&1 || true
+}
+trap '_tele_stage=cancelled; exit 130' INT
+# _agent_health_ok — 0 when the agent answers /health on its configured port, over HTTP or HTTPS.
+_agent_health_ok() {
+  local port host scheme
+  port="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" AGENT_BIND_PORT)"
+  host="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" AGENT_BIND_HOST)"
+  [[ "$port" =~ ^[0-9]+$ ]] || port=8082
+  case "$host" in ""|0.0.0.0|::|"[::]") host=127.0.0.1 ;; *:*) host="[$host]" ;; esac
+  if command -v curl >/dev/null 2>&1; then
+    for scheme in http https; do
+      [[ "$(curl -sk -m 3 -o /dev/null -w '%{http_code}' "$scheme://$host:$port/health" 2>/dev/null)" == "200" ]] && return 0
+    done
+    return 1
+  fi
+  "${PYTHON3:-python3}" - "$host" "$port" >/dev/null 2>&1 <<'PY'
+import ssl, sys, urllib.request
+host, port = sys.argv[1], sys.argv[2]
+ctx = ssl._create_unverified_context()
+for scheme in ("http", "https"):
+    try:
+        if urllib.request.urlopen(f"{scheme}://{host}:{port}/health", timeout=3, context=ctx).status == 200:
+            sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+PY
+}
+trap _agent_tele_on_exit EXIT
 
 if [[ "$AGENT_OS" == "linux" ]]; then
   $SUDO mkdir -p /var/log/llm-systems-manager
@@ -4224,6 +4323,7 @@ _ok "agent code installed to $INSTALL_DIR"
 
 # Optional CUDA-gated vLLM install — flips ENABLE_VLLM on success, so it must
 # run before the config writer and the sudoers/journal steps read the flag.
+_tele_stage=runtime
 if $INSTALL_VLLM && [[ "$AGENT_OS" == "linux" ]]; then
   if ! _offer_vllm_install; then
     INSTALL_VLLM=false
@@ -4232,6 +4332,7 @@ if $INSTALL_VLLM && [[ "$AGENT_OS" == "linux" ]]; then
 fi
 
 # 3. Drop config from example if missing
+_tele_stage=config
 if [[ ! -f "$INSTALL_DIR/agent_config.yaml" ]]; then
   $SUDO cp "$SRC_DIR/agent_config.yaml.example" "$INSTALL_DIR/agent_config.yaml"
   $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/agent_config.yaml"
@@ -4284,8 +4385,9 @@ def _set(key, value):
     by the installer's prompt overrides.
     """
     global text
-    pattern = rf'^[#\s]*{re.escape(key)}:[^\n]*'
     new_line = f'{key}: {value}'
+    live = rf'^{re.escape(key)}:[^\n]*'
+    pattern = live if re.search(live, text, flags=re.M) else rf'^[#\s]*{re.escape(key)}:[^\n]*'
     if re.search(pattern, text, flags=re.M):
         # Lambda repl: literal insertion, no \-escape processing of the value.
         text = re.sub(pattern, lambda _m: new_line, text, count=1, flags=re.M)
@@ -4504,6 +4606,73 @@ if oc_dir:      _set_quoted('OPENCLAW_AGENTS_DIR', oc_dir)
 
 open(path, 'w').write(text)
 PYEOF
+elif [[ "$LLAMA_INSTALLED_THIS_RUN" == true ]]; then
+  # Re-run that installed llama.cpp: back up the config, then write only the llama keys.
+  _cfg_bak="$INSTALL_DIR/agent_config.yaml.bak-$(date +%Y%m%d-%H%M%S)"
+  _run_as "$USER_ARG" cp -p "$INSTALL_DIR/agent_config.yaml" "$_cfg_bak"
+  _run_as "$USER_ARG" "${PYTHON3:-python3}" -I - "$INSTALL_DIR/agent_config.yaml" \
+    "$LLAMA_BIN_OVERRIDE" "$LLAMA_CONFIG_INI_OVERRIDE" "$LLAMA_BUILD_METHOD_OVERRIDE" \
+    "$LLAMA_BUILD_DIR_OVERRIDE" "$LLAMA_BUILD_BACKEND_OVERRIDE" \
+    "$LLAMA_API_URL_OVERRIDE" "$LLAMA_SYSTEMD_UNIT_OVERRIDE" \
+    "$LLAMA_LOG_FILE_OVERRIDE" "$LLAMA_BUILD_SCRIPT_OVERRIDE" <<'PYEOF'
+import os, re, sys
+
+path, bin_, ini, method, build_dir, backend, api, unit, log, script = sys.argv[1:]
+text = open(path).read()
+
+def _set(key, value):
+    # Sets the live KEY line when there is one, else uncomments the first commented one.
+    global text
+    line = f'{key}: {value}'
+    live = rf'^{re.escape(key)}:[^\n]*'
+    pattern = live if re.search(live, text, flags=re.M) else rf'^#[ \t]*{re.escape(key)}:[^\n]*'
+    if re.search(pattern, text, flags=re.M):
+        text = re.sub(pattern, lambda _m: line, text, count=1, flags=re.M)
+    else:
+        text = text.rstrip() + f"\n{line}\n"
+
+def _quoted(value):
+    s = (str(value).replace('\\', '\\\\').replace('"', '\\"')
+         .replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t'))
+    return f'"{s}"'
+
+def _set_build_opt(key, value):
+    global text
+    lines = text.split('\n')
+    hdr = next((i for i, ln in enumerate(lines) if re.match(r'^[#\s]*LLAMA_BUILD_OPTS:', ln)), None)
+    child = f'  {key}: {value}'
+    if hdr is None:
+        text = text.rstrip() + f'\nLLAMA_BUILD_OPTS:\n{child}\n'
+        return
+    lines[hdr] = 'LLAMA_BUILD_OPTS:'
+    found, j = None, hdr + 1
+    while j < len(lines) and re.match(r'^#?\s{2,}\S', lines[j]):
+        if re.match(rf'^#?\s{{2,}}{re.escape(key)}:', lines[j]):
+            found = j
+        j += 1
+    if found is not None:
+        lines[found] = child
+    else:
+        lines.insert(hdr + 1, child)
+    text = '\n'.join(lines)
+
+_set('LLAMA_ENABLED', 'true')
+for key, value in (('LLAMA_BIN', bin_), ('LLAMA_CONFIG_INI', ini), ('LLAMA_BUILD_METHOD', method),
+                   ('LLAMA_BUILD_DIR', build_dir), ('LLAMA_API_URL', api), ('LLAMA_SYSTEMD_UNIT', unit),
+                   ('LLAMA_LOG_FILE', log)):
+    if value:
+        _set(key, _quoted(value))
+if backend:
+    _set_build_opt('backend', backend)
+if script:
+    _set_build_opt('script_path', _quoted(script))
+st = os.stat(path)
+fd = os.open(path + '.tmp', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, st.st_mode & 0o777)
+with os.fdopen(fd, 'w') as fh:
+    fh.write(text)
+os.replace(path + '.tmp', path)
+PYEOF
+  _ok "agent_config.yaml: llama.cpp settings written (previous copy: $_cfg_bak)"
 else
   _warn "existing $INSTALL_DIR/agent_config.yaml — leaving untouched"
   echo "    Prompts from this install were NOT applied. Pass --update to merge new keys,"
@@ -4514,6 +4683,7 @@ $SUDO mkdir -p "$INSTALL_DIR/src"
 $SUDO chown "$USER_ARG:$USER_GROUP" "$INSTALL_DIR/src"
 
 : "${PYTHON3:=$(command -v python3)}"
+_tele_stage=venv
 _run_as "$USER_ARG" "$PYTHON3" -m venv "$INSTALL_DIR/venv"
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir --upgrade pip
 _pip_filter _run_as "$USER_ARG" "$INSTALL_DIR/venv/bin/pip" install --quiet --no-cache-dir -r "$TMPL_DIR/requirements.txt"
@@ -4525,6 +4695,7 @@ if $ENABLE_LLAMA; then
 fi
 
 # Install sudoers + svcconfig wrapper before enabling the agent.
+_tele_stage=sudoers
 if [[ "$AGENT_OS" == "linux" && "$SKIP_SUDOERS" == "false" ]]; then
   _apply_sudoers_and_wrapper || exit 1
 fi
@@ -4540,6 +4711,7 @@ if [[ "$AGENT_OS" == "linux" && "$ENABLE_VLLM" == "true" ]]; then
 fi
 
 # 5. systemd unit (Linux) / launchd plist (macOS)
+_tele_stage=service
 if ! $SKIP_SERVICE; then
   if [[ "$AGENT_OS" == "linux" ]]; then
     _section "Installing systemd service"
@@ -4552,9 +4724,28 @@ if ! $SKIP_SERVICE; then
     if $SKIP_START; then
       $SUDO systemctl enable llm-systems-agent.service >/dev/null 2>&1
       _ok "$UNIT_DEST installed + enabled (not started — --no-start)"
+    elif $SUDO systemctl is-active --quiet llm-systems-agent.service; then
+      echo "  ⓘ restarting the running agent so this install takes effect (tasks it is running stop)"
+      $SUDO systemctl enable llm-systems-agent.service >/dev/null 2>&1
+      $SUDO systemctl restart llm-systems-agent.service
+      _ok "$UNIT_DEST installed + restarted"
     else
       $SUDO systemctl enable --now llm-systems-agent.service >/dev/null 2>&1
       _ok "$UNIT_DEST installed + started"
+    fi
+    if ! $SKIP_START; then
+      # Waits up to 30 s for the agent's /health; a miss marks the report failed:agent_start.
+      _agent_up=false
+      for _i in $(seq 1 30); do
+        if _agent_health_ok; then _agent_up=true; break; fi
+        sleep 1
+      done
+      if $_agent_up; then
+        _ok "agent answering on its health address"
+      else
+        _warn "agent did not answer on its health address within 30s — check: journalctl -u llm-systems-agent -n 50"
+        _tele_outcome="failed:agent_start"
+      fi
     fi
   else
     PLIST_DEST="$HOME/Library/LaunchAgents/com.llm-systems-agent.plist"
@@ -4617,7 +4808,7 @@ EOF
     _registered=false
     for _i in $(seq 1 30); do
       sleep 1
-      if [[ "$(_probe_http_code http://127.0.0.1:8082/health)" == "200" ]]; then
+      if _agent_health_ok; then
         _started=true
         # Once started, give it a moment to register, then check.
         if [[ "$(_probe_http_code "$MANAGER_URL/api/agents")" == "200" ]]; then
@@ -4633,7 +4824,7 @@ EOF
     done
 
     if $_started && $_registered; then
-      echo "  ✓ agent up at :8082 and registered with manager"
+      echo "  ✓ agent up and registered with manager"
     elif $_started && ! $_registered; then
       echo
       echo "  ⚠ agent started locally but is NOT registered with the manager." >&2
@@ -4646,8 +4837,9 @@ EOF
       echo "    Tail the log to confirm registration:" >&2
       echo "        tail -f /Users/$USER_ARG/Library/Logs/llm-systems-agent/agent.log" >&2
     elif ! $_started; then
+      _tele_outcome="failed:agent_start"
       echo
-      echo "  ✗ agent did not respond on http://127.0.0.1:8082/health within 30s." >&2
+      echo "  ✗ agent did not answer on its health address within 30s." >&2
       echo "    Check the launchd log:" >&2
       echo "        tail -f /Users/$USER_ARG/Library/Logs/llm-systems-agent/agent.log" >&2
     fi
@@ -4656,6 +4848,7 @@ EOF
 fi
 
 # 6b. Agent state dir (power arbiter durable record).
+_tele_stage=finish
 _ensure_agent_state_dir
 
 # 7. Example perf-controller systemd units (opt-in via --install-perf-units;
@@ -4783,35 +4976,39 @@ if [[ "$AGENT_OS" == "linux" ]] \
       "/usr/local/llama.cpp/llama-server" \
       "/usr/local/bin/llama-server" \
       "$HOME/llama.cpp/build/bin/llama-server" 2>/dev/null || true)"
+  [[ -z "$_llama_found" ]] && _llama_found="$(command -v llama-server 2>/dev/null || true)"
   _lms_found=""
   command -v lms >/dev/null 2>&1 && _lms_found="$(command -v lms)"
   [[ -z "$_lms_found" && -x "$HOME/.lmstudio/bin/lms" ]] && _lms_found="$HOME/.lmstudio/bin/lms"
   _vllm_found=""
   python3 -c "import vllm" >/dev/null 2>&1 && _vllm_found="python3 -c 'import vllm'"
+  _ollama_found="$(command -v ollama 2>/dev/null || true)"
 
   if [[ -z "$_llama_found" && -z "$_lms_found" && -z "$_vllm_found" ]]; then
     echo
     echo "── Recommended next step: install an inference runtime ────────────────"
     echo "  This host has a $_gpu_vendor GPU but no inference runtime was found"
-    echo "  (llama.cpp / LM Studio / vLLM). The agent registered fine — it just"
+    echo "  (llama.cpp / LM Studio / vLLM). The agent is installed — it just"
     echo "  won't have a provider to monitor until one is installed."
+    if [[ -n "$_ollama_found" ]]; then
+      echo
+      echo "  Ollama is installed here ($_ollama_found), but the agent does not"
+      echo "  monitor Ollama. Add llama.cpp or LM Studio to see this host's models."
+    fi
     echo
-    echo "  The installer does NOT auto-install these (GPU toolchain + version"
-    echo "  pinning + license choices are operator decisions). Pick ONE:"
+    echo "  Pick ONE:"
     echo
     if [[ "$_gpu_vendor" == "AMD" ]]; then
-      echo "  • llama.cpp (HIP/ROCm) — small, fast, GGUF models:"
-      echo "      git clone https://github.com/ggerganov/llama.cpp /usr/local/llama.cpp"
-      echo "      cd /usr/local/llama.cpp && cmake -B build -DGGML_HIP=ON \\"
-      echo "          -DAMDGPU_TARGETS=gfx1100 -DCMAKE_BUILD_TYPE=Release"
-      echo "      cmake --build build --config Release -j"
-      echo "      # adjust AMDGPU_TARGETS for your card (gfx1100 = RX 7900 XTX)"
+      echo "  • llama.cpp — the agent installer can set it up for you. Vulkan works"
+      echo "    on Radeon cards and Ryzen AI Max (Strix Halo) without ROCm:"
+      echo "      bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- \\"
+      echo "        --manager-url $MANAGER_URL --install-llama --llama-backend vulkan"
+      echo "    With ROCm installed, use --llama-backend rocm instead."
     else
-      echo "  • llama.cpp (CUDA) — small, fast, GGUF models:"
-      echo "      git clone https://github.com/ggerganov/llama.cpp /usr/local/llama.cpp"
-      echo "      cd /usr/local/llama.cpp && cmake -B build -DGGML_CUDA=ON \\"
-      echo "          -DCMAKE_BUILD_TYPE=Release"
-      echo "      cmake --build build --config Release -j"
+      echo "  • llama.cpp — the agent installer can set it up for you:"
+      echo "      bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- \\"
+      echo "        --manager-url $MANAGER_URL --install-llama=source --llama-backend cuda"
+      echo "    (builds llama.cpp with this machine's CUDA toolkit; needs git and cmake)"
     fi
     echo
     echo "  • LM Studio — GUI-driven catalog + headless 'lms' CLI:"
@@ -4827,14 +5024,14 @@ if [[ "$AGENT_OS" == "linux" ]] \
       echo "      before committing to it on this host."
     fi
     echo
-    echo "  After installing one, re-run the installer with --update so the"
-    echo "  agent re-detects the runtime and enables the matching provider:"
-    echo "      sudo bash $INSTALL_DIR/src/agent/install/install.sh --update"
-    echo "  …then edit $INSTALL_DIR/agent_config.yaml to set LLAMA_ENABLED=true"
-    echo "  (or LMS_ENABLED=true), and restart the agent."
+    echo "  After installing LM Studio or vLLM yourself, re-run the installer with"
+    echo "  --update so the agent re-detects the runtime:"
+    echo "      bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update"
+    echo "  …then edit $INSTALL_DIR/agent_config.yaml to set LMS_ENABLED: true"
+    echo "  (or VLLM_ENABLED: true), and restart the agent."
     echo "─────────────────────────────────────────────────────────────────────────"
   fi
-  unset _llama_found _lms_found _vllm_found
+  unset _llama_found _lms_found _vllm_found _ollama_found
 fi
 
 echo
@@ -4842,7 +5039,10 @@ echo "── Agent Installation Complete ─────────────
 echo "  Edit config:    $INSTALL_DIR/agent_config.yaml"
 echo "  View logs:      ${AGENT_OS:+(linux)} journalctl -u llm-systems-agent -f"
 echo "                  (macOS) tail -f /Users/$USER_ARG/Library/Logs/llm-systems-agent/agent.log"
-echo "  Health check:   curl http://localhost:8082/health"
+_hc_port="$(_yaml_scalar "$INSTALL_DIR/agent_config.yaml" AGENT_BIND_PORT)"
+[[ "$_hc_port" =~ ^[0-9]+$ ]] || _hc_port=8082
+echo "  Health check:   curl http://localhost:$_hc_port/health"
+echo "                  (once approved: curl -k https://localhost:$_hc_port/health)"
 echo
 # Show a browser-reachable URL — when the manager runs on the same host
 # (MANAGER_URL=127.0.0.1) the operator still needs a LAN IP they can hit
@@ -4858,46 +5058,5 @@ fi
 echo "  Approve at:     $APPROVE_URL/  → Admin tab → Agents"
 echo "─────────────────────────────────────────────────────────────────────────"
 
-# Agent-only install report (Mode 5 or standalone); full installs report from install.sh.
-if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
-      && -f "$SRC_DIR/../tools/installer/telemetry-report.sh" ]]; then
-  _tele_root="$(cd "$SRC_DIR/.." && pwd)"
-  _tele_ver="$(sed -nE 's/^VERSION = "(.*)"/\1/p' "$SRC_DIR/llm-systems-agent.py" | head -1)"
-  _tele_ver="${_tele_ver:-$VERSION}"
-  # Code source: the parent installer's answer, else .git = git, .llmsys-release = release, else local.
-  _tele_src="${LLMSYS_TELEMETRY_SOURCE:-}" _tele_rel="${LLMSYS_TELEMETRY_RELEASE:-}"
-  if [[ -z "$_tele_src" ]]; then
-    if [[ -e "$_tele_root/.git" ]]; then _tele_src=git
-    elif [[ -f "$_tele_root/.llmsys-release" ]]; then
-      _tele_src=release; _tele_rel="$(head -n1 "$_tele_root/.llmsys-release" 2>/dev/null)"
-    else _tele_src=local
-    fi
-  fi
-  if [[ -z "$_tele_rel" && -f "$_tele_root/RELEASE" ]]; then _tele_rel="$(head -n1 "$_tele_root/RELEASE" 2>/dev/null)"; fi
-  [[ "$_tele_rel" == \$Format* ]] && _tele_rel=""
-  # Unreadable source tree: stage a throwaway /tmp copy of the report files for the user.
-  if ! _run_as "$USER_ARG" test -r "$_tele_root/llm-systems-manager/backend/telemetry.py"; then
-    _tele_tmp=""
-    if _tele_tmp="$(mktemp -d /tmp/llmsys-telemetry.XXXXXX)" \
-      && $SUDO chmod 0755 "$_tele_tmp" \
-      && $SUDO install -d -m 0755 -o "$USER_ARG" "$_tele_tmp/llm-systems-manager/backend" "$_tele_tmp/tools/installer" \
-      && $SUDO install -m 0644 -o "$USER_ARG" "$_tele_root/llm-systems-manager/backend/telemetry.py" "$_tele_tmp/llm-systems-manager/backend/" \
-      && $SUDO install -m 0755 -o "$USER_ARG" "$_tele_root/tools/installer/lib-common.sh" \
-           "$_tele_root/tools/installer/telemetry-report.sh" "$_tele_root/tools/installer/telemetry-retry.sh" \
-           "$_tele_tmp/tools/installer/" \
-      && $SUDO chown "$USER_ARG" "$_tele_tmp"; then
-      _tele_root="$_tele_tmp"
-    else
-      if [[ -n "$_tele_tmp" ]]; then $SUDO rm -rf "$_tele_tmp"; fi
-      _tele_root=""
-    fi
-  fi
-  if [[ -n "$_tele_root" ]]; then
-    _run_as "$USER_ARG" env LLMSYS_TELEMETRY=1 CI="${CI:-}" \
-      LLMSYS_TELEMETRY_SOURCE="$_tele_src" LLMSYS_TELEMETRY_RELEASE="$_tele_rel" \
-      LLMSYS_TELEMETRY_ENDPOINT="${LLMSYS_TELEMETRY_ENDPOINT:-}" \
-      LLMSYS_TELEMETRY_RETRY_DELAYS="${LLMSYS_TELEMETRY_RETRY_DELAYS:-}" \
-      bash "$_tele_root/tools/installer/telemetry-report.sh" --event install --channel script --mode 5 \
-      --data-dir "$INSTALL_DIR/state" --version "$_tele_ver" --root "$_tele_root" </dev/null || true
-  fi
-fi
+# Agent-only install report: ok, or the step that failed after the files were in place.
+_agent_tele_report "$_tele_outcome"

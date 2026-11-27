@@ -101,7 +101,7 @@ jobs:
           path: dist
 
       - name: Install .deb (fresh)
-        run: sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb 2>&1 | tee /tmp/deb-install-fresh.log
+        run: sudo LLMSYS_TELEMETRY=0 DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/llm-systems-manager_0.0.1_all.deb 2>&1 | tee /tmp/deb-install-fresh.log; test "${PIPESTATUS[0]}" -eq 0
 
       # The postinst probes the configured InfluxDB and prints a loud notice
       # when it's unreachable (#385). No InfluxDB runs here, so it MUST fire.
@@ -160,7 +160,7 @@ jobs:
             echo 'ERROR: the package printed a password into the apt log'; exit 1
           fi
           sudo /opt/llm-systems-manager/llm-systems-manager/venv/bin/python3 \
-            /opt/llm-systems-manager/llm-systems-manager/backend/admin_password.py reset --yes | tee /tmp/admin-reset.log
+            /opt/llm-systems-manager/llm-systems-manager/backend/admin_password.py reset --yes | tee /tmp/admin-reset.log; test "${PIPESTATUS[0]}" -eq 0
           sudo stat -c '%U %a' /opt/llm-systems-manager/data/manager_users.json | grep -qx 'llmsys 600'
           sudo bash tools/installer/ci-first-signin.sh /tmp/admin-reset.log
 

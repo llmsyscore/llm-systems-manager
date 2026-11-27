@@ -1399,6 +1399,8 @@ telemetry_payload() {
   [[ -n "$rel" ]] || rel="${LLMSYS_TELEMETRY_RELEASE:-}"
   local b="$7/llm-systems-manager/backend/telemetry.py" src=()
   grep -q -- '"--source"' "$b" 2>/dev/null && src=(--source "${LLMSYS_TELEMETRY_SOURCE:-}")
+  [[ -n "${LLMSYS_TELEMETRY_PROVIDER:-}" ]] && grep -q -- '"--provider"' "$b" 2>/dev/null \
+    && src+=(--provider "$LLMSYS_TELEMETRY_PROVIDER")
   "$py" -I "$b" payload --event "$1" --channel "$2" \
     --mode "$3" --outcome "$4" --data-dir "$5" --version "$6" --root "$7" --release "$rel" \
     ${src[@]+"${src[@]}"}

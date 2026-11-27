@@ -460,6 +460,14 @@ def test_select_asset_vulkan_requires_token():
     assert dl == "https://example.com/llama-b1-bin-ubuntu-vulkan-x64.tar.gz"
 
 
+@pytest.mark.parametrize("arch", ["x64", "arm64"])
+def test_select_asset_cuda_skips_the_runtime_only_archive(arch):
+    assets = _assets(f"cudart-llama-bin-ubuntu-cuda-13.5-{arch}.tar.gz",
+                     f"llama-b1-bin-ubuntu-cuda-13.5-{arch}.tar.gz")
+    dl = li._select_asset(assets, ["ubuntu", arch], li._RELEASE_VARIANT["cuda"])
+    assert dl == f"https://example.com/llama-b1-bin-ubuntu-cuda-13.5-{arch}.tar.gz"
+
+
 def test_select_asset_returns_none_when_no_match():
     assets = _assets("llama-b1-bin-ubuntu-openvino-x64.tar.gz")
     assert li._select_asset(assets, ["ubuntu", "x64"], li._RELEASE_VARIANT["cpu"]) is None
@@ -846,3 +854,32 @@ def test_source_up_to_date_false_when_upstream_unresolvable(monkeypatch):
     monkeypatch.setattr(li, "remote_commit", lambda ref, **k: None)
     out = li.source_up_to_date({"git_ref": "master"}, "a" * 40, "cpu")
     assert out["up_to_date"] is False and "could not resolve master" in out["reason"]
+
+
+# Asset names of llama.cpp build b12774 (2026-11), the release the picker resolves today.
+_B12774 = """cudart-llama-b12774-bin-ubuntu-cuda-12.8-x64.tar.gz cudart-llama-b12774-bin-ubuntu-cuda-13.5-arm64.tar.gz
+cudart-llama-b12774-bin-ubuntu-cuda-13.5-x64.tar.gz cudart-llama-bin-win-cuda-13.5-x64.zip
+llama-b12774-bin-android-arm64.tar.gz llama-b12774-bin-linux-arm64-snapdragon.tar.gz
+llama-b12774-bin-macos-arm64.tar.gz llama-b12774-bin-macos-x64.tar.gz llama-b12774-bin-ubuntu-26.04-s390x.tar.gz
+llama-b12774-bin-ubuntu-arm64.tar.gz llama-b12774-bin-ubuntu-cuda-12.8-x64.tar.gz
+llama-b12774-bin-ubuntu-cuda-13.5-arm64.tar.gz llama-b12774-bin-ubuntu-cuda-13.5-x64.tar.gz
+llama-b12774-bin-ubuntu-openvino-2026.4.1-x64.tar.gz llama-b12774-bin-ubuntu-rocm-10.0-x64.tar.gz
+llama-b12774-bin-ubuntu-sycl-fp16-x64.tar.gz llama-b12774-bin-ubuntu-vulkan-arm64.tar.gz
+llama-b12774-bin-ubuntu-vulkan-x64.tar.gz llama-b12774-bin-ubuntu-x64.tar.gz llama-b12774-bin-win-cpu-x64.zip
+llama-b12774-ui.tar.gz""".split()
+
+
+@pytest.mark.parametrize("os_tok,arch,backend,want", [
+    ("ubuntu", "x64", "cpu", "llama-b12774-bin-ubuntu-x64.tar.gz"),
+    ("ubuntu", "arm64", "cpu", "llama-b12774-bin-ubuntu-arm64.tar.gz"),
+    ("ubuntu", "x64", "cuda", "llama-b12774-bin-ubuntu-cuda-12.8-x64.tar.gz"),
+    ("ubuntu", "arm64", "cuda", "llama-b12774-bin-ubuntu-cuda-13.5-arm64.tar.gz"),
+    ("ubuntu", "x64", "vulkan", "llama-b12774-bin-ubuntu-vulkan-x64.tar.gz"),
+    ("ubuntu", "arm64", "vulkan", "llama-b12774-bin-ubuntu-vulkan-arm64.tar.gz"),
+    ("ubuntu", "x64", "rocm", "llama-b12774-bin-ubuntu-rocm-10.0-x64.tar.gz"),
+    ("ubuntu", "arm64", "rocm", None),
+    ("macos", "arm64", "cpu", "llama-b12774-bin-macos-arm64.tar.gz"),
+])
+def test_select_asset_on_a_recorded_release(os_tok, arch, backend, want):
+    dl = li._select_asset(_assets(*_B12774), [os_tok, arch], li._RELEASE_VARIANT[backend])
+    assert dl == (f"https://example.com/{want}" if want else None)

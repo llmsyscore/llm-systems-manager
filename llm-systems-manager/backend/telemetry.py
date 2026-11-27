@@ -160,6 +160,14 @@ def _cpu_model() -> str:
         for line in Path("/proc/cpuinfo").read_text().splitlines():
             if line.lower().startswith("model name"):
                 return line.split(":", 1)[1].strip()[:128]
+        # ARM /proc/cpuinfo has no model name line; lscpu names the core instead.
+        out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=3,
+                             env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"}).stdout
+        for line in out.splitlines():
+            if line.strip().lower().startswith("model name:"):
+                name = line.split(":", 1)[1].strip()
+                if name and name != "-":
+                    return name[:128]
     except Exception:
         pass  # falls back to platform.processor()
     return platform.processor()[:128] or "unknown"
@@ -280,6 +288,7 @@ def _call_str(fn) -> Optional[str]:
 
 
 SOURCES = ("release", "git", "local")
+PROVIDERS = ("llama", "lms", "vllm", "none")
 
 
 # One "<install time> <version>" line per installed package header.
@@ -711,6 +720,7 @@ def _main(argv) -> int:
     p.add_argument("--outcome", default="")
     p.add_argument("--release", default="")
     p.add_argument("--source", default="")
+    p.add_argument("--provider", default="")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--root", required=True)
@@ -725,7 +735,8 @@ def _main(argv) -> int:
     if a.cmd == "payload":
         out = build_payload(a.event, data_dir=Path(a.data_dir), version=a.version, channel=a.channel,
                             mode=a.mode, outcome=a.outcome, source=a.source,
-                            extra={"release": a.release[:128] or None})
+                            extra={"release": a.release[:128] or None,
+                                   "provider": a.provider if a.provider in PROVIDERS else None})
         print(json.dumps(out))
         return 0
     payload = json.loads(Path(a.file).read_text())

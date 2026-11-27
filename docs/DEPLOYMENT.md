@@ -211,7 +211,7 @@ The installer asks once, after the mode picker, whether to send the anonymous in
 
 | Report | When | Fields |
 |---|---|---|
-| Install | once per install or update | product release and version, the installed package version on .deb and .rpm installs, where the code came from (a published release, a git copy of `main`, or a local copy), install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded |
+| Install | once per install or update | product release and version, the installed package version on .deb and .rpm installs, where the code came from (a published release, a git copy of `main`, or a local copy), install channel and mode, operating system and version, CPU model, memory size, GPU vendor and count, whether the install succeeded and, if not, the step it stopped at; on an agent-only install, which inference runtime it found (llama.cpp, LM Studio, vLLM or none) |
 | Crash | when a service hits an unexpected error, at most five a day | component, error type, code locations inside the product, uptime |
 | Daily check-in | once a day | product release and version, operating system and version, install channel |
 | Daily diagnostic | once a day when turned on, instead of the check-in | product release, the installed package version on .deb and .rpm installs, manager, alarm engine and agent versions, operating system, hardware, number of agents, provider mix, uptime, and how many times some features were used: benchmark, autotune, quality and Tower test runs and Tower questions in the last day, alarm rules set up, alarms raised in the last day, and models loaded |
@@ -303,6 +303,8 @@ bash <(curl -fsSL https://get.llmsysmanager.com/install.sh)
 ```bash
 sudo bash install.sh --mode 5 -- --update --ca-fingerprint <fingerprint>
 ```
+
+**Running the agent installer again.** On a computer that already has the agent, the installer keeps the agent's settings and restarts the agent so the new code takes effect; anything the agent was running at that moment, such as a download, stops. If you run it with `--install-llama` to add llama.cpp, it also turns llama.cpp on in the agent's settings. It keeps the previous settings file next to it as `agent_config.yaml.bak-<date>`, and you can delete those copies when you no longer need them.
 
 ### Step 2: Start the Agent (if not started during the installation)
 
@@ -993,10 +995,10 @@ The install script finds these for you. Check them after a .deb or .rpm install,
 
 The helper is a small program, owned by root, that the agent uses to edit and restart the llama-server service.
 
-The dashboard asks you to update it when you press **Switch to multi-model mode** or **Add a presets file**, and when you start or stop the server after its service name changed. Run this once on that computer as root, then try again:
+The dashboard asks you to update it when you press **Switch to multi-model mode** or **Add a presets file**, and when you start or stop the server after its service name changed. Run this once on that computer (it asks for your password), then try again:
 
 ```bash
-sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update
 ```
 
 If you installed the agent from the .deb package, run `sudo dpkg-reconfigure llm-systems-agent` instead.
