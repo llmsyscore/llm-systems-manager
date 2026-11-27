@@ -72,7 +72,7 @@ jobs:
       # default, and the local agent installs after the manager is up.
       # --no-self-update pins the run to the PR's installer, not upstream's.
       - name: Run installer (mode 1)
-        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log; test "${PIPESTATUS[0]}" -eq 0
 
       # The Next steps banner shows a temporary admin password; it must sign in
       # once and force a change before anything else works (#1160).
@@ -94,7 +94,7 @@ jobs:
         run: sudo bash tools/installer/ci-plant-stale-fixture.sh tools/installer/removed-paths.manifest
 
       - name: Reinstall over existing tree (mode 1)
-        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/reinstall.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 1 --no-self-update < /dev/null 2>&1 | tee /tmp/reinstall.log; test "${PIPESTATUS[0]}" -eq 0
 
       # A reinstall keeps the admin's own password (#1160).
       - name: Reinstall kept the admin password
@@ -185,7 +185,7 @@ jobs:
       # restarted service self-reports the freshly deployed version and
       # exits non-zero on mismatch or failed units.
       - name: Upgrade to head
-        run: sudo CI=true LLMSYS_TELEMETRY=0 REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update.log
+        run: sudo CI=true LLMSYS_TELEMETRY=0 REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Update replaced the old shipped password with a temporary one
         run: |
@@ -319,7 +319,7 @@ jobs:
           cp tools/installer/install.sh "$RUNNER_TEMP/install.sh"
           sudo LLMSYS_TELEMETRY=0 LLMSYS_RELEASE_TAG="$TAG" \
                bash "$RUNNER_TEMP/install.sh" --mode 3 --no-self-update < /dev/null 2>&1 \
-            | tee /tmp/main-vs-release.log
+            | tee /tmp/main-vs-release.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Assert the tarball's lib-common was paired and the run completed
         run: |
@@ -507,7 +507,7 @@ jobs:
           echo '# split-upgrade drift' | sudo tee -a /opt/llm-systems-manager-ae/llm-systems-alarm-engine/backend/alarm_engine.py >/dev/null
 
       - name: Update the manager tree to head
-        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-mgr.log
+        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-mgr REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-mgr.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Manager update names the certificate copy, the InfluxDB host and Update all
         run: |
@@ -520,7 +520,7 @@ jobs:
           sudo test -f /opt/llm-systems-manager-mgr/data/ae-tls.crt
 
       - name: Update the alarm engine tree to head
-        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae.log
+        run: sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Alarm engine update says its certificate has no role name yet
         run: |
@@ -546,7 +546,7 @@ jobs:
 
       - name: A second alarm engine update no longer asks for the certificate
         run: |
-          sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae2.log
+          sudo CI=true LLMSYS_TELEMETRY=0 LLMSYS_INSTALL_DIR=/opt/llm-systems-manager-ae REPO_SRC="$GITHUB_WORKSPACE/head" bash head/tools/installer/update.sh --yes 2>&1 | tee /tmp/update-ae2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -F 'Next steps' /tmp/update-ae2.log
           ! sed -n '/Next steps/,$p' /tmp/update-ae2.log | grep -qiF 'certificate'
 
@@ -580,7 +580,7 @@ jobs:
         run: sudo bash tools/installer/ci-prereqs.sh jq rsync wget gnupg ca-certificates openssl
 
       - name: Install InfluxDB only (mode 6)
-        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log
+        run: sudo LLMSYS_TELEMETRY=0 bash tools/installer/install.sh --mode 6 --no-self-update < /dev/null 2>&1 | tee /tmp/install.log; test "${PIPESTATUS[0]}" -eq 0
 
       # Mode 6 gets the OOM drop-in and 0s fsync but no GOMEMLIMIT (dedicated host).
       - name: Assert fresh mode-6 tuning
@@ -600,7 +600,7 @@ jobs:
       - name: Run update.sh on the DB-only host
         run: |
           set -o pipefail
-          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update.log
+          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update.log; test "${PIPESTATUS[0]}" -eq 0
           if grep -q 'nothing to update' /tmp/update.log; then echo 'ERROR: update.sh skipped the InfluxDB-only host'; exit 1; fi
           grep -q 'InfluxDB host tuning' /tmp/update.log
 
@@ -614,7 +614,7 @@ jobs:
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8086/health >/dev/null && break; sleep 1; done
           curl -fsS http://127.0.0.1:8086/health | jq .
           # A second run is a no-op: nothing changed, no restart.
-          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update2.log
+          sudo CI=true LLMSYS_TELEMETRY=0 bash tools/installer/update.sh -y < /dev/null 2>&1 | tee /tmp/update2.log; test "${PIPESTATUS[0]}" -eq 0
           grep -q 'already current' /tmp/update2.log
 
       - name: Collect service logs on failure
@@ -649,7 +649,7 @@ jobs:
       - name: Install from the local tree (mode 1, --source local)
         run: |
           sudo LLMSYS_TELEMETRY=0 bash "${RUNNER_TEMP}/extract/tools/installer/install.sh" \
-            --mode 1 --source local < /dev/null 2>&1 | tee /tmp/local-install.log
+            --mode 1 --source local < /dev/null 2>&1 | tee /tmp/local-install.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Assert the offline path was actually taken
         run: |
@@ -712,7 +712,7 @@ jobs:
         run: |
           cp tools/installer/install.sh "${RUNNER_TEMP}/install.sh"
           sudo LLMSYS_TELEMETRY=0 bash "${RUNNER_TEMP}/install.sh" \
-            --mode 1 --source git --no-self-update < /dev/null 2>&1 | tee /tmp/git-install.log
+            --mode 1 --source git --no-self-update < /dev/null 2>&1 | tee /tmp/git-install.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Assert the git path was actually taken and deployed THIS tree
         run: |
