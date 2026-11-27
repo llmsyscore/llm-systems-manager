@@ -55,7 +55,7 @@ banner() {
 # Strip pip's harmless "cache entry deserialization failed" warnings (any case) from stderr.
 # Exit status preserved; the filter ignores Ctrl-C.
 pip_filter() {
-  "$@" 2> >(trap '' INT; grep -viE 'cache entry deserialization failed' >&2)
+  ("$@") 2> >(trap '' INT; grep -viE 'cache entry deserialization failed' >&2)
 }
 
 # confirm <prompt> [default] — interactive yes/no; default "y" (empty=yes) or

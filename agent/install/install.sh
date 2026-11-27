@@ -673,7 +673,7 @@ _run_as() {
 # Run a command with pip's harmless "cache entry deserialization failed" warnings removed from stderr.
 # Exit status preserved; the filter ignores Ctrl-C.
 _pip_filter() {
-  "$@" 2> >(trap '' INT; grep -vi 'cache entry deserialization failed' >&2)
+  ("$@") 2> >(trap '' INT; grep -vi 'cache entry deserialization failed' >&2)
 }
 
 # _yaml_scalar FILE KEY
