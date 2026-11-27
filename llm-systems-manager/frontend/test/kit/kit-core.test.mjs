@@ -42,7 +42,7 @@ describe('kit core', () => {
   test('version header', () => {
     const first = KIT_SRC.split('\n')[0];
     assert.equal(first, '// Panel kit ' + KIT_VERSION.trim());
-    assert.equal(first, '// Panel kit 1.4.4');
+    assert.equal(first, '// Panel kit 1.4.5');
   });
 
   test('coexists with an old copy', () => {
@@ -396,6 +396,23 @@ describe('ported from cloud kit.test.mjs', () => {
     const k = kit();
     assert.equal(count(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 30 }]), /% of the step above/g), 0);
     assert.ok(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5 }]).includes('50% of the step above'));
+  });
+
+  test('funnelHtml step with its own base', () => {
+    const k = kit();
+    const h = k.funnelHtml([{ label: 'A', v: 100 }, { label: 'B', v: 4, base: 10, baseLabel: 'of installs with a manager' }, { label: 'C', v: 2 }]);
+    assert.ok(h.includes('40% of installs with a manager'));
+    assert.ok(h.includes('50% of the step above'));
+    assert.equal(count(h, /% of the step above/g), 1);
+    assert.ok(k.funnelHtml([{ label: 'A', v: 3, base: 4 }]).includes('<span class="f-pc">75%</span>'));
+    assert.ok(k.funnelHtml([{ label: 'A', v: 1, base: 2, baseLabel: '<b>' }]).includes('50% &lt;b&gt;'));
+    assert.equal(count(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, base: 0, baseLabel: 'x' }]), /<span class="f-pc"><\/span>/g), 2);
+    assert.equal(count(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, base: 2, baseLabel: 'x' }]), /<span class="f-pc"><\/span>/g), 2);
+    assert.equal(count(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, base: -10, baseLabel: 'x' }]), /<span class="f-pc"><\/span>/g), 2);
+    assert.ok(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, base: null }]).includes('50% of the step above'));
+    assert.ok(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, base: undefined }]).includes('50% of the step above'));
+    assert.ok(k.funnelHtml([{ label: 'A', v: 10 }, { label: 'B', v: 5, baseLabel: 'x' }]).includes('50% of the step above'));
+    assert.ok(k.funnelHtml([{ label: 'A', v: 3, base: '10', baseLabel: 'x' }]).includes('30% x'));
   });
 
   test('panelHtml table option', () => {

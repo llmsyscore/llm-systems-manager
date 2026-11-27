@@ -1,4 +1,4 @@
-// Panel kit 1.4.4
+// Panel kit 1.4.5
 // Shared panel kit: HTML renderers (panel shell, KPI, time series, timeline, ranked list, split bar, funnel, map, feed) and their helpers, using only colour tokens.
 var KIT_RANGE_DAYS = { 'today': 0, '1': 1, '3': 3, '5': 5, '7': 7, '14': 14, '30': 30, '90': 90, '365': 365 };
 var KIT_SERIES_OFF = {};
@@ -592,13 +592,16 @@ function splitHtml(rows, o) {
   return '<div class="sbar" aria-hidden="true">' + bar + '</div><div class="legend stacked">' + legend + '</div>';
 }
 
-// Funnel: one bar per step; each step after the first shows its share of the step above when that is 100% or less.
+// Funnel: one bar per step; a step shows its share (100% or less) of s.base labelled s.baseLabel when base is set,
+// otherwise each step after the first shows its share of the step above.
 function funnelHtml(steps) {
   steps = steps || [];
   var mx = Math.max.apply(null, [1].concat(steps.map(function(s) { return +s.v || 0; })));
   return '<ol class="fun">' + steps.map(function(s, i) {
-    var prev = i ? +steps[i - 1].v || 0 : 0, v = +s.v || 0, r = prev ? v / prev : null;
-    var pc = r !== null && r <= 1 ? Math.round(r * 100) + '% of the step above' : '';
+    var own = s.base != null, v = +s.v || 0;
+    var den = own ? +s.base || 0 : (i ? +steps[i - 1].v || 0 : 0), r = den > 0 ? v / den : null;
+    var lab = own ? (s.baseLabel ? ' ' + s.baseLabel : '') : ' of the step above';
+    var pc = r !== null && r <= 1 ? kitEsc(Math.round(r * 100) + '%' + lab) : '';
     return '<li><span class="f-lab">' + kitEsc(s.label) + '</span><span class="f-bar"><i style="width:' + kitN((v / mx) * 100) + '%"></i></span>' +
       '<span class="f-val">' + kitFmt(v) + '</span><span class="f-pc">' + pc + '</span></li>';
   }).join('') + '</ol>';
