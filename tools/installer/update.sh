@@ -682,18 +682,28 @@ fi
 # running process still has them mapped). InfluxDB is left alone, it's
 # orthogonal to the sync.
 STOPPED_UNITS=()
-# EXIT handler: remove the TOML-merge temp file, and restart pre-flight-stopped
-# services if the run aborts before the restart phase (so a mid-update failure
-# can't leave manager/AE/agent down).
+# EXIT handler: removes the TOML-merge temp file; after an abort it restarts the pre-flight-stopped
+# services with Ctrl-C ignored, or names the ones still stopped when the abort came mid-restart.
 _restart_phase_reached=0
+_restart_running=0
 _TOML_MERGE_TMP=""
 _on_exit() {
   local rc=$?
   [[ -n "$_TOML_MERGE_TMP" ]] && rm -f "$_TOML_MERGE_TMP" 2>/dev/null
   (( rc == 0 )) && return 0
   (( DRY_RUN )) && return 0
-  (( _restart_phase_reached )) && return 0
   (( ${#STOPPED_UNITS[@]} == 0 )) && return 0
+  if (( _restart_phase_reached )); then
+    local u still_stopped=()
+    for u in "${STOPPED_UNITS[@]}"; do
+      _unit_failed "$u" || still_stopped+=("$u")
+    done
+    if (( _restart_running )) && (( ${#still_stopped[@]} > 0 )); then
+      warn "update stopped during the service restart; start any of these that are down: sudo systemctl start ${still_stopped[*]}"
+    fi
+    return 0
+  fi
+  trap '' INT
   warn "update aborted (exit $rc) after services were stopped — restarting them:"
   local u
   for u in "${STOPPED_UNITS[@]}"; do
@@ -706,6 +716,7 @@ _on_exit() {
   done
 }
 trap _on_exit EXIT
+trap 'exit 130' INT
 if (( ! DRY_RUN )) && ( $HAVE_MANAGER || $HAVE_AE || $HAVE_AGENT ); then
   banner "Pre-flight: stop services before sync?"
   log "Stopping the services before file/venv sync avoids race conditions"
@@ -714,20 +725,23 @@ if (( ! DRY_RUN )) && ( $HAVE_MANAGER || $HAVE_AE || $HAVE_AGENT ); then
   if prompt_yn "Stop services now?" "y"; then
     $HAVE_MANAGER && {
       log "stopping llm-systems-manager.service"
+      STOPPED_UNITS+=("llm-systems-manager.service")
       $SUDO systemctl stop llm-systems-manager.service \
-        && { STOPPED_UNITS+=("llm-systems-manager.service"); RESTART_UNITS+=("llm-systems-manager.service"); } \
+        && RESTART_UNITS+=("llm-systems-manager.service") \
         || warn "  stop returned non-zero"
     }
     $HAVE_AE && {
       log "stopping llm-systems-alarm-engine.service"
+      STOPPED_UNITS+=("llm-systems-alarm-engine.service")
       $SUDO systemctl stop llm-systems-alarm-engine.service \
-        && { STOPPED_UNITS+=("llm-systems-alarm-engine.service"); RESTART_UNITS+=("llm-systems-alarm-engine.service"); } \
+        && RESTART_UNITS+=("llm-systems-alarm-engine.service") \
         || warn "  stop returned non-zero"
     }
     $HAVE_AGENT && {
       log "stopping llm-systems-agent.service"
+      STOPPED_UNITS+=("llm-systems-agent.service")
       $SUDO systemctl stop llm-systems-agent.service \
-        && { STOPPED_UNITS+=("llm-systems-agent.service"); RESTART_UNITS+=("llm-systems-agent.service"); } \
+        && RESTART_UNITS+=("llm-systems-agent.service") \
         || warn "  stop returned non-zero"
     }
   else
@@ -1194,6 +1208,7 @@ elif (( SKIP_RESTART )); then
 elif (( DRY_RUN )); then
   log "[dry-run] would restart: ${RESTART_UNITS[*]}"
 else
+  _restart_running=1
   if prompt_yn "Restart now: ${RESTART_UNITS[*]} ?" "y"; then
     for u in "${RESTART_UNITS[@]}"; do
       log "restarting $u"
@@ -1211,6 +1226,7 @@ else
     _RESTART_DEFERRED=1; _DEFERRED_UNITS=("${RESTART_UNITS[@]}")
     warn "left services as-is; restart manually when ready"
   fi
+  _restart_running=0
 fi
 
 # ── Health probes ───────────────────────────────────────────────────────────

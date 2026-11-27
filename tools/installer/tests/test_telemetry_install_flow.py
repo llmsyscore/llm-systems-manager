@@ -7,6 +7,7 @@ REPO = INSTALLER.parents[1]
 INSTALL = (INSTALLER / "install.sh").read_text()
 UPDATE = (INSTALLER / "update.sh").read_text()
 AGENT = (REPO / "agent" / "install" / "install.sh").read_text()
+LIB = (INSTALLER / "lib-common.sh").read_text()
 
 
 def test_install_asks_once_after_lib_common_and_before_mode5():
@@ -262,6 +263,184 @@ for _i in $(seq 1 200); do sleep 0.05; done
     assert " --outcome failed:cancelled " in log.read_text()
 
 
+def _group_ctrl_c(tmp_path, script, again=False):
+    """Run a bash script in its own session and Ctrl-C its whole process group once it is ready
+    (and a second time once the file AGAIN exists, when again is set)."""
+    import contextlib
+    import os
+    import signal
+    import subprocess
+    import time
+
+    def wait_for(path):
+        for _ in range(100):
+            if path.exists():
+                break
+            time.sleep(0.05)
+        assert path.exists()
+
+    files = {name: tmp_path / name.lower() for name in ("READY", "AGAIN", "CALLS")}
+    for name, path in files.items():
+        script = script.replace(name, str(path))
+    proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True, env={"PATH": "/usr/bin:/bin"})
+    try:
+        wait_for(files["READY"])
+        time.sleep(0.5)
+        os.killpg(proc.pid, signal.SIGINT)
+        if again:
+            wait_for(files["AGAIN"])
+            os.killpg(proc.pid, signal.SIGINT)
+        _out, err = proc.communicate(timeout=20)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+    return proc.returncode, err
+
+
+def _func(text, name):
+    return re.search(rf"\n({name}\(\) \{{.*?\n\}})", text, re.S).group(1)
+
+
+def test_agent_pip_filter_keeps_stderr_open_on_group_ctrl_c(tmp_path):
+    script = f"""_run_as() {{ "$@"; }}
+{_func(AGENT, "_pip_filter")}
+_work() {{ sleep 10; echo next; }}
+trap 'exit 130' INT
+trap 'echo "exit handler ran rc=$?" >&2' EXIT
+touch READY
+_pip_filter _work
+"""
+    rc, err = _group_ctrl_c(tmp_path, script)
+    assert rc == 130
+    assert "exit handler ran rc=130" in err
+
+
+def test_lib_pip_filter_keeps_stderr_open_on_group_ctrl_c(tmp_path):
+    script = f"""{_func(LIB, "pip_filter")}
+_work() {{ sleep 10; echo next; }}
+trap 'exit 130' INT
+trap 'echo "exit handler ran rc=$?" >&2' EXIT
+touch READY
+pip_filter _work
+"""
+    rc, err = _group_ctrl_c(tmp_path, script)
+    assert rc == 130
+    assert "exit handler ran rc=130" in err
+
+
+def _update_exit_script(stub_sleep=0, restart_phase=0, restart_running=0, unit_failed="return 1"):
+    int_trap = re.search(r"\ntrap _on_exit EXIT\n(trap 'exit 130' INT)\n", UPDATE).group(1)
+    return f"""SUDO="" DRY_RUN=0 _restart_phase_reached={restart_phase} _restart_running={restart_running} _TOML_MERGE_TMP=""
+STOPPED_UNITS=(a.service b.service c.service)
+warn() {{ echo "$*" >&2; }}
+_unit_failed() {{ {unit_failed}; }}
+systemctl() {{ echo "$*" >> CALLS; touch AGAIN; sleep {stub_sleep}; }}
+{_func(UPDATE, "_on_exit")}
+trap _on_exit EXIT
+{int_trap}
+touch READY
+sleep 10
+"""
+
+
+def test_update_ctrl_c_restarts_the_stopped_services(tmp_path):
+    rc, err = _group_ctrl_c(tmp_path, _update_exit_script())
+    assert rc == 130
+    assert (tmp_path / "calls").read_text() == "start a.service\nstart b.service\nstart c.service\n"
+
+
+def test_update_second_ctrl_c_does_not_stop_the_restart(tmp_path):
+    rc, err = _group_ctrl_c(tmp_path, _update_exit_script(stub_sleep=1), again=True)
+    assert rc == 130
+    assert (tmp_path / "calls").read_text() == "start a.service\nstart b.service\nstart c.service\n"
+
+
+def test_update_ctrl_c_in_the_restart_phase_names_the_services(tmp_path):
+    rc, err = _group_ctrl_c(tmp_path, _update_exit_script(restart_phase=1, restart_running=1,
+                                                          unit_failed='[[ $1 == b.service ]]'))
+    assert rc == 130
+    assert "sudo systemctl start a.service c.service" in err
+    assert not (tmp_path / "calls").exists()
+
+
+def test_update_failed_finish_after_the_restart_names_nothing(tmp_path):
+    import subprocess
+    script = _update_exit_script(restart_phase=1).replace("touch READY\nsleep 10\n", "exit 1\n")
+    script = script.replace("CALLS", str(tmp_path / "calls"))
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20,
+                       env={"PATH": "/usr/bin:/bin"})
+    assert r.returncode == 1
+    assert "systemctl start" not in r.stderr
+    assert not (tmp_path / "calls").exists()
+
+
+def test_update_records_a_unit_before_stopping_it():
+    for unit in ("llm-systems-manager.service", "llm-systems-alarm-engine.service", "llm-systems-agent.service"):
+        assert f'STOPPED_UNITS+=("{unit}")\n      $SUDO systemctl stop {unit} \\\n' in UPDATE
+
+
+def _install_exit_script(tmp_path, report_body):
+    traps = re.search(r"\n(trap '_telemetry_on_exit; rm -f [^\n]*' EXIT)\n(trap 'LLMSYS_STAGE=cancelled; exit 130' INT)\n",
+                      INSTALL)
+    return f"""LLMSYS_STAGE=deps
+telemetry_pick_root() {{ echo /nonexistent; }}
+telemetry_report_as_user() {{ {report_body} }}
+{traps.group(1)}
+{traps.group(2)}
+{_func(INSTALL, "_telemetry_on_exit")}
+_TELEMETRY_DONE=0 LLMSYS_TELEMETRY=1 LLMSYS_RUN_USER=me MODE=1 REPO_SRC=/nonexistent _TELEMETRY_VERSION=v0
+LLMSYS_INSTALL_DIR={tmp_path}/inst
+mkdir -p {tmp_path}/inst/data
+touch READY
+sleep 10
+"""
+
+
+def test_install_ctrl_c_reports_cancelled(tmp_path):
+    script = _install_exit_script(tmp_path, 'echo "$*" >> CALLS;')
+    rc, err = _group_ctrl_c(tmp_path, script)
+    assert rc == 130
+    assert " failed:cancelled " in (tmp_path / "calls").read_text()
+
+
+def test_install_second_ctrl_c_still_finishes_the_report(tmp_path):
+    script = _install_exit_script(tmp_path, 'echo "$*" >> CALLS; touch AGAIN; sleep 1; echo finished >> CALLS;')
+    rc, err = _group_ctrl_c(tmp_path, script, again=True)
+    assert rc == 130
+    assert "finished" in (tmp_path / "calls").read_text()
+
+
+def test_agent_exit_hook_ignores_a_second_ctrl_c():
+    assert "local rc=$?\n  trap '' INT\n" in _func(AGENT, "_agent_tele_on_exit")
+
+
+def test_gpu_vendor_probe_reads_the_drm_vendor(tmp_path):
+    import subprocess
+    lines = AGENT.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("# GPU: PCI vendor"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "done")
+    probe = "\n".join(lines[start:end + 1]).replace("/sys/class/drm", str(tmp_path / "drm"))
+
+    def run():
+        return subprocess.run(["bash", "-c", probe + '\necho "v=$_gpu_vendor"'], capture_output=True,
+                              text=True, timeout=20, env={"PATH": "/usr/bin:/bin"})
+
+    r = run()
+    assert r.stdout.endswith("v=\n")
+    (tmp_path / "drm" / "card0" / "device").mkdir(parents=True)
+    (tmp_path / "drm" / "card0" / "device" / "vendor").write_text("0x1002\n")
+    r = run()
+    assert r.stdout.endswith("v=AMD\n")
+
+
+def test_hint_skips_an_explicit_system_only_role():
+    i_cond = AGENT.index('[[ "$ROLE" != "system_only" || "$ROLE_WRITTEN" == "auto" ]]')
+    i_if = AGENT.rindex('if [[ "$AGENT_OS" == "linux" ]] \\', 0, i_cond)
+    i_hint = AGENT.index("This host has a $_gpu_vendor GPU")
+    assert i_if < i_cond < i_hint
+
+
 def test_rerun_that_installed_llama_writes_only_llama_keys(tmp_path):
     import subprocess
     m = re.search(r'elif \[\[ "\$LLAMA_INSTALLED_THIS_RUN" == true \]\]; then.*?<<\'PYEOF\'\n(.*?)\nPYEOF\n', AGENT, re.S)
@@ -310,3 +489,10 @@ def test_closing_health_command_names_the_configured_port():
     assert "localhost:8082" not in tail
     assert '_yaml_scalar "$INSTALL_DIR/agent_config.yaml" AGENT_BIND_PORT' in tail
     assert "curl -k https://localhost:$_hc_port/health" in tail
+
+
+def test_gpu_vendor_probe_runs_for_every_role():
+    probe = AGENT.index("for _v in /sys/class/drm/card[0-9]*/device/vendor; do")
+    guard = AGENT.index('if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then')
+    assert probe < guard
+    assert '_gpu_vendor=""' not in AGENT[guard:AGENT.index("# Recommend an inference runtime")]

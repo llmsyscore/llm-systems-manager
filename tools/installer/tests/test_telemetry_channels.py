@@ -190,7 +190,7 @@ def test_ci_workflows_silence_reports():
 
 
 def test_install_sh_revision_bumped():
-    assert "_INSTALL_SH_REVISION=20261024001" in (REPO / "tools/installer/install.sh").read_text()
+    assert "_INSTALL_SH_REVISION=20261127001" in (REPO / "tools/installer/install.sh").read_text()
 
 
 def test_postinst_upgrade_ignores_stored_debconf_answers(tmp_path):
