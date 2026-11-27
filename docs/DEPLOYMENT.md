@@ -1056,7 +1056,7 @@ The update process:
 
 Every update also re-stamps the install root's `RELEASE` marker, so an install that could not previously name its release — and therefore never reported an available update — self-heals on its next update.
 
-You do not need to stop services first — the updater handles restarts.
+You do not need to stop services first — the updater handles restarts. If you press Ctrl-C after the updater has stopped the services, it starts them again before it exits; if you press it while services are restarting, it lists the ones to start.
 
 When the update spans more than one host, update the manager host first, then the alarm engine host, then the agents (**Admin → Agents → Manage ▾ → Update all**). Certificates issued since v3.1.0 name what they belong to, and each side starts requiring that name once it has seen it, so this order keeps every connection working during the update. The updater also corrects the alarm engine's allowed-origins list (see `[alarm_engine].cors_origins` in the configuration table) and, when run from a terminal on a host that has never answered the question, asks once about the [anonymous reports](#anonymous-reports).
 
