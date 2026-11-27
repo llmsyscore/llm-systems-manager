@@ -543,6 +543,18 @@ def test_cli_payload_source(tmp_path):
     assert json.loads(out)["source"] == "local"
 
 
+def test_cli_payload_provider_keeps_known_values_only(tmp_path):
+    def payload(provider):
+        return json.loads(subprocess.run([sys.executable, "-I", str(BACKEND / "telemetry.py"), "payload",
+                                          "--event", "install", "--channel", "script", "--mode", "5",
+                                          "--data-dir", str(tmp_path), "--version", "v9",
+                                          "--root", str(BACKEND.parent.parent), "--provider", provider],
+                                         capture_output=True, text=True, check=True).stdout)
+    assert payload("llama")["provider"] == "llama"
+    assert payload("none")["provider"] == "none"
+    assert "provider" not in payload("ollama")
+
+
 def test_install_source_falls_back_to_the_tree(cfg, tmp_path, monkeypatch):
     import companion
     monkeypatch.setattr(companion, "_installed_release", lambda: {"source": "dpkg"})
@@ -611,3 +623,40 @@ def test_do_not_track_disables_every_kind_and_send_now(cfg, sched, monkeypatch):
 def test_do_not_track_zero_or_false_is_not_set(monkeypatch, val, expected):
     monkeypatch.setenv("DO_NOT_TRACK", val)
     assert telemetry.do_not_track() is expected
+
+
+def test_cpu_model_on_arm_comes_from_lscpu(monkeypatch):
+    class _Info:
+        def __init__(self, _p):
+            pass
+
+        def read_text(self):
+            return "processor\t: 0\nBogoMIPS\t: 2000.00\nCPU implementer\t: 0x41\n"
+
+    lscpu = "Architecture:  aarch64\nVendor ID:     ARM\nModel name:    Cortex-X925\nModel name:    Cortex-A725\n"
+    monkeypatch.setattr(telemetry.sys, "platform", "linux")
+    monkeypatch.setattr(telemetry, "Path", _Info)
+    monkeypatch.setattr(telemetry.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=lscpu))
+    assert telemetry._cpu_model() == "Cortex-X925"
+    monkeypatch.setattr(telemetry.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="Model name: -\n"))
+    monkeypatch.setattr(telemetry.platform, "processor", lambda: "aarch64")
+    assert telemetry._cpu_model() == "aarch64"
+
+
+@pytest.mark.parametrize("err", [FileNotFoundError("lscpu"), subprocess.TimeoutExpired("lscpu", 3)])
+def test_cpu_model_falls_back_when_lscpu_is_missing_or_slow(monkeypatch, err):
+    class _Info:
+        def __init__(self, _p):
+            pass
+
+        def read_text(self):
+            return "processor\t: 0\n"
+
+    def boom(*a, **k):
+        raise err
+
+    monkeypatch.setattr(telemetry.sys, "platform", "linux")
+    monkeypatch.setattr(telemetry, "Path", _Info)
+    monkeypatch.setattr(telemetry.subprocess, "run", boom)
+    monkeypatch.setattr(telemetry.platform, "processor", lambda: "aarch64")
+    assert telemetry._cpu_model() == "aarch64"

@@ -336,6 +336,9 @@ def _select_asset(assets: list, tokens: list, variant_tokens: tuple) -> "str | N
         dl = asset.get("browser_download_url") or ""
         if not name.endswith((".zip", ".tar.gz", ".tgz")):
             continue
+        # cudart-* archives hold only the CUDA runtime libraries, not llama.cpp.
+        if name.startswith("cudart-"):
+            continue
         if not all(t in name for t in tokens):
             continue
         if variant_tokens:

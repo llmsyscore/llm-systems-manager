@@ -451,6 +451,17 @@ def test_payload_skips_source_for_an_older_builder(tmp_path):
     assert "source" not in json.loads(r.stdout)
 
 
+def test_payload_carries_the_exported_provider(tmp_path):
+    root = _tree(tmp_path, "prov")
+    data = tmp_path / "data"
+    data.mkdir()
+    r = run(tmp_path, f'telemetry_payload install script 5 ok "{data}" v1 "{root}"', {"LLMSYS_TELEMETRY_PROVIDER": "lms"})
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["provider"] == "lms"
+    r = run(tmp_path, f'telemetry_payload install script 5 ok "{data}" v1 "{root}"')
+    assert "provider" not in json.loads(r.stdout)
+
+
 def test_report_as_user_passes_the_source_env():
     text = LIB.read_text()
     body = text[text.index("telemetry_report_as_user() {"):]

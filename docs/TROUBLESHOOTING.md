@@ -144,7 +144,7 @@ Set `LLAMA_API_URL` to the server's address (for example `http://localhost:9931`
 Run this once on that machine, then try again:
 
 ```bash
-sudo bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update
+bash <(curl -fsSL https://get.llmsysmanager.com/install.sh) --mode 5 -- --update
 ```
 
 For a .deb install run `sudo dpkg-reconfigure llm-systems-agent`; for an .rpm install run `sudo dnf reinstall llm-systems-agent`. See [Updating the agent's helper](DEPLOYMENT.md#updating-the-agents-helper).
