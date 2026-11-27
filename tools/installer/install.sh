@@ -53,7 +53,7 @@ unset LLMSYS_UPSTREAM_TMP _upstream_re
 # substantive change to this file. The self-update trampoline only re-execs
 # when the upstream copy carries a STRICTLY GREATER number, so locally-
 # modified scripts (or unpushed commits) are never silently downgraded.
-_INSTALL_SH_REVISION=20261024001
+_INSTALL_SH_REVISION=20261127001
 
 # Fallback bootstrap helpers — used until we source lib-common.sh.
 # TTY-aware colors so OK/WARN/ERR markers stand out in interactive runs and
@@ -801,6 +801,7 @@ fi
 # EXIT-trap hook: on a non-zero exit, report the failed stage unless a final report already ran.
 _telemetry_on_exit() {
   local rc=$?
+  trap '' INT
   (( rc != 0 )) || return 0
   (( _TELEMETRY_DONE )) && return 0
   [[ "${LLMSYS_TELEMETRY:-0}" == "1" ]] || return 0
@@ -949,6 +950,7 @@ export LLMSYS_INSTALL_MODE="$MODE"
 LLMSYS_INFLUXDB_TOKEN_FILE=""
 export LLMSYS_INFLUXDB_TOKEN_FILE LLMSYS_APT_STAMP
 trap '_telemetry_on_exit; rm -f "${LLMSYS_INFLUXDB_TOKEN_FILE:-}" "${LLMSYS_APT_STAMP:-}"' EXIT
+trap 'LLMSYS_STAGE=cancelled; exit 130' INT
 LLMSYS_INFLUXDB_TOKEN_FILE="$(mktemp -t llmsys-influxdb-tokens.XXXXXX.env)"
 chmod 0600 "$LLMSYS_INFLUXDB_TOKEN_FILE"
 # Keep the preflight stamp when it exists; otherwise start an empty one.

@@ -670,12 +670,10 @@ _run_as() {
   fi
 }
 
-# Filter pip's harmless `cache entry deserialization failed` warnings from
-# stderr while preserving the wrapped command's exit status. Pip emits these
-# when an older HTTP-cache entry can't be decoded; they survive --quiet and
-# clutter the installer output.
+# Run a command with pip's harmless "cache entry deserialization failed" warnings removed from stderr.
+# Exit status preserved; the filter ignores Ctrl-C.
 _pip_filter() {
-  "$@" 2> >(grep -v 'cache entry deserialization failed' >&2)
+  ("$@") 2> >(trap '' INT; grep -vi 'cache entry deserialization failed' >&2)
 }
 
 # _yaml_scalar FILE KEY
@@ -3714,21 +3712,19 @@ _offer_apt_install() {
   return 1
 }
 
+# GPU: PCI vendor 0x1002 (AMD) or 0x10de (NVIDIA) on any DRM card, for every role.
+_gpu_vendor=""
+for _v in /sys/class/drm/card[0-9]*/device/vendor; do
+  [[ -f "$_v" ]] || continue
+  case "$(cat "$_v" 2>/dev/null)" in
+    0x1002) _gpu_vendor=AMD;    break ;;
+    0x10de) _gpu_vendor=NVIDIA; break ;;
+  esac
+done
 if [[ "$AGENT_OS" == "linux" ]] && [[ "$ROLE" != "system_only" ]]; then
   echo
   echo "── Host hardware collectors ────────────────────────────────────────────"
-  # GPU: PCI vendor 0x1002 (AMD) or 0x10de (NVIDIA) on any DRM card.
-  # AMD reads pure sysfs (no binary). NVIDIA needs nvidia-smi from
-  # nvidia-utils. We offer to install nvidia-utils; installing the
-  # kernel driver itself is out of scope (needs reboot, version matching).
-  _gpu_vendor=""
-  for _v in /sys/class/drm/card[0-9]*/device/vendor; do
-    [[ -f "$_v" ]] || continue
-    case "$(cat "$_v" 2>/dev/null)" in
-      0x1002) _gpu_vendor=AMD;    break ;;
-      0x10de) _gpu_vendor=NVIDIA; break ;;
-    esac
-  done
+  # AMD reads sysfs; NVIDIA needs nvidia-smi from nvidia-utils, which is offered for install.
   case "$_gpu_vendor" in
     AMD)
       COLLECT_GPU=true
@@ -4238,6 +4234,7 @@ _agent_tele_report() {
 # EXIT hook: a run that stops with an error reports the step it stopped at.
 _agent_tele_on_exit() {
   local rc=$?
+  trap '' INT
   (( rc != 0 )) || return 0
   (( rc == 130 )) && _tele_stage=cancelled
   if [[ "${LLMSYS_TELEMETRY:-0}" == "1" && "${LLMSYS_INSTALL_MODE:-5}" == "5" \
@@ -4957,17 +4954,10 @@ if { $ENABLE_PERF || $INSTALL_PERF_UNITS; } && [[ "$AGENT_OS" == "linux" ]]; the
   fi
 fi
 
-# Recommend an inference runtime when the host has a GPU but no provider
-# was enabled and no llama-server / lms / vllm binary is on disk. Pure
-# information — never auto-installs (toolchain/version/license decisions
-# belong to the operator). Only fires on fresh installs (the --update
-# path exits earlier).
-#
-# `_gpu_vendor` is set by the Host hardware collectors block, which is
-# skipped for ROLE=system_only. Default to empty here so set -u is happy
-# and the guard correctly evaluates to "no GPU detected, skip".
-: "${_gpu_vendor:=}"
+# Recommend an inference runtime on a fresh Linux install with an AMD/NVIDIA GPU and no provider
+# or runtime binary found; an operator-chosen --role system_only skips it.
 if [[ "$AGENT_OS" == "linux" ]] \
+   && [[ "$ROLE" != "system_only" || "$ROLE_WRITTEN" == "auto" ]] \
    && [[ "$_gpu_vendor" == "AMD" || "$_gpu_vendor" == "NVIDIA" ]] \
    && [[ "$ENABLE_LLAMA" != "true" && "$ENABLE_LMS" != "true" ]]; then
   _llama_found=""

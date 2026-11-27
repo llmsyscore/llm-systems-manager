@@ -52,12 +52,10 @@ banner() {
     "$(printf '─%.0s' $(seq 1 $((72 - ${#title}))))${LLMSYS_C_RST}"
 }
 
-# Strip known-noisy harmless pip warnings (case-insensitive — pip emits both
-# "Cache entry deserialization failed" and "cache entry deserialization failed"
-# across versions; the previous pattern was lowercase-only and let the capital-C
-# variant through). Exit status preserved.
+# Strip pip's harmless "cache entry deserialization failed" warnings (any case) from stderr.
+# Exit status preserved; the filter ignores Ctrl-C.
 pip_filter() {
-  "$@" 2> >(grep -viE 'cache entry deserialization failed' >&2)
+  ("$@") 2> >(trap '' INT; grep -viE 'cache entry deserialization failed' >&2)
 }
 
 # confirm <prompt> [default] — interactive yes/no; default "y" (empty=yes) or
